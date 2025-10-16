@@ -1,0 +1,11 @@
+# Rust compilation artifacts
+/target/
+**/*.rs.bk
+
+# Common tooling directories
+/.vscode/
+/.idea/
+
+# OS-specific junk
+.DS_Store
+Thumbs.db

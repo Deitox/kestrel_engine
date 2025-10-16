@@ -1,0 +1,27 @@
+[package]
+name = "kestrel_engine"
+version = "0.7.0"
+edition = "2021"
+
+[dependencies]
+winit = { version = "0.30.12", features = ["rwh_06"] }
+wgpu = "27.0.1"
+pollster = "0.3"
+glam = "0.27"
+bevy_ecs = "0.15"
+bytemuck = { version = "1.15", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+rand = "0.8"
+egui = "0.33"
+egui-winit = "0.33"
+egui-wgpu = { version = "0.33", features = ["winit"] }
+egui_plot = "0.34"
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+opt-level = 3
