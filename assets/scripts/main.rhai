@@ -4,6 +4,9 @@ fn init(world) {
     world.log("Script init");
     world.set_auto_spawn_rate(0.0);
     world.set_spawn_per_press(100);
+    world.set_emitter_spread(1.0);
+    world.set_emitter_speed(1.0);
+    world.set_emitter_lifetime(1.2);
     state.timer = 0.0;
 }
 

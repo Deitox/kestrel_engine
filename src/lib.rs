@@ -64,6 +64,9 @@ pub struct App {
     ui_hist: Vec<f32>,
     ui_root_spin: f32,
     ui_emitter_rate: f32,
+    ui_emitter_spread: f32,
+    ui_emitter_speed: f32,
+    ui_emitter_lifetime: f32,
 
     // Camera / selection
     camera: Camera2D,
@@ -112,6 +115,9 @@ impl App {
             ui_hist: Vec::with_capacity(240),
             ui_root_spin: 1.2,
             ui_emitter_rate: 35.0,
+            ui_emitter_spread: std::f32::consts::PI / 3.0,
+            ui_emitter_speed: 0.8,
+            ui_emitter_lifetime: 1.2,
             camera: Camera2D::new(CAMERA_BASE_HALF_HEIGHT),
             selected_entity: None,
             config,
@@ -287,6 +293,9 @@ impl ApplicationHandler for App {
         self.ecs.set_spatial_cell(self.ui_cell_size.max(0.05));
         if let Some(emitter) = self.emitter_entity {
             self.ecs.set_emitter_rate(emitter, self.ui_emitter_rate);
+            self.ecs.set_emitter_spread(emitter, self.ui_emitter_spread);
+            self.ecs.set_emitter_speed(emitter, self.ui_emitter_speed);
+            self.ecs.set_emitter_lifetime(emitter, self.ui_emitter_lifetime);
         }
         self.scripts.update(dt);
         let commands = self.scripts.drain_commands();
@@ -336,6 +345,9 @@ impl ApplicationHandler for App {
         let mut ui_auto_spawn_rate = self.ui_auto_spawn_rate;
         let mut ui_root_spin = self.ui_root_spin;
         let mut ui_emitter_rate = self.ui_emitter_rate;
+        let mut ui_emitter_spread = self.ui_emitter_spread;
+        let mut ui_emitter_speed = self.ui_emitter_speed;
+        let mut ui_emitter_lifetime = self.ui_emitter_lifetime;
         let mut selected_entity = self.selected_entity;
         let mut selection_details = selected_entity.and_then(|entity| self.ecs.entity_info(entity));
         let cursor_world = self
@@ -380,6 +392,12 @@ impl ApplicationHandler for App {
                 ui.add(
                     egui::Slider::new(&mut ui_emitter_rate, 0.0..=200.0).text("Emitter rate (particles/s)"),
                 );
+                ui.add(
+                    egui::Slider::new(&mut ui_emitter_spread, 0.0..=std::f32::consts::PI)
+                        .text("Emitter spread (rad)"),
+                );
+                ui.add(egui::Slider::new(&mut ui_emitter_speed, 0.0..=3.0).text("Emitter speed"));
+                ui.add(egui::Slider::new(&mut ui_emitter_lifetime, 0.1..=5.0).text("Particle lifetime (s)"));
                 ui.add(egui::Slider::new(&mut ui_root_spin, -5.0..=5.0).text("Root spin speed"));
                 if ui.button("Spawn now").clicked() {
                     actions.spawn_now = true;
@@ -486,6 +504,9 @@ impl ApplicationHandler for App {
         self.ui_auto_spawn_rate = ui_auto_spawn_rate;
         self.ui_root_spin = ui_root_spin;
         self.ui_emitter_rate = ui_emitter_rate;
+        self.ui_emitter_spread = ui_emitter_spread;
+        self.ui_emitter_speed = ui_emitter_speed;
+        self.ui_emitter_lifetime = ui_emitter_lifetime;
         self.selected_entity = selected_entity;
 
         let egui::FullOutput { platform_output, textures_delta, shapes, .. } = full_output;
@@ -583,6 +604,30 @@ impl App {
                 }
                 ScriptCommand::SetSpawnPerPress { count } => {
                     self.ui_spawn_per_press = count.max(0);
+                }
+                ScriptCommand::SetEmitterRate { rate } => {
+                    self.ui_emitter_rate = rate.max(0.0);
+                    if let Some(emitter) = self.emitter_entity {
+                        self.ecs.set_emitter_rate(emitter, self.ui_emitter_rate);
+                    }
+                }
+                ScriptCommand::SetEmitterSpread { spread } => {
+                    self.ui_emitter_spread = spread.clamp(0.0, std::f32::consts::PI);
+                    if let Some(emitter) = self.emitter_entity {
+                        self.ecs.set_emitter_spread(emitter, self.ui_emitter_spread);
+                    }
+                }
+                ScriptCommand::SetEmitterSpeed { speed } => {
+                    self.ui_emitter_speed = speed.max(0.0);
+                    if let Some(emitter) = self.emitter_entity {
+                        self.ecs.set_emitter_speed(emitter, self.ui_emitter_speed);
+                    }
+                }
+                ScriptCommand::SetEmitterLifetime { lifetime } => {
+                    self.ui_emitter_lifetime = lifetime.max(0.05);
+                    if let Some(emitter) = self.emitter_entity {
+                        self.ecs.set_emitter_lifetime(emitter, self.ui_emitter_lifetime);
+                    }
                 }
             }
         }

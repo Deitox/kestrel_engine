@@ -52,3 +52,4 @@ This architecture ensures each frame flows data in a clear order (Input → ECS 
 - Use `global name;` inside functions when mutating module-level state so Rhai updates the shared variable instead of shadowing it.
 - `world.spawn_sprite` returns a negative handle until the engine materializes the entity; pass that handle to other `world.*` calls and the app resolves it when it processes the queued commands.
 - Scripts can broadcast designer tweaks (auto spawn rate, spawn counts) via `set_auto_spawn_rate` and `set_spawn_per_press`; these override the corresponding debug UI controls at runtime.
+- Scripts can adjust emitter rate/spread/speed/lifetime via the `set_emitter_*` helpers.

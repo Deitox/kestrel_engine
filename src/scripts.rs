@@ -22,6 +22,10 @@ pub enum ScriptCommand {
     Despawn { handle: ScriptHandle },
     SetAutoSpawnRate { rate: f32 },
     SetSpawnPerPress { count: i32 },
+    SetEmitterRate { rate: f32 },
+    SetEmitterSpread { spread: f32 },
+    SetEmitterSpeed { speed: f32 },
+    SetEmitterLifetime { lifetime: f32 },
 }
 
 #[derive(Default)]
@@ -95,6 +99,26 @@ impl ScriptWorld {
     fn set_spawn_per_press(&mut self, count: i64) {
         let clamped = count.clamp(0, 10_000) as i32;
         self.state.borrow_mut().commands.push(ScriptCommand::SetSpawnPerPress { count: clamped });
+    }
+
+    fn set_emitter_rate(&mut self, rate: f32) {
+        self.state.borrow_mut().commands.push(ScriptCommand::SetEmitterRate { rate: rate.max(0.0) });
+    }
+
+    fn set_emitter_spread(&mut self, spread: f32) {
+        let clamped = spread.clamp(0.0, std::f32::consts::PI);
+        self.state.borrow_mut().commands.push(ScriptCommand::SetEmitterSpread { spread: clamped });
+    }
+
+    fn set_emitter_speed(&mut self, speed: f32) {
+        self.state.borrow_mut().commands.push(ScriptCommand::SetEmitterSpeed { speed: speed.max(0.0) });
+    }
+
+    fn set_emitter_lifetime(&mut self, lifetime: f32) {
+        self.state
+            .borrow_mut()
+            .commands
+            .push(ScriptCommand::SetEmitterLifetime { lifetime: lifetime.max(0.05) });
     }
 
     fn random_range(&mut self, min: f32, max: f32) -> f32 {
@@ -273,6 +297,10 @@ fn register_api(engine: &mut Engine) {
     engine.register_fn("despawn", ScriptWorld::despawn);
     engine.register_fn("set_auto_spawn_rate", ScriptWorld::set_auto_spawn_rate);
     engine.register_fn("set_spawn_per_press", ScriptWorld::set_spawn_per_press);
+    engine.register_fn("set_emitter_rate", ScriptWorld::set_emitter_rate);
+    engine.register_fn("set_emitter_spread", ScriptWorld::set_emitter_spread);
+    engine.register_fn("set_emitter_speed", ScriptWorld::set_emitter_speed);
+    engine.register_fn("set_emitter_lifetime", ScriptWorld::set_emitter_lifetime);
     engine.register_fn("log", ScriptWorld::log);
     engine.register_fn("rand", ScriptWorld::random_range);
 }

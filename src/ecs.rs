@@ -238,6 +238,24 @@ impl EcsWorld {
         }
     }
 
+    pub fn set_emitter_spread(&mut self, entity: Entity, spread: f32) {
+        if let Some(mut emitter) = self.world.get_mut::<ParticleEmitter>(entity) {
+            emitter.spread = spread.clamp(0.0, std::f32::consts::PI);
+        }
+    }
+
+    pub fn set_emitter_speed(&mut self, entity: Entity, speed: f32) {
+        if let Some(mut emitter) = self.world.get_mut::<ParticleEmitter>(entity) {
+            emitter.speed = speed.max(0.0);
+        }
+    }
+
+    pub fn set_emitter_lifetime(&mut self, entity: Entity, lifetime: f32) {
+        if let Some(mut emitter) = self.world.get_mut::<ParticleEmitter>(entity) {
+            emitter.lifetime = lifetime.max(0.05);
+        }
+    }
+
     pub fn update(&mut self, dt: f32) {
         self.world.resource_mut::<TimeDelta>().0 = dt;
         self.schedule_var.run(&mut self.world);
