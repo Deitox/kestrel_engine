@@ -63,6 +63,7 @@ pub struct App {
     ui_cell_size: f32,
     ui_hist: Vec<f32>,
     ui_root_spin: f32,
+    ui_emitter_rate: f32,
 
     // Camera / selection
     camera: Camera2D,
@@ -70,6 +71,9 @@ pub struct App {
 
     // Configuration
     config: AppConfig,
+
+    // Particles
+    emitter_entity: Option<Entity>,
 
     // Scripting
     scripts: ScriptHost,
@@ -79,7 +83,7 @@ impl App {
     pub async fn new(config: AppConfig) -> Self {
         let renderer = Renderer::new(&config.window).await;
         let mut ecs = EcsWorld::new();
-        ecs.spawn_demo_scene();
+        let emitter = ecs.spawn_demo_scene();
         let time = Time::new();
         let input = Input::new();
         let assets = AssetManager::new();
@@ -107,9 +111,11 @@ impl App {
             ui_cell_size: 0.25,
             ui_hist: Vec::with_capacity(240),
             ui_root_spin: 1.2,
+            ui_emitter_rate: 35.0,
             camera: Camera2D::new(CAMERA_BASE_HALF_HEIGHT),
             selected_entity: None,
             config,
+            emitter_entity: Some(emitter),
             scripts,
         }
     }
@@ -279,6 +285,9 @@ impl ApplicationHandler for App {
         }
 
         self.ecs.set_spatial_cell(self.ui_cell_size.max(0.05));
+        if let Some(emitter) = self.emitter_entity {
+            self.ecs.set_emitter_rate(emitter, self.ui_emitter_rate);
+        }
         self.scripts.update(dt);
         let commands = self.scripts.drain_commands();
         self.apply_script_commands(commands);
@@ -326,6 +335,7 @@ impl ApplicationHandler for App {
         let mut ui_spawn_per_press = self.ui_spawn_per_press;
         let mut ui_auto_spawn_rate = self.ui_auto_spawn_rate;
         let mut ui_root_spin = self.ui_root_spin;
+        let mut ui_emitter_rate = self.ui_emitter_rate;
         let mut selected_entity = self.selected_entity;
         let mut selection_details = selected_entity.and_then(|entity| self.ecs.entity_info(entity));
         let cursor_world = self
@@ -366,6 +376,9 @@ impl ApplicationHandler for App {
                 ui.add(egui::Slider::new(&mut ui_spawn_per_press, 1..=5000).text("Spawn per press"));
                 ui.add(
                     egui::Slider::new(&mut ui_auto_spawn_rate, 0.0..=5000.0).text("Auto-spawn per second"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut ui_emitter_rate, 0.0..=200.0).text("Emitter rate (particles/s)"),
                 );
                 ui.add(egui::Slider::new(&mut ui_root_spin, -5.0..=5.0).text("Root spin speed"));
                 if ui.button("Spawn now").clicked() {
@@ -472,6 +485,7 @@ impl ApplicationHandler for App {
         self.ui_spawn_per_press = ui_spawn_per_press;
         self.ui_auto_spawn_rate = ui_auto_spawn_rate;
         self.ui_root_spin = ui_root_spin;
+        self.ui_emitter_rate = ui_emitter_rate;
         self.selected_entity = selected_entity;
 
         let egui::FullOutput { platform_output, textures_delta, shapes, .. } = full_output;

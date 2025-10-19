@@ -25,17 +25,18 @@
 - **AssetManager** (`src/assets.rs`) lazily loads texture atlases and provides UV lookup for ECS sprites.
 - **Camera2D** (`src/camera.rs`) converts between screen and world coordinates and exposes pan/zoom controls.
 - **Config** (`src/config.rs`) loads user configuration and feeds initial window settings into the renderer.
-- **ScriptHost** (`src/scripts.rs`) embeds the Rhai runtime, hot-reloads scripts, and exposes a safe API for spawning/mutating entities.
+- **Physics** (`src/ecs.rs`) defines global parameters (gravity, damping) and systems that integrate forces/mass each fixed step.
+- **ScriptHost** (`src/scripts.rs`) embeds the Rhai runtime, hot-reloads scripts, and queues gameplay commands (spawn/mutate/despawn/tweaks) that the app applies after each script tick.
 - **App** (`src/lib.rs`) coordinates the subsystems: processes input, runs fixed/variable ECS schedules, executes scripts, renders sprites, and builds the egui debug UI.
 
 ### Frame Flow
 1. **Input ingest** - `ApplicationHandler::window_event` converts Winit events into `InputEvent`s. `device_event` tracks raw mouse motion, and `about_to_wait` reads consumed events.
 2. **Camera controls** - `App::about_to_wait` applies zoom/pan before simulation, ensuring the view-projection matrix reflects user intent.
 3. **Scripting** - `ScriptHost::update` hot-reloads Rhai scripts, queues commands, and the app drains those commands before simulation so mutations stay deterministic.
-4. **Simulation** - A fixed timestep loop calls `EcsWorld::fixed_step` for deterministic physics/collision work. A variable step handles spin propagation and transform hierarchies.
+4. **Physics & Simulation** - The fixed timestep applies gravity/forces, integrates positions, handles world bounds, and resolves collisions and particle lifetime.
 5. **Rendering prep** - ECS collects instanced sprite data. Camera produces the view-projection matrix for sprite batching.
 6. **Rendering** - `Renderer::render_batch` draws sprites; egui input is processed, overlays drawn, and the frame submitted.
-7. **UI Feedback** - egui window exposes performance stats, spawn controls, camera details, selection gizmos, scripting status, and exposes script toggles (enable/reload).
+7. **UI Feedback** - egui window exposes performance stats, spawn controls, emitter rate, camera details, selection gizmos, scripting status, and exposes script toggles (enable/reload).
 
 ### Module Relationships
 - `App` owns instances of `Renderer`, `EcsWorld`, `Input`, `Camera2D`, `AssetManager`, and `Time`.

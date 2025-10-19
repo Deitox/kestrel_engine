@@ -1,6 +1,7 @@
 use crate::assets::AssetManager;
 use anyhow::{anyhow, Context, Result};
 use bevy_ecs::prelude::*;
+use bevy_ecs::system::{Commands, Res, ResMut};
 use glam::{Mat4, Vec2};
 use rand::Rng;
 use std::borrow::Cow;
@@ -39,6 +40,23 @@ pub struct Velocity(pub Vec2);
 pub struct Aabb {
     pub half: Vec2,
 }
+#[derive(Component, Clone, Copy, Default)]
+pub struct Mass(pub f32);
+#[derive(Component, Clone, Copy, Default)]
+pub struct Force(pub Vec2);
+#[derive(Component)]
+pub struct ParticleEmitter {
+    pub rate: f32,
+    pub spread: f32,
+    pub speed: f32,
+    pub lifetime: f32,
+    pub accumulator: f32,
+}
+#[derive(Component)]
+pub struct Particle {
+    pub lifetime: f32,
+    pub max_lifetime: f32,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -51,6 +69,12 @@ pub struct EntityInfo {
     pub translation: Vec2,
     pub velocity: Option<Vec2>,
     pub sprite_region: Option<String>,
+}
+
+#[derive(Resource)]
+pub struct PhysicsParams {
+    pub gravity: Vec2,
+    pub linear_damping: f32,
 }
 
 // ---------- Spatial hash ----------
@@ -94,13 +118,20 @@ impl EcsWorld {
         let mut world = World::new();
         world.insert_resource(TimeDelta(0.0));
         world.insert_resource(SpatialHash::new(0.25));
+        world.insert_resource(PhysicsParams { gravity: Vec2::new(0.0, -0.6), linear_damping: 0.3 });
 
         let mut schedule_var = Schedule::default();
-        schedule_var.add_systems((sys_apply_spin, sys_propagate_transforms));
+        schedule_var.add_systems((
+            sys_apply_spin,
+            sys_propagate_transforms,
+            sys_update_emitters,
+            sys_update_particles,
+        ));
 
         let mut schedule_fixed = Schedule::default();
         schedule_fixed.add_systems((
-            sys_integrate_velocities,
+            sys_solve_forces,
+            sys_integrate_positions,
             sys_world_bounds_bounce,
             sys_build_spatial_hash,
             sys_collide_spatial,
@@ -109,7 +140,7 @@ impl EcsWorld {
         Self { world, schedule_var, schedule_fixed }
     }
 
-    pub fn spawn_demo_scene(&mut self) {
+    pub fn spawn_demo_scene(&mut self) -> Entity {
         let root = self
             .world
             .spawn((
@@ -127,6 +158,8 @@ impl EcsWorld {
                 Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("checker") },
                 Aabb { half: Vec2::splat(0.35) },
                 Velocity(Vec2::new(0.2, 0.0)),
+                Force::default(),
+                Mass(1.0),
             ))
             .id();
         let b = self
@@ -138,6 +171,8 @@ impl EcsWorld {
                 Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("redorb") },
                 Aabb { half: Vec2::splat(0.30) },
                 Velocity(Vec2::new(-0.25, 0.0)),
+                Force::default(),
+                Mass(1.0),
             ))
             .id();
         let c = self
@@ -149,9 +184,14 @@ impl EcsWorld {
                 Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("bluebox") },
                 Aabb { half: Vec2::splat(0.25) },
                 Velocity(Vec2::new(0.0, -0.2)),
+                Force::default(),
+                Mass(1.0),
             ))
             .id();
         self.world.entity_mut(root).insert(Children(vec![a, b, c]));
+        let emitter =
+            self.spawn_particle_emitter(Vec2::new(0.0, 0.0), 35.0, std::f32::consts::PI / 3.0, 0.8, 1.2);
+        emitter
     }
 
     pub fn spawn_burst(&mut self, _assets: &AssetManager, count: usize) {
@@ -169,7 +209,32 @@ impl EcsWorld {
                 Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed(rname) },
                 Aabb { half },
                 Velocity(vel),
+                Force::default(),
+                Mass(0.8),
             ));
+        }
+    }
+
+    pub fn spawn_particle_emitter(
+        &mut self,
+        position: Vec2,
+        rate: f32,
+        spread: f32,
+        speed: f32,
+        lifetime: f32,
+    ) -> Entity {
+        self.world
+            .spawn((
+                Transform { translation: position, rotation: 0.0, scale: Vec2::splat(0.2) },
+                WorldTransform::default(),
+                ParticleEmitter { rate, spread, speed, lifetime, accumulator: 0.0 },
+            ))
+            .id()
+    }
+
+    pub fn set_emitter_rate(&mut self, entity: Entity, rate: f32) {
+        if let Some(mut emitter) = self.world.get_mut::<ParticleEmitter>(entity) {
+            emitter.rate = rate.max(0.0);
         }
     }
 
@@ -349,9 +414,80 @@ fn sys_propagate_transforms(
     }
 }
 
-fn sys_integrate_velocities(mut q: Query<(&mut Transform, &Velocity)>, dt: Res<TimeDelta>) {
+fn sys_solve_forces(
+    mut q: Query<(&mut Velocity, &mut Force, &Mass)>,
+    params: Res<PhysicsParams>,
+    dt: Res<TimeDelta>,
+) {
+    for (mut vel, mut force, mass) in &mut q {
+        if mass.0 <= 0.0 {
+            continue;
+        }
+        let acceleration = (force.0 / mass.0) + params.gravity;
+        vel.0 += acceleration * dt.0;
+        vel.0 *= 1.0 / (1.0 + params.linear_damping * dt.0);
+        force.0 = Vec2::ZERO;
+    }
+}
+
+fn sys_integrate_positions(mut q: Query<(&mut Transform, &Velocity)>, dt: Res<TimeDelta>) {
     for (mut t, v) in &mut q {
         t.translation += v.0 * dt.0;
+    }
+}
+
+fn sys_update_emitters(
+    mut commands: Commands,
+    mut emitters: Query<(&mut ParticleEmitter, &Transform)>,
+    dt: Res<TimeDelta>,
+) {
+    let mut rng = rand::thread_rng();
+    for (mut emitter, transform) in &mut emitters {
+        let spawn_rate = emitter.rate.max(0.0);
+        emitter.accumulator += spawn_rate * dt.0;
+        let count = emitter.accumulator.floor() as i32;
+        if count <= 0 {
+            continue;
+        }
+        emitter.accumulator -= count as f32;
+        for _ in 0..count {
+            let angle = rng.gen_range(-emitter.spread..=emitter.spread);
+            let dir = Vec2::from_angle(std::f32::consts::FRAC_PI_2 + angle);
+            let velocity = dir * emitter.speed;
+            let lifetime = emitter.lifetime;
+            commands.spawn((
+                Transform {
+                    translation: transform.translation + dir * 0.05,
+                    rotation: 0.0,
+                    scale: Vec2::splat(0.12),
+                },
+                WorldTransform::default(),
+                Velocity(velocity),
+                Force::default(),
+                Mass(0.2),
+                Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("green") },
+                Particle { lifetime, max_lifetime: lifetime },
+            ));
+        }
+    }
+}
+
+fn sys_update_particles(
+    mut commands: Commands,
+    mut particles: Query<(Entity, &mut Particle, &mut Transform, Option<&mut Velocity>)>,
+    dt: Res<TimeDelta>,
+) {
+    for (entity, mut particle, mut transform, velocity) in &mut particles {
+        particle.lifetime -= dt.0;
+        if particle.lifetime <= 0.0 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        let t = (particle.lifetime / particle.max_lifetime).clamp(0.0, 1.0);
+        transform.scale = Vec2::splat(0.12 * t.max(0.2));
+        if let Some(mut vel) = velocity {
+            vel.0 *= 0.98;
+        }
     }
 }
 
