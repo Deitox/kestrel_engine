@@ -11,6 +11,7 @@
 | Serialization | `serde` + `serde_json` | Flexible data formats for config/atlas files; broad ecosystem support. |
 | Error handling | `anyhow` | Simplified error propagation with contextual messages during initialization and asset loading. |
 | Randomness | `rand` 0.8 | Lightweight RNG for spawning demo entities and gameplay experimentation. |
+| Physics | `rapier2d` 0.26 | Proven 2D rigid-body simulation that integrates cleanly with custom ECS loops while keeping SIMD-friendly performance. |
 | Scripting | `rhai` 1.23 | Lightweight, hot-reloadable scripting with an ergonomic Rust API surface and no VM build step. |
 
 ### Guiding Principles

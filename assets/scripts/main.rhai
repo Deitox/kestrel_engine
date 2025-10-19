@@ -35,4 +35,9 @@ fn spawn_entity(world) {
     } else {
         world.log("Failed to spawn entity: " + handle.to_string());
     }
+    let angle = world.rand(0.0, 6.28318);
+    let speed = world.rand(0.35, 0.95);
+    let vx = speed * cos(angle);
+    let vy = speed * sin(angle);
+    world.set_velocity(handle, vx, vy);
 }

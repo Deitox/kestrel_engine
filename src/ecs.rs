@@ -1,10 +1,11 @@
 use crate::assets::AssetManager;
 use anyhow::{anyhow, Context, Result};
 use bevy_ecs::prelude::*;
-use bevy_ecs::query::With;
+use bevy_ecs::query::{With, Without};
 use bevy_ecs::system::{Commands, Res, ResMut};
 use glam::{Mat4, Vec2, Vec4};
 use rand::Rng;
+use rapier2d::prelude::*;
 use std::borrow::Cow;
 use std::collections::HashMap;
 
@@ -72,6 +73,22 @@ pub struct ParticleVisual {
     pub end_size: f32,
 }
 
+#[derive(Component, Clone, Copy)]
+pub struct RapierBody {
+    pub handle: RigidBodyHandle,
+}
+
+#[derive(Component, Clone, Copy)]
+pub struct RapierCollider {
+    pub handle: ColliderHandle,
+}
+
+#[derive(Component, Clone, Copy)]
+pub struct OrbitController {
+    pub center: Vec2,
+    pub angular_speed: f32,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct InstanceData {
@@ -90,6 +107,152 @@ pub struct EntityInfo {
 pub struct PhysicsParams {
     pub gravity: Vec2,
     pub linear_damping: f32,
+}
+
+#[derive(Resource)]
+pub struct RapierState {
+    pipeline: PhysicsPipeline,
+    gravity: Vector<Real>,
+    integration_parameters: IntegrationParameters,
+    island_manager: IslandManager,
+    broad_phase: DefaultBroadPhase,
+    narrow_phase: NarrowPhase,
+    bodies: RigidBodySet,
+    colliders: ColliderSet,
+    impulse_joints: ImpulseJointSet,
+    multibody_joints: MultibodyJointSet,
+    ccd_solver: CCDSolver,
+    query_pipeline: QueryPipeline,
+}
+
+impl RapierState {
+    pub fn new(gravity: Vec2) -> Self {
+        let mut state = Self {
+            pipeline: PhysicsPipeline::new(),
+            gravity: vec_to_rapier(gravity),
+            integration_parameters: IntegrationParameters::default(),
+            island_manager: IslandManager::new(),
+            broad_phase: DefaultBroadPhase::new(),
+            narrow_phase: NarrowPhase::new(),
+            bodies: RigidBodySet::new(),
+            colliders: ColliderSet::new(),
+            impulse_joints: ImpulseJointSet::new(),
+            multibody_joints: MultibodyJointSet::new(),
+            ccd_solver: CCDSolver::new(),
+            query_pipeline: QueryPipeline::new(),
+        };
+        state.init_bounds();
+        state
+    }
+
+    fn init_bounds(&mut self) {
+        let thickness = 0.05;
+        let min = vector![-1.4, -1.0];
+        let max = vector![1.4, 1.0];
+        let horizontal_half = vector![(max.x - min.x) * 0.5 + thickness, thickness];
+        let vertical_half = vector![thickness, (max.y - min.y) * 0.5 + thickness];
+
+        let centers = [
+            vector![0.0, min.y - thickness],
+            vector![0.0, max.y + thickness],
+            vector![min.x - thickness, 0.0],
+            vector![max.x + thickness, 0.0],
+        ];
+        let half_extents = [horizontal_half, horizontal_half, vertical_half, vertical_half];
+
+        for (center, half) in centers.into_iter().zip(half_extents) {
+            self.insert_static_collider(center, half);
+        }
+    }
+
+    fn insert_static_collider(&mut self, center: Vector<Real>, half: Vector<Real>) {
+        let body = RigidBodyBuilder::fixed().translation(center).build();
+        let body_handle = self.bodies.insert(body);
+        let collider = ColliderBuilder::cuboid(half.x, half.y).restitution(0.4).friction(0.8).build();
+        let _ = self.colliders.insert_with_parent(collider, body_handle, &mut self.bodies);
+    }
+
+    pub fn spawn_dynamic_body(
+        &mut self,
+        position: Vec2,
+        half: Vec2,
+        mass: f32,
+        velocity: Vec2,
+    ) -> (RigidBodyHandle, ColliderHandle) {
+        let body = RigidBodyBuilder::dynamic().translation(vector![position.x, position.y]).build();
+        let body_handle = self.bodies.insert(body);
+        if let Some(body) = self.bodies.get_mut(body_handle) {
+            if mass > 0.0 {
+                body.set_additional_mass(mass, true);
+            }
+            body.set_linvel(vector![velocity.x, velocity.y], true);
+            body.wake_up(true);
+        }
+        let collider = ColliderBuilder::cuboid(half.x, half.y).restitution(0.3).friction(0.6).build();
+        let collider_handle = self.colliders.insert_with_parent(collider, body_handle, &mut self.bodies);
+        (body_handle, collider_handle)
+    }
+
+    pub fn remove_body(&mut self, handle: RigidBodyHandle) {
+        let _ = self.bodies.remove(
+            handle,
+            &mut self.island_manager,
+            &mut self.colliders,
+            &mut self.impulse_joints,
+            &mut self.multibody_joints,
+            true,
+        );
+    }
+
+    pub fn clear_dynamic(&mut self) {
+        let mut to_remove = Vec::new();
+        for (handle, body) in self.bodies.iter() {
+            if body.is_dynamic() {
+                to_remove.push(handle);
+            }
+        }
+        for handle in to_remove {
+            self.remove_body(handle);
+        }
+    }
+
+    pub fn step(&mut self, dt: f32) {
+        self.integration_parameters.dt = dt;
+        let hooks = ();
+        let mut events = ();
+        self.pipeline.step(
+            &self.gravity,
+            &self.integration_parameters,
+            &mut self.island_manager,
+            &mut self.broad_phase,
+            &mut self.narrow_phase,
+            &mut self.bodies,
+            &mut self.colliders,
+            &mut self.impulse_joints,
+            &mut self.multibody_joints,
+            &mut self.ccd_solver,
+            Some(&mut self.query_pipeline),
+            &hooks,
+            &mut events,
+        );
+        self.query_pipeline.update(&self.colliders);
+    }
+
+    pub fn body(&self, handle: RigidBodyHandle) -> Option<&RigidBody> {
+        self.bodies.get(handle)
+    }
+
+    pub fn body_mut(&mut self, handle: RigidBodyHandle) -> Option<&mut RigidBody> {
+        self.bodies.get_mut(handle)
+    }
+
+    pub fn collider(&self, handle: ColliderHandle) -> Option<&Collider> {
+        self.colliders.get(handle)
+    }
+}
+
+fn vec_to_rapier(v: Vec2) -> Vector<Real> {
+    vector![v.x, v.y]
 }
 
 // ---------- Spatial hash ----------
@@ -134,6 +297,7 @@ impl EcsWorld {
         world.insert_resource(TimeDelta(0.0));
         world.insert_resource(SpatialHash::new(0.25));
         world.insert_resource(PhysicsParams { gravity: Vec2::new(0.0, -0.6), linear_damping: 0.3 });
+        world.insert_resource(RapierState::new(Vec2::new(0.0, -0.6)));
 
         let mut schedule_var = Schedule::default();
         schedule_var.add_systems((
@@ -147,6 +311,9 @@ impl EcsWorld {
         schedule_fixed.add_systems((
             sys_solve_forces,
             sys_integrate_positions,
+            sys_drive_orbits,
+            sys_step_rapier,
+            sys_sync_from_rapier,
             sys_world_bounds_bounce,
             sys_build_spatial_hash,
             sys_collide_spatial,
@@ -156,54 +323,91 @@ impl EcsWorld {
     }
 
     pub fn spawn_demo_scene(&mut self) -> Entity {
-        let root = self
+        let _root = self
             .world
             .spawn((
-                Transform { translation: Vec2::new(0.0, 0.0), rotation: 0.0, scale: Vec2::splat(1.2) },
+                Transform { translation: Vec2::ZERO, rotation: 0.0, scale: Vec2::splat(0.8) },
                 WorldTransform::default(),
                 Spin { speed: 1.2 },
-            ))
-            .id();
-        let a = self
-            .world
-            .spawn((
-                Transform { translation: Vec2::new(-0.9, 0.0), rotation: 0.0, scale: Vec2::splat(0.7) },
-                WorldTransform::default(),
-                Parent(root),
                 Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("checker") },
-                Aabb { half: Vec2::splat(0.35) },
-                Velocity(Vec2::new(0.2, 0.0)),
-                Force::default(),
-                Mass(1.0),
+                Tint(Vec4::new(1.0, 1.0, 1.0, 0.2)),
             ))
             .id();
-        let b = self
+
+        let orbit_center = Vec2::ZERO;
+        let orbit_speed_a = 0.9;
+        let orbit_speed_b = 0.95;
+        let orbit_speed_c = 1.05;
+
+        let translation_a = Vec2::new(-0.9, 0.0);
+        let half_a = Vec2::splat(0.35);
+        let velocity_a = Vec2::new(-translation_a.y, translation_a.x) * orbit_speed_a;
+        let (body_a, collider_a) = {
+            let mut rapier = self.world.resource_mut::<RapierState>();
+            rapier.spawn_dynamic_body(translation_a, half_a, 1.0, velocity_a)
+        };
+        let _a = self
             .world
             .spawn((
-                Transform { translation: Vec2::new(0.9, 0.0), rotation: 0.0, scale: Vec2::splat(0.6) },
+                Transform { translation: translation_a, rotation: 0.0, scale: Vec2::splat(0.7) },
                 WorldTransform::default(),
-                Parent(root),
+                Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("checker") },
+                Aabb { half: half_a },
+                Velocity(velocity_a),
+                Force::default(),
+                Mass(1.0),
+                RapierBody { handle: body_a },
+                RapierCollider { handle: collider_a },
+                OrbitController { center: orbit_center, angular_speed: orbit_speed_a },
+            ))
+            .id();
+
+        let translation_b = Vec2::new(0.9, 0.0);
+        let half_b = Vec2::splat(0.30);
+        let velocity_b = Vec2::new(-translation_b.y, translation_b.x) * orbit_speed_b;
+        let (body_b, collider_b) = {
+            let mut rapier = self.world.resource_mut::<RapierState>();
+            rapier.spawn_dynamic_body(translation_b, half_b, 1.0, velocity_b)
+        };
+        let _b = self
+            .world
+            .spawn((
+                Transform { translation: translation_b, rotation: 0.0, scale: Vec2::splat(0.6) },
+                WorldTransform::default(),
                 Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("redorb") },
-                Aabb { half: Vec2::splat(0.30) },
-                Velocity(Vec2::new(-0.25, 0.0)),
+                Aabb { half: half_b },
+                Velocity(velocity_b),
                 Force::default(),
                 Mass(1.0),
+                RapierBody { handle: body_b },
+                RapierCollider { handle: collider_b },
+                OrbitController { center: orbit_center, angular_speed: orbit_speed_b },
             ))
             .id();
-        let c = self
+
+        let translation_c = Vec2::new(0.0, 0.9);
+        let half_c = Vec2::splat(0.25);
+        let velocity_c = Vec2::new(-translation_c.y, translation_c.x) * orbit_speed_c;
+        let (body_c, collider_c) = {
+            let mut rapier = self.world.resource_mut::<RapierState>();
+            rapier.spawn_dynamic_body(translation_c, half_c, 1.0, velocity_c)
+        };
+        let _c = self
             .world
             .spawn((
-                Transform { translation: Vec2::new(0.0, 0.9), rotation: 0.0, scale: Vec2::splat(0.5) },
+                Transform { translation: translation_c, rotation: 0.0, scale: Vec2::splat(0.5) },
                 WorldTransform::default(),
-                Parent(root),
                 Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("bluebox") },
-                Aabb { half: Vec2::splat(0.25) },
-                Velocity(Vec2::new(0.0, -0.2)),
+                Aabb { half: half_c },
+                Velocity(velocity_c),
                 Force::default(),
                 Mass(1.0),
+                RapierBody { handle: body_c },
+                RapierCollider { handle: collider_c },
+                OrbitController { center: orbit_center, angular_speed: orbit_speed_c },
             ))
             .id();
-        self.world.entity_mut(root).insert(Children(vec![a, b, c]));
+
         let emitter = self.spawn_particle_emitter(
             Vec2::new(0.0, 0.0),
             35.0,
@@ -227,6 +431,10 @@ impl EcsWorld {
             let vel = Vec2::new(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0)) * 0.6;
             let scale = rng.gen_range(0.15..0.35);
             let half = Vec2::splat(scale * 0.5);
+            let (body_handle, collider_handle) = {
+                let mut rapier = self.world.resource_mut::<RapierState>();
+                rapier.spawn_dynamic_body(pos, half, 0.8, vel)
+            };
             self.world.spawn((
                 Transform { translation: pos, rotation: 0.0, scale: Vec2::splat(scale) },
                 WorldTransform::default(),
@@ -235,6 +443,8 @@ impl EcsWorld {
                 Velocity(vel),
                 Force::default(),
                 Mass(0.8),
+                RapierBody { handle: body_handle },
+                RapierCollider { handle: collider_handle },
             ));
         }
     }
@@ -308,6 +518,10 @@ impl EcsWorld {
     }
 
     pub fn clear_world(&mut self) {
+        {
+            let mut rapier = self.world.resource_mut::<RapierState>();
+            rapier.clear_dynamic();
+        }
         let entities: Vec<Entity> = self.world.iter_entities().map(|e| e.id()).collect();
         for entity in entities {
             let _ = self.world.despawn(entity);
@@ -366,6 +580,10 @@ impl EcsWorld {
             return Err(anyhow!("Region '{region}' not found in atlas '{atlas}'"));
         }
         let half = Vec2::splat(scale * 0.5);
+        let (body_handle, collider_handle) = {
+            let mut rapier = self.world.resource_mut::<RapierState>();
+            rapier.spawn_dynamic_body(position, half, 1.0, velocity)
+        };
         let entity = self
             .world
             .spawn((
@@ -376,25 +594,45 @@ impl EcsWorld {
                 Velocity(velocity),
                 Force::default(),
                 Mass(1.0),
+                RapierBody { handle: body_handle },
+                RapierCollider { handle: collider_handle },
             ))
             .id();
         Ok(entity)
     }
     pub fn set_velocity(&mut self, entity: Entity, velocity: Vec2) -> bool {
-        if let Some(mut vel) = self.world.get_mut::<Velocity>(entity) {
-            vel.0 = velocity;
-            true
-        } else {
-            false
+        let mut updated = false;
+        {
+            if let Some(mut vel) = self.world.get_mut::<Velocity>(entity) {
+                vel.0 = velocity;
+                updated = true;
+            }
         }
+        if let Some(handle) = self.world.get::<RapierBody>(entity).map(|b| b.handle) {
+            let mut rapier = self.world.resource_mut::<RapierState>();
+            if let Some(body) = rapier.body_mut(handle) {
+                body.set_linvel(vector![velocity.x, velocity.y], true);
+            }
+            updated = true;
+        }
+        updated
     }
     pub fn set_translation(&mut self, entity: Entity, translation: Vec2) -> bool {
-        if let Some(mut transform) = self.world.get_mut::<Transform>(entity) {
-            transform.translation = translation;
-            true
-        } else {
-            false
+        let mut changed = false;
+        {
+            if let Some(mut transform) = self.world.get_mut::<Transform>(entity) {
+                transform.translation = translation;
+                changed = true;
+            }
         }
+        if let Some(handle) = self.world.get::<RapierBody>(entity).map(|b| b.handle) {
+            let mut rapier = self.world.resource_mut::<RapierState>();
+            if let Some(body) = rapier.body_mut(handle) {
+                body.set_translation(vector![translation.x, translation.y], true);
+            }
+            changed = true;
+        }
+        changed
     }
     pub fn collect_sprite_instances(
         &mut self,
@@ -458,6 +696,10 @@ impl EcsWorld {
         for child in child_ids {
             removed |= self.despawn_entity(child);
         }
+        if let Some(handle) = self.world.get::<RapierBody>(entity).map(|b| b.handle) {
+            let mut rapier = self.world.resource_mut::<RapierState>();
+            rapier.remove_body(handle);
+        }
         removed |= self.world.despawn(entity);
         removed
     }
@@ -512,11 +754,14 @@ fn sys_propagate_transforms(
 }
 
 fn sys_solve_forces(
-    mut q: Query<(&mut Velocity, &mut Force, &Mass)>,
+    mut q: Query<(&mut Velocity, &mut Force, &Mass, Option<&RapierBody>)>,
     params: Res<PhysicsParams>,
     dt: Res<TimeDelta>,
 ) {
-    for (mut vel, mut force, mass) in &mut q {
+    for (mut vel, mut force, mass, rapier_body) in &mut q {
+        if rapier_body.is_some() {
+            continue;
+        }
         if mass.0 <= 0.0 {
             continue;
         }
@@ -527,9 +772,56 @@ fn sys_solve_forces(
     }
 }
 
-fn sys_integrate_positions(mut q: Query<(&mut Transform, &Velocity)>, dt: Res<TimeDelta>) {
-    for (mut t, v) in &mut q {
+fn sys_integrate_positions(
+    mut q: Query<(&mut Transform, &Velocity, Option<&RapierBody>)>,
+    dt: Res<TimeDelta>,
+) {
+    for (mut t, v, rapier_body) in &mut q {
+        if rapier_body.is_some() {
+            continue;
+        }
         t.translation += v.0 * dt.0;
+    }
+}
+
+fn sys_step_rapier(mut rapier: ResMut<RapierState>, dt: Res<TimeDelta>) {
+    if dt.0 > 0.0 {
+        rapier.step(dt.0);
+    }
+}
+
+fn sys_sync_from_rapier(
+    rapier: Res<RapierState>,
+    mut query: Query<(&RapierBody, &mut Transform, Option<&mut Velocity>)>,
+) {
+    for (body_handle, mut transform, velocity) in &mut query {
+        if let Some(body) = rapier.body(body_handle.handle) {
+            let translation = body.translation();
+            transform.translation = Vec2::new(translation.x, translation.y);
+            transform.rotation = body.rotation().angle();
+            if let Some(mut vel) = velocity {
+                let linvel = body.linvel();
+                vel.0 = Vec2::new(linvel.x, linvel.y);
+            }
+        }
+    }
+}
+
+fn sys_drive_orbits(
+    mut rapier: ResMut<RapierState>,
+    query: Query<(&RapierBody, &Transform, &OrbitController)>,
+) {
+    for (body, transform, orbit) in &query {
+        if let Some(rb) = rapier.body_mut(body.handle) {
+            let offset = transform.translation - orbit.center;
+            let radius_sq = offset.length_squared();
+            if radius_sq <= f32::EPSILON {
+                continue;
+            }
+            let tangent = Vec2::new(-offset.y, offset.x) * orbit.angular_speed;
+            rb.set_linvel(vector![tangent.x, tangent.y], true);
+            rb.wake_up(true);
+        }
     }
 }
 
@@ -611,10 +903,15 @@ fn sys_update_particles(
     }
 }
 
-fn sys_world_bounds_bounce(mut q: Query<(&mut Transform, &mut Velocity, Option<&Aabb>)>) {
+fn sys_world_bounds_bounce(
+    mut q: Query<(&mut Transform, &mut Velocity, Option<&Aabb>, Option<&RapierBody>)>,
+) {
     let min = Vec2::new(-1.4, -1.0);
     let max = Vec2::new(1.4, 1.0);
-    for (mut t, mut v, aabb) in &mut q {
+    for (mut t, mut v, aabb, rapier_body) in &mut q {
+        if rapier_body.is_some() {
+            continue;
+        }
         let half = aabb.map_or(Vec2::splat(0.25), |a| a.half);
         if t.translation.x - half.x < min.x {
             t.translation.x = min.x + half.x;
@@ -635,7 +932,10 @@ fn sys_world_bounds_bounce(mut q: Query<(&mut Transform, &mut Velocity, Option<&
     }
 }
 
-fn sys_build_spatial_hash(mut grid: ResMut<SpatialHash>, q: Query<(Entity, &Transform, &Aabb)>) {
+fn sys_build_spatial_hash(
+    mut grid: ResMut<SpatialHash>,
+    q: Query<(Entity, &Transform, &Aabb), Without<RapierBody>>,
+) {
     grid.clear();
     for (e, t, a) in &q {
         grid.insert(e, t.translation, a.half);
@@ -644,8 +944,8 @@ fn sys_build_spatial_hash(mut grid: ResMut<SpatialHash>, q: Query<(Entity, &Tran
 
 fn sys_collide_spatial(
     grid: Res<SpatialHash>,
-    mut movers: Query<(Entity, &Transform, &Aabb, &mut Velocity)>,
-    positions: Query<(&Transform, &Aabb)>,
+    mut movers: Query<(Entity, &Transform, &Aabb, &mut Velocity), Without<RapierBody>>,
+    positions: Query<(&Transform, &Aabb), Without<RapierBody>>,
 ) {
     let neighbors = [(-1, -1), (0, -1), (1, -1), (-1, 0), (0, 0), (1, 0), (-1, 1), (0, 1), (1, 1)];
     for (e, t, a, mut v) in &mut movers {

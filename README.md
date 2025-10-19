@@ -1,22 +1,18 @@
-# Kestrel Engine - Milestone 7
+# Kestrel Engine - Milestone 8
 
-**Scripting layer with hot reload**
+**Rapier-driven physics with resilient particles**
 
 ## New
-- Deterministic physics step with gravity, damping, and mass-aware force integration.
-- Lightweight particle emitter spawns lifetimed sprites with adjustable rate and color/size gradients.
-- Script API can tweak emitter rate, spread, speed, lifetime, colors, and size gradients at runtime.
-- Embedded Rhai runtime automatically loads `assets/scripts/main.rhai` and hot-reloads on file save.
-- Scripts can spawn, move, and despawn ECS entities through `world.spawn_sprite`, `set_velocity`, `set_position`, and `despawn`, and they can adjust auto-spawn rate / spawn counts via `set_auto_spawn_rate` and `set_spawn_per_press`\.
-- Script API exposes logging and random helpers for quick prototyping.
-- Script handles are resolved automatically: newly spawned entities return negative handles that remain valid for later `set_*` calls.
-- Debug UI surfaces script status with enable toggle, manual reload, and inline error reporting.
+- Rapier2D now drives rigid body motion: sprites carry collider/rigid-body handles that live in the ECS alongside `Transform`/`Velocity`.
+- Static boundary colliders keep bursts and scripted spawns inside the arena with restitution and friction authored in one place.
+- Script and UI helpers (`set_velocity`, `set_position`, spawn burst) all push updates through Rapier, so the physics state stays authoritative even after hot-reloads.
+- Demo scene and random bursts automatically attach dynamic colliders while the existing particle emitter keeps using the lightweight force integrator for thousands of billboards.
 
 ## Still here
-- egui overlay shows camera status, cursor world position, and selection details.
-- Debug UI exposes particle emitter rate/spread/speed/lifetime/color/size for quick tuning.
-- Right mouse drag pans the camera; mouse wheel zooms with clamped limits.
-- Selection gizmo highlights the chosen entity and supports deletion from the UI.
+- Hot-reloadable Rhai scripting with emitter controls, spawn automation, and script-driven entity management.
+- egui overlay shows camera status, cursor world position, selection info, and exposes particle + spawn tuning.
+- Camera pan/zoom (RMB + wheel), selection gizmo with deletion, and deterministic fixed-step integration for particles.
+- Lightweight particle emitter with color/size gradients and lifetime control for quick visual iteration.
 
 ## Controls
 - Space - spawn N sprites (configurable)
