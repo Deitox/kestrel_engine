@@ -394,6 +394,8 @@ impl ApplicationHandler for App {
         struct UiActions {
             spawn_now: bool,
             delete_entity: Option<Entity>,
+            clear_particles: bool,
+            reset_world: bool,
         }
         let mut actions = UiActions::default();
 
@@ -429,6 +431,12 @@ impl ApplicationHandler for App {
                 ui.add(egui::Slider::new(&mut ui_root_spin, -5.0..=5.0).text("Root spin speed"));
                 if ui.button("Spawn now").clicked() {
                     actions.spawn_now = true;
+                }
+                if ui.button("Clear particles").clicked() {
+                    actions.clear_particles = true;
+                }
+                if ui.button("Reset world").clicked() {
+                    actions.reset_world = true;
                 }
                 ui.separator();
                 let hist = eplot::Plot::new("fps_plot").height(120.0).include_y(0.0).include_y(40.0);
@@ -552,8 +560,40 @@ impl ApplicationHandler for App {
             self.ecs.spawn_burst(&self.assets, self.ui_spawn_per_press as usize);
         }
         if let Some(entity) = actions.delete_entity {
-            self.ecs.despawn_entity(entity);
+            if self.ecs.despawn_entity(entity) {
+                self.scripts.forget_entity(entity);
+            }
             self.selected_entity = None;
+        }
+        if actions.clear_particles {
+            self.ecs.clear_particles();
+            self.ui_emitter_rate = 0.0;
+            self.ui_emitter_spread = std::f32::consts::PI / 3.0;
+            self.ui_emitter_speed = 0.8;
+            self.ui_emitter_lifetime = 1.2;
+            self.ui_emitter_start_size = 0.05;
+            self.ui_emitter_end_size = 0.05;
+            self.ui_emitter_start_color = [1.0, 1.0, 1.0, 1.0];
+            self.ui_emitter_end_color = [1.0, 1.0, 1.0, 0.0];
+            self.scripts.clear_handles();
+            if let Some(emitter) = self.emitter_entity {
+                self.ecs.set_emitter_rate(emitter, self.ui_emitter_rate);
+                self.ecs.set_emitter_spread(emitter, self.ui_emitter_spread);
+                self.ecs.set_emitter_speed(emitter, self.ui_emitter_speed);
+                self.ecs.set_emitter_lifetime(emitter, self.ui_emitter_lifetime);
+                self.ecs.set_emitter_colors(
+                    emitter,
+                    Vec4::from_array(self.ui_emitter_start_color),
+                    Vec4::from_array(self.ui_emitter_end_color),
+                );
+                self.ecs.set_emitter_sizes(emitter, self.ui_emitter_start_size, self.ui_emitter_end_size);
+            }
+        }
+        if actions.reset_world {
+            self.ecs.clear_world();
+            self.emitter_entity = None;
+            self.selected_entity = None;
+            self.scripts.clear_handles();
         }
 
         if let (Some(ren), Some(screen)) = (self.egui_renderer.as_mut(), self.egui_screen.as_ref()) {

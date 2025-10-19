@@ -285,6 +285,14 @@ impl ScriptHost {
         self.handle_map.remove(&handle);
     }
 
+    pub fn forget_entity(&mut self, entity: Entity) {
+        self.handle_map.retain(|_, value| *value != entity);
+    }
+
+    pub fn clear_handles(&mut self) {
+        self.handle_map.clear();
+    }
+
     fn reload_if_needed(&mut self) -> Result<()> {
         let metadata = match fs::metadata(&self.script_path) {
             Ok(meta) => meta,

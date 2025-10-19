@@ -1,6 +1,7 @@
 use crate::assets::AssetManager;
 use anyhow::{anyhow, Context, Result};
 use bevy_ecs::prelude::*;
+use bevy_ecs::query::With;
 use bevy_ecs::system::{Commands, Res, ResMut};
 use glam::{Mat4, Vec2, Vec4};
 use rand::Rng;
@@ -174,7 +175,6 @@ impl EcsWorld {
                 Velocity(Vec2::new(0.2, 0.0)),
                 Force::default(),
                 Mass(1.0),
-                Tint(Vec4::ONE),
             ))
             .id();
         let b = self
@@ -188,7 +188,6 @@ impl EcsWorld {
                 Velocity(Vec2::new(-0.25, 0.0)),
                 Force::default(),
                 Mass(1.0),
-                Tint(Vec4::ONE),
             ))
             .id();
         let c = self
@@ -202,7 +201,6 @@ impl EcsWorld {
                 Velocity(Vec2::new(0.0, -0.2)),
                 Force::default(),
                 Mass(1.0),
-                Tint(Vec4::ONE),
             ))
             .id();
         self.world.entity_mut(root).insert(Children(vec![a, b, c]));
@@ -237,7 +235,6 @@ impl EcsWorld {
                 Velocity(vel),
                 Force::default(),
                 Mass(0.8),
-                Tint(Vec4::ONE),
             ));
         }
     }
@@ -290,6 +287,30 @@ impl EcsWorld {
         if let Some(mut emitter) = self.world.get_mut::<ParticleEmitter>(entity) {
             emitter.start_size = start.max(0.01);
             emitter.end_size = end.max(0.01);
+        }
+    }
+
+    pub fn clear_particles(&mut self) {
+        let mut particles = Vec::new();
+        {
+            let mut query = self.world.query_filtered::<Entity, With<Particle>>();
+            for entity in query.iter(&self.world) {
+                particles.push(entity);
+            }
+        }
+        for entity in particles {
+            let _ = self.world.despawn(entity);
+        }
+        let mut emitters = self.world.query::<&mut ParticleEmitter>();
+        for mut emitter in emitters.iter_mut(&mut self.world) {
+            emitter.accumulator = 0.0;
+        }
+    }
+
+    pub fn clear_world(&mut self) {
+        let entities: Vec<Entity> = self.world.iter_entities().map(|e| e.id()).collect();
+        for entity in entities {
+            let _ = self.world.despawn(entity);
         }
     }
 
@@ -355,7 +376,6 @@ impl EcsWorld {
                 Velocity(velocity),
                 Force::default(),
                 Mass(1.0),
-                Tint(Vec4::ONE),
             ))
             .id();
         Ok(entity)
@@ -544,6 +564,7 @@ fn sys_update_emitters(
                 Mass(0.2),
                 Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("green") },
                 Tint(emitter.start_color),
+                Aabb { half: Vec2::splat((emitter.start_size * 0.5).max(0.01)) },
                 Particle { lifetime, max_lifetime: lifetime },
                 ParticleVisual {
                     start_color: emitter.start_color,
@@ -565,10 +586,11 @@ fn sys_update_particles(
         Option<&mut Velocity>,
         &ParticleVisual,
         &mut Tint,
+        Option<&mut Aabb>,
     )>,
     dt: Res<TimeDelta>,
 ) {
-    for (entity, mut particle, mut transform, velocity, visual, mut tint) in &mut particles {
+    for (entity, mut particle, mut transform, velocity, visual, mut tint, aabb) in &mut particles {
         particle.lifetime -= dt.0;
         if particle.lifetime <= 0.0 {
             commands.entity(entity).despawn();
@@ -578,6 +600,9 @@ fn sys_update_particles(
         let progress = 1.0 - life_ratio;
         let size = visual.start_size + (visual.end_size - visual.start_size) * progress;
         transform.scale = Vec2::splat(size.max(0.01));
+        if let Some(mut half) = aabb {
+            half.half = Vec2::splat((size * 0.5).max(0.01));
+        }
         let color = visual.start_color + (visual.end_color - visual.start_color) * progress;
         tint.0 = color;
         if let Some(mut vel) = velocity {
