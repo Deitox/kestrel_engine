@@ -19,6 +19,7 @@ egui = "0.33"
 egui-winit = "0.33"
 egui-wgpu = { version = "0.33", features = ["winit"] }
 egui_plot = "0.34"
+rhai = { version = "1.17", default-features = false, features = ["std"] }
 
 [profile.dev]
 opt-level = 1

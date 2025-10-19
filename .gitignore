@@ -6,6 +6,9 @@
 /.vscode/
 /.idea/
 
+# Local overrides
+/config/*.local.json
+
 # OS-specific junk
 .DS_Store
 Thumbs.db

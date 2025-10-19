@@ -1,37 +1,44 @@
-
-pub mod time;
+pub mod assets;
+pub mod camera;
+pub mod config;
+pub mod ecs;
 pub mod input;
 pub mod renderer;
-pub mod ecs;
-pub mod assets;
+pub mod scripts;
+pub mod time;
 
-use crate::ecs::EcsWorld;
-use crate::renderer::Renderer;
-use crate::time::Time;
-use crate::input::{Input, InputEvent};
 use crate::assets::AssetManager;
+use crate::camera::Camera2D;
+use crate::config::AppConfig;
+use crate::ecs::EcsWorld;
+use crate::input::{Input, InputEvent};
+use crate::renderer::Renderer;
+use crate::scripts::ScriptHost;
+use crate::time::Time;
 
 use bevy_ecs::prelude::Entity;
-use glam::{Mat4, Vec2, Vec3, Vec4};
+use glam::Vec2;
 
+use anyhow::{Context, Result};
 use winit::application::ApplicationHandler;
-use winit::dpi::PhysicalSize;
 use winit::event::{DeviceEvent, ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 
 // egui
-use egui::{Context as EguiCtx};
-use egui_winit::State as EguiWinit;
-use egui_wgpu::{Renderer as EguiRenderer, RendererOptions, ScreenDescriptor};
+use egui::Context as EguiCtx;
 use egui_plot as eplot;
+use egui_wgpu::{Renderer as EguiRenderer, RendererOptions, ScreenDescriptor};
+use egui_winit::State as EguiWinit;
 
 const CAMERA_BASE_HALF_HEIGHT: f32 = 1.2;
 
-pub async fn run() {
-    let event_loop = EventLoop::new().unwrap();
-    let mut app = App::new().await;
-    event_loop.run_app(&mut app).unwrap();
+pub async fn run() -> Result<()> {
+    let config = AppConfig::load_or_default("config/app.json");
+    let event_loop = EventLoop::new().context("Failed to create winit event loop")?;
+    let mut app = App::new(config).await;
+    event_loop.run_app(&mut app).context("Event loop execution failed")?;
+    Ok(())
 }
 
 pub struct App {
@@ -58,14 +65,19 @@ pub struct App {
     ui_root_spin: f32,
 
     // Camera / selection
-    camera_pos: Vec2,
-    camera_zoom: f32,
+    camera: Camera2D,
     selected_entity: Option<Entity>,
+
+    // Configuration
+    config: AppConfig,
+
+    // Scripting
+    scripts: ScriptHost,
 }
 
 impl App {
-    pub async fn new() -> Self {
-        let renderer = Renderer::new().await;
+    pub async fn new(config: AppConfig) -> Self {
+        let renderer = Renderer::new(&config.window).await;
         let mut ecs = EcsWorld::new();
         ecs.spawn_demo_scene();
         let time = Time::new();
@@ -75,13 +87,19 @@ impl App {
         // egui context and state
         let egui_ctx = EguiCtx::default();
         let egui_winit = None;
+        let scripts = ScriptHost::new("assets/scripts/main.rhai");
 
         Self {
-            renderer, ecs, time, input, assets,
+            renderer,
+            ecs,
+            time,
+            input,
+            assets,
             should_close: false,
             accumulator: 0.0,
-            fixed_dt: 1.0/60.0,
-            egui_ctx, egui_winit,
+            fixed_dt: 1.0 / 60.0,
+            egui_ctx,
+            egui_winit,
             egui_renderer: None,
             egui_screen: None,
             ui_spawn_per_press: 200,
@@ -89,20 +107,36 @@ impl App {
             ui_cell_size: 0.25,
             ui_hist: Vec::with_capacity(240),
             ui_root_spin: 1.2,
-            camera_pos: Vec2::ZERO,
-            camera_zoom: 1.0,
+            camera: Camera2D::new(CAMERA_BASE_HALF_HEIGHT),
             selected_entity: None,
+            config,
+            scripts,
         }
     }
 }
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        self.renderer.ensure_window(event_loop);
+        if let Err(err) = self.renderer.ensure_window(event_loop) {
+            eprintln!("Renderer initialization error: {err:?}");
+            self.should_close = true;
+            return;
+        }
         let (device, queue) = self.renderer.device_and_queue();
         self.assets.set_device(device, queue);
-        self.assets.load_atlas("main", "assets/images/atlas.json").expect("atlas");
-        let atlas_view = self.assets.atlas_texture_view("main").expect("atlas tex");
+        if let Err(err) = self.assets.load_atlas("main", "assets/images/atlas.json") {
+            eprintln!("Failed to load atlas: {err:?}");
+            self.should_close = true;
+            return;
+        }
+        let atlas_view = match self.assets.atlas_texture_view("main") {
+            Ok(view) => view,
+            Err(err) => {
+                eprintln!("Failed to create atlas texture view: {err:?}");
+                self.should_close = true;
+                return;
+            }
+        };
         let sampler = self.assets.default_sampler().clone();
         self.renderer.init_sprite_pipeline_with_atlas(atlas_view, sampler);
 
@@ -121,7 +155,11 @@ impl ApplicationHandler for App {
         }
 
         // egui painter
-        let egui_renderer = EguiRenderer::new(self.renderer.device(), self.renderer.surface_format(), RendererOptions::default());
+        let egui_renderer = EguiRenderer::new(
+            self.renderer.device(),
+            self.renderer.surface_format(),
+            RendererOptions::default(),
+        );
         self.egui_renderer = Some(egui_renderer);
         let size = self.renderer.size();
         self.egui_screen = Some(ScreenDescriptor {
@@ -144,7 +182,9 @@ impl ApplicationHandler for App {
         let input_event = InputEvent::from_window_event(&event);
         self.input.push(input_event);
 
-        if consumed { return; }
+        if consumed {
+            return;
+        }
 
         match &event {
             WindowEvent::CloseRequested => self.should_close = true,
@@ -157,7 +197,9 @@ impl ApplicationHandler for App {
             }
             WindowEvent::KeyboardInput { event: KeyEvent { logical_key, state, .. }, .. } => {
                 if let Key::Named(NamedKey::Escape) = logical_key {
-                    if *state == ElementState::Pressed { self.should_close = true; }
+                    if *state == ElementState::Pressed {
+                        self.should_close = true;
+                    }
                 }
             }
             _ => {}
@@ -169,7 +211,10 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if self.should_close { event_loop.exit(); return; }
+        if self.should_close {
+            event_loop.exit();
+            return;
+        }
         self.time.tick();
         let dt = self.time.delta_seconds();
         self.accumulator += dt;
@@ -194,25 +239,24 @@ impl ApplicationHandler for App {
             self.ecs.spawn_burst(&self.assets, (self.ui_spawn_per_press * 5).max(1000) as usize);
         }
 
+        let window_size = self.renderer.size();
+
         if let Some(delta) = self.input.consume_wheel_delta() {
-            let zoom_multiplier = (-delta * 0.1).exp();
-            self.camera_zoom = (self.camera_zoom * zoom_multiplier).clamp(0.25, 5.0);
+            self.camera.apply_scroll_zoom(delta);
         }
 
         if self.input.right_held() {
             let (dx, dy) = self.input.mouse_delta;
             if dx.abs() > f32::EPSILON || dy.abs() > f32::EPSILON {
-                let pan = self.screen_delta_to_world(dx, dy);
-                self.camera_pos -= pan;
+                self.camera.pan_screen_delta(Vec2::new(dx, dy), window_size);
             }
         }
 
-        let view_proj = self.view_projection_matrix();
-        let inv_view_proj = view_proj.inverse();
+        let view_proj = self.camera.view_projection(window_size);
 
         if self.input.take_left_click() {
             if let Some((sx, sy)) = self.input.cursor_position() {
-                if let Some(world) = self.screen_to_world(Vec2::new(sx, sy), inv_view_proj) {
+                if let Some(world) = self.camera.screen_to_world(Vec2::new(sx, sy), window_size) {
                     self.selected_entity = self.ecs.pick_entity(world);
                 } else {
                     self.selected_entity = None;
@@ -221,6 +265,7 @@ impl ApplicationHandler for App {
         }
 
         self.ecs.set_spatial_cell(self.ui_cell_size.max(0.05));
+        self.scripts.update(&mut self.ecs, &self.assets, dt);
 
         while self.accumulator >= self.fixed_dt {
             self.ecs.fixed_step(self.fixed_dt);
@@ -231,19 +276,25 @@ impl ApplicationHandler for App {
         let (instances, _atlas) = self.ecs.collect_sprite_instances(&self.assets);
         let _ = self.renderer.render_batch(&instances, view_proj);
 
-        if self.egui_winit.is_none() { return; }
-        let window_size = self.renderer.size();
+        if self.egui_winit.is_none() {
+            return;
+        }
         let pixels_per_point = self.renderer.pixels_per_point();
 
         let raw_input = {
-            let Some(window) = self.renderer.window() else { return; };
+            let Some(window) = self.renderer.window() else {
+                return;
+            };
             self.egui_winit.as_mut().unwrap().take_egui_input(window)
         };
         let dt_ms = dt * 1000.0;
         self.ui_hist.push(dt_ms);
-        if self.ui_hist.len() > 240 { self.ui_hist.remove(0); }
+        if self.ui_hist.len() > 240 {
+            self.ui_hist.remove(0);
+        }
 
-        let hist_points: Vec<[f64;2]> = self.ui_hist.iter().enumerate().map(|(i,v)| [i as f64, *v as f64]).collect();
+        let hist_points: Vec<[f64; 2]> =
+            self.ui_hist.iter().enumerate().map(|(i, v)| [i as f64, *v as f64]).collect();
         let entity_count = self.ecs.entity_count();
         let instances_drawn = instances.len();
         let mut ui_cell_size = self.ui_cell_size;
@@ -252,9 +303,27 @@ impl ApplicationHandler for App {
         let mut ui_root_spin = self.ui_root_spin;
         let mut selected_entity = self.selected_entity;
         let mut selection_details = selected_entity.and_then(|entity| self.ecs.entity_info(entity));
-        let mut highlight_rect = selected_entity
-            .and_then(|entity| self.ecs.entity_bounds(entity))
-            .and_then(|(min, max)| self.world_rect_to_screen_rect(min, max, view_proj, window_size, pixels_per_point));
+        let cursor_world = self
+            .input
+            .cursor_position()
+            .and_then(|(sx, sy)| self.camera.screen_to_world(Vec2::new(sx, sy), window_size));
+        let mut highlight_rect = None;
+        let mut gizmo_center_px = None;
+        let camera_position = self.camera.position;
+        let camera_zoom = self.camera.zoom;
+
+        if let Some(entity) = selected_entity {
+            if let Some((min, max)) = self.ecs.entity_bounds(entity) {
+                if let Some((min_px, max_px)) = self.camera.world_rect_to_screen_bounds(min, max, window_size)
+                {
+                    highlight_rect = Some(egui::Rect::from_two_pos(
+                        egui::pos2(min_px.x / pixels_per_point, min_px.y / pixels_per_point),
+                        egui::pos2(max_px.x / pixels_per_point, max_px.y / pixels_per_point),
+                    ));
+                    gizmo_center_px = Some((min_px + max_px) * 0.5);
+                }
+            }
+        }
 
         #[derive(Default)]
         struct UiActions {
@@ -270,7 +339,9 @@ impl ApplicationHandler for App {
                 ui.separator();
                 ui.add(egui::Slider::new(&mut ui_cell_size, 0.05..=0.8).text("Spatial cell size"));
                 ui.add(egui::Slider::new(&mut ui_spawn_per_press, 1..=5000).text("Spawn per press"));
-                ui.add(egui::Slider::new(&mut ui_auto_spawn_rate, 0.0..=5000.0).text("Auto-spawn per second"));
+                ui.add(
+                    egui::Slider::new(&mut ui_auto_spawn_rate, 0.0..=5000.0).text("Auto-spawn per second"),
+                );
                 ui.add(egui::Slider::new(&mut ui_root_spin, -5.0..=5.0).text("Root spin speed"));
                 if ui.button("Spawn now").clicked() {
                     actions.spawn_now = true;
@@ -281,6 +352,22 @@ impl ApplicationHandler for App {
                     plot_ui.line(eplot::Line::new("ms/frame", eplot::PlotPoints::from(hist_points.clone())));
                 });
                 ui.label("Target: 16.7ms for 60 FPS");
+                ui.separator();
+                ui.label(format!(
+                    "Camera: pos({:.2}, {:.2}) zoom {:.2}",
+                    camera_position.x, camera_position.y, camera_zoom
+                ));
+                let display_mode = if self.config.window.fullscreen { "Fullscreen" } else { "Windowed" };
+                ui.label(format!(
+                    "Display: {}x{} {}",
+                    self.config.window.width, self.config.window.height, display_mode
+                ));
+                ui.label(format!("VSync: {}", if self.config.window.vsync { "On" } else { "Off" }));
+                if let Some(cursor) = cursor_world {
+                    ui.label(format!("Cursor world: ({:.2}, {:.2})", cursor.x, cursor.y));
+                } else {
+                    ui.label("Cursor world: n/a");
+                }
                 ui.separator();
                 if let Some(entity) = selected_entity {
                     ui.label(format!("Selected: {:?}", entity));
@@ -302,14 +389,57 @@ impl ApplicationHandler for App {
                         selected_entity = None;
                         selection_details = None;
                         highlight_rect = None;
+                        gizmo_center_px = None;
                     }
                 } else {
                     ui.label("No entity selected");
                 }
+                ui.separator();
+                ui.heading("Scripts");
+                ui.label(format!("Path: {}", self.scripts.script_path().display()));
+                let mut scripts_enabled = self.scripts.enabled();
+                if ui.checkbox(&mut scripts_enabled, "Enable scripts").changed() {
+                    self.scripts.set_enabled(scripts_enabled);
+                }
+                if ui.button("Reload script").clicked() {
+                    if let Err(err) = self.scripts.force_reload() {
+                        self.scripts.set_error_message(err.to_string());
+                    }
+                }
+                if let Some(err) = self.scripts.last_error() {
+                    ui.colored_label(egui::Color32::RED, format!("Error: {err}"));
+                } else if self.scripts.enabled() {
+                    ui.label("Script running");
+                } else {
+                    ui.label("Scripts disabled");
+                }
             });
 
+            let painter = ctx.debug_painter();
             if let Some(rect) = highlight_rect {
-                ctx.debug_painter().rect_stroke(rect, 0.0, egui::Stroke::new(2.0, egui::Color32::YELLOW), egui::StrokeKind::Inside);
+                painter.rect_stroke(
+                    rect,
+                    0.0,
+                    egui::Stroke::new(2.0, egui::Color32::YELLOW),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            if let Some(center_px) = gizmo_center_px {
+                let center = egui::pos2(center_px.x / pixels_per_point, center_px.y / pixels_per_point);
+                let extent = 8.0 / pixels_per_point;
+                painter.line_segment(
+                    [egui::pos2(center.x - extent, center.y), egui::pos2(center.x + extent, center.y)],
+                    egui::Stroke::new(2.0, egui::Color32::YELLOW),
+                );
+                painter.line_segment(
+                    [egui::pos2(center.x, center.y - extent), egui::pos2(center.x, center.y + extent)],
+                    egui::Stroke::new(2.0, egui::Color32::YELLOW),
+                );
+                painter.circle_stroke(
+                    center,
+                    3.0 / pixels_per_point,
+                    egui::Stroke::new(2.0, egui::Color32::YELLOW),
+                );
             }
         });
 
@@ -319,12 +449,7 @@ impl ApplicationHandler for App {
         self.ui_root_spin = ui_root_spin;
         self.selected_entity = selected_entity;
 
-        let egui::FullOutput {
-            platform_output,
-            textures_delta,
-            shapes,
-            ..
-        } = full_output;
+        let egui::FullOutput { platform_output, textures_delta, shapes, .. } = full_output;
         if let Some(window) = self.renderer.window() {
             self.egui_winit.as_mut().unwrap().handle_platform_output(window, platform_output);
         } else {
@@ -345,83 +470,16 @@ impl ApplicationHandler for App {
             }
             let meshes = self.egui_ctx.tessellate(shapes, screen.pixels_per_point);
             let _ = self.renderer.render_egui(ren, &meshes, screen);
-            for id in &textures_delta.free { ren.free_texture(id); }
+            for id in &textures_delta.free {
+                ren.free_texture(id);
+            }
         }
 
         self.ecs.set_root_spin(self.ui_root_spin);
 
-        if let Some(w) = self.renderer.window() { w.request_redraw(); }
-        self.input.clear_frame();
-    }
-}
-
-impl App {
-    fn view_projection_matrix(&self) -> Mat4 {
-        let aspect = self.renderer.aspect_ratio();
-        let half_height = CAMERA_BASE_HALF_HEIGHT / self.camera_zoom;
-        let half_width = half_height * aspect;
-        let proj = Mat4::orthographic_rh_gl(-half_width, half_width, -half_height, half_height, -1.0, 1.0);
-        let view = Mat4::from_translation(Vec3::new(-self.camera_pos.x, -self.camera_pos.y, 0.0));
-        proj * view
-    }
-
-    fn screen_delta_to_world(&self, dx: f32, dy: f32) -> Vec2 {
-        let size = self.renderer.size();
-        if size.width == 0 || size.height == 0 { return Vec2::ZERO; }
-        let half_height = CAMERA_BASE_HALF_HEIGHT / self.camera_zoom;
-        let half_width = half_height * self.renderer.aspect_ratio();
-        let world_width = half_width * 2.0;
-        let world_height = half_height * 2.0;
-        Vec2::new(
-            dx / size.width as f32 * world_width,
-            -dy / size.height as f32 * world_height,
-        )
-    }
-
-    fn screen_to_world(&self, screen: Vec2, inv_view_proj: Mat4) -> Option<Vec2> {
-        let size = self.renderer.size();
-        if size.width == 0 || size.height == 0 { return None; }
-        let ndc_x = (screen.x / size.width as f32) * 2.0 - 1.0;
-        let ndc_y = 1.0 - (screen.y / size.height as f32) * 2.0;
-        let clip = Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
-        let world = inv_view_proj * clip;
-        if world.w.abs() <= f32::EPSILON { return None; }
-        let world = world / world.w;
-        Some(Vec2::new(world.x, world.y))
-    }
-
-    fn world_to_screen_pixels(&self, world: Vec2, view_proj: Mat4, window_size: PhysicalSize<u32>) -> Option<Vec2> {
-        if window_size.width == 0 || window_size.height == 0 { return None; }
-        let clip = view_proj * Vec4::new(world.x, world.y, 0.0, 1.0);
-        if clip.w.abs() <= f32::EPSILON { return None; }
-        let ndc = clip.truncate() / clip.w;
-        let x = (ndc.x + 1.0) * 0.5 * window_size.width as f32;
-        let y = (1.0 - ndc.y) * 0.5 * window_size.height as f32;
-        Some(Vec2::new(x, y))
-    }
-
-    fn world_rect_to_screen_rect(
-        &self,
-        min: Vec2,
-        max: Vec2,
-        view_proj: Mat4,
-        window_size: PhysicalSize<u32>,
-        pixels_per_point: f32,
-    ) -> Option<egui::Rect> {
-        let corners = [
-            self.world_to_screen_pixels(Vec2::new(min.x, min.y), view_proj, window_size)?,
-            self.world_to_screen_pixels(Vec2::new(min.x, max.y), view_proj, window_size)?,
-            self.world_to_screen_pixels(Vec2::new(max.x, min.y), view_proj, window_size)?,
-            self.world_to_screen_pixels(Vec2::new(max.x, max.y), view_proj, window_size)?,
-        ];
-        let mut min_screen = Vec2::splat(f32::INFINITY);
-        let mut max_screen = Vec2::splat(f32::NEG_INFINITY);
-        for p in corners {
-            min_screen = min_screen.min(p);
-            max_screen = max_screen.max(p);
+        if let Some(w) = self.renderer.window() {
+            w.request_redraw();
         }
-        let top_left = egui::pos2(min_screen.x / pixels_per_point, min_screen.y / pixels_per_point);
-        let bottom_right = egui::pos2(max_screen.x / pixels_per_point, max_screen.y / pixels_per_point);
-        Some(egui::Rect::from_two_pos(top_left, bottom_right))
+        self.input.clear_frame();
     }
 }

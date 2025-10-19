@@ -15,7 +15,9 @@ pub struct Input {
 }
 
 impl Input {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn push(&mut self, ev: InputEvent) {
         match &ev {
@@ -92,8 +94,12 @@ impl Input {
         was
     }
 
-    pub fn right_held(&self) -> bool { self.right_pressed }
-    pub fn cursor_position(&self) -> Option<(f32, f32)> { self.cursor_pos }
+    pub fn right_held(&self) -> bool {
+        self.right_pressed
+    }
+    pub fn cursor_position(&self) -> Option<(f32, f32)> {
+        self.cursor_pos
+    }
 }
 
 pub enum InputEvent {
@@ -121,16 +127,19 @@ impl InputEvent {
             WindowEvent::MouseInput { state, button, .. } => {
                 InputEvent::MouseButton { button: *button, pressed: *state == ElementState::Pressed }
             }
-            WindowEvent::KeyboardInput { event, .. } => {
-                InputEvent::Key { key: event.logical_key.clone(), pressed: event.state == ElementState::Pressed }
-            }
+            WindowEvent::KeyboardInput { event, .. } => InputEvent::Key {
+                key: event.logical_key.clone(),
+                pressed: event.state == ElementState::Pressed,
+            },
             _ => InputEvent::Other,
         }
     }
 
     pub fn from_device_event(ev: &DeviceEvent) -> Self {
         match ev {
-            DeviceEvent::MouseMotion { delta: (dx, dy) } => InputEvent::MouseMove { dx: *dx as f32, dy: *dy as f32 },
+            DeviceEvent::MouseMotion { delta: (dx, dy) } => {
+                InputEvent::MouseMove { dx: *dx as f32, dy: *dy as f32 }
+            }
             _ => InputEvent::Other,
         }
     }

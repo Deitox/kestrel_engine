@@ -1,0 +1,47 @@
+# Architecture Overview
+
+```
+┌────────┐   input events   ┌────────────┐   fixed update   ┌─────────┐
+│ Winit  │ ───────────────► │   Input    │ ───────────────► │  ECS    │
+└────────┘                  └────────────┘                  └─────────┘
+      ▲                           │   ▲                          │
+      │ window resize             │   │ entity data              │
+      │ frame timing              ▼   │                          ▼
+┌────────────┐        timing   ┌────────┐    render data   ┌──────────┐
+│    Time    │ ───────────────►│  Time  │ ───────────────► │ Renderer │
+└────────────┘                 └────────┘                 └──────────┘
+                                           ▲
+                                           │ egui UI
+                                      ┌─────────┐
+                                      │  egui   │
+                                      └─────────┘
+```
+
+- **Winit** drives the event loop (`src/lib.rs`) and feeds window/device events into the input system.
+- **Input** (`src/input.rs`) accumulates per-frame keyboard and mouse state used by the simulation and camera.
+- **Time** (`src/time.rs`) tracks elapsed and delta durations used for the fixed (60 Hz) and variable update paths.
+- **ECS** (`src/ecs.rs`) stores game state using Bevy ECS: transform hierarchy, sprites, velocities, spatial hash, and collision systems.
+- **Renderer** (`src/renderer.rs`) owns WGPU resources, sprite batching, and egui rendering.
+- **AssetManager** (`src/assets.rs`) lazily loads texture atlases and provides UV lookup for ECS sprites.
+- **Camera2D** (`src/camera.rs`) converts between screen and world coordinates and exposes pan/zoom controls.
+- **Config** (`src/config.rs`) loads user configuration and feeds initial window settings into the renderer.
+- **ScriptHost** (`src/scripts.rs`) embeds the Rhai runtime, hot-reloads scripts, and exposes a safe API for spawning/mutating entities.
+- **App** (`src/lib.rs`) coordinates the subsystems: processes input, runs fixed/variable ECS schedules, executes scripts, renders sprites, and builds the egui debug UI.
+
+### Frame Flow
+1. **Input ingest** - `ApplicationHandler::window_event` converts Winit events into `InputEvent`s. `device_event` tracks raw mouse motion, and `about_to_wait` reads consumed events.
+2. **Camera controls** - `App::about_to_wait` applies zoom/pan before simulation, ensuring the view-projection matrix reflects user intent.
+3. **Scripting** - `ScriptHost::update` hot-reloads Rhai scripts and lets them spawn/mutate entities before the frame update runs.
+4. **Simulation** - A fixed timestep loop calls `EcsWorld::fixed_step` for deterministic physics/collision work. A variable step handles spin propagation and transform hierarchies.
+5. **Rendering prep** - ECS collects instanced sprite data. Camera produces the view-projection matrix for sprite batching.
+6. **Rendering** - `Renderer::render_batch` draws sprites; egui input is processed, overlays drawn, and the frame submitted.
+7. **UI Feedback** - egui window exposes performance stats, spawn controls, camera details, selection gizmos, and scripting status.
+
+### Module Relationships
+- `App` owns instances of `Renderer`, `EcsWorld`, `Input`, `Camera2D`, `AssetManager`, and `Time`.
+- `Renderer` references `WindowConfig` to honor user display preferences.
+- `EcsWorld` queries `AssetManager` for atlas UVs during instance collection.
+- `Camera2D` is stateless aside from position/zoom; it depends on window size from `Renderer`.
+- `ScriptHost` bridges Rhai scripts to ECS/AssetManager operations via a thin API, applying changes before simulation updates.
+
+This architecture ensures each frame flows data in a clear order (Input → ECS → Renderer → UI) without hidden global state, supporting the project's deterministic and data-driven goals.

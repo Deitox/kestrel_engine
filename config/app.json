@@ -1,0 +1,9 @@
+{
+  "window": {
+    "title": "Kestrel Engine",
+    "width": 1280,
+    "height": 720,
+    "vsync": true,
+    "fullscreen": false
+  }
+}
