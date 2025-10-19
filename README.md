@@ -4,8 +4,9 @@
 
 ## New
 - Embedded Rhai runtime automatically loads `assets/scripts/main.rhai` and hot-reloads on file save.
-- Scripts can spawn, move, and despawn ECS entities through `world.spawn_sprite`, `set_velocity`, `set_position`, and `despawn`.
+- Scripts can spawn, move, and despawn ECS entities through `world.spawn_sprite`, `set_velocity`, `set_position`, and `despawn`, and they can adjust auto-spawn rate / spawn counts via `set_auto_spawn_rate` and `set_spawn_per_press`\.
 - Script API exposes logging and random helpers for quick prototyping.
+- Script handles are resolved automatically: newly spawned entities return negative handles that remain valid for later `set_*` calls.
 - Debug UI surfaces script status with enable toggle, manual reload, and inline error reporting.
 
 ## Still here

@@ -13,7 +13,7 @@ use crate::config::AppConfig;
 use crate::ecs::EcsWorld;
 use crate::input::{Input, InputEvent};
 use crate::renderer::Renderer;
-use crate::scripts::ScriptHost;
+use crate::scripts::{ScriptCommand, ScriptHost};
 use crate::time::Time;
 
 use bevy_ecs::prelude::Entity;
@@ -122,7 +122,14 @@ impl ApplicationHandler for App {
             self.should_close = true;
             return;
         }
-        let (device, queue) = self.renderer.device_and_queue();
+        let (device, queue) = match self.renderer.device_and_queue() {
+            Ok(pair) => pair,
+            Err(err) => {
+                eprintln!("Renderer missing device/queue: {err:?}");
+                self.should_close = true;
+                return;
+            }
+        };
         self.assets.set_device(device, queue);
         if let Err(err) = self.assets.load_atlas("main", "assets/images/atlas.json") {
             eprintln!("Failed to load atlas: {err:?}");
@@ -138,7 +145,11 @@ impl ApplicationHandler for App {
             }
         };
         let sampler = self.assets.default_sampler().clone();
-        self.renderer.init_sprite_pipeline_with_atlas(atlas_view, sampler);
+        if let Err(err) = self.renderer.init_sprite_pipeline_with_atlas(atlas_view, sampler) {
+            eprintln!("Failed to initialize sprite pipeline: {err:?}");
+            self.should_close = true;
+            return;
+        }
 
         if self.egui_winit.is_none() {
             if let Some(window) = self.renderer.window() {
@@ -155,11 +166,14 @@ impl ApplicationHandler for App {
         }
 
         // egui painter
-        let egui_renderer = EguiRenderer::new(
-            self.renderer.device(),
-            self.renderer.surface_format(),
-            RendererOptions::default(),
-        );
+        let egui_renderer = match (self.renderer.device(), self.renderer.surface_format()) {
+            (Ok(device), Ok(format)) => EguiRenderer::new(device, format, RendererOptions::default()),
+            (Err(err), _) | (_, Err(err)) => {
+                eprintln!("Unable to initialize egui renderer: {err:?}");
+                self.should_close = true;
+                return;
+            }
+        };
         self.egui_renderer = Some(egui_renderer);
         let size = self.renderer.size();
         self.egui_screen = Some(ScreenDescriptor {
@@ -265,7 +279,9 @@ impl ApplicationHandler for App {
         }
 
         self.ecs.set_spatial_cell(self.ui_cell_size.max(0.05));
-        self.scripts.update(&mut self.ecs, &self.assets, dt);
+        self.scripts.update(dt);
+        let commands = self.scripts.drain_commands();
+        self.apply_script_commands(commands);
 
         while self.accumulator >= self.fixed_dt {
             self.ecs.fixed_step(self.fixed_dt);
@@ -273,8 +289,17 @@ impl ApplicationHandler for App {
         }
         self.ecs.update(dt);
 
-        let (instances, _atlas) = self.ecs.collect_sprite_instances(&self.assets);
-        let _ = self.renderer.render_batch(&instances, view_proj);
+        let (instances, _atlas) = match self.ecs.collect_sprite_instances(&self.assets) {
+            Ok(data) => data,
+            Err(err) => {
+                eprintln!("Instance collection error: {err:?}");
+                self.input.clear_frame();
+                return;
+            }
+        };
+        if let Err(err) = self.renderer.render_batch(&instances, view_proj) {
+            eprintln!("Render error: {err:?}");
+        }
 
         if self.egui_winit.is_none() {
             return;
@@ -465,11 +490,15 @@ impl ApplicationHandler for App {
         }
 
         if let (Some(ren), Some(screen)) = (self.egui_renderer.as_mut(), self.egui_screen.as_ref()) {
-            for (id, delta) in &textures_delta.set {
-                ren.update_texture(self.renderer.device(), self.renderer.queue(), *id, delta);
+            if let (Ok(device), Ok(queue)) = (self.renderer.device(), self.renderer.queue()) {
+                for (id, delta) in &textures_delta.set {
+                    ren.update_texture(device, queue, *id, delta);
+                }
             }
             let meshes = self.egui_ctx.tessellate(shapes, screen.pixels_per_point);
-            let _ = self.renderer.render_egui(ren, &meshes, screen);
+            if let Err(err) = self.renderer.render_egui(ren, &meshes, screen) {
+                eprintln!("Egui render error: {err:?}");
+            }
             for id in &textures_delta.free {
                 ren.free_texture(id);
             }
@@ -481,5 +510,67 @@ impl ApplicationHandler for App {
             w.request_redraw();
         }
         self.input.clear_frame();
+    }
+}
+
+impl App {
+    fn apply_script_commands(&mut self, commands: Vec<ScriptCommand>) {
+        for cmd in commands {
+            match cmd {
+                ScriptCommand::Spawn { handle, atlas, region, position, scale, velocity } => {
+                    match self.ecs.spawn_scripted_sprite(
+                        &self.assets,
+                        &atlas,
+                        &region,
+                        position,
+                        scale,
+                        velocity,
+                    ) {
+                        Ok(entity) => {
+                            self.scripts.register_spawn_result(handle, entity);
+                        }
+                        Err(err) => {
+                            eprintln!("[script] spawn error for {atlas}:{region}: {err}");
+                            self.scripts.forget_handle(handle);
+                        }
+                    }
+                }
+                ScriptCommand::SetVelocity { handle, velocity } => {
+                    if let Some(entity) = self.scripts.resolve_handle(handle) {
+                        if !self.ecs.set_velocity(entity, velocity) {
+                            eprintln!("[script] set_velocity failed for handle {handle}");
+                        }
+                    } else {
+                        eprintln!("[script] set_velocity unknown handle {handle}");
+                    }
+                }
+                ScriptCommand::SetPosition { handle, position } => {
+                    if let Some(entity) = self.scripts.resolve_handle(handle) {
+                        if !self.ecs.set_translation(entity, position) {
+                            eprintln!("[script] set_position failed for handle {handle}");
+                        }
+                    } else {
+                        eprintln!("[script] set_position unknown handle {handle}");
+                    }
+                }
+                ScriptCommand::Despawn { handle } => {
+                    if let Some(entity) = self.scripts.resolve_handle(handle) {
+                        if self.ecs.despawn_entity(entity) {
+                            self.scripts.forget_handle(handle);
+                        } else {
+                            eprintln!("[script] despawn failed for handle {handle}");
+                        }
+                    } else {
+                        eprintln!("[script] despawn unknown handle {handle}");
+                    }
+                }
+                ScriptCommand::SetAutoSpawnRate { rate } => {
+                    self.ui_auto_spawn_rate = rate.max(0.0);
+                }
+                ScriptCommand::SetSpawnPerPress { count } => {
+                    self.ui_spawn_per_press = count.max(0);
+                }
+            }
+        }
     }
 }

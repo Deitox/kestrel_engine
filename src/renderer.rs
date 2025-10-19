@@ -143,8 +143,12 @@ impl Renderer {
         Ok(())
     }
 
-    pub fn init_sprite_pipeline_with_atlas(&mut self, atlas_view: wgpu::TextureView, sampler: wgpu::Sampler) {
-        let device = self.device.as_ref().unwrap();
+    pub fn init_sprite_pipeline_with_atlas(
+        &mut self,
+        atlas_view: wgpu::TextureView,
+        sampler: wgpu::Sampler,
+    ) -> Result<()> {
+        let device = self.device.as_ref().context("GPU device not initialized")?;
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Sprite Shader"),
@@ -295,7 +299,7 @@ impl Renderer {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: self.config.as_ref().unwrap().format,
+                    format: self.config.as_ref().context("Surface configuration missing")?.format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -319,19 +323,22 @@ impl Renderer {
         self.globals_bg = Some(globals_bg);
         self.texture_bgl = Some(texture_bgl);
         self.texture_bg = Some(texture_bg);
+        Ok(())
     }
 
-    pub fn device_and_queue(&self) -> (&wgpu::Device, &wgpu::Queue) {
-        (self.device.as_ref().unwrap(), self.queue.as_ref().unwrap())
+    pub fn device_and_queue(&self) -> Result<(&wgpu::Device, &wgpu::Queue)> {
+        let device = self.device.as_ref().context("GPU device not initialized")?;
+        let queue = self.queue.as_ref().context("GPU queue not initialized")?;
+        Ok((device, queue))
     }
-    pub fn device(&self) -> &wgpu::Device {
-        self.device.as_ref().unwrap()
+    pub fn device(&self) -> Result<&wgpu::Device> {
+        self.device.as_ref().context("GPU device not initialized")
     }
-    pub fn queue(&self) -> &wgpu::Queue {
-        self.queue.as_ref().unwrap()
+    pub fn queue(&self) -> Result<&wgpu::Queue> {
+        self.queue.as_ref().context("GPU queue not initialized")
     }
-    pub fn surface_format(&self) -> wgpu::TextureFormat {
-        self.config.as_ref().unwrap().format
+    pub fn surface_format(&self) -> Result<wgpu::TextureFormat> {
+        Ok(self.config.as_ref().context("Surface configuration missing")?.format)
     }
     pub fn size(&self) -> PhysicalSize<u32> {
         self.size
@@ -364,10 +371,10 @@ impl Renderer {
         }
     }
 
-    fn ensure_instance_capacity(&mut self, count: usize) {
-        let device = self.device.as_ref().unwrap();
+    fn ensure_instance_capacity(&mut self, count: usize) -> Result<()> {
+        let device = self.device.as_ref().context("GPU device not initialized")?;
         if self.instance_capacity >= count {
-            return;
+            return Ok(());
         }
         let mut new_cap = self.instance_capacity.max(256);
         while new_cap < count {
@@ -382,35 +389,34 @@ impl Renderer {
         });
         self.instance_buffer = Some(new_buf);
         self.instance_capacity = new_cap;
+        Ok(())
     }
 
-    pub fn render_batch(
-        &mut self,
-        instances: &[InstanceData],
-        view_proj: Mat4,
-    ) -> Result<(), wgpu::SurfaceError> {
+    pub fn render_batch(&mut self, instances: &[InstanceData], view_proj: Mat4) -> Result<()> {
         {
-            let queue = self.queue.as_ref().unwrap();
+            let queue = self.queue.as_ref().context("GPU queue not initialized")?;
+            let globals = self.globals_buf.as_ref().context("Globals buffer missing")?;
             queue.write_buffer(
-                self.globals_buf.as_ref().unwrap(),
+                globals,
                 0,
                 bytemuck::bytes_of(&Globals { proj: view_proj.to_cols_array_2d() }),
             );
         }
 
-        self.ensure_instance_capacity(instances.len());
+        self.ensure_instance_capacity(instances.len())?;
 
+        let instance_buffer = self.instance_buffer.as_ref().context("Instance buffer missing")?;
+        let byte_data = bytemuck::cast_slice(instances);
         {
-            let queue = self.queue.as_ref().unwrap();
-            let byte_data = bytemuck::cast_slice(instances);
-            queue.write_buffer(self.instance_buffer.as_ref().unwrap(), 0, byte_data);
+            let queue = self.queue.as_ref().context("GPU queue not initialized")?;
+            queue.write_buffer(instance_buffer, 0, byte_data);
         }
 
-        let surface = self.surface.as_ref().unwrap();
-        let device = self.device.as_ref().unwrap();
-        let queue = self.queue.as_ref().unwrap();
+        let surface = self.surface.as_ref().context("Surface not initialized")?;
+        let device = self.device.as_ref().context("GPU device not initialized")?;
+        let queue = self.queue.as_ref().context("GPU queue not initialized")?;
 
-        let frame = surface.get_current_texture()?;
+        let frame = surface.get_current_texture().context("Acquiring swapchain texture")?;
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Encoder") });
@@ -431,12 +437,18 @@ impl Renderer {
                 occlusion_query_set: None,
                 timestamp_writes: None,
             });
-            pass.set_pipeline(self.pipeline.as_ref().unwrap());
-            pass.set_bind_group(0, self.globals_bg.as_ref().unwrap(), &[]);
-            pass.set_bind_group(1, self.texture_bg.as_ref().unwrap(), &[]);
-            pass.set_vertex_buffer(0, self.vertex_buffer.as_ref().unwrap().slice(..));
-            pass.set_vertex_buffer(1, self.instance_buffer.as_ref().unwrap().slice(..));
-            pass.set_index_buffer(self.index_buffer.as_ref().unwrap().slice(..), wgpu::IndexFormat::Uint16);
+            pass.set_pipeline(self.pipeline.as_ref().context("Sprite pipeline missing")?);
+            pass.set_bind_group(0, self.globals_bg.as_ref().context("Globals bind group missing")?, &[]);
+            pass.set_bind_group(1, self.texture_bg.as_ref().context("Texture bind group missing")?, &[]);
+            pass.set_vertex_buffer(
+                0,
+                self.vertex_buffer.as_ref().context("Vertex buffer missing")?.slice(..),
+            );
+            pass.set_vertex_buffer(1, instance_buffer.slice(..));
+            pass.set_index_buffer(
+                self.index_buffer.as_ref().context("Index buffer missing")?.slice(..),
+                wgpu::IndexFormat::Uint16,
+            );
             pass.draw_indexed(0..6, 0, 0..(instances.len() as u32));
         }
 
@@ -450,11 +462,11 @@ impl Renderer {
         painter: &mut EguiRenderer,
         paint_jobs: &[egui::ClippedPrimitive],
         screen: &ScreenDescriptor,
-    ) -> Result<(), wgpu::SurfaceError> {
-        let surface = self.surface.as_ref().unwrap();
-        let device = self.device.as_ref().unwrap();
-        let queue = self.queue.as_ref().unwrap();
-        let frame = surface.get_current_texture()?;
+    ) -> Result<()> {
+        let surface = self.surface.as_ref().context("Surface not initialized")?;
+        let device = self.device.as_ref().context("GPU device not initialized")?;
+        let queue = self.queue.as_ref().context("GPU queue not initialized")?;
+        let frame = surface.get_current_texture().context("Acquiring swapchain texture")?;
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let mut encoder =

@@ -1,5 +1,10 @@
+let state = #{ timer: 0.0 };
+
 fn init(world) {
     world.log("Script init");
+    world.set_auto_spawn_rate(0.0);
+    world.set_spawn_per_press(100);
+    state.timer = 0.0;
 }
 
 fn update(world, dt) {
@@ -7,13 +12,9 @@ fn update(world, dt) {
         return;
     }
 
-    let remaining = dt;
-    while remaining >= 1.0 {
-        spawn_entity(world);
-        remaining -= 1.0;
-    }
-
-    if world.rand(0.0, 1.0) < remaining {
+    state.timer += dt;
+    while state.timer >= 1.0 {
+        state.timer -= 1.0;
         spawn_entity(world);
     }
 }
@@ -21,8 +22,10 @@ fn update(world, dt) {
 fn spawn_entity(world) {
     let x = world.rand(-1.1, 1.1);
     let y = world.rand(-0.8, 0.8);
-    let entity = world.spawn_sprite("main", "green", x, y, 0.25, 0.0, 0.0);
-    if entity >= 0 {
-        world.log("Spawned entity: " + entity.to_string());
+    let handle = world.spawn_sprite("main", "green", x, y, 0.25, 0.0, 0.0);
+    if handle >= 0 {
+        world.log("Spawned entity handle: " + handle.to_string());
+    } else {
+        world.log("Failed to spawn entity: " + handle.to_string());
     }
 }

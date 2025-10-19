@@ -31,17 +31,23 @@
 ### Frame Flow
 1. **Input ingest** - `ApplicationHandler::window_event` converts Winit events into `InputEvent`s. `device_event` tracks raw mouse motion, and `about_to_wait` reads consumed events.
 2. **Camera controls** - `App::about_to_wait` applies zoom/pan before simulation, ensuring the view-projection matrix reflects user intent.
-3. **Scripting** - `ScriptHost::update` hot-reloads Rhai scripts and lets them spawn/mutate entities before the frame update runs.
+3. **Scripting** - `ScriptHost::update` hot-reloads Rhai scripts, queues commands, and the app drains those commands before simulation so mutations stay deterministic.
 4. **Simulation** - A fixed timestep loop calls `EcsWorld::fixed_step` for deterministic physics/collision work. A variable step handles spin propagation and transform hierarchies.
 5. **Rendering prep** - ECS collects instanced sprite data. Camera produces the view-projection matrix for sprite batching.
 6. **Rendering** - `Renderer::render_batch` draws sprites; egui input is processed, overlays drawn, and the frame submitted.
-7. **UI Feedback** - egui window exposes performance stats, spawn controls, camera details, selection gizmos, and scripting status.
+7. **UI Feedback** - egui window exposes performance stats, spawn controls, camera details, selection gizmos, scripting status, and exposes script toggles (enable/reload).
 
 ### Module Relationships
 - `App` owns instances of `Renderer`, `EcsWorld`, `Input`, `Camera2D`, `AssetManager`, and `Time`.
 - `Renderer` references `WindowConfig` to honor user display preferences.
 - `EcsWorld` queries `AssetManager` for atlas UVs during instance collection.
 - `Camera2D` is stateless aside from position/zoom; it depends on window size from `Renderer`.
-- `ScriptHost` bridges Rhai scripts to ECS/AssetManager operations via a thin API, applying changes before simulation updates.
+- `ScriptHost` bridges Rhai scripts to ECS/AssetManager operations via a command queue; the app resolves script handles to entities when executing those commands.
 
 This architecture ensures each frame flows data in a clear order (Input → ECS → Renderer → UI) without hidden global state, supporting the project's deterministic and data-driven goals.
+
+
+### Scripting Guidelines
+- Use `global name;` inside functions when mutating module-level state so Rhai updates the shared variable instead of shadowing it.
+- `world.spawn_sprite` returns a negative handle until the engine materializes the entity; pass that handle to other `world.*` calls and the app resolves it when it processes the queued commands.
+- Scripts can broadcast designer tweaks (auto spawn rate, spawn counts) via `set_auto_spawn_rate` and `set_spawn_per_press`; these override the corresponding debug UI controls at runtime.

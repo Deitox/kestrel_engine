@@ -1,5 +1,5 @@
 use crate::assets::AssetManager;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use bevy_ecs::prelude::*;
 use glam::{Mat4, Vec2};
 use rand::Rng;
@@ -235,15 +235,20 @@ impl EcsWorld {
             false
         }
     }
-    pub fn collect_sprite_instances(&mut self, assets: &AssetManager) -> (Vec<InstanceData>, &'static str) {
+    pub fn collect_sprite_instances(
+        &mut self,
+        assets: &AssetManager,
+    ) -> Result<(Vec<InstanceData>, &'static str)> {
         let mut out = Vec::new();
         let atlas_key = "main";
         let mut q = self.world.query::<(&WorldTransform, &Sprite)>();
         for (wt, s) in q.iter(&self.world) {
-            let uv_rect = assets.atlas_region_uv(atlas_key, s.region.as_ref());
+            let uv_rect = assets
+                .atlas_region_uv(atlas_key, s.region.as_ref())
+                .with_context(|| format!("Collecting sprite instance for region '{}'", s.region))?;
             out.push(InstanceData { model: wt.0.to_cols_array_2d(), uv_rect });
         }
-        (out, atlas_key)
+        Ok((out, atlas_key))
     }
     pub fn entity_count(&self) -> usize {
         self.world.entities().len() as usize

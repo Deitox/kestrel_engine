@@ -114,14 +114,17 @@ impl AssetManager {
         self.texture_cache.insert(image_path, (view.clone(), (w, h)));
         Ok(view)
     }
-    pub fn atlas_region_uv(&self, atlas_key: &str, region: &str) -> [f32; 4] {
-        let atlas = self.atlases.get(atlas_key).expect("atlas");
-        let r = atlas.regions.get(region).expect("region");
+    pub fn atlas_region_uv(&self, atlas_key: &str, region: &str) -> Result<[f32; 4]> {
+        let atlas = self.atlases.get(atlas_key).ok_or_else(|| anyhow!("atlas '{atlas_key}' not loaded"))?;
+        let r = atlas
+            .regions
+            .get(region)
+            .ok_or_else(|| anyhow!("region '{region}' not found in atlas '{atlas_key}'"))?;
         let u0 = r.x as f32 / atlas.width as f32;
         let v0 = r.y as f32 / atlas.height as f32;
         let u1 = (r.x + r.w) as f32 / atlas.width as f32;
         let v1 = (r.y + r.h) as f32 / atlas.height as f32;
-        [u0, v0, u1, v1]
+        Ok([u0, v0, u1, v1])
     }
     pub fn atlas_region_exists(&self, atlas_key: &str, region: &str) -> bool {
         self.atlases.get(atlas_key).and_then(|atlas| atlas.regions.get(region)).is_some()

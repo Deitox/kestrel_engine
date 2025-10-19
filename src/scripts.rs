@@ -1,5 +1,8 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::SystemTime;
 
 use anyhow::{anyhow, Context, Result};
@@ -7,21 +10,34 @@ use glam::Vec2;
 use rand::Rng;
 use rhai::{Engine, EvalAltResult, Scope, AST};
 
-use crate::assets::AssetManager;
-use crate::ecs::EcsWorld;
+use bevy_ecs::prelude::Entity;
 
-#[derive(Clone, Copy)]
-pub struct ScriptApi {
-    ecs: *mut EcsWorld,
-    assets: *const AssetManager,
+pub type ScriptHandle = rhai::INT;
+
+#[derive(Debug, Clone)]
+pub enum ScriptCommand {
+    Spawn { handle: ScriptHandle, atlas: String, region: String, position: Vec2, scale: f32, velocity: Vec2 },
+    SetVelocity { handle: ScriptHandle, velocity: Vec2 },
+    SetPosition { handle: ScriptHandle, position: Vec2 },
+    Despawn { handle: ScriptHandle },
+    SetAutoSpawnRate { rate: f32 },
+    SetSpawnPerPress { count: i32 },
 }
 
-unsafe impl Send for ScriptApi {}
-unsafe impl Sync for ScriptApi {}
+#[derive(Default)]
+struct SharedState {
+    next_handle: ScriptHandle,
+    commands: Vec<ScriptCommand>,
+}
 
-impl ScriptApi {
-    pub fn new(ecs: &mut EcsWorld, assets: &AssetManager) -> Self {
-        Self { ecs, assets }
+#[derive(Clone)]
+pub struct ScriptWorld {
+    state: Rc<RefCell<SharedState>>,
+}
+
+impl ScriptWorld {
+    fn new(state: Rc<RefCell<SharedState>>) -> Self {
+        Self { state }
     }
 
     fn spawn_sprite(
@@ -33,57 +49,60 @@ impl ScriptApi {
         scale: f32,
         vx: f32,
         vy: f32,
-    ) -> rhai::INT {
-        let ecs = unsafe { &mut *self.ecs };
-        let assets = unsafe { &*self.assets };
-        match ecs.spawn_scripted_sprite(assets, atlas, region, Vec2::new(x, y), scale, Vec2::new(vx, vy)) {
-            Ok(entity) => entity.to_bits() as rhai::INT,
-            Err(err) => {
-                eprintln!("[script] spawn_sprite error: {err}");
-                -1
-            }
+    ) -> ScriptHandle {
+        if scale <= 0.0 {
+            return -1;
         }
+        let mut state = self.state.borrow_mut();
+        let handle = state.next_handle;
+        state.next_handle -= 1;
+        state.commands.push(ScriptCommand::Spawn {
+            handle,
+            atlas: atlas.to_string(),
+            region: region.to_string(),
+            position: Vec2::new(x, y),
+            scale,
+            velocity: Vec2::new(vx, vy),
+        });
+        handle
     }
 
-    fn set_velocity(&mut self, entity_bits: rhai::INT, vx: f32, vy: f32) -> bool {
-        let ecs = unsafe { &mut *self.ecs };
-        match entity_from_bits(entity_bits) {
-            Some(entity) => ecs.set_velocity(entity, Vec2::new(vx, vy)),
-            None => false,
-        }
+    fn set_velocity(&mut self, handle: ScriptHandle, vx: f32, vy: f32) -> bool {
+        self.state
+            .borrow_mut()
+            .commands
+            .push(ScriptCommand::SetVelocity { handle, velocity: Vec2::new(vx, vy) });
+        true
     }
 
-    fn set_position(&mut self, entity_bits: rhai::INT, x: f32, y: f32) -> bool {
-        let ecs = unsafe { &mut *self.ecs };
-        match entity_from_bits(entity_bits) {
-            Some(entity) => ecs.set_translation(entity, Vec2::new(x, y)),
-            None => false,
-        }
+    fn set_position(&mut self, handle: ScriptHandle, x: f32, y: f32) -> bool {
+        self.state
+            .borrow_mut()
+            .commands
+            .push(ScriptCommand::SetPosition { handle, position: Vec2::new(x, y) });
+        true
     }
 
-    fn despawn(&mut self, entity_bits: rhai::INT) -> bool {
-        let ecs = unsafe { &mut *self.ecs };
-        match entity_from_bits(entity_bits) {
-            Some(entity) => ecs.despawn_entity(entity),
-            None => false,
-        }
+    fn despawn(&mut self, handle: ScriptHandle) -> bool {
+        self.state.borrow_mut().commands.push(ScriptCommand::Despawn { handle });
+        true
+    }
+
+    fn set_auto_spawn_rate(&mut self, rate: f32) {
+        self.state.borrow_mut().commands.push(ScriptCommand::SetAutoSpawnRate { rate });
+    }
+
+    fn set_spawn_per_press(&mut self, count: i64) {
+        let clamped = count.clamp(0, 10_000) as i32;
+        self.state.borrow_mut().commands.push(ScriptCommand::SetSpawnPerPress { count: clamped });
     }
 
     fn random_range(&mut self, min: f32, max: f32) -> f32 {
-        let mut rng = rand::thread_rng();
-        rng.gen_range(min..max)
+        rand::thread_rng().gen_range(min..max)
     }
 
     fn log(&mut self, message: &str) {
         println!("[script] {message}");
-    }
-}
-
-fn entity_from_bits(bits: rhai::INT) -> Option<bevy_ecs::prelude::Entity> {
-    if bits == -1 {
-        None
-    } else {
-        Some(bevy_ecs::prelude::Entity::from_bits(bits as u64))
     }
 }
 
@@ -96,6 +115,8 @@ pub struct ScriptHost {
     error: Option<String>,
     enabled: bool,
     initialized: bool,
+    shared: Rc<RefCell<SharedState>>,
+    handle_map: HashMap<ScriptHandle, Entity>,
 }
 
 impl ScriptHost {
@@ -103,6 +124,8 @@ impl ScriptHost {
         let mut engine = Engine::new();
         engine.set_fast_operators(true);
         register_api(&mut engine);
+        let mut shared = SharedState::default();
+        shared.next_handle = -1;
         Self {
             engine,
             ast: None,
@@ -112,6 +135,8 @@ impl ScriptHost {
             error: None,
             enabled: true,
             initialized: false,
+            shared: Rc::new(RefCell::new(shared)),
+            handle_map: HashMap::new(),
         }
     }
 
@@ -139,7 +164,7 @@ impl ScriptHost {
         self.load_script().map(|_| ())
     }
 
-    pub fn update(&mut self, ecs: &mut EcsWorld, assets: &AssetManager, dt: f32) {
+    pub fn update(&mut self, dt: f32) {
         if let Err(err) = self.reload_if_needed() {
             self.error = Some(err.to_string());
             return;
@@ -153,9 +178,14 @@ impl ScriptHost {
             None => return,
         };
 
-        let api_init = ScriptApi::new(ecs, assets);
+        {
+            let mut shared = self.shared.borrow_mut();
+            shared.commands.clear();
+        }
+
+        let world = ScriptWorld::new(self.shared.clone());
         if !self.initialized {
-            match self.engine.call_fn::<()>(&mut self.scope, ast, "init", (api_init,)) {
+            match self.engine.call_fn::<()>(&mut self.scope, ast, "init", (world.clone(),)) {
                 Ok(_) => {
                     self.initialized = true;
                     self.error = None;
@@ -171,8 +201,7 @@ impl ScriptHost {
             }
         }
 
-        let api = ScriptApi::new(ecs, assets);
-        match self.engine.call_fn::<()>(&mut self.scope, ast, "update", (api, dt)) {
+        match self.engine.call_fn::<()>(&mut self.scope, ast, "update", (world, dt)) {
             Ok(_) => {
                 self.error = None;
             }
@@ -184,6 +213,26 @@ impl ScriptHost {
                 }
             }
         }
+    }
+
+    pub fn drain_commands(&mut self) -> Vec<ScriptCommand> {
+        self.shared.borrow_mut().commands.drain(..).collect()
+    }
+
+    pub fn register_spawn_result(&mut self, handle: ScriptHandle, entity: Entity) {
+        self.handle_map.insert(handle, entity);
+    }
+
+    pub fn resolve_handle(&self, handle: ScriptHandle) -> Option<Entity> {
+        if handle >= 0 {
+            Some(Entity::from_bits(handle as u64))
+        } else {
+            self.handle_map.get(&handle).copied()
+        }
+    }
+
+    pub fn forget_handle(&mut self, handle: ScriptHandle) {
+        self.handle_map.remove(&handle);
     }
 
     fn reload_if_needed(&mut self) -> Result<()> {
@@ -205,6 +254,9 @@ impl ScriptHost {
             .with_context(|| format!("Reading {}", self.script_path.display()))?;
         let ast = self.engine.compile(source).with_context(|| "Compiling Rhai script")?;
         self.scope = Scope::new();
+        self.engine
+            .run_ast_with_scope(&mut self.scope, &ast)
+            .map_err(|err| anyhow!("Evaluating script global statements: {err}"))?;
         self.last_modified = fs::metadata(&self.script_path).ok().and_then(|meta| meta.modified().ok());
         self.initialized = false;
         self.error = None;
@@ -214,11 +266,13 @@ impl ScriptHost {
 }
 
 fn register_api(engine: &mut Engine) {
-    engine.register_type_with_name::<ScriptApi>("World");
-    engine.register_fn("spawn_sprite", ScriptApi::spawn_sprite);
-    engine.register_fn("set_velocity", ScriptApi::set_velocity);
-    engine.register_fn("set_position", ScriptApi::set_position);
-    engine.register_fn("despawn", ScriptApi::despawn);
-    engine.register_fn("log", ScriptApi::log);
-    engine.register_fn("rand", ScriptApi::random_range);
+    engine.register_type_with_name::<ScriptWorld>("World");
+    engine.register_fn("spawn_sprite", ScriptWorld::spawn_sprite);
+    engine.register_fn("set_velocity", ScriptWorld::set_velocity);
+    engine.register_fn("set_position", ScriptWorld::set_position);
+    engine.register_fn("despawn", ScriptWorld::despawn);
+    engine.register_fn("set_auto_spawn_rate", ScriptWorld::set_auto_spawn_rate);
+    engine.register_fn("set_spawn_per_press", ScriptWorld::set_spawn_per_press);
+    engine.register_fn("log", ScriptWorld::log);
+    engine.register_fn("rand", ScriptWorld::random_range);
 }
