@@ -6,6 +6,7 @@ pub mod ecs;
 pub mod events;
 pub mod input;
 pub mod renderer;
+pub mod scene;
 pub mod scripts;
 pub mod time;
 
@@ -76,6 +77,8 @@ pub struct App {
     ui_emitter_end_size: f32,
     ui_emitter_start_color: [f32; 4],
     ui_emitter_end_color: [f32; 4],
+    ui_scene_path: String,
+    ui_scene_status: Option<String>,
 
     // Audio
     audio: AudioManager,
@@ -113,6 +116,40 @@ impl App {
             audio.handle_event(&event);
             recent_events.push_back(event);
         }
+        let emitter_snapshot = ecs.emitter_snapshot(emitter);
+        let (
+            ui_emitter_rate,
+            ui_emitter_spread,
+            ui_emitter_speed,
+            ui_emitter_lifetime,
+            ui_emitter_start_size,
+            ui_emitter_end_size,
+            ui_emitter_start_color,
+            ui_emitter_end_color,
+        ) = if let Some(snapshot) = emitter_snapshot {
+            (
+                snapshot.rate,
+                snapshot.spread,
+                snapshot.speed,
+                snapshot.lifetime,
+                snapshot.start_size,
+                snapshot.end_size,
+                snapshot.start_color.to_array(),
+                snapshot.end_color.to_array(),
+            )
+        } else {
+            (
+                35.0,
+                std::f32::consts::PI / 3.0,
+                0.8,
+                1.2,
+                0.18,
+                0.05,
+                [1.0, 0.8, 0.2, 0.8],
+                [1.0, 0.2, 0.2, 0.0],
+            )
+        };
+        let scene_path = String::from("assets/scenes/quick_save.json");
         let time = Time::new();
         let input = Input::new();
         let assets = AssetManager::new();
@@ -140,14 +177,16 @@ impl App {
             ui_cell_size: 0.25,
             ui_hist: Vec::with_capacity(240),
             ui_root_spin: 1.2,
-            ui_emitter_rate: 35.0,
-            ui_emitter_spread: std::f32::consts::PI / 3.0,
-            ui_emitter_speed: 0.8,
-            ui_emitter_lifetime: 1.2,
-            ui_emitter_start_size: 0.18,
-            ui_emitter_end_size: 0.05,
-            ui_emitter_start_color: [1.0, 0.8, 0.2, 0.8],
-            ui_emitter_end_color: [1.0, 0.2, 0.2, 0.0],
+            ui_emitter_rate,
+            ui_emitter_spread,
+            ui_emitter_speed,
+            ui_emitter_lifetime,
+            ui_emitter_start_size,
+            ui_emitter_end_size,
+            ui_emitter_start_color,
+            ui_emitter_end_color,
+            ui_scene_path: scene_path,
+            ui_scene_status: None,
             audio,
             recent_events,
             event_log_limit,
@@ -170,6 +209,24 @@ impl App {
                 self.recent_events.pop_front();
             }
             self.recent_events.push_back(event);
+        }
+    }
+
+    fn sync_emitter_ui(&mut self) {
+        if let Some(entity) = self.ecs.first_emitter() {
+            self.emitter_entity = Some(entity);
+            if let Some(snapshot) = self.ecs.emitter_snapshot(entity) {
+                self.ui_emitter_rate = snapshot.rate;
+                self.ui_emitter_spread = snapshot.spread;
+                self.ui_emitter_speed = snapshot.speed;
+                self.ui_emitter_lifetime = snapshot.lifetime;
+                self.ui_emitter_start_size = snapshot.start_size;
+                self.ui_emitter_end_size = snapshot.end_size;
+                self.ui_emitter_start_color = snapshot.start_color.to_array();
+                self.ui_emitter_end_color = snapshot.end_color.to_array();
+            }
+        } else {
+            self.emitter_entity = None;
         }
     }
 }
@@ -442,6 +499,8 @@ impl ApplicationHandler for App {
             delete_entity: Option<Entity>,
             clear_particles: bool,
             reset_world: bool,
+            save_scene: bool,
+            load_scene: bool,
         }
         let mut actions = UiActions::default();
 
@@ -552,6 +611,21 @@ impl ApplicationHandler for App {
                     ui.label("Scripts disabled");
                 }
                 ui.separator();
+                ui.heading("Scene");
+                ui.horizontal(|ui| {
+                    ui.label("Path");
+                    ui.text_edit_singleline(&mut self.ui_scene_path);
+                    if ui.button("Save").clicked() {
+                        actions.save_scene = true;
+                    }
+                    if ui.button("Load").clicked() {
+                        actions.load_scene = true;
+                    }
+                });
+                if let Some(status) = &self.ui_scene_status {
+                    ui.label(status);
+                }
+                ui.separator();
                 ui.heading("Recent Events");
                 if recent_events.is_empty() {
                     ui.label("No events recorded");
@@ -626,6 +700,26 @@ impl ApplicationHandler for App {
             return;
         }
 
+        if actions.save_scene {
+            match self.ecs.save_scene_to_path(&self.ui_scene_path) {
+                Ok(_) => self.ui_scene_status = Some(format!("Saved {}", self.ui_scene_path)),
+                Err(err) => self.ui_scene_status = Some(format!("Save failed: {err}")),
+            }
+        }
+        if actions.load_scene {
+            match self.ecs.load_scene_from_path(&self.ui_scene_path, &self.assets) {
+                Ok(_) => {
+                    self.ui_scene_status = Some(format!("Loaded {}", self.ui_scene_path));
+                    self.selected_entity = None;
+                    self.scripts.clear_handles();
+                    self.ui_hist.clear();
+                    self.sync_emitter_ui();
+                }
+                Err(err) => {
+                    self.ui_scene_status = Some(format!("Load failed: {err}"));
+                }
+            }
+        }
         if actions.spawn_now {
             self.ecs.spawn_burst(&self.assets, self.ui_spawn_per_press as usize);
         }
@@ -661,9 +755,9 @@ impl ApplicationHandler for App {
         }
         if actions.reset_world {
             self.ecs.clear_world();
-            self.emitter_entity = None;
             self.selected_entity = None;
             self.scripts.clear_handles();
+            self.sync_emitter_ui();
         }
 
         if let (Some(ren), Some(screen)) = (self.egui_renderer.as_mut(), self.egui_screen.as_ref()) {

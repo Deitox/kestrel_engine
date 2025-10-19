@@ -167,6 +167,8 @@
 - Restore ECS state from disk.
 - Asset dependency tracking and reference counting.
 
+**Status:** JSON scene quick-save/load (with egui path input) is live; asset dependency tracking remains open.
+
 **Stretch Ideas**
 - Binary `.kscene` format with compression.
 

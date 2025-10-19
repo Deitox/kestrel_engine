@@ -1,5 +1,9 @@
 use crate::assets::AssetManager;
 use crate::events::{EventBus, GameEvent};
+use crate::scene::{
+    ColliderData, ColorData, OrbitControllerData, ParticleEmitterData, Scene, SceneEntity, SpriteData,
+    TransformData,
+};
 use anyhow::{anyhow, Context, Result};
 use bevy_ecs::prelude::*;
 use bevy_ecs::query::{With, Without};
@@ -9,6 +13,7 @@ use rand::Rng;
 use rapier2d::prelude::*;
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::path::Path;
 
 // ---------- Components ----------
 #[derive(Component, Clone, Copy)]
@@ -102,6 +107,17 @@ pub struct EntityInfo {
     pub translation: Vec2,
     pub velocity: Option<Vec2>,
     pub sprite_region: Option<String>,
+}
+
+pub struct EmitterSnapshot {
+    pub rate: f32,
+    pub spread: f32,
+    pub speed: f32,
+    pub lifetime: f32,
+    pub start_color: Vec4,
+    pub end_color: Vec4,
+    pub start_size: f32,
+    pub end_size: f32,
 }
 
 #[derive(Resource)]
@@ -755,6 +771,232 @@ impl EcsWorld {
         for mut spin in query.iter_mut(&mut self.world) {
             spin.speed = speed;
             break;
+        }
+    }
+}
+
+impl EcsWorld {
+    pub fn save_scene_to_path(&mut self, path: impl AsRef<Path>) -> Result<()> {
+        let scene = self.export_scene();
+        scene.save_to_path(path)
+    }
+
+    pub fn load_scene_from_path(&mut self, path: impl AsRef<Path>, assets: &AssetManager) -> Result<()> {
+        let scene = Scene::load_from_path(path)?;
+        self.load_scene(&scene, assets)
+    }
+
+    pub fn load_scene(&mut self, scene: &Scene, assets: &AssetManager) -> Result<()> {
+        self.clear_scene_entities();
+        let mut entity_map = Vec::with_capacity(scene.entities.len());
+        for entity_data in &scene.entities {
+            let entity = self.spawn_scene_entity(entity_data, assets)?;
+            entity_map.push(entity);
+        }
+        for (index, entity_data) in scene.entities.iter().enumerate() {
+            if let Some(parent_index) = entity_data.parent {
+                let parent_entity = *entity_map
+                    .get(parent_index)
+                    .ok_or_else(|| anyhow!("Scene entity parent index {parent_index} out of bounds"))?;
+                let child_entity = entity_map[index];
+                self.world.entity_mut(child_entity).insert(Parent(parent_entity));
+                if let Some(mut children) = self.world.get_mut::<Children>(parent_entity) {
+                    if !children.0.contains(&child_entity) {
+                        children.0.push(child_entity);
+                    }
+                } else {
+                    self.world.entity_mut(parent_entity).insert(Children(vec![child_entity]));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn export_scene(&mut self) -> Scene {
+        let mut scene = Scene::default();
+        let mut query = self.world.query::<(Entity, Option<&Parent>, Option<&Transform>)>();
+        let mut roots = Vec::new();
+        for (entity, parent, transform) in query.iter(&self.world) {
+            if parent.is_none() && transform.is_some() {
+                roots.push(entity);
+            }
+        }
+        for root in roots {
+            self.collect_scene_entity(root, None, &mut scene.entities);
+        }
+        scene
+    }
+
+    pub fn first_emitter(&mut self) -> Option<Entity> {
+        let mut query = self.world.query::<(Entity, &ParticleEmitter)>();
+        query.iter(&self.world).map(|(entity, _)| entity).next()
+    }
+
+    pub fn emitter_snapshot(&self, entity: Entity) -> Option<EmitterSnapshot> {
+        let emitter = self.world.get::<ParticleEmitter>(entity)?;
+        Some(EmitterSnapshot {
+            rate: emitter.rate,
+            spread: emitter.spread,
+            speed: emitter.speed,
+            lifetime: emitter.lifetime,
+            start_color: emitter.start_color,
+            end_color: emitter.end_color,
+            start_size: emitter.start_size,
+            end_size: emitter.end_size,
+        })
+    }
+
+    fn spawn_scene_entity(&mut self, data: &SceneEntity, assets: &AssetManager) -> Result<Entity> {
+        let translation: Vec2 = data.transform.translation.clone().into();
+        let scale: Vec2 = data.transform.scale.clone().into();
+        let rotation = data.transform.rotation;
+        let velocity_vec: Vec2 = data.velocity.as_ref().map(|v| Vec2::from(v.clone())).unwrap_or(Vec2::ZERO);
+        let collider_half = data.collider.as_ref().map(|c| Vec2::from(c.half_extents.clone()));
+
+        let mut body_handle = None;
+        let mut collider_handle = None;
+        if let Some(half) = collider_half.as_ref() {
+            let mass_value = data.mass.unwrap_or(1.0);
+            let mut rapier = self.world.resource_mut::<RapierState>();
+            let (body, collider) = rapier.spawn_dynamic_body(translation, *half, mass_value, velocity_vec);
+            body_handle = Some(body);
+            collider_handle = Some(collider);
+        }
+
+        let mut entity =
+            self.world.spawn((Transform { translation, rotation, scale }, WorldTransform::default()));
+
+        if let Some(spin) = data.spin {
+            entity.insert(Spin { speed: spin });
+        }
+        if let Some(tint) = data.tint.clone() {
+            entity.insert(Tint(tint.into()));
+        }
+        if let Some(velocity) = data.velocity.as_ref() {
+            entity.insert(Velocity(velocity.clone().into()));
+        }
+        if let Some(mass) = data.mass {
+            entity.insert(Mass(mass));
+        }
+        if let Some(half) = collider_half.as_ref() {
+            entity.insert(Aabb { half: *half });
+            entity.insert(Force::default());
+        }
+        if let Some(emitter) = data.particle_emitter.clone() {
+            entity.insert(ParticleEmitter {
+                rate: emitter.rate,
+                spread: emitter.spread,
+                speed: emitter.speed,
+                lifetime: emitter.lifetime,
+                accumulator: 0.0,
+                start_color: emitter.start_color.into(),
+                end_color: emitter.end_color.into(),
+                start_size: emitter.start_size,
+                end_size: emitter.end_size,
+            });
+        }
+        if let Some(orbit) = data.orbit.clone() {
+            entity
+                .insert(OrbitController { center: orbit.center.into(), angular_speed: orbit.angular_speed });
+        }
+
+        let mut sprite_event = None;
+        if let Some(sprite) = data.sprite.as_ref() {
+            if !assets.atlas_region_exists(&sprite.atlas, &sprite.region) {
+                return Err(anyhow!(
+                    "Scene references unknown atlas region '{}:{}'",
+                    sprite.atlas,
+                    sprite.region
+                ));
+            }
+            entity.insert(Sprite {
+                atlas_key: Cow::Owned(sprite.atlas.clone()),
+                region: Cow::Owned(sprite.region.clone()),
+            });
+            sprite_event = Some((sprite.atlas.clone(), sprite.region.clone()));
+        }
+
+        if let Some(body) = body_handle {
+            entity.insert(RapierBody { handle: body });
+        }
+        if let Some(collider) = collider_handle {
+            entity.insert(RapierCollider { handle: collider });
+        }
+
+        let entity_id = entity.id();
+        drop(entity);
+
+        if let Some((atlas, region)) = sprite_event {
+            self.emit(GameEvent::SpriteSpawned { entity: entity_id, atlas, region });
+        }
+
+        Ok(entity_id)
+    }
+
+    fn collect_scene_entity(&self, entity: Entity, parent_index: Option<usize>, out: &mut Vec<SceneEntity>) {
+        if self.world.get::<Transform>(entity).is_none() {
+            return;
+        }
+        if self.world.get::<Particle>(entity).is_some() {
+            return;
+        }
+
+        let transform = *self.world.get::<Transform>(entity).unwrap();
+        let scene_entity = SceneEntity {
+            name: None,
+            transform: TransformData::from_components(
+                transform.translation,
+                transform.rotation,
+                transform.scale,
+            ),
+            sprite: self.world.get::<Sprite>(entity).map(|sprite| SpriteData {
+                atlas: sprite.atlas_key.to_string(),
+                region: sprite.region.to_string(),
+            }),
+            tint: self.world.get::<Tint>(entity).map(|t| ColorData::from(t.0)),
+            velocity: self.world.get::<Velocity>(entity).map(|v| v.0.into()),
+            mass: self.world.get::<Mass>(entity).map(|m| m.0),
+            collider: self.world.get::<Aabb>(entity).map(|a| ColliderData { half_extents: a.half.into() }),
+            particle_emitter: self.world.get::<ParticleEmitter>(entity).map(|emitter| ParticleEmitterData {
+                rate: emitter.rate,
+                spread: emitter.spread,
+                speed: emitter.speed,
+                lifetime: emitter.lifetime,
+                start_color: emitter.start_color.into(),
+                end_color: emitter.end_color.into(),
+                start_size: emitter.start_size,
+                end_size: emitter.end_size,
+            }),
+            orbit: self.world.get::<OrbitController>(entity).map(|orbit| OrbitControllerData {
+                center: orbit.center.into(),
+                angular_speed: orbit.angular_speed,
+            }),
+            spin: self.world.get::<Spin>(entity).map(|s| s.speed),
+            parent: parent_index,
+        };
+
+        let current_index = out.len();
+        out.push(scene_entity);
+
+        if let Some(children) = self.world.get::<Children>(entity) {
+            for &child in &children.0 {
+                self.collect_scene_entity(child, Some(current_index), out);
+            }
+        }
+    }
+
+    fn clear_scene_entities(&mut self) {
+        let mut roots = Vec::new();
+        {
+            let mut query = self.world.query::<(Entity, Option<&Parent>)>();
+            for (entity, parent) in query.iter(&self.world) {
+                if parent.is_none() {
+                    roots.push(entity);
+                }
+            }
+        }
+        for entity in roots {
+            self.despawn_entity(entity);
         }
     }
 }
