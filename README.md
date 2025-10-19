@@ -4,8 +4,8 @@
 
 ## New
 - Deterministic physics step with gravity, damping, and mass-aware force integration.
-- Lightweight particle emitter spawns lifetimed sprites with adjustable rate.
-- Script API can tweak emitter rate, spread, speed, and lifetime at runtime.
+- Lightweight particle emitter spawns lifetimed sprites with adjustable rate and color/size gradients.
+- Script API can tweak emitter rate, spread, speed, lifetime, colors, and size gradients at runtime.
 - Embedded Rhai runtime automatically loads `assets/scripts/main.rhai` and hot-reloads on file save.
 - Scripts can spawn, move, and despawn ECS entities through `world.spawn_sprite`, `set_velocity`, `set_position`, and `despawn`, and they can adjust auto-spawn rate / spawn counts via `set_auto_spawn_rate` and `set_spawn_per_press`\.
 - Script API exposes logging and random helpers for quick prototyping.
@@ -14,7 +14,7 @@
 
 ## Still here
 - egui overlay shows camera status, cursor world position, and selection details.
-- Debug UI exposes particle emitter rate/spread/speed/lifetime for quick tuning.
+- Debug UI exposes particle emitter rate/spread/speed/lifetime/color/size for quick tuning.
 - Right mouse drag pans the camera; mouse wheel zooms with clamped limits.
 - Selection gizmo highlights the chosen entity and supports deletion from the UI.
 

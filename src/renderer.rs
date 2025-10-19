@@ -290,6 +290,11 @@ impl Renderer {
                                 format: wgpu::VertexFormat::Float32x4,
                                 offset: 64,
                             },
+                            wgpu::VertexAttribute {
+                                shader_location: 7,
+                                format: wgpu::VertexFormat::Float32x4,
+                                offset: 80,
+                            },
                         ],
                     },
                 ],

@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::time::SystemTime;
 
 use anyhow::{anyhow, Context, Result};
-use glam::Vec2;
+use glam::{Vec2, Vec4};
 use rand::Rng;
 use rhai::{Engine, EvalAltResult, Scope, AST};
 
@@ -26,6 +26,10 @@ pub enum ScriptCommand {
     SetEmitterSpread { spread: f32 },
     SetEmitterSpeed { speed: f32 },
     SetEmitterLifetime { lifetime: f32 },
+    SetEmitterStartColor { color: Vec4 },
+    SetEmitterEndColor { color: Vec4 },
+    SetEmitterStartSize { size: f32 },
+    SetEmitterEndSize { size: f32 },
 }
 
 #[derive(Default)]
@@ -119,6 +123,28 @@ impl ScriptWorld {
             .borrow_mut()
             .commands
             .push(ScriptCommand::SetEmitterLifetime { lifetime: lifetime.max(0.05) });
+    }
+
+    fn set_emitter_start_color(&mut self, r: f32, g: f32, b: f32, a: f32) {
+        self.state
+            .borrow_mut()
+            .commands
+            .push(ScriptCommand::SetEmitterStartColor { color: Vec4::new(r, g, b, a) });
+    }
+
+    fn set_emitter_end_color(&mut self, r: f32, g: f32, b: f32, a: f32) {
+        self.state
+            .borrow_mut()
+            .commands
+            .push(ScriptCommand::SetEmitterEndColor { color: Vec4::new(r, g, b, a) });
+    }
+
+    fn set_emitter_start_size(&mut self, size: f32) {
+        self.state.borrow_mut().commands.push(ScriptCommand::SetEmitterStartSize { size: size.max(0.01) });
+    }
+
+    fn set_emitter_end_size(&mut self, size: f32) {
+        self.state.borrow_mut().commands.push(ScriptCommand::SetEmitterEndSize { size: size.max(0.01) });
     }
 
     fn random_range(&mut self, min: f32, max: f32) -> f32 {
@@ -301,6 +327,10 @@ fn register_api(engine: &mut Engine) {
     engine.register_fn("set_emitter_spread", ScriptWorld::set_emitter_spread);
     engine.register_fn("set_emitter_speed", ScriptWorld::set_emitter_speed);
     engine.register_fn("set_emitter_lifetime", ScriptWorld::set_emitter_lifetime);
+    engine.register_fn("set_emitter_start_color", ScriptWorld::set_emitter_start_color);
+    engine.register_fn("set_emitter_end_color", ScriptWorld::set_emitter_end_color);
+    engine.register_fn("set_emitter_start_size", ScriptWorld::set_emitter_start_size);
+    engine.register_fn("set_emitter_end_size", ScriptWorld::set_emitter_end_size);
     engine.register_fn("log", ScriptWorld::log);
     engine.register_fn("rand", ScriptWorld::random_range);
 }

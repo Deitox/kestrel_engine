@@ -2,7 +2,7 @@ use crate::assets::AssetManager;
 use anyhow::{anyhow, Context, Result};
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::{Commands, Res, ResMut};
-use glam::{Mat4, Vec2};
+use glam::{Mat4, Vec2, Vec4};
 use rand::Rng;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -40,6 +40,8 @@ pub struct Velocity(pub Vec2);
 pub struct Aabb {
     pub half: Vec2,
 }
+#[derive(Component, Clone, Copy)]
+pub struct Tint(pub Vec4);
 #[derive(Component, Clone, Copy, Default)]
 pub struct Mass(pub f32);
 #[derive(Component, Clone, Copy, Default)]
@@ -51,11 +53,22 @@ pub struct ParticleEmitter {
     pub speed: f32,
     pub lifetime: f32,
     pub accumulator: f32,
+    pub start_color: Vec4,
+    pub end_color: Vec4,
+    pub start_size: f32,
+    pub end_size: f32,
 }
 #[derive(Component)]
 pub struct Particle {
     pub lifetime: f32,
     pub max_lifetime: f32,
+}
+#[derive(Component)]
+pub struct ParticleVisual {
+    pub start_color: Vec4,
+    pub end_color: Vec4,
+    pub start_size: f32,
+    pub end_size: f32,
 }
 
 #[repr(C)]
@@ -63,6 +76,7 @@ pub struct Particle {
 pub struct InstanceData {
     pub model: [[f32; 4]; 4],
     pub uv_rect: [f32; 4],
+    pub tint: [f32; 4],
 }
 
 pub struct EntityInfo {
@@ -160,6 +174,7 @@ impl EcsWorld {
                 Velocity(Vec2::new(0.2, 0.0)),
                 Force::default(),
                 Mass(1.0),
+                Tint(Vec4::ONE),
             ))
             .id();
         let b = self
@@ -173,6 +188,7 @@ impl EcsWorld {
                 Velocity(Vec2::new(-0.25, 0.0)),
                 Force::default(),
                 Mass(1.0),
+                Tint(Vec4::ONE),
             ))
             .id();
         let c = self
@@ -186,11 +202,21 @@ impl EcsWorld {
                 Velocity(Vec2::new(0.0, -0.2)),
                 Force::default(),
                 Mass(1.0),
+                Tint(Vec4::ONE),
             ))
             .id();
         self.world.entity_mut(root).insert(Children(vec![a, b, c]));
-        let emitter =
-            self.spawn_particle_emitter(Vec2::new(0.0, 0.0), 35.0, std::f32::consts::PI / 3.0, 0.8, 1.2);
+        let emitter = self.spawn_particle_emitter(
+            Vec2::new(0.0, 0.0),
+            35.0,
+            std::f32::consts::PI / 3.0,
+            0.8,
+            1.2,
+            Vec4::new(1.0, 0.8, 0.2, 0.8),
+            Vec4::new(1.0, 0.2, 0.2, 0.0),
+            0.18,
+            0.05,
+        );
         emitter
     }
 
@@ -211,6 +237,7 @@ impl EcsWorld {
                 Velocity(vel),
                 Force::default(),
                 Mass(0.8),
+                Tint(Vec4::ONE),
             ));
         }
     }
@@ -222,12 +249,26 @@ impl EcsWorld {
         spread: f32,
         speed: f32,
         lifetime: f32,
+        start_color: Vec4,
+        end_color: Vec4,
+        start_size: f32,
+        end_size: f32,
     ) -> Entity {
         self.world
             .spawn((
-                Transform { translation: position, rotation: 0.0, scale: Vec2::splat(0.2) },
+                Transform { translation: position, rotation: 0.0, scale: Vec2::splat(start_size) },
                 WorldTransform::default(),
-                ParticleEmitter { rate, spread, speed, lifetime, accumulator: 0.0 },
+                ParticleEmitter {
+                    rate,
+                    spread,
+                    speed,
+                    lifetime,
+                    accumulator: 0.0,
+                    start_color,
+                    end_color,
+                    start_size,
+                    end_size,
+                },
             ))
             .id()
     }
@@ -235,6 +276,20 @@ impl EcsWorld {
     pub fn set_emitter_rate(&mut self, entity: Entity, rate: f32) {
         if let Some(mut emitter) = self.world.get_mut::<ParticleEmitter>(entity) {
             emitter.rate = rate.max(0.0);
+        }
+    }
+
+    pub fn set_emitter_colors(&mut self, entity: Entity, start: Vec4, end: Vec4) {
+        if let Some(mut emitter) = self.world.get_mut::<ParticleEmitter>(entity) {
+            emitter.start_color = start;
+            emitter.end_color = end;
+        }
+    }
+
+    pub fn set_emitter_sizes(&mut self, entity: Entity, start: f32, end: f32) {
+        if let Some(mut emitter) = self.world.get_mut::<ParticleEmitter>(entity) {
+            emitter.start_size = start.max(0.01);
+            emitter.end_size = end.max(0.01);
         }
     }
 
@@ -298,6 +353,9 @@ impl EcsWorld {
                 Sprite { atlas_key: Cow::Owned(atlas.to_string()), region: Cow::Owned(region.to_string()) },
                 Aabb { half },
                 Velocity(velocity),
+                Force::default(),
+                Mass(1.0),
+                Tint(Vec4::ONE),
             ))
             .id();
         Ok(entity)
@@ -324,12 +382,13 @@ impl EcsWorld {
     ) -> Result<(Vec<InstanceData>, &'static str)> {
         let mut out = Vec::new();
         let atlas_key = "main";
-        let mut q = self.world.query::<(&WorldTransform, &Sprite)>();
-        for (wt, s) in q.iter(&self.world) {
+        let mut q = self.world.query::<(&WorldTransform, &Sprite, Option<&Tint>)>();
+        for (wt, s, tint) in q.iter(&self.world) {
             let uv_rect = assets
                 .atlas_region_uv(atlas_key, s.region.as_ref())
                 .with_context(|| format!("Collecting sprite instance for region '{}'", s.region))?;
-            out.push(InstanceData { model: wt.0.to_cols_array_2d(), uv_rect });
+            let color = tint.map(|t| t.0.to_array()).unwrap_or([1.0, 1.0, 1.0, 1.0]);
+            out.push(InstanceData { model: wt.0.to_cols_array_2d(), uv_rect, tint: color });
         }
         Ok((out, atlas_key))
     }
@@ -477,14 +536,21 @@ fn sys_update_emitters(
                 Transform {
                     translation: transform.translation + dir * 0.05,
                     rotation: 0.0,
-                    scale: Vec2::splat(0.12),
+                    scale: Vec2::splat(emitter.start_size),
                 },
                 WorldTransform::default(),
                 Velocity(velocity),
                 Force::default(),
                 Mass(0.2),
                 Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("green") },
+                Tint(emitter.start_color),
                 Particle { lifetime, max_lifetime: lifetime },
+                ParticleVisual {
+                    start_color: emitter.start_color,
+                    end_color: emitter.end_color,
+                    start_size: emitter.start_size,
+                    end_size: emitter.end_size,
+                },
             ));
         }
     }
@@ -492,17 +558,28 @@ fn sys_update_emitters(
 
 fn sys_update_particles(
     mut commands: Commands,
-    mut particles: Query<(Entity, &mut Particle, &mut Transform, Option<&mut Velocity>)>,
+    mut particles: Query<(
+        Entity,
+        &mut Particle,
+        &mut Transform,
+        Option<&mut Velocity>,
+        &ParticleVisual,
+        &mut Tint,
+    )>,
     dt: Res<TimeDelta>,
 ) {
-    for (entity, mut particle, mut transform, velocity) in &mut particles {
+    for (entity, mut particle, mut transform, velocity, visual, mut tint) in &mut particles {
         particle.lifetime -= dt.0;
         if particle.lifetime <= 0.0 {
             commands.entity(entity).despawn();
             continue;
         }
-        let t = (particle.lifetime / particle.max_lifetime).clamp(0.0, 1.0);
-        transform.scale = Vec2::splat(0.12 * t.max(0.2));
+        let life_ratio = (particle.lifetime / particle.max_lifetime).clamp(0.0, 1.0);
+        let progress = 1.0 - life_ratio;
+        let size = visual.start_size + (visual.end_size - visual.start_size) * progress;
+        transform.scale = Vec2::splat(size.max(0.01));
+        let color = visual.start_color + (visual.end_color - visual.start_color) * progress;
+        tint.0 = color;
         if let Some(mut vel) = velocity {
             vel.0 *= 0.98;
         }

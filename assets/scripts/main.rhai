@@ -7,6 +7,10 @@ fn init(world) {
     world.set_emitter_spread(1.0);
     world.set_emitter_speed(1.0);
     world.set_emitter_lifetime(1.2);
+    world.set_emitter_start_size(0.18);
+    world.set_emitter_end_size(0.05);
+    world.set_emitter_start_color(1.0, 0.8, 0.2, 0.8);
+    world.set_emitter_end_color(1.0, 0.2, 0.2, 0.0);
     state.timer = 0.0;
 }
 

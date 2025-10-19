@@ -36,7 +36,7 @@
 4. **Physics & Simulation** - The fixed timestep applies gravity/forces, integrates positions, handles world bounds, and resolves collisions and particle lifetime.
 5. **Rendering prep** - ECS collects instanced sprite data. Camera produces the view-projection matrix for sprite batching.
 6. **Rendering** - `Renderer::render_batch` draws sprites; egui input is processed, overlays drawn, and the frame submitted.
-7. **UI Feedback** - egui window exposes performance stats, spawn controls, emitter rate, camera details, selection gizmos, scripting status, and exposes script toggles (enable/reload).
+7. **UI Feedback** - egui window exposes performance stats, spawn controls, emitter tuning (rate/spread/speed/lifetime/colors/sizes), camera details, selection gizmos, scripting status, and exposes script toggles (enable/reload).
 
 ### Module Relationships
 - `App` owns instances of `Renderer`, `EcsWorld`, `Input`, `Camera2D`, `AssetManager`, and `Time`.

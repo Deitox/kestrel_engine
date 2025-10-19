@@ -17,7 +17,7 @@ use crate::scripts::{ScriptCommand, ScriptHost};
 use crate::time::Time;
 
 use bevy_ecs::prelude::Entity;
-use glam::Vec2;
+use glam::{Vec2, Vec4};
 
 use anyhow::{Context, Result};
 use winit::application::ApplicationHandler;
@@ -67,6 +67,10 @@ pub struct App {
     ui_emitter_spread: f32,
     ui_emitter_speed: f32,
     ui_emitter_lifetime: f32,
+    ui_emitter_start_size: f32,
+    ui_emitter_end_size: f32,
+    ui_emitter_start_color: [f32; 4],
+    ui_emitter_end_color: [f32; 4],
 
     // Camera / selection
     camera: Camera2D,
@@ -118,6 +122,10 @@ impl App {
             ui_emitter_spread: std::f32::consts::PI / 3.0,
             ui_emitter_speed: 0.8,
             ui_emitter_lifetime: 1.2,
+            ui_emitter_start_size: 0.18,
+            ui_emitter_end_size: 0.05,
+            ui_emitter_start_color: [1.0, 0.8, 0.2, 0.8],
+            ui_emitter_end_color: [1.0, 0.2, 0.2, 0.0],
             camera: Camera2D::new(CAMERA_BASE_HALF_HEIGHT),
             selected_entity: None,
             config,
@@ -296,6 +304,12 @@ impl ApplicationHandler for App {
             self.ecs.set_emitter_spread(emitter, self.ui_emitter_spread);
             self.ecs.set_emitter_speed(emitter, self.ui_emitter_speed);
             self.ecs.set_emitter_lifetime(emitter, self.ui_emitter_lifetime);
+            self.ecs.set_emitter_colors(
+                emitter,
+                Vec4::from_array(self.ui_emitter_start_color),
+                Vec4::from_array(self.ui_emitter_end_color),
+            );
+            self.ecs.set_emitter_sizes(emitter, self.ui_emitter_start_size, self.ui_emitter_end_size);
         }
         self.scripts.update(dt);
         let commands = self.scripts.drain_commands();
@@ -348,6 +362,10 @@ impl ApplicationHandler for App {
         let mut ui_emitter_spread = self.ui_emitter_spread;
         let mut ui_emitter_speed = self.ui_emitter_speed;
         let mut ui_emitter_lifetime = self.ui_emitter_lifetime;
+        let mut ui_emitter_start_size = self.ui_emitter_start_size;
+        let mut ui_emitter_end_size = self.ui_emitter_end_size;
+        let mut ui_emitter_start_color = self.ui_emitter_start_color;
+        let mut ui_emitter_end_color = self.ui_emitter_end_color;
         let mut selected_entity = self.selected_entity;
         let mut selection_details = selected_entity.and_then(|entity| self.ecs.entity_info(entity));
         let cursor_world = self
@@ -398,6 +416,16 @@ impl ApplicationHandler for App {
                 );
                 ui.add(egui::Slider::new(&mut ui_emitter_speed, 0.0..=3.0).text("Emitter speed"));
                 ui.add(egui::Slider::new(&mut ui_emitter_lifetime, 0.1..=5.0).text("Particle lifetime (s)"));
+                ui.add(egui::Slider::new(&mut ui_emitter_start_size, 0.01..=0.5).text("Particle start size"));
+                ui.add(egui::Slider::new(&mut ui_emitter_end_size, 0.01..=0.5).text("Particle end size"));
+                ui.horizontal(|ui| {
+                    ui.label("Start color");
+                    ui.color_edit_button_rgba_unmultiplied(&mut ui_emitter_start_color);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("End color");
+                    ui.color_edit_button_rgba_unmultiplied(&mut ui_emitter_end_color);
+                });
                 ui.add(egui::Slider::new(&mut ui_root_spin, -5.0..=5.0).text("Root spin speed"));
                 if ui.button("Spawn now").clicked() {
                     actions.spawn_now = true;
@@ -507,6 +535,10 @@ impl ApplicationHandler for App {
         self.ui_emitter_spread = ui_emitter_spread;
         self.ui_emitter_speed = ui_emitter_speed;
         self.ui_emitter_lifetime = ui_emitter_lifetime;
+        self.ui_emitter_start_size = ui_emitter_start_size;
+        self.ui_emitter_end_size = ui_emitter_end_size;
+        self.ui_emitter_start_color = ui_emitter_start_color;
+        self.ui_emitter_end_color = ui_emitter_end_color;
         self.selected_entity = selected_entity;
 
         let egui::FullOutput { platform_output, textures_delta, shapes, .. } = full_output;
@@ -627,6 +659,46 @@ impl App {
                     self.ui_emitter_lifetime = lifetime.max(0.05);
                     if let Some(emitter) = self.emitter_entity {
                         self.ecs.set_emitter_lifetime(emitter, self.ui_emitter_lifetime);
+                    }
+                }
+                ScriptCommand::SetEmitterStartColor { color } => {
+                    self.ui_emitter_start_color = color.to_array();
+                    if let Some(emitter) = self.emitter_entity {
+                        self.ecs.set_emitter_colors(
+                            emitter,
+                            color,
+                            Vec4::from_array(self.ui_emitter_end_color),
+                        );
+                    }
+                }
+                ScriptCommand::SetEmitterEndColor { color } => {
+                    self.ui_emitter_end_color = color.to_array();
+                    if let Some(emitter) = self.emitter_entity {
+                        self.ecs.set_emitter_colors(
+                            emitter,
+                            Vec4::from_array(self.ui_emitter_start_color),
+                            color,
+                        );
+                    }
+                }
+                ScriptCommand::SetEmitterStartSize { size } => {
+                    self.ui_emitter_start_size = size.max(0.01);
+                    if let Some(emitter) = self.emitter_entity {
+                        self.ecs.set_emitter_sizes(
+                            emitter,
+                            self.ui_emitter_start_size,
+                            self.ui_emitter_end_size,
+                        );
+                    }
+                }
+                ScriptCommand::SetEmitterEndSize { size } => {
+                    self.ui_emitter_end_size = size.max(0.01);
+                    if let Some(emitter) = self.emitter_entity {
+                        self.ecs.set_emitter_sizes(
+                            emitter,
+                            self.ui_emitter_start_size,
+                            self.ui_emitter_end_size,
+                        );
                     }
                 }
             }
