@@ -36,6 +36,7 @@ pub enum ScriptCommand {
 struct SharedState {
     next_handle: ScriptHandle,
     commands: Vec<ScriptCommand>,
+    logs: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -152,6 +153,10 @@ impl ScriptWorld {
     }
 
     fn log(&mut self, message: &str) {
+        {
+            let mut state = self.state.borrow_mut();
+            state.logs.push(message.to_string());
+        }
         println!("[script] {message}");
     }
 }
@@ -267,6 +272,10 @@ impl ScriptHost {
 
     pub fn drain_commands(&mut self) -> Vec<ScriptCommand> {
         self.shared.borrow_mut().commands.drain(..).collect()
+    }
+
+    pub fn drain_logs(&mut self) -> Vec<String> {
+        self.shared.borrow_mut().logs.drain(..).collect()
     }
 
     pub fn register_spawn_result(&mut self, handle: ScriptHandle, entity: Entity) {

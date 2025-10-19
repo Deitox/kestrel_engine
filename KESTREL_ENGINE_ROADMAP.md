@@ -1,244 +1,244 @@
-# 🦅 Kestrel Engine — Full Development Roadmap
+# Kestrel Engine - Full Development Roadmap
 
-**Version:** 0 → 1.0  
-**Language/Stack:** Rust + WGPU + Winit + Bevy ECS + Egui  
-**Philosophy:** Clean, self-contained, data-driven engine — code-first, no drag-drop UI required.  
-
----
-
-## 🩵 Milestone 0 — Concept & Architecture Blueprint  
-**Goal:** Define scope, subsystems, and philosophy before a single line of code.  
-
-**Deliverables:**
-- Overall architecture diagram (Renderer, ECS, Asset, Input, UI).
-- Naming and crate structure (`kestrel_engine/src/` layout).
-- Decision log on external crates (Bevy ECS, WGPU, Egui, Image, Serde).
-- Foundational code style + build setup (Cargo, Clippy, rustfmt).
-
-**Key Design Rules:**
-1. Every frame is a clean data flow: Input → ECS → Renderer → UI.
-2. No “magic singletons”: all resources explicit.
-3. Deterministic simulation loop (fixed + variable time steps).
+**Version:** 0 to 1.0  
+**Technology Stack:** Rust, WGPU, Winit, Bevy ECS, egui  
+**Philosophy:** Clean, self-contained, data-driven engine; code-first with no mandatory editor.
 
 ---
 
-## ⚙️ Milestone 1 — Core Runtime & Renderer Initialization  
-**Goal:** Get pixels on screen.  
+## Milestone 0 - Concept & Architecture Blueprint
+**Goal:** Define scope, subsystems, and guiding principles before coding.
 
-**Deliverables:**
-- Winit window loop using `ApplicationHandler`.
-- WGPU initialization with SRGB format.
-- Simple quad rendering with WGSL shader.
-- `Time` utility with delta and elapsed.
-- Resize & surface reconfiguration.
+**Deliverables**
+- Architecture outline covering renderer, ECS, input, assets, and UI.
+- Crate and module layout (`kestrel_engine/src/...`).
+- Decision log for third-party crates (Bevy ECS, WGPU, egui, image, serde).
+- Code-style guide and build setup (Cargo, Clippy, rustfmt).
 
-**Stretch:**
-- Configurable vsync.
-- Hot-reload clear color from JSON.
-
----
-
-## 🖼️ Milestone 2 — Sprites, Atlas, and Transform Hierarchy  
-**Goal:** Batch-render many sprites with hierarchical transforms.  
-
-**Deliverables:**
-- AssetManager with texture + atlas loader.
-- ECS Components: `Transform`, `Parent`, `Children`, `WorldTransform`, `Sprite`.
-- Instanced vertex data (matrix + UV rect).
-- Atlas batching → one draw call for 1000s of sprites.
-
-**Stretch:**
-- Animated sprite frames (time-based UV cycling).
+**Key Design Rules**
+1. Every frame follows a predictable flow: Input -> ECS -> Renderer -> UI.
+2. Avoid hidden singletons; keep resources explicit.
+3. Maintain a deterministic simulation loop with fixed and variable timesteps.
 
 ---
 
-## ⌨️ Milestone 3 — Input, Spawning, Fixed / Variable Time  
-**Goal:** Allow player input & large-scale entity management.  
+## Milestone 1 - Core Runtime and Renderer Initialization
+**Goal:** Show pixels on screen.
 
-**Deliverables:**
-- Input event manager (keyboard, mouse, wheel).
-- Fixed 60 Hz update loop; variable-step visuals.
-- On-demand spawning (space/B) and dynamic instance buffer growth.
-- Early performance stress tests.
+**Deliverables**
+- Winit application loop using `ApplicationHandler`.
+- WGPU initialization with sRGB surface.
+- Simple quad rendered with WGSL shader.
+- `Time` helper tracking delta and elapsed time.
+- Resize handling and surface recreation.
 
-**Stretch:**
-- Simple input remapping config file.
-
----
-
-## 🧮 Milestone 3.5 — Spatial Hashing & Collisions  
-**Goal:** Introduce spatial awareness & simple physics.  
-
-**Deliverables:**
-- Broadphase spatial grid.
-- Simple impulse-based separation (AABB overlap).
-- Debug visualization (bounding boxes or cell overlays).
-
-**Stretch:**
-- Basic quadtree fallback when density spikes.
+**Stretch Ideas**
+- Configurable VSync toggle.
+- Reload clear color from JSON.
 
 ---
 
-## 🧰 Milestone 4 — Stability, Error Handling, and Config  
-**Goal:** Make the foundation robust and user-friendly.  
+## Milestone 2 - Sprites, Atlases, and Transform Hierarchy
+**Goal:** Efficiently batch-render sprites with hierarchical transforms.
 
-**Deliverables:**
+**Deliverables**
+- AssetManager capable of loading textures plus atlas metadata.
+- ECS components: `Transform`, `Parent`, `Children`, `WorldTransform`, `Sprite`.
+- Instanced vertex data path (matrix + UV rectangle).
+- Single-draw-call batching for thousands of sprites.
+
+**Stretch Ideas**
+- Time-based animated sprite frames.
+
+---
+
+## Milestone 3 - Input, Spawning, and Fixed vs Variable Time
+**Goal:** Allow user input and large-scale entity creation.
+
+**Deliverables**
+- Keyboard, mouse, and wheel input manager.
+- Fixed 60 Hz simulation step plus variable rendering step.
+- Burst spawning via input (Space/B) and dynamic instance buffer growth.
+- Early performance stress-test scenarios.
+
+**Stretch Ideas**
+- Config-driven input remapping.
+
+---
+
+## Milestone 3.5 - Spatial Hashing and Collisions
+**Goal:** Introduce spatial awareness and basic physics responses.
+
+**Deliverables**
+- Spatial hash grid for broad-phase queries.
+- Simple impulse-based separation for overlapping AABBs.
+- Debug visualization of bounding regions.
+
+**Stretch Ideas**
+- Quadtree fallback for high-density zones.
+
+---
+
+## Milestone 4 - Stability, Error Handling, and Configuration
+**Goal:** Harden the foundation and improve usability.
+
+**Deliverables**
 - Error propagation via `anyhow`.
-- Config file for display mode, vsync, resolution.
-- Graceful asset failure recovery.
-- Clean module boundaries and documentation comments.
+- Config file controlling display mode, VSync, resolution.
+- Graceful asset failure handling.
+- Clean module boundaries with documentation comments.
 
-**Stretch:**
-- Optional CLI flags to override config.
+**Stretch Ideas**
+- Optional CLI overrides for config values.
 
 ---
 
-## 🧭 Milestone 5 — Egui Debug UI  
-**Goal:** In-window control panel for live tuning.  
+## Milestone 5 - egui Debug UI
+**Goal:** Deliver an in-window control panel for rapid iteration.
 
-**Deliverables:**
-- Entity counter, sliders for spawn count & spatial cell.
+**Deliverables**
+- Entity counter plus sliders for spawn counts and spatial cell size.
 - Real-time frame-time histogram.
 - Runtime toggles for debug visuals.
 
-**Stretch:**
+**Stretch Ideas**
 - Collapsible panels and profiler integration.
 
 ---
 
-## 🔍 Milestone 6 — Camera, Picking, and Gizmos  
-**Goal:** Fully navigable 2D world & interactive selection.  
+## Milestone 6 - Camera, Picking, and Gizmos
+**Goal:** Provide a fully navigable 2D view with basic selection tools.
 
-**Deliverables:**
+**Deliverables**
 - Camera pan/zoom (RMB + wheel).
-- Screen→world & world→screen conversion.
-- Click-to-select entities, highlight gizmo.
-- Delete / inspect via UI.
+- Screen-to-world and world-to-screen conversions.
+- Click-to-select entities with highlight gizmo.
+- Delete or inspect entities via UI.
 
-**Stretch:**
-- Multiple cameras & “follow target” logic.
+**Stretch Ideas**
+- Multi-camera support or follow-target logic.
 
 ---
 
-## 🧠 Milestone 7 — Scripting Layer  
-**Goal:** Extend the engine with modifiable gameplay logic.  
+## Milestone 7 - Scripting Layer
+**Goal:** Extend the engine with hot-reloadable gameplay logic.
 
-**Deliverables:**
+**Deliverables**
 - Embed a scripting language (Rhai or Lua).
-- Bind ECS entity manipulation (spawn, move, despawn).
-- Script reload on file save (hot-reload).
+- Bind ECS entity operations (spawn, move, despawn).
+- Hot-reload scripts on file changes.
 
-**Stretch:**
+**Stretch Ideas**
 - Scripting debugger or REPL console.
 
 ---
 
-## 🧱 Milestone 8 — Physics & Particles  
-**Goal:** Add realism and visual flourish.  
+## Milestone 8 - Physics and Particles
+**Goal:** Add rigid-body dynamics and visual effects.
 
-**Deliverables:**
-- 2D rigidbody and collider ECS components.
-- Integrate Rapier2D for collisions.
-- Simple particle emitter system (instanced billboards).
+**Deliverables**
+- Rigid-body and collider ECS components.
+- Rapier2D integration for collisions.
+- Particle emitter system with instanced billboards.
 
-**Stretch:**
-- Force fields, attractors, particle trails.
+**Stretch Ideas**
+- Force fields, attractors, or particle trails.
 
 ---
 
-## 🌗 Milestone 9 — Audio & Event Bus  
-**Goal:** Add sound and reactive systems.  
+## Milestone 9 - Audio and Event Bus
+**Goal:** Introduce sound and reactive messaging.
 
-**Deliverables:**
-- Simple `AudioManager` (rodio crate).
-- Global `EventBus` resource for messaging between systems.
-- Sound playback from ECS events.
+**Deliverables**
+- Simple `AudioManager` (e.g., rodio).
+- Global `EventBus` resource for cross-system communication.
+- Play sounds in response to ECS events.
 
-**Stretch:**
+**Stretch Ideas**
 - 3D positional audio with falloff.
 
 ---
 
-## 🪶 Milestone 10 — Scene Graph & Serialization  
-**Goal:** Load and save structured scenes.  
+## Milestone 10 - Scene Graph and Serialization
+**Goal:** Load and save structured scenes.
 
-**Deliverables:**
-- `Scene` serializer (Serde JSON or Ron).
-- Load scenes from disk and restore ECS state.
-- Asset dependency graph and reference counting.
+**Deliverables**
+- `Scene` serializer using JSON, RON, or similar.
+- Restore ECS state from disk.
+- Asset dependency tracking and reference counting.
 
-**Stretch:**
+**Stretch Ideas**
 - Binary `.kscene` format with compression.
 
 ---
 
-## 🪄 Milestone 11 — Editor Layer  
-**Goal:** Visual inspector and scene manipulation (within window).  
+## Milestone 11 - Editor Layer
+**Goal:** Provide in-window inspection and manipulation tools.
 
-**Deliverables:**
-- Egui-based entity inspector.
-- Transform gizmos (translate/rotate/scale).
-- Save / load scene button.
+**Deliverables**
+- egui-based entity inspector.
+- Transform gizmos for translate/rotate/scale.
+- Save and load scene buttons.
 
-**Stretch:**
-- Drag-drop prefab creation.
-
----
-
-## 🌍 Milestone 12 — 3D Extension  
-**Goal:** Add depth support.  
-
-**Deliverables:**
-- Switch to perspective projection path.
-- Mesh loading (glTF).
-- Basic PBR shader pipeline.
-
-**Stretch:**
-- Shadow maps and light culling.
+**Stretch Ideas**
+- Drag-and-drop prefab creation.
 
 ---
 
-## 🧩 Milestone 13 — Plugin / Module System  
-**Goal:** Make the engine extensible.  
+## Milestone 12 - 3D Extension
+**Goal:** Add depth support and a 3D rendering path.
 
-**Deliverables:**
-- Plugin registration API (init/update hooks).
-- Dynamic load via `.dll` / `.so` (optional).
+**Deliverables**
+- Perspective projection pipeline.
+- Mesh loading (glTF or similar).
+- Basic PBR shader.
+
+**Stretch Ideas**
+- Shadow mapping and light culling.
+
+---
+
+## Milestone 13 - Plugin and Module System
+**Goal:** Make the engine extensible.
+
+**Deliverables**
+- Plugin registration API with init/update hooks.
+- Optional dynamic library loading (`.dll` / `.so`).
 - Versioned feature registry.
 
-**Stretch:**
+**Stretch Ideas**
 - Sandbox for untrusted plugins.
 
 ---
 
-## 🚀 Milestone 14 — Build & Distribution  
-**Goal:** Turn engine into a portable product.  
+## Milestone 14 - Build and Distribution
+**Goal:** Package the engine for release.
 
-**Deliverables:**
+**Deliverables**
 - CLI tool (`kestrel-build`) for bundling games.
-- Asset packer and release mode pipeline.
-- Windows/Linux/macOS builds.
+- Asset packer and release-mode pipeline.
+- Windows, Linux, and macOS builds.
 
-**Stretch:**
-- WebAssembly target via `wgpu`+`winit` web backend.
+**Stretch Ideas**
+- WebAssembly target leveraging wgpu + winit web backends.
 
 ---
 
-## 🎯 Milestone 15 — Finalization & Docs  
-**Goal:** Public-facing release.  
+## Milestone 15 - Finalization and Documentation
+**Goal:** Prepare a public-facing release.
 
-**Deliverables:**
+**Deliverables**
 - Comprehensive documentation (user guide + API docs).
-- Example games (`pong`, `asteroids`, `arena`).
-- Version 1.0 release tagging.
+- Example games (pong, asteroids, arena).
+- Tag and publish version 1.0.
 
-**Stretch:**
+**Stretch Ideas**
 - Automated CI/CD, crates.io publication, versioned templates.
 
 ---
 
-## 🧩 Long-Term Vision (Post-1.0)
-- Headless server mode for networked simulations.  
-- ECS hot-migration for multiplayer state sync.  
-- Procedural asset pipelines (noise, generation, shaders).  
-- Visual node editor for logic scripting.  
+## Long-Term Vision (Post-1.0)
+- Headless server mode for networked simulations.
+- ECS hot-migration for multiplayer state sync.
+- Procedural asset pipelines (noise, generation, shaders).
+- Visual node editor for logic scripting.

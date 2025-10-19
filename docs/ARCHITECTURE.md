@@ -1,56 +1,57 @@
 # Architecture Overview
 
 ```
-┌────────┐   input events   ┌────────────┐   fixed update   ┌─────────┐
-│ Winit  │ ───────────────► │   Input    │ ───────────────► │  ECS    │
-└────────┘                  └────────────┘                  └─────────┘
-      ▲                           │   ▲                          │
-      │ window resize             │   │ entity data              │
-      │ frame timing              ▼   │                          ▼
-┌────────────┐        timing   ┌────────┐    render data   ┌──────────┐
-│    Time    │ ───────────────►│  Time  │ ───────────────► │ Renderer │
-└────────────┘                 └────────┘                 └──────────┘
-                                           ▲
-                                           │ egui UI
-                                      ┌─────────┐
-                                      │  egui   │
-                                      └─────────┘
++---------------+    input events    +-------------+    fixed update    +-----------+
+|     Winit     | -----------------> |    Input    | -----------------> |    ECS    |
++-------+-------+                    +------+------+                    +-----+-----+
+        |                                   |                                |
+        | window/device events              | entity data                    | render data
+        v                                   v                                v
++-------+-------+    timing info    +------+------+    egui I/O         +-----------+
+|      Time     | -----------------> |     App      | -----------------> | Renderer  |
++---------------+                    +-------------+                    +-----------+
+                                             |
+                                             v
+                                       +-----------+
+                                       |    egui   |
+                                       +-----------+
 ```
 
-- **Winit** drives the event loop (`src/lib.rs`) and feeds window/device events into the input system.
-- **Input** (`src/input.rs`) accumulates per-frame keyboard and mouse state used by the simulation and camera.
-- **Time** (`src/time.rs`) tracks elapsed and delta durations used for the fixed (60 Hz) and variable update paths.
-- **ECS** (`src/ecs.rs`) stores game state using Bevy ECS: transform hierarchy, sprites, velocities, spatial hash, and collision systems.
-- **Renderer** (`src/renderer.rs`) owns WGPU resources, sprite batching, and egui rendering.
-- **AssetManager** (`src/assets.rs`) lazily loads texture atlases and provides UV lookup for ECS sprites.
-- **Camera2D** (`src/camera.rs`) converts between screen and world coordinates and exposes pan/zoom controls.
-- **Config** (`src/config.rs`) loads user configuration and feeds initial window settings into the renderer.
-- **Physics** (`src/ecs.rs`) owns the Rapier2D world (`RapierState`), bridging rigid-body/collider handles into ECS while the legacy force integrator continues to drive lightweight particles.
-- **ScriptHost** (`src/scripts.rs`) embeds the Rhai runtime, hot-reloads scripts, and queues gameplay commands (spawn/mutate/despawn/tweaks) that the app applies after each script tick.
-- **App** (`src/lib.rs`) coordinates the subsystems: processes input, runs fixed/variable ECS schedules, executes scripts, renders sprites, and builds the egui debug UI.
+- `src/lib.rs` drives Winit's `EventLoop`, advances the simulation, runs scripts, renders, and feeds egui.
+- `src/input.rs` accumulates keyboard and mouse state for the current frame.
+- `src/time.rs` tracks elapsed time and maintains the fixed 60 Hz timestep.
+- `src/ecs.rs` hosts the Bevy ECS world: sprites, transforms, Rapier physics, particle emitters, and utility resources.
+- `src/renderer.rs` owns WGPU device and swapchain setup, sprite batching, and egui rendering.
+- `src/assets.rs` lazily loads texture atlases and exposes UV lookups to the ECS.
+- `src/camera.rs` implements the 2D camera with pan and zoom helpers.
+- `src/config.rs` loads `config/app.json` and hands window defaults to the renderer.
+- `src/scripts.rs` embeds Rhai, hot-reloads scripts, queues gameplay commands for the app to apply, and captures script log messages.
+- `src/events.rs` defines `GameEvent` plus the `EventBus` resource that records gameplay signals for tooling and audio.
+- `src/audio.rs` contains `AudioManager`, a lightweight trigger collector that reacts to `GameEvent`s (placeholder until real audio playback lands).
 
 ### Frame Flow
-1. **Input ingest** - `ApplicationHandler::window_event` converts Winit events into `InputEvent`s. `device_event` tracks raw mouse motion, and `about_to_wait` reads consumed events.
-2. **Camera controls** - `App::about_to_wait` applies zoom/pan before simulation, ensuring the view-projection matrix reflects user intent.
-3. **Scripting** - `ScriptHost::update` hot-reloads Rhai scripts, queues commands, and the app drains those commands before simulation so mutations stay deterministic.
-4. **Physics & Simulation** - The fixed timestep advances Rapier for rigid bodies, mirrors the results back into ECS transforms, and still runs the lightweight force integrator for particle lifetimes.
-5. **Rendering prep** - ECS collects instanced sprite data. Camera produces the view-projection matrix for sprite batching.
-6. **Rendering** - `Renderer::render_batch` draws sprites; egui input is processed, overlays drawn, and the frame submitted.
-7. **UI Feedback** - egui window exposes performance stats, spawn controls, emitter tuning (rate/spread/speed/lifetime/colors/sizes), camera details, selection gizmos, scripting status, and exposes script toggles (enable/reload).
+1. **Input ingest** - `ApplicationHandler::window_event` converts Winit events into `InputEvent` values, storing them on `Input`.
+2. **Camera controls** - `App::about_to_wait` applies zoom and pan so the view matrix matches player input before simulation.
+3. **Scripting** - `ScriptHost::update` reloads Rhai scripts, queues commands, and the app drains those commands before the fixed step.
+4. **Physics and simulation** - Rapier advances rigid bodies at the fixed timestep, ECS mirrors poses back into transforms, and the particle integrator runs while systems emit `GameEvent` entries (including collision hits and script messages).
+5. **Rendering prep** - ECS collects sprite instances, builds GPU buffers, and the camera produces the view-projection matrix.
+6. **Rendering** - `Renderer::render_batch` submits draw calls, egui consumes input and produces overlay meshes, and the frame is presented.
+7. **UI feedback** - egui surfaces frame time, spawn controls, emitter tuning, camera details, selection status, and script toggles.
 
 ### Module Relationships
-- `App` owns instances of `Renderer`, `EcsWorld`, `Input`, `Camera2D`, `AssetManager`, and `Time`.
-- `Renderer` references `WindowConfig` to honor user display preferences.
-- `EcsWorld` queries `AssetManager` for atlas UVs during instance collection.
-- `Camera2D` is stateless aside from position/zoom; it depends on window size from `Renderer`.
-- `ScriptHost` bridges Rhai scripts to ECS/AssetManager operations via a command queue; the app resolves script handles to entities when executing those commands.
-- `RapierState` lives as a resource inside `EcsWorld`, stepping Rapier each fixed tick and synchronizing rigid-body poses back into ECS components.
+- `App` owns `Renderer`, `EcsWorld`, `Input`, `Camera2D`, `AssetManager`, `Time`, and `ScriptHost`.
+- `Renderer` consults `WindowConfig` (from `config.rs`) for swapchain setup.
+- `EcsWorld` uses `AssetManager` to resolve atlas regions when building instance buffers.
+- `Camera2D` depends on window size data supplied by `Renderer`.
+- `ScriptHost` issues commands back into `App`, which resolves script handles to ECS entities.
+- `RapierState` lives inside `EcsWorld` and synchronizes rigid-body data each fixed tick.
+- `EventBus` is stored as an ECS resource so systems can push `GameEvent` values that the app drains after each frame.
+- `AudioManager` listens to drained `GameEvent`s so tooling can preview which sounds would fire for spawns, despawns, collisions, or script-driven cues.
 
-This architecture ensures each frame flows data in a clear order (Input → ECS → Renderer → UI) without hidden global state, supporting the project's deterministic and data-driven goals.
-
+The data always flows in the same order - Input -> ECS -> Renderer -> UI - keeping subsystems decoupled and deterministic.
 
 ### Scripting Guidelines
-- Use `global name;` inside functions when mutating module-level state so Rhai updates the shared variable instead of shadowing it.
-- `world.spawn_sprite` returns a negative handle until the engine materializes the entity; pass that handle to other `world.*` calls and the app resolves it when it processes the queued commands.
-- Scripts can broadcast designer tweaks (auto spawn rate, spawn counts) via `set_auto_spawn_rate` and `set_spawn_per_press`; these override the corresponding debug UI controls at runtime.
-- Scripts can adjust emitter rate/spread/speed/lifetime via the `set_emitter_*` helpers.
+- Declare `global name;` inside functions before mutating module-level state so Rhai updates the shared variable rather than shadowing it.
+- `world.spawn_sprite` returns a negative handle until the engine materializes the entity; use that handle with other `world.*` calls and the app will resolve it when commands are applied.
+- Scripts can override debug UI settings such as spawn counts or auto spawn rate via `set_spawn_per_press` and `set_auto_spawn_rate`.
+- Use the emitter helpers (`set_emitter_rate`, `*_spread`, `*_speed`, `*_lifetime`, `*_start_color`, `*_end_color`, `*_start_size`, `*_end_size`) to tweak the particle system at runtime.

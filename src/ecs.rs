@@ -1,4 +1,5 @@
 use crate::assets::AssetManager;
+use crate::events::{EventBus, GameEvent};
 use anyhow::{anyhow, Context, Result};
 use bevy_ecs::prelude::*;
 use bevy_ecs::query::{With, Without};
@@ -298,6 +299,7 @@ impl EcsWorld {
         world.insert_resource(SpatialHash::new(0.25));
         world.insert_resource(PhysicsParams { gravity: Vec2::new(0.0, -0.6), linear_damping: 0.3 });
         world.insert_resource(RapierState::new(Vec2::new(0.0, -0.6)));
+        world.insert_resource(EventBus::default());
 
         let mut schedule_var = Schedule::default();
         schedule_var.add_systems((
@@ -322,8 +324,20 @@ impl EcsWorld {
         Self { world, schedule_var, schedule_fixed }
     }
 
+    fn emit(&mut self, event: GameEvent) {
+        self.world.resource_mut::<EventBus>().push(event);
+    }
+
+    pub fn drain_events(&mut self) -> Vec<GameEvent> {
+        self.world.resource_mut::<EventBus>().drain()
+    }
+
+    pub fn push_event(&mut self, event: GameEvent) {
+        self.emit(event);
+    }
+
     pub fn spawn_demo_scene(&mut self) -> Entity {
-        let _root = self
+        let root = self
             .world
             .spawn((
                 Transform { translation: Vec2::ZERO, rotation: 0.0, scale: Vec2::splat(0.8) },
@@ -333,6 +347,11 @@ impl EcsWorld {
                 Tint(Vec4::new(1.0, 1.0, 1.0, 0.2)),
             ))
             .id();
+        self.emit(GameEvent::SpriteSpawned {
+            entity: root,
+            atlas: "main".to_string(),
+            region: "checker".to_string(),
+        });
 
         let orbit_center = Vec2::ZERO;
         let orbit_speed_a = 0.9;
@@ -346,7 +365,7 @@ impl EcsWorld {
             let mut rapier = self.world.resource_mut::<RapierState>();
             rapier.spawn_dynamic_body(translation_a, half_a, 1.0, velocity_a)
         };
-        let _a = self
+        let a = self
             .world
             .spawn((
                 Transform { translation: translation_a, rotation: 0.0, scale: Vec2::splat(0.7) },
@@ -361,6 +380,11 @@ impl EcsWorld {
                 OrbitController { center: orbit_center, angular_speed: orbit_speed_a },
             ))
             .id();
+        self.emit(GameEvent::SpriteSpawned {
+            entity: a,
+            atlas: "main".to_string(),
+            region: "checker".to_string(),
+        });
 
         let translation_b = Vec2::new(0.9, 0.0);
         let half_b = Vec2::splat(0.30);
@@ -369,7 +393,7 @@ impl EcsWorld {
             let mut rapier = self.world.resource_mut::<RapierState>();
             rapier.spawn_dynamic_body(translation_b, half_b, 1.0, velocity_b)
         };
-        let _b = self
+        let b = self
             .world
             .spawn((
                 Transform { translation: translation_b, rotation: 0.0, scale: Vec2::splat(0.6) },
@@ -384,6 +408,11 @@ impl EcsWorld {
                 OrbitController { center: orbit_center, angular_speed: orbit_speed_b },
             ))
             .id();
+        self.emit(GameEvent::SpriteSpawned {
+            entity: b,
+            atlas: "main".to_string(),
+            region: "redorb".to_string(),
+        });
 
         let translation_c = Vec2::new(0.0, 0.9);
         let half_c = Vec2::splat(0.25);
@@ -392,7 +421,7 @@ impl EcsWorld {
             let mut rapier = self.world.resource_mut::<RapierState>();
             rapier.spawn_dynamic_body(translation_c, half_c, 1.0, velocity_c)
         };
-        let _c = self
+        let c = self
             .world
             .spawn((
                 Transform { translation: translation_c, rotation: 0.0, scale: Vec2::splat(0.5) },
@@ -407,6 +436,11 @@ impl EcsWorld {
                 OrbitController { center: orbit_center, angular_speed: orbit_speed_c },
             ))
             .id();
+        self.emit(GameEvent::SpriteSpawned {
+            entity: c,
+            atlas: "main".to_string(),
+            region: "bluebox".to_string(),
+        });
 
         let emitter = self.spawn_particle_emitter(
             Vec2::new(0.0, 0.0),
@@ -435,17 +469,25 @@ impl EcsWorld {
                 let mut rapier = self.world.resource_mut::<RapierState>();
                 rapier.spawn_dynamic_body(pos, half, 0.8, vel)
             };
-            self.world.spawn((
-                Transform { translation: pos, rotation: 0.0, scale: Vec2::splat(scale) },
-                WorldTransform::default(),
-                Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed(rname) },
-                Aabb { half },
-                Velocity(vel),
-                Force::default(),
-                Mass(0.8),
-                RapierBody { handle: body_handle },
-                RapierCollider { handle: collider_handle },
-            ));
+            let entity = self
+                .world
+                .spawn((
+                    Transform { translation: pos, rotation: 0.0, scale: Vec2::splat(scale) },
+                    WorldTransform::default(),
+                    Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed(rname) },
+                    Aabb { half },
+                    Velocity(vel),
+                    Force::default(),
+                    Mass(0.8),
+                    RapierBody { handle: body_handle },
+                    RapierCollider { handle: collider_handle },
+                ))
+                .id();
+            self.emit(GameEvent::SpriteSpawned {
+                entity,
+                atlas: "main".to_string(),
+                region: rname.to_string(),
+            });
         }
     }
 
@@ -598,6 +640,7 @@ impl EcsWorld {
                 RapierCollider { handle: collider_handle },
             ))
             .id();
+        self.emit(GameEvent::SpriteSpawned { entity, atlas: atlas.to_string(), region: region.to_string() });
         Ok(entity)
     }
     pub fn set_velocity(&mut self, entity: Entity, velocity: Vec2) -> bool {
@@ -700,7 +743,11 @@ impl EcsWorld {
             let mut rapier = self.world.resource_mut::<RapierState>();
             rapier.remove_body(handle);
         }
-        removed |= self.world.despawn(entity);
+        let entity_removed = self.world.despawn(entity);
+        if entity_removed {
+            removed = true;
+            self.emit(GameEvent::EntityDespawned { entity });
+        }
         removed
     }
     pub fn set_root_spin(&mut self, speed: f32) {
@@ -946,22 +993,28 @@ fn sys_collide_spatial(
     grid: Res<SpatialHash>,
     mut movers: Query<(Entity, &Transform, &Aabb, &mut Velocity), Without<RapierBody>>,
     positions: Query<(&Transform, &Aabb), Without<RapierBody>>,
+    mut events: ResMut<EventBus>,
 ) {
     let neighbors = [(-1, -1), (0, -1), (1, -1), (-1, 0), (0, 0), (1, 0), (-1, 1), (0, 1), (1, 1)];
     for (e, t, a, mut v) in &mut movers {
         let key = grid.key(t.translation);
         let mut impulse = Vec2::ZERO;
+        let mut checked: Vec<Entity> = Vec::new();
         for (dx, dy) in neighbors {
             if let Some(list) = grid.grid.get(&(key.0 + dx, key.1 + dy)) {
                 for &other in list {
-                    if other == e {
+                    if other == e || checked.contains(&other) {
                         continue;
                     }
+                    checked.push(other);
                     if let Ok((ot, oa)) = positions.get(other) {
                         if overlap(t.translation, a.half, ot.translation, oa.half) {
                             let delta = t.translation - ot.translation;
                             let dir = delta.signum();
                             impulse += dir * 0.04;
+                            if e.index() < other.index() {
+                                events.push(GameEvent::describes_collision_between(e, other));
+                            }
                         }
                     }
                 }

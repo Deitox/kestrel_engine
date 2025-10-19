@@ -1,16 +1,20 @@
 pub mod assets;
+pub mod audio;
 pub mod camera;
 pub mod config;
 pub mod ecs;
+pub mod events;
 pub mod input;
 pub mod renderer;
 pub mod scripts;
 pub mod time;
 
 use crate::assets::AssetManager;
+use crate::audio::AudioManager;
 use crate::camera::Camera2D;
 use crate::config::AppConfig;
 use crate::ecs::EcsWorld;
+use crate::events::GameEvent;
 use crate::input::{Input, InputEvent};
 use crate::renderer::Renderer;
 use crate::scripts::{ScriptCommand, ScriptHost};
@@ -20,6 +24,7 @@ use bevy_ecs::prelude::Entity;
 use glam::{Vec2, Vec4};
 
 use anyhow::{Context, Result};
+use std::collections::VecDeque;
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -72,6 +77,13 @@ pub struct App {
     ui_emitter_start_color: [f32; 4],
     ui_emitter_end_color: [f32; 4],
 
+    // Audio
+    audio: AudioManager,
+
+    // Events
+    recent_events: VecDeque<GameEvent>,
+    event_log_limit: usize,
+
     // Camera / selection
     camera: Camera2D,
     selected_entity: Option<Entity>,
@@ -91,6 +103,16 @@ impl App {
         let renderer = Renderer::new(&config.window).await;
         let mut ecs = EcsWorld::new();
         let emitter = ecs.spawn_demo_scene();
+        let mut audio = AudioManager::new(16);
+        let event_log_limit = 32;
+        let mut recent_events = VecDeque::with_capacity(event_log_limit);
+        for event in ecs.drain_events() {
+            if recent_events.len() == event_log_limit {
+                recent_events.pop_front();
+            }
+            audio.handle_event(&event);
+            recent_events.push_back(event);
+        }
         let time = Time::new();
         let input = Input::new();
         let assets = AssetManager::new();
@@ -126,11 +148,28 @@ impl App {
             ui_emitter_end_size: 0.05,
             ui_emitter_start_color: [1.0, 0.8, 0.2, 0.8],
             ui_emitter_end_color: [1.0, 0.2, 0.2, 0.0],
+            audio,
+            recent_events,
+            event_log_limit,
             camera: Camera2D::new(CAMERA_BASE_HALF_HEIGHT),
             selected_entity: None,
             config,
             emitter_entity: Some(emitter),
             scripts,
+        }
+    }
+
+    fn record_events(&mut self) {
+        let events = self.ecs.drain_events();
+        if events.is_empty() {
+            return;
+        }
+        for event in events {
+            self.audio.handle_event(&event);
+            if self.recent_events.len() == self.event_log_limit {
+                self.recent_events.pop_front();
+            }
+            self.recent_events.push_back(event);
         }
     }
 }
@@ -314,12 +353,16 @@ impl ApplicationHandler for App {
         self.scripts.update(dt);
         let commands = self.scripts.drain_commands();
         self.apply_script_commands(commands);
+        for message in self.scripts.drain_logs() {
+            self.ecs.push_event(GameEvent::ScriptMessage { message });
+        }
 
         while self.accumulator >= self.fixed_dt {
             self.ecs.fixed_step(self.fixed_dt);
             self.accumulator -= self.fixed_dt;
         }
         self.ecs.update(dt);
+        self.record_events();
 
         let (instances, _atlas) = match self.ecs.collect_sprite_instances(&self.assets) {
             Ok(data) => data,
@@ -376,6 +419,9 @@ impl ApplicationHandler for App {
         let mut gizmo_center_px = None;
         let camera_position = self.camera.position;
         let camera_zoom = self.camera.zoom;
+        let recent_events: Vec<GameEvent> = self.recent_events.iter().cloned().collect();
+        let audio_triggers: Vec<String> = self.audio.recent_triggers().cloned().collect();
+        let mut audio_enabled = self.audio.enabled();
 
         if let Some(entity) = selected_entity {
             if let Some((min, max)) = self.ecs.entity_bounds(entity) {
@@ -504,6 +550,30 @@ impl ApplicationHandler for App {
                     ui.label("Script running");
                 } else {
                     ui.label("Scripts disabled");
+                }
+                ui.separator();
+                ui.heading("Recent Events");
+                if recent_events.is_empty() {
+                    ui.label("No events recorded");
+                } else {
+                    for event in recent_events.iter().rev().take(10) {
+                        ui.label(event.to_string());
+                    }
+                }
+                ui.separator();
+                ui.heading("Audio Debug");
+                if ui.checkbox(&mut audio_enabled, "Enable audio triggers").changed() {
+                    self.audio.set_enabled(audio_enabled);
+                }
+                if ui.button("Clear audio log").clicked() {
+                    self.audio.clear();
+                }
+                if audio_triggers.is_empty() {
+                    ui.label("No audio triggers");
+                } else {
+                    for trigger in audio_triggers.iter().rev() {
+                        ui.label(trigger);
+                    }
                 }
             });
 
