@@ -19,6 +19,10 @@ pub enum ScriptCommand {
     Spawn { handle: ScriptHandle, atlas: String, region: String, position: Vec2, scale: f32, velocity: Vec2 },
     SetVelocity { handle: ScriptHandle, velocity: Vec2 },
     SetPosition { handle: ScriptHandle, position: Vec2 },
+    SetRotation { handle: ScriptHandle, rotation: f32 },
+    SetScale { handle: ScriptHandle, scale: Vec2 },
+    SetTint { handle: ScriptHandle, tint: Option<Vec4> },
+    SetSpriteRegion { handle: ScriptHandle, region: String },
     Despawn { handle: ScriptHandle },
     SetAutoSpawnRate { rate: f32 },
     SetSpawnPerPress { count: i32 },
@@ -89,6 +93,38 @@ impl ScriptWorld {
             .borrow_mut()
             .commands
             .push(ScriptCommand::SetPosition { handle, position: Vec2::new(x, y) });
+        true
+    }
+
+    fn set_rotation(&mut self, handle: ScriptHandle, radians: f32) -> bool {
+        self.state.borrow_mut().commands.push(ScriptCommand::SetRotation { handle, rotation: radians });
+        true
+    }
+
+    fn set_scale(&mut self, handle: ScriptHandle, sx: f32, sy: f32) -> bool {
+        let clamped = Vec2::new(sx.max(0.01), sy.max(0.01));
+        self.state.borrow_mut().commands.push(ScriptCommand::SetScale { handle, scale: clamped });
+        true
+    }
+
+    fn set_tint(&mut self, handle: ScriptHandle, r: f32, g: f32, b: f32, a: f32) -> bool {
+        self.state
+            .borrow_mut()
+            .commands
+            .push(ScriptCommand::SetTint { handle, tint: Some(Vec4::new(r, g, b, a)) });
+        true
+    }
+
+    fn clear_tint(&mut self, handle: ScriptHandle) -> bool {
+        self.state.borrow_mut().commands.push(ScriptCommand::SetTint { handle, tint: None });
+        true
+    }
+
+    fn set_sprite_region(&mut self, handle: ScriptHandle, region: &str) -> bool {
+        self.state
+            .borrow_mut()
+            .commands
+            .push(ScriptCommand::SetSpriteRegion { handle, region: region.to_string() });
         true
     }
 
@@ -337,6 +373,11 @@ fn register_api(engine: &mut Engine) {
     engine.register_fn("spawn_sprite", ScriptWorld::spawn_sprite);
     engine.register_fn("set_velocity", ScriptWorld::set_velocity);
     engine.register_fn("set_position", ScriptWorld::set_position);
+    engine.register_fn("set_rotation", ScriptWorld::set_rotation);
+    engine.register_fn("set_scale", ScriptWorld::set_scale);
+    engine.register_fn("set_tint", ScriptWorld::set_tint);
+    engine.register_fn("clear_tint", ScriptWorld::clear_tint);
+    engine.register_fn("set_sprite_region", ScriptWorld::set_sprite_region);
     engine.register_fn("despawn", ScriptWorld::despawn);
     engine.register_fn("set_auto_spawn_rate", ScriptWorld::set_auto_spawn_rate);
     engine.register_fn("set_spawn_per_press", ScriptWorld::set_spawn_per_press);

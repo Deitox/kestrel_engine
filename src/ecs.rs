@@ -10,10 +10,13 @@ use bevy_ecs::query::{With, Without};
 use bevy_ecs::system::{Commands, Res, ResMut};
 use glam::{Mat4, Vec2, Vec4};
 use rand::Rng;
+use rapier2d::geometry::{CollisionEvent, CollisionEventFlags};
+use rapier2d::pipeline::{ActiveEvents, EventHandler};
 use rapier2d::prelude::*;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Mutex;
 
 // ---------- Components ----------
 #[derive(Component, Clone, Copy)]
@@ -136,6 +139,49 @@ pub struct PhysicsParams {
     pub linear_damping: f32,
 }
 
+struct CollisionEventCollector {
+    events: Mutex<Vec<CollisionEvent>>,
+}
+
+impl CollisionEventCollector {
+    fn new() -> Self {
+        Self { events: Mutex::new(Vec::new()) }
+    }
+
+    fn drain(&self) -> Vec<CollisionEvent> {
+        if let Ok(mut events) = self.events.lock() {
+            std::mem::take(&mut *events)
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+impl EventHandler for CollisionEventCollector {
+    fn handle_collision_event(
+        &self,
+        _bodies: &RigidBodySet,
+        _colliders: &ColliderSet,
+        event: CollisionEvent,
+        _contact_pair: Option<&ContactPair>,
+    ) {
+        if let Ok(mut events) = self.events.lock() {
+            events.push(event);
+        }
+    }
+
+    fn handle_contact_force_event(
+        &self,
+        _dt: Real,
+        _bodies: &RigidBodySet,
+        _colliders: &ColliderSet,
+        _contact_pair: &ContactPair,
+        _total_force_magnitude: Real,
+    ) {
+        // Contact force events are not used for the current milestone.
+    }
+}
+
 #[derive(Resource)]
 pub struct RapierState {
     pipeline: PhysicsPipeline,
@@ -150,6 +196,8 @@ pub struct RapierState {
     multibody_joints: MultibodyJointSet,
     ccd_solver: CCDSolver,
     query_pipeline: QueryPipeline,
+    collider_entities: HashMap<ColliderHandle, Entity>,
+    event_collector: CollisionEventCollector,
 }
 
 impl RapierState {
@@ -167,6 +215,8 @@ impl RapierState {
             multibody_joints: MultibodyJointSet::new(),
             ccd_solver: CCDSolver::new(),
             query_pipeline: QueryPipeline::new(),
+            collider_entities: HashMap::new(),
+            event_collector: CollisionEventCollector::new(),
         };
         state.init_bounds();
         state
@@ -215,12 +265,24 @@ impl RapierState {
             body.set_linvel(vector![velocity.x, velocity.y], true);
             body.wake_up(true);
         }
-        let collider = ColliderBuilder::cuboid(half.x, half.y).restitution(0.3).friction(0.6).build();
+        let collider = ColliderBuilder::cuboid(half.x, half.y)
+            .restitution(0.3)
+            .friction(0.6)
+            .active_events(ActiveEvents::COLLISION_EVENTS)
+            .build();
         let collider_handle = self.colliders.insert_with_parent(collider, body_handle, &mut self.bodies);
         (body_handle, collider_handle)
     }
 
     pub fn remove_body(&mut self, handle: RigidBodyHandle) {
+        let collider_handles: Vec<ColliderHandle> = self
+            .bodies
+            .get(handle)
+            .map(|body| body.colliders().iter().copied().collect())
+            .unwrap_or_default();
+        for collider in collider_handles {
+            self.collider_entities.remove(&collider);
+        }
         let _ = self.bodies.remove(
             handle,
             &mut self.island_manager,
@@ -246,7 +308,6 @@ impl RapierState {
     pub fn step(&mut self, dt: f32) {
         self.integration_parameters.dt = dt;
         let hooks = ();
-        let mut events = ();
         self.pipeline.step(
             &self.gravity,
             &self.integration_parameters,
@@ -260,9 +321,34 @@ impl RapierState {
             &mut self.ccd_solver,
             Some(&mut self.query_pipeline),
             &hooks,
-            &mut events,
+            &self.event_collector,
         );
         self.query_pipeline.update(&self.colliders);
+    }
+
+    pub fn register_collider_entity(&mut self, collider: ColliderHandle, entity: Entity) {
+        self.collider_entities.insert(collider, entity);
+    }
+
+    pub fn unregister_collider(&mut self, collider: ColliderHandle) {
+        self.collider_entities.remove(&collider);
+    }
+
+    pub fn drain_collision_pairs(&mut self) -> Vec<(Entity, Entity)> {
+        let mut pairs = Vec::new();
+        for event in self.event_collector.drain() {
+            if let CollisionEvent::Started(a, b, flags) = event {
+                if flags.contains(CollisionEventFlags::SENSOR) {
+                    continue;
+                }
+                if let (Some(entity_a), Some(entity_b)) =
+                    (self.collider_entities.get(&a), self.collider_entities.get(&b))
+                {
+                    pairs.push((*entity_a, *entity_b));
+                }
+            }
+        }
+        pairs
     }
 
     pub fn body(&self, handle: RigidBodyHandle) -> Option<&RigidBody> {
@@ -406,6 +492,10 @@ impl EcsWorld {
                 OrbitController { center: orbit_center, angular_speed: orbit_speed_a },
             ))
             .id();
+        {
+            let mut rapier = self.world.resource_mut::<RapierState>();
+            rapier.register_collider_entity(collider_a, a);
+        }
         self.emit(GameEvent::SpriteSpawned {
             entity: a,
             atlas: "main".to_string(),
@@ -434,6 +524,10 @@ impl EcsWorld {
                 OrbitController { center: orbit_center, angular_speed: orbit_speed_b },
             ))
             .id();
+        {
+            let mut rapier = self.world.resource_mut::<RapierState>();
+            rapier.register_collider_entity(collider_b, b);
+        }
         self.emit(GameEvent::SpriteSpawned {
             entity: b,
             atlas: "main".to_string(),
@@ -462,6 +556,10 @@ impl EcsWorld {
                 OrbitController { center: orbit_center, angular_speed: orbit_speed_c },
             ))
             .id();
+        {
+            let mut rapier = self.world.resource_mut::<RapierState>();
+            rapier.register_collider_entity(collider_c, c);
+        }
         self.emit(GameEvent::SpriteSpawned {
             entity: c,
             atlas: "main".to_string(),
@@ -509,6 +607,10 @@ impl EcsWorld {
                     RapierCollider { handle: collider_handle },
                 ))
                 .id();
+            {
+                let mut rapier = self.world.resource_mut::<RapierState>();
+                rapier.register_collider_entity(collider_handle, entity);
+            }
             self.emit(GameEvent::SpriteSpawned {
                 entity,
                 atlas: "main".to_string(),
@@ -666,6 +768,10 @@ impl EcsWorld {
                 RapierCollider { handle: collider_handle },
             ))
             .id();
+        {
+            let mut rapier = self.world.resource_mut::<RapierState>();
+            rapier.register_collider_entity(collider_handle, entity);
+        }
         self.emit(GameEvent::SpriteSpawned { entity, atlas: atlas.to_string(), region: region.to_string() });
         Ok(entity)
     }
@@ -1022,6 +1128,11 @@ impl EcsWorld {
         let entity_id = entity.id();
         drop(entity);
 
+        if let Some(collider) = collider_handle {
+            let mut rapier = self.world.resource_mut::<RapierState>();
+            rapier.register_collider_entity(collider, entity_id);
+        }
+
         if let Some((atlas, region)) = sprite_event {
             self.emit(GameEvent::SpriteSpawned { entity: entity_id, atlas, region });
         }
@@ -1169,9 +1280,12 @@ fn sys_integrate_positions(
     }
 }
 
-fn sys_step_rapier(mut rapier: ResMut<RapierState>, dt: Res<TimeDelta>) {
+fn sys_step_rapier(mut rapier: ResMut<RapierState>, mut events: ResMut<EventBus>, dt: Res<TimeDelta>) {
     if dt.0 > 0.0 {
         rapier.step(dt.0);
+    }
+    for (a, b) in rapier.drain_collision_pairs() {
+        events.push(GameEvent::describes_collision_between(a, b));
     }
 }
 
@@ -1334,10 +1448,11 @@ fn sys_collide_spatial(
     mut events: ResMut<EventBus>,
 ) {
     let neighbors = [(-1, -1), (0, -1), (1, -1), (-1, 0), (0, 0), (1, 0), (-1, 1), (0, 1), (1, 1)];
+    let mut checked = Vec::with_capacity(8);
     for (e, t, a, mut v) in &mut movers {
         let key = grid.key(t.translation);
         let mut impulse = Vec2::ZERO;
-        let mut checked: Vec<Entity> = Vec::new();
+        checked.clear();
         for (dx, dy) in neighbors {
             if let Some(list) = grid.grid.get(&(key.0 + dx, key.1 + dy)) {
                 for &other in list {

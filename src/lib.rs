@@ -975,6 +975,42 @@ impl App {
                         eprintln!("[script] set_position unknown handle {handle}");
                     }
                 }
+                ScriptCommand::SetRotation { handle, rotation } => {
+                    if let Some(entity) = self.scripts.resolve_handle(handle) {
+                        if !self.ecs.set_rotation(entity, rotation) {
+                            eprintln!("[script] set_rotation failed for handle {handle}");
+                        }
+                    } else {
+                        eprintln!("[script] set_rotation unknown handle {handle}");
+                    }
+                }
+                ScriptCommand::SetScale { handle, scale } => {
+                    if let Some(entity) = self.scripts.resolve_handle(handle) {
+                        if !self.ecs.set_scale(entity, scale) {
+                            eprintln!("[script] set_scale failed for handle {handle}");
+                        }
+                    } else {
+                        eprintln!("[script] set_scale unknown handle {handle}");
+                    }
+                }
+                ScriptCommand::SetTint { handle, tint } => {
+                    if let Some(entity) = self.scripts.resolve_handle(handle) {
+                        if !self.ecs.set_tint(entity, tint) {
+                            eprintln!("[script] set_tint failed for handle {handle}");
+                        }
+                    } else {
+                        eprintln!("[script] set_tint unknown handle {handle}");
+                    }
+                }
+                ScriptCommand::SetSpriteRegion { handle, region } => {
+                    if let Some(entity) = self.scripts.resolve_handle(handle) {
+                        if !self.ecs.set_sprite_region(entity, &self.assets, &region) {
+                            eprintln!("[script] set_sprite_region failed for handle {handle}");
+                        }
+                    } else {
+                        eprintln!("[script] set_sprite_region unknown handle {handle}");
+                    }
+                }
                 ScriptCommand::Despawn { handle } => {
                     if let Some(entity) = self.scripts.resolve_handle(handle) {
                         if self.ecs.despawn_entity(entity) {
