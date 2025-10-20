@@ -724,6 +724,7 @@ impl EcsWorld {
         for mut emitter in emitters.iter_mut(&mut self.world) {
             emitter.accumulator = 0.0;
         }
+        self.world.resource_mut::<ParticleContacts>().pairs.clear();
     }
 
     pub fn clear_world(&mut self) {
@@ -731,10 +732,16 @@ impl EcsWorld {
             let mut rapier = self.world.resource_mut::<RapierState>();
             rapier.clear_dynamic();
         }
-        let entities: Vec<Entity> = self.world.iter_entities().map(|e| e.id()).collect();
+        let boundary = {
+            let rapier = self.world.resource::<RapierState>();
+            rapier.boundary_entity()
+        };
+        let entities: Vec<Entity> =
+            self.world.iter_entities().map(|e| e.id()).filter(|entity| *entity != boundary).collect();
         for entity in entities {
             let _ = self.world.despawn(entity);
         }
+        self.world.resource_mut::<ParticleContacts>().pairs.clear();
     }
 
     pub fn set_emitter_spread(&mut self, entity: Entity, spread: f32) {
@@ -1258,6 +1265,10 @@ impl EcsWorld {
     }
 
     fn clear_scene_entities(&mut self) {
+        let boundary = {
+            let rapier = self.world.resource::<RapierState>();
+            rapier.boundary_entity()
+        };
         let mut roots = Vec::new();
         {
             let mut query = self.world.query::<(Entity, Option<&Parent>)>();
@@ -1268,8 +1279,12 @@ impl EcsWorld {
             }
         }
         for entity in roots {
+            if entity == boundary {
+                continue;
+            }
             self.despawn_entity(entity);
         }
+        self.world.resource_mut::<ParticleContacts>().pairs.clear();
     }
 }
 
@@ -1523,7 +1538,8 @@ fn sys_collide_spatial(
 ) {
     let neighbors = [(-1, -1), (0, -1), (1, -1), (-1, 0), (0, 0), (1, 0), (-1, 1), (0, 1), (1, 1)];
     let mut checked: SmallVec<[Entity; 16]> = SmallVec::new();
-    let mut current_pairs: HashSet<(Entity, Entity)> = HashSet::with_capacity(contacts.pairs.len());
+    let mut previous_pairs = std::mem::take(&mut contacts.pairs);
+    contacts.pairs.clear();
     for (e, t, a, mut v) in &mut movers {
         let key = grid.key(t.translation);
         let mut impulse = Vec2::ZERO;
@@ -1541,7 +1557,7 @@ fn sys_collide_spatial(
                             let dir = delta.signum();
                             impulse += dir * 0.04;
                             let pair = if e.index() <= other.index() { (e, other) } else { (other, e) };
-                            if current_pairs.insert(pair) && !contacts.pairs.contains(&pair) {
+                            if contacts.pairs.insert(pair) && !previous_pairs.remove(&pair) {
                                 events.push(GameEvent::collision_started(pair.0, pair.1));
                             }
                         }
@@ -1551,12 +1567,9 @@ fn sys_collide_spatial(
         }
         v.0 += impulse;
     }
-    for pair in contacts.pairs.iter() {
-        if !current_pairs.contains(pair) {
-            events.push(GameEvent::collision_ended(pair.0, pair.1));
-        }
+    for pair in previous_pairs {
+        events.push(GameEvent::collision_ended(pair.0, pair.1));
     }
-    contacts.pairs = current_pairs;
 }
 
 fn mat_from_transform(t: Transform) -> Mat4 {
