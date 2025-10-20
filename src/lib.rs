@@ -14,7 +14,7 @@ use crate::assets::AssetManager;
 use crate::audio::AudioManager;
 use crate::camera::Camera2D;
 use crate::config::AppConfig;
-use crate::ecs::EcsWorld;
+use crate::ecs::{EcsWorld, SpriteInfo};
 use crate::events::GameEvent;
 use crate::input::{Input, InputEvent};
 use crate::renderer::Renderer;
@@ -79,6 +79,7 @@ pub struct App {
     ui_emitter_end_color: [f32; 4],
     ui_scene_path: String,
     ui_scene_status: Option<String>,
+    inspector_status: Option<String>,
 
     // Audio
     audio: AudioManager,
@@ -187,6 +188,7 @@ impl App {
             ui_emitter_end_color,
             ui_scene_path: scene_path,
             ui_scene_status: None,
+            inspector_status: None,
             audio,
             recent_events,
             event_log_limit,
@@ -388,8 +390,10 @@ impl ApplicationHandler for App {
             if let Some((sx, sy)) = self.input.cursor_position() {
                 if let Some(world) = self.camera.screen_to_world(Vec2::new(sx, sy), window_size) {
                     self.selected_entity = self.ecs.pick_entity(world);
+                    self.inspector_status = None;
                 } else {
                     self.selected_entity = None;
+                    self.inspector_status = None;
                 }
             }
         }
@@ -567,19 +571,131 @@ impl ApplicationHandler for App {
                 }
                 ui.separator();
                 if let Some(entity) = selected_entity {
-                    ui.label(format!("Selected: {:?}", entity));
-                    if let Some(info) = selection_details.as_ref() {
-                        ui.label(format!("Position: ({:.2}, {:.2})", info.translation.x, info.translation.y));
-                        if let Some(vel) = info.velocity {
-                            ui.label(format!("Velocity: ({:.2}, {:.2})", vel.x, vel.y));
+                    ui.heading("Entity Inspector");
+                    ui.label(format!("Entity: {:?}", entity));
+                    let mut inspector_refresh = false;
+                    let mut inspector_info = selection_details.clone();
+                    if let Some(mut info) = inspector_info {
+                        let mut translation = info.translation;
+                        ui.horizontal(|ui| {
+                            ui.label("Position");
+                            if ui.add(egui::DragValue::new(&mut translation.x).speed(0.01)).changed()
+                                | ui.add(egui::DragValue::new(&mut translation.y).speed(0.01)).changed()
+                            {
+                                if self.ecs.set_translation(entity, translation) {
+                                    info.translation = translation;
+                                    inspector_refresh = true;
+                                    self.inspector_status = None;
+                                }
+                            }
+                        });
+
+                        let mut rotation_deg = info.rotation.to_degrees();
+                        if ui.add(egui::DragValue::new(&mut rotation_deg).speed(1.0).suffix(" deg")).changed()
+                        {
+                            let rotation_rad = rotation_deg.to_radians();
+                            if self.ecs.set_rotation(entity, rotation_rad) {
+                                info.rotation = rotation_rad;
+                                inspector_refresh = true;
+                                self.inspector_status = None;
+                            }
+                        }
+
+                        let mut scale = info.scale;
+                        ui.horizontal(|ui| {
+                            ui.label("Scale");
+                            if ui.add(egui::DragValue::new(&mut scale.x).speed(0.01)).changed()
+                                | ui.add(egui::DragValue::new(&mut scale.y).speed(0.01)).changed()
+                            {
+                                let clamped = Vec2::new(scale.x.max(0.01), scale.y.max(0.01));
+                                if self.ecs.set_scale(entity, clamped) {
+                                    info.scale = clamped;
+                                    inspector_refresh = true;
+                                    self.inspector_status = None;
+                                }
+                            }
+                        });
+
+                        if let Some(mut velocity) = info.velocity {
+                            ui.horizontal(|ui| {
+                                ui.label("Velocity");
+                                if ui.add(egui::DragValue::new(&mut velocity.x).speed(0.01)).changed()
+                                    | ui.add(egui::DragValue::new(&mut velocity.y).speed(0.01)).changed()
+                                {
+                                    if self.ecs.set_velocity(entity, velocity) {
+                                        info.velocity = Some(velocity);
+                                        inspector_refresh = true;
+                                        self.inspector_status = None;
+                                    }
+                                }
+                            });
                         } else {
                             ui.label("Velocity: n/a");
                         }
-                        if let Some(region) = &info.sprite_region {
-                            ui.label(format!("Sprite: {}", region));
+
+                        if let Some(sprite) = info.sprite.clone() {
+                            ui.separator();
+                            ui.label(format!("Atlas: {}", sprite.atlas));
+                            let mut region = sprite.region.clone();
+                            if ui.text_edit_singleline(&mut region).changed() {
+                                if self.ecs.set_sprite_region(entity, &self.assets, &region) {
+                                    info.sprite = Some(SpriteInfo {
+                                        atlas: sprite.atlas.clone(),
+                                        region: region.clone(),
+                                    });
+                                    inspector_refresh = true;
+                                    self.inspector_status = Some(format!("Sprite region set to {}", region));
+                                } else {
+                                    self.inspector_status = Some(format!(
+                                        "Region '{}' not found in atlas {}",
+                                        region, sprite.atlas
+                                    ));
+                                }
+                            }
+                        } else {
+                            ui.label("Sprite: n/a");
                         }
+
+                        ui.separator();
+                        let mut tinted = info.tint.is_some();
+                        if ui.checkbox(&mut tinted, "Tint override").changed() {
+                            if tinted {
+                                let color = Vec4::splat(1.0);
+                                if self.ecs.set_tint(entity, Some(color)) {
+                                    info.tint = Some(color);
+                                    inspector_refresh = true;
+                                    self.inspector_status = None;
+                                }
+                            } else if self.ecs.set_tint(entity, None) {
+                                info.tint = None;
+                                inspector_refresh = true;
+                                self.inspector_status = None;
+                            }
+                        }
+                        if let Some(color) = info.tint {
+                            let mut color_arr = color.to_array();
+                            if ui.color_edit_button_rgba_unmultiplied(&mut color_arr).changed() {
+                                let vec = Vec4::from_array(color_arr);
+                                if self.ecs.set_tint(entity, Some(vec)) {
+                                    info.tint = Some(vec);
+                                    inspector_refresh = true;
+                                    self.inspector_status = None;
+                                }
+                            }
+                        }
+
+                        inspector_info = Some(info);
                     } else {
                         ui.label("Selection data unavailable");
+                    }
+
+                    if inspector_refresh {
+                        selection_details = selected_entity.and_then(|entity| self.ecs.entity_info(entity));
+                    } else {
+                        selection_details = inspector_info;
+                    }
+                    if let Some(status) = &self.inspector_status {
+                        ui.label(status);
                     }
                     if ui.button("Delete selected").clicked() {
                         actions.delete_entity = Some(entity);
@@ -587,6 +703,7 @@ impl ApplicationHandler for App {
                         selection_details = None;
                         highlight_rect = None;
                         gizmo_center_px = None;
+                        self.inspector_status = None;
                     }
                 } else {
                     ui.label("No entity selected");
@@ -720,6 +837,7 @@ impl ApplicationHandler for App {
                     self.scripts.clear_handles();
                     self.ui_hist.clear();
                     self.sync_emitter_ui();
+                    self.inspector_status = None;
                 }
                 Err(err) => {
                     self.ui_scene_status = Some(format!("Load failed: {err}"));
@@ -764,6 +882,7 @@ impl ApplicationHandler for App {
             self.selected_entity = None;
             self.scripts.clear_handles();
             self.sync_emitter_ui();
+            self.inspector_status = None;
         }
 
         if let (Some(ren), Some(screen)) = (self.egui_renderer.as_mut(), self.egui_screen.as_ref()) {

@@ -37,7 +37,7 @@
 4. **Physics and simulation** - Rapier advances rigid bodies at the fixed timestep, ECS mirrors poses back into transforms, and the particle integrator runs while systems emit `GameEvent` entries (including collision hits and script messages).
 5. **Rendering prep** - ECS collects sprite instances, builds GPU buffers, and the camera produces the view-projection matrix.
 6. **Rendering** - `Renderer::render_batch` submits draw calls, egui consumes input and produces overlay meshes, and the frame is presented.
-7. **UI feedback** - egui surfaces frame time, spawn controls, emitter tuning, camera details, selection status, and script toggles.
+7. **UI feedback** - egui surfaces frame time, spawn controls, emitter tuning, camera details, an entity inspector with editable transform/tint/sprite region, selection status, and script toggles.
 
 ### Module Relationships
 - `App` owns `Renderer`, `EcsWorld`, `Input`, `Camera2D`, `AssetManager`, `Time`, and `ScriptHost`.

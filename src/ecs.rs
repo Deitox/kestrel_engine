@@ -103,10 +103,20 @@ pub struct InstanceData {
     pub tint: [f32; 4],
 }
 
+#[derive(Clone)]
 pub struct EntityInfo {
     pub translation: Vec2,
+    pub rotation: f32,
+    pub scale: Vec2,
     pub velocity: Option<Vec2>,
-    pub sprite_region: Option<String>,
+    pub sprite: Option<SpriteInfo>,
+    pub tint: Option<Vec4>,
+}
+
+#[derive(Clone)]
+pub struct SpriteInfo {
+    pub atlas: String,
+    pub region: String,
 }
 
 pub struct EmitterSnapshot {
@@ -693,6 +703,71 @@ impl EcsWorld {
         }
         changed
     }
+    pub fn set_rotation(&mut self, entity: Entity, rotation: f32) -> bool {
+        let mut changed = false;
+        {
+            if let Some(mut transform) = self.world.get_mut::<Transform>(entity) {
+                transform.rotation = rotation;
+                changed = true;
+            }
+        }
+        if let Some(handle) = self.world.get::<RapierBody>(entity).map(|b| b.handle) {
+            let mut rapier = self.world.resource_mut::<RapierState>();
+            if let Some(body) = rapier.body_mut(handle) {
+                body.set_rotation(Rotation::new(rotation), true);
+            }
+            changed = true;
+        }
+        changed
+    }
+    pub fn set_scale(&mut self, entity: Entity, scale: Vec2) -> bool {
+        if scale.x.abs() < f32::EPSILON || scale.y.abs() < f32::EPSILON {
+            return false;
+        }
+        let mut changed = false;
+        if let Some(mut transform) = self.world.get_mut::<Transform>(entity) {
+            transform.scale = scale;
+            changed = true;
+        }
+        if let Some(mut aabb) = self.world.get_mut::<Aabb>(entity) {
+            aabb.half = Vec2::new(scale.x.abs(), scale.y.abs()) * 0.5;
+            changed = true;
+        }
+        changed
+    }
+    pub fn set_tint(&mut self, entity: Entity, color: Option<Vec4>) -> bool {
+        match color {
+            Some(color) => {
+                if let Some(mut tint) = self.world.get_mut::<Tint>(entity) {
+                    tint.0 = color;
+                    true
+                } else {
+                    self.world.entity_mut(entity).insert(Tint(color));
+                    true
+                }
+            }
+            None => {
+                if self.world.get::<Tint>(entity).is_some() {
+                    self.world.entity_mut(entity).remove::<Tint>();
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+    pub fn set_sprite_region(&mut self, entity: Entity, assets: &AssetManager, region: &str) -> bool {
+        if let Some(mut sprite) = self.world.get_mut::<Sprite>(entity) {
+            let atlas = sprite.atlas_key.to_string();
+            if !assets.atlas_region_exists(&atlas, region) {
+                return false;
+            }
+            sprite.region = Cow::Owned(region.to_string());
+            true
+        } else {
+            false
+        }
+    }
     pub fn collect_sprite_instances(
         &mut self,
         assets: &AssetManager,
@@ -735,11 +810,23 @@ impl EcsWorld {
         Some((center - half, center + half))
     }
     pub fn entity_info(&self, entity: Entity) -> Option<EntityInfo> {
-        let wt = self.world.get::<WorldTransform>(entity)?;
-        let translation = Vec2::new(wt.0.w_axis.x, wt.0.w_axis.y);
+        let transform = self.world.get::<Transform>(entity)?;
+        let world_transform = self.world.get::<WorldTransform>(entity)?;
+        let translation = Vec2::new(world_transform.0.w_axis.x, world_transform.0.w_axis.y);
         let velocity = self.world.get::<Velocity>(entity).map(|v| v.0);
-        let sprite_region = self.world.get::<Sprite>(entity).map(|s| s.region.to_string());
-        Some(EntityInfo { translation, velocity, sprite_region })
+        let sprite = self.world.get::<Sprite>(entity).map(|sprite| SpriteInfo {
+            atlas: sprite.atlas_key.to_string(),
+            region: sprite.region.to_string(),
+        });
+        let tint = self.world.get::<Tint>(entity).map(|t| t.0);
+        Some(EntityInfo {
+            translation,
+            rotation: transform.rotation,
+            scale: transform.scale,
+            velocity,
+            sprite,
+            tint,
+        })
     }
     pub fn entity_exists(&self, entity: Entity) -> bool {
         self.world.get_entity(entity).is_ok()

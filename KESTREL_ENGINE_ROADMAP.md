@@ -182,6 +182,8 @@
 - Transform gizmos for translate/rotate/scale.
 - Save and load scene buttons.
 
+**Status:** Debug UI now exposes an inspector with editable transform/tint/sprite fields; gizmos and scene toolbar work remain.
+
 **Stretch Ideas**
 - Drag-and-drop prefab creation.
 
