@@ -1,5 +1,7 @@
+use crate::camera3d::Camera3D;
 use crate::config::WindowConfig;
 use crate::ecs::InstanceData;
+use crate::mesh::{Mesh, MeshVertex};
 use anyhow::{Context, Result};
 use glam::Mat4;
 use std::sync::Arc;
@@ -17,10 +19,37 @@ struct Globals {
     proj: [[f32; 4]; 4],
 }
 
+const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct MeshGlobals {
+    view_proj: [[f32; 4]; 4],
+    model: [[f32; 4]; 4],
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct RenderViewport {
     pub origin: (f32, f32),
     pub size: (f32, f32),
+}
+
+#[derive(Debug)]
+pub struct GpuMesh {
+    pub vertex_buffer: wgpu::Buffer,
+    pub index_buffer: wgpu::Buffer,
+    pub index_count: u32,
+}
+
+pub struct MeshDraw<'a> {
+    pub mesh: &'a GpuMesh,
+    pub model: Mat4,
+}
+
+struct MeshPipelineResources {
+    pipeline: wgpu::RenderPipeline,
+    globals_buf: wgpu::Buffer,
+    globals_bg: wgpu::BindGroup,
 }
 
 pub struct Renderer {
@@ -46,6 +75,10 @@ pub struct Renderer {
 
     instance_buffer: Option<wgpu::Buffer>,
     instance_capacity: usize,
+
+    depth_texture: Option<wgpu::Texture>,
+    depth_view: Option<wgpu::TextureView>,
+    mesh_pipeline: Option<MeshPipelineResources>,
 }
 
 impl Renderer {
@@ -70,6 +103,9 @@ impl Renderer {
             texture_bgl: None,
             instance_buffer: None,
             instance_capacity: 0,
+            depth_texture: None,
+            depth_view: None,
+            mesh_pipeline: None,
         }
     }
 
@@ -142,10 +178,14 @@ impl Renderer {
         };
         surface.configure(&device, &config);
 
+        let (depth_texture, depth_view) = Self::create_depth_texture(&device, size)?;
+
         self.surface = Some(surface);
         self.device = Some(device);
         self.queue = Some(queue);
         self.config = Some(config);
+        self.depth_texture = Some(depth_texture);
+        self.depth_view = Some(depth_view);
         Ok(())
     }
 
@@ -337,6 +377,192 @@ impl Renderer {
         Ok(())
     }
 
+    pub fn init_mesh_pipeline(&mut self) -> Result<()> {
+        if self.depth_texture.is_none() {
+            self.recreate_depth_texture()?;
+        }
+        let device = self.device()?;
+
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Mesh Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../assets/shaders/mesh_basic.wgsl").into()),
+        });
+
+        let globals_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Mesh Globals BGL"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let globals_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Mesh Globals Buffer"),
+            size: std::mem::size_of::<MeshGlobals>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let globals_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Mesh Globals BG"),
+            layout: &globals_bgl,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: globals_buf.as_entire_binding() }],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Mesh Pipeline Layout"),
+            bind_group_layouts: &[&globals_bgl],
+            push_constant_ranges: &[],
+        });
+
+        let mesh_vertex_layout = MeshVertex::layout();
+        let color_target = Some(wgpu::ColorTargetState {
+            format: self.surface_format()?,
+            blend: Some(wgpu::BlendState::REPLACE),
+            write_mask: wgpu::ColorWrites::ALL,
+        });
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Mesh Pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[mesh_vertex_layout],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[color_target],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: Some(wgpu::Face::Back),
+                front_face: wgpu::FrontFace::Ccw,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
+        self.mesh_pipeline = Some(MeshPipelineResources { pipeline, globals_buf, globals_bg });
+        Ok(())
+    }
+
+    pub fn create_gpu_mesh(&self, mesh: &Mesh) -> Result<GpuMesh> {
+        let device = self.device()?;
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Mesh Vertex Buffer"),
+            contents: bytemuck::cast_slice(&mesh.vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Mesh Index Buffer"),
+            contents: bytemuck::cast_slice(&mesh.indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        Ok(GpuMesh { vertex_buffer, index_buffer, index_count: mesh.indices.len() as u32 })
+    }
+
+    pub fn encode_mesh_pass(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        color_target: &wgpu::TextureView,
+        viewport: RenderViewport,
+        draws: &[MeshDraw],
+        camera: &Camera3D,
+    ) -> Result<()> {
+        if draws.is_empty() {
+            return Ok(());
+        }
+        if self.mesh_pipeline.is_none() {
+            self.init_mesh_pipeline()?;
+        }
+        if self.depth_texture.is_none() {
+            self.recreate_depth_texture()?;
+        }
+        let mesh_pipeline = self.mesh_pipeline.as_ref().context("Mesh pipeline not initialized")?;
+        let depth_view = self.depth_view.as_ref().context("Depth texture missing")?;
+        let queue = self.queue()?;
+        let vp_size = PhysicalSize::new(
+            viewport.size.0.max(1.0).round() as u32,
+            viewport.size.1.max(1.0).round() as u32,
+        );
+        let view_proj = camera.view_projection(vp_size);
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Mesh Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: color_target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth_view,
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                stencil_ops: None,
+            }),
+            occlusion_query_set: None,
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&mesh_pipeline.pipeline);
+        let mut sc_x = viewport.origin.0.max(0.0).floor() as u32;
+        let mut sc_y = viewport.origin.1.max(0.0).floor() as u32;
+        let mut sc_w = viewport.size.0.max(1.0).floor() as u32;
+        let mut sc_h = viewport.size.1.max(1.0).floor() as u32;
+        let limit_w = self.size.width.max(1);
+        let limit_h = self.size.height.max(1);
+        if sc_x >= limit_w {
+            sc_x = limit_w.saturating_sub(1);
+        }
+        if sc_y >= limit_h {
+            sc_y = limit_h.saturating_sub(1);
+        }
+        let avail_w = limit_w.saturating_sub(sc_x).max(1);
+        let avail_h = limit_h.saturating_sub(sc_y).max(1);
+        sc_w = sc_w.min(avail_w);
+        sc_h = sc_h.min(avail_h);
+
+        pass.set_viewport(
+            viewport.origin.0,
+            viewport.origin.1,
+            viewport.size.0.max(1.0),
+            viewport.size.1.max(1.0),
+            0.0,
+            1.0,
+        );
+        pass.set_scissor_rect(sc_x, sc_y, sc_w, sc_h);
+
+        for draw in draws {
+            let globals = MeshGlobals {
+                view_proj: view_proj.to_cols_array_2d(),
+                model: draw.model.to_cols_array_2d(),
+            };
+            queue.write_buffer(&mesh_pipeline.globals_buf, 0, bytemuck::bytes_of(&globals));
+            pass.set_bind_group(0, &mesh_pipeline.globals_bg, &[]);
+            pass.set_vertex_buffer(0, draw.mesh.vertex_buffer.slice(..));
+            pass.set_index_buffer(draw.mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..draw.mesh.index_count, 0, 0..1);
+        }
+
+        Ok(())
+    }
+
     pub fn device_and_queue(&self) -> Result<(&wgpu::Device, &wgpu::Queue)> {
         let device = self.device.as_ref().context("GPU device not initialized")?;
         let queue = self.queue.as_ref().context("GPU queue not initialized")?;
@@ -356,6 +582,17 @@ impl Renderer {
     }
     pub fn pixels_per_point(&self) -> f32 {
         1.0
+    }
+
+    fn recreate_depth_texture(&mut self) -> Result<()> {
+        let depth_sources = {
+            let device = self.device.as_ref().context("GPU device not initialized")?;
+            Self::create_depth_texture(device, self.size)?
+        };
+        let (depth_texture, depth_view) = depth_sources;
+        self.depth_texture = Some(depth_texture);
+        self.depth_view = Some(depth_view);
+        Ok(())
     }
 
     pub fn window(&self) -> Option<&Window> {
@@ -379,6 +616,9 @@ impl Renderer {
                 config.height = new_size.height;
                 surface.configure(device, config);
             }
+            if let Err(err) = self.recreate_depth_texture() {
+                eprintln!("Depth texture resize failed: {err:?}");
+            }
         }
     }
 
@@ -401,6 +641,29 @@ impl Renderer {
         self.instance_buffer = Some(new_buf);
         self.instance_capacity = new_cap;
         Ok(())
+    }
+
+    fn create_depth_texture(
+        device: &wgpu::Device,
+        size: PhysicalSize<u32>,
+    ) -> Result<(wgpu::Texture, wgpu::TextureView)> {
+        let extent = wgpu::Extent3d {
+            width: size.width.max(1),
+            height: size.height.max(1),
+            depth_or_array_layers: 1,
+        };
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Depth Texture"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DEPTH_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        Ok((texture, view))
     }
 
     pub fn render_batch(

@@ -1,6 +1,8 @@
 pub mod assets;
 pub mod audio;
 pub mod camera;
+pub mod camera3d;
+pub mod mesh;
 pub mod config;
 pub mod ecs;
 pub mod events;
