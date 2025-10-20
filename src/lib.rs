@@ -55,6 +55,7 @@ impl Default for GizmoMode {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
 enum GizmoInteraction {
     Translate { entity: Entity, offset: Vec2 },
     Rotate { entity: Entity, start_rotation: f32, start_angle: f32 },
@@ -314,10 +315,6 @@ impl App {
         }
     }
 
-    fn viewport_to_screen(&self, viewport_pos: Vec2) -> Vec2 {
-        viewport_pos + self.viewport.origin
-    }
-
     fn update_viewport(&mut self, origin: Vec2, size: Vec2) {
         let clamped = Vec2::new(size.x.max(1.0), size.y.max(1.0));
         self.viewport = Viewport::new(origin, clamped);
@@ -479,6 +476,8 @@ impl ApplicationHandler for App {
         let gizmo_center_viewport = selected_info
             .as_ref()
             .and_then(|info| self.camera.world_to_screen_pixels(info.translation, viewport_size));
+        let prev_selected_entity = self.selected_entity;
+        let prev_gizmo_interaction = self.gizmo_interaction;
 
         if let Some(delta) = self.input.consume_wheel_delta() {
             self.camera.apply_scroll_zoom(delta);
@@ -595,6 +594,8 @@ impl ApplicationHandler for App {
             }
         }
 
+        let mut selection_changed = self.selected_entity != prev_selected_entity;
+        let mut gizmo_changed = self.gizmo_interaction != prev_gizmo_interaction;
         selected_info = self.selected_entity.and_then(|entity| self.ecs.entity_info(entity));
 
         self.ecs.set_spatial_cell(self.ui_cell_size.max(0.05));
@@ -680,29 +681,11 @@ impl ApplicationHandler for App {
         let mut ui_emitter_end_color = self.ui_emitter_end_color;
         let mut selected_entity = self.selected_entity;
         let mut selection_details = selected_info.clone();
-        let mut highlight_rect = None;
-        let mut gizmo_center_px = None;
         let camera_position = self.camera.position;
         let camera_zoom = self.camera.zoom;
         let recent_events: Vec<GameEvent> = self.recent_events.iter().cloned().collect();
         let audio_triggers: Vec<String> = self.audio.recent_triggers().cloned().collect();
         let mut audio_enabled = self.audio.enabled();
-
-        if let Some(entity) = selected_entity {
-            if let Some((min, max)) = self.ecs.entity_bounds(entity) {
-                if let Some((min_px_view, max_px_view)) =
-                    self.camera.world_rect_to_screen_bounds(min, max, viewport_size)
-                {
-                    let min_screen = self.viewport_to_screen(min_px_view);
-                    let max_screen = self.viewport_to_screen(max_px_view);
-                    highlight_rect = Some(egui::Rect::from_two_pos(
-                        egui::pos2(min_screen.x / ui_pixels_per_point, min_screen.y / ui_pixels_per_point),
-                        egui::pos2(max_screen.x / ui_pixels_per_point, max_screen.y / ui_pixels_per_point),
-                    ));
-                    gizmo_center_px = Some((min_screen + max_screen) * 0.5);
-                }
-            }
-        }
 
         #[derive(Default)]
         struct UiActions {
@@ -944,8 +927,6 @@ impl ApplicationHandler for App {
                         actions.delete_entity = Some(entity);
                         selected_entity = None;
                         selection_details = None;
-                        highlight_rect = None;
-                        gizmo_center_px = None;
                         self.inspector_status = None;
                     }
                 } else {
@@ -1026,19 +1007,62 @@ impl ApplicationHandler for App {
             let window_height_px = window_size.height as f32;
             let viewport_width_px =
                 (window_width_px - left_panel_width_px - right_panel_width_px).max(1.0);
-            pending_viewport = Some((
-                Vec2::new(left_panel_width_px, 0.0),
-                Vec2::new(viewport_width_px, window_height_px),
-            ));
+            let viewport_origin_vec2 = Vec2::new(left_panel_width_px, 0.0);
+            let viewport_size_vec2 = Vec2::new(viewport_width_px, window_height_px);
+            let viewport_size_physical = PhysicalSize::new(
+                viewport_size_vec2.x.max(1.0).round() as u32,
+                viewport_size_vec2.y.max(1.0).round() as u32,
+            );
+            pending_viewport = Some((viewport_origin_vec2, viewport_size_vec2));
+
+            let cursor_in_new_viewport = cursor_screen
+                .map(|pos| {
+                    pos.x >= viewport_origin_vec2.x
+                        && pos.x <= viewport_origin_vec2.x + viewport_size_vec2.x
+                        && pos.y >= viewport_origin_vec2.y
+                        && pos.y <= viewport_origin_vec2.y + viewport_size_vec2.y
+                })
+                .unwrap_or(false);
+            if !cursor_in_new_viewport {
+                if selection_changed {
+                    self.selected_entity = prev_selected_entity;
+                    selection_details = self.selected_entity.and_then(|entity| self.ecs.entity_info(entity));
+                    selected_entity = self.selected_entity;
+                    selection_changed = false;
+                }
+                if gizmo_changed {
+                    self.gizmo_interaction = prev_gizmo_interaction;
+                    gizmo_changed = false;
+                }
+            }
+
+            let mut highlight_rect = None;
+            let mut gizmo_center_px = None;
+            if let Some(entity) = self.selected_entity {
+                if let Some((min, max)) = self.ecs.entity_bounds(entity) {
+                    if let Some((min_px_view, max_px_view)) =
+                        self.camera.world_rect_to_screen_bounds(min, max, viewport_size_physical)
+                    {
+                        let min_screen = min_px_view + viewport_origin_vec2;
+                        let max_screen = max_px_view + viewport_origin_vec2;
+                        highlight_rect = Some(egui::Rect::from_two_pos(
+                            egui::pos2(min_screen.x / ui_pixels_per_point, min_screen.y / ui_pixels_per_point),
+                            egui::pos2(max_screen.x / ui_pixels_per_point, max_screen.y / ui_pixels_per_point),
+                        ));
+                        gizmo_center_px = Some((min_screen + max_screen) * 0.5);
+                    }
+                }
+            }
+
             let painter = ctx.debug_painter();
             let viewport_outline = egui::Rect::from_min_size(
                 egui::pos2(
-                    self.viewport.origin.x / ui_pixels_per_point,
-                    self.viewport.origin.y / ui_pixels_per_point,
+                    viewport_origin_vec2.x / ui_pixels_per_point,
+                    viewport_origin_vec2.y / ui_pixels_per_point,
                 ),
                 egui::vec2(
-                    self.viewport.size.x / ui_pixels_per_point,
-                    self.viewport.size.y / ui_pixels_per_point,
+                    viewport_size_vec2.x / ui_pixels_per_point,
+                    viewport_size_vec2.y / ui_pixels_per_point,
                 ),
             );
             painter.rect_stroke(
