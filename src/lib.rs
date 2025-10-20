@@ -639,6 +639,12 @@ impl ApplicationHandler for App {
                 if ui.checkbox(&mut audio_enabled, "Enable audio triggers").changed() {
                     self.audio.set_enabled(audio_enabled);
                 }
+                if !self.audio.available() {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(200, 80, 80),
+                        "Audio device unavailable; triggers will be silent.",
+                    );
+                }
                 if ui.button("Clear audio log").clicked() {
                     self.audio.clear();
                 }

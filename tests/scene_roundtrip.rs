@@ -8,6 +8,10 @@ fn scene_roundtrip_preserves_entity_count() {
     let _emitter = world.spawn_demo_scene();
     let original_count = world.entity_count();
     let scene = world.export_scene();
+    assert!(
+        scene.dependencies.atlases.iter().any(|atlas| atlas == "main"),
+        "scene should track atlas dependency"
+    );
 
     let path = std::path::Path::new("target/test_scene_roundtrip.json");
     scene.save_to_path(path).expect("scene save should succeed");
@@ -24,4 +28,11 @@ fn scene_roundtrip_preserves_entity_count() {
     new_world.load_scene(&loaded, &assets).expect("scene load into world");
     assert_eq!(new_world.entity_count(), original_count);
     assert!(new_world.first_emitter().is_some());
+
+    let missing_assets = AssetManager::new();
+    let mut missing_world = EcsWorld::new();
+    assert!(
+        missing_world.load_scene(&loaded, &missing_assets).is_err(),
+        "loading without required assets should error"
+    );
 }

@@ -129,4 +129,7 @@ impl AssetManager {
     pub fn atlas_region_exists(&self, atlas_key: &str, region: &str) -> bool {
         self.atlases.get(atlas_key).and_then(|atlas| atlas.regions.get(region)).is_some()
     }
+    pub fn has_atlas(&self, key: &str) -> bool {
+        self.atlases.contains_key(key)
+    }
 }

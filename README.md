@@ -8,6 +8,7 @@
 - Script and UI helpers (`set_velocity`, `set_position`, spawn burst) all push updates through Rapier, so the physics state stays authoritative even after hot-reloads.
 - Demo scene and random bursts automatically attach dynamic colliders while the existing particle emitter keeps using the lightweight force integrator for thousands of billboards.
 - Debug UI now offers scene quick-save/load, serializing the active entity hierarchy to JSON to bootstrap Milestone 10.
+- Event-driven audio cues now play synthesized beeps via rodio whenever spawn/despawn/collision events fire.
 
 ## Still here
 - Hot-reloadable Rhai scripting with emitter controls, spawn automation, and script-driven entity management.

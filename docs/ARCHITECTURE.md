@@ -27,8 +27,8 @@
 - `src/config.rs` loads `config/app.json` and hands window defaults to the renderer.
 - `src/scripts.rs` embeds Rhai, hot-reloads scripts, queues gameplay commands for the app to apply, and captures script log messages.
 - `src/events.rs` defines `GameEvent` plus the `EventBus` resource that records gameplay signals for tooling and audio.
-- `src/scene.rs` describes the JSON scene format and handles serialization/deserialization of entity hierarchies for save/load operations.
-- `src/audio.rs` contains `AudioManager`, a lightweight trigger collector that reacts to `GameEvent`s (placeholder until real audio playback lands).
+- `src/scene.rs` describes the JSON scene format, tracks asset dependencies, and handles serialization/deserialization of entity hierarchies for save/load operations.
+- `src/audio.rs` contains `AudioManager`, which uses `rodio` to emit lightweight synthesized cues in response to `GameEvent`s.
 
 ### Frame Flow
 1. **Input ingest** - `ApplicationHandler::window_event` converts Winit events into `InputEvent` values, storing them on `Input`.
@@ -47,7 +47,7 @@
 - `ScriptHost` issues commands back into `App`, which resolves script handles to ECS entities.
 - `RapierState` lives inside `EcsWorld` and synchronizes rigid-body data each fixed tick.
 - `EventBus` is stored as an ECS resource so systems can push `GameEvent` values that the app drains after each frame.
-- `AudioManager` listens to drained `GameEvent`s so tooling can preview which sounds would fire for spawns, despawns, collisions, or script-driven cues.
+- `AudioManager` listens to drained `GameEvent`s so tooling can preview which sounds would fire for spawns, despawns, collisions, or script-driven cues while also playing the corresponding rodio tone when audio is available.
 - `Scene` helpers let the app export/import entity graphs; the debug UI exposes quick-save/quick-load controls that hand JSON files to these helpers.
 
 The data always flows in the same order - Input -> ECS -> Renderer -> UI - keeping subsystems decoupled and deterministic.

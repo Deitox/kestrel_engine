@@ -1,12 +1,43 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scene {
     #[serde(default)]
+    pub dependencies: SceneDependencies,
+    #[serde(default)]
     pub entities: Vec<SceneEntity>,
+}
+
+impl Default for Scene {
+    fn default() -> Self {
+        Self { dependencies: SceneDependencies::default(), entities: Vec::new() }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SceneDependencies {
+    #[serde(default)]
+    pub atlases: Vec<String>,
+}
+
+impl SceneDependencies {
+    pub fn from_entities(entities: &[SceneEntity]) -> Self {
+        let mut set = BTreeSet::new();
+        for entity in entities {
+            if let Some(sprite) = &entity.sprite {
+                set.insert(sprite.atlas.clone());
+            }
+        }
+        Self { atlases: set.into_iter().collect() }
+    }
+
+    pub fn contains_atlas(&self, key: &str) -> bool {
+        self.atlases.iter().any(|atlas| atlas == key)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,8 +119,10 @@ impl Scene {
     pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let bytes = fs::read(path).with_context(|| format!("Reading scene file {}", path.display()))?;
-        let scene = serde_json::from_slice::<Scene>(&bytes)
+        let mut scene = serde_json::from_slice::<Scene>(&bytes)
             .with_context(|| format!("Parsing scene file {}", path.display()))?;
+        scene.dependencies.atlases.sort();
+        scene.dependencies.atlases.dedup();
         Ok(scene)
     }
 
@@ -99,7 +132,10 @@ impl Scene {
             fs::create_dir_all(parent)
                 .with_context(|| format!("Creating scene directory {}", parent.display()))?;
         }
-        let json = serde_json::to_string_pretty(self)?;
+        let mut normalized = self.clone();
+        normalized.dependencies.atlases.sort();
+        normalized.dependencies.atlases.dedup();
+        let json = serde_json::to_string_pretty(&normalized)?;
         fs::write(path, json.as_bytes()).with_context(|| format!("Writing scene file {}", path.display()))?;
         Ok(())
     }

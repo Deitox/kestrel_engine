@@ -1,23 +1,58 @@
 use crate::events::GameEvent;
+use rodio::source::{SineWave, Source};
+use rodio::{OutputStream, OutputStreamHandle, Sink};
 use std::collections::VecDeque;
+use std::time::Duration;
 
 pub struct AudioManager {
     enabled: bool,
     capacity: usize,
     triggers: VecDeque<String>,
+    _stream: Option<OutputStream>,
+    handle: Option<OutputStreamHandle>,
+    playback_available: bool,
 }
 
 impl AudioManager {
     pub fn new(capacity: usize) -> Self {
-        Self { enabled: true, capacity: capacity.max(1), triggers: VecDeque::new() }
+        let capacity = capacity.max(1);
+        match OutputStream::try_default() {
+            Ok((stream, handle)) => Self {
+                enabled: true,
+                capacity,
+                triggers: VecDeque::new(),
+                _stream: Some(stream),
+                handle: Some(handle),
+                playback_available: true,
+            },
+            Err(err) => {
+                eprintln!("Audio output unavailable: {err}");
+                Self {
+                    enabled: false,
+                    capacity,
+                    triggers: VecDeque::new(),
+                    _stream: None,
+                    handle: None,
+                    playback_available: false,
+                }
+            }
+        }
     }
 
     pub fn enabled(&self) -> bool {
         self.enabled
     }
 
+    pub fn available(&self) -> bool {
+        self.playback_available
+    }
+
     pub fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
+        if !self.playback_available {
+            self.enabled = false;
+        } else {
+            self.enabled = enabled;
+        }
     }
 
     pub fn clear(&mut self) {
@@ -29,17 +64,15 @@ impl AudioManager {
     }
 
     pub fn handle_event(&mut self, event: &GameEvent) {
-        if !self.enabled {
-            return;
-        }
         let label = match event {
-            GameEvent::SpriteSpawned { atlas, region, .. } => Some(format!("spawn:{}:{}", atlas, region)),
-            GameEvent::EntityDespawned { .. } => Some(String::from("despawn")),
-            GameEvent::Collision2d { .. } => Some(String::from("collision")),
-            GameEvent::ScriptMessage { .. } => None,
+            GameEvent::SpriteSpawned { atlas, region, .. } => format!("spawn:{}:{}", atlas, region),
+            GameEvent::EntityDespawned { .. } => String::from("despawn"),
+            GameEvent::Collision2d { .. } => String::from("collision"),
+            GameEvent::ScriptMessage { .. } => return,
         };
-        if let Some(label) = label {
-            self.push_trigger(label);
+        self.push_trigger(label.clone());
+        if self.enabled && self.playback_available {
+            self.play_label(&label);
         }
     }
 
@@ -48,5 +81,26 @@ impl AudioManager {
             self.triggers.pop_front();
         }
         self.triggers.push_back(trigger);
+    }
+
+    fn play_label(&mut self, label: &str) {
+        let handle = match self.handle.as_ref() {
+            Some(handle) => handle,
+            None => return,
+        };
+        let frequency_hz = if label.starts_with("spawn") {
+            440.0
+        } else if label == "despawn" {
+            330.0
+        } else if label == "collision" {
+            560.0
+        } else {
+            return;
+        };
+        if let Ok(sink) = Sink::try_new(handle) {
+            let source = SineWave::new(frequency_hz).take_duration(Duration::from_millis(140)).amplify(0.18);
+            sink.append(source);
+            sink.detach();
+        }
     }
 }

@@ -1,8 +1,8 @@
 use crate::assets::AssetManager;
 use crate::events::{EventBus, GameEvent};
 use crate::scene::{
-    ColliderData, ColorData, OrbitControllerData, ParticleEmitterData, Scene, SceneEntity, SpriteData,
-    TransformData,
+    ColliderData, ColorData, OrbitControllerData, ParticleEmitterData, Scene, SceneDependencies, SceneEntity,
+    SpriteData, TransformData,
 };
 use anyhow::{anyhow, Context, Result};
 use bevy_ecs::prelude::*;
@@ -787,6 +787,14 @@ impl EcsWorld {
     }
 
     pub fn load_scene(&mut self, scene: &Scene, assets: &AssetManager) -> Result<()> {
+        for atlas in &scene.dependencies.atlases {
+            if !assets.has_atlas(atlas) {
+                return Err(anyhow!(
+                    "Scene requires atlas '{}' which is not loaded. Call AssetManager::load_atlas before loading the scene.",
+                    atlas
+                ));
+            }
+        }
         self.clear_scene_entities();
         let mut entity_map = Vec::with_capacity(scene.entities.len());
         for entity_data in &scene.entities {
@@ -824,6 +832,7 @@ impl EcsWorld {
         for root in roots {
             self.collect_scene_entity(root, None, &mut scene.entities);
         }
+        scene.dependencies = SceneDependencies::from_entities(&scene.entities);
         scene
     }
 
