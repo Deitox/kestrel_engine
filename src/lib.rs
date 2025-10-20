@@ -77,6 +77,7 @@ pub struct App {
     ui_emitter_end_size: f32,
     ui_emitter_start_color: [f32; 4],
     ui_emitter_end_color: [f32; 4],
+    ui_scale: f32,
     ui_scene_path: String,
     ui_scene_status: Option<String>,
     inspector_status: Option<String>,
@@ -186,6 +187,7 @@ impl App {
             ui_emitter_end_size,
             ui_emitter_start_color,
             ui_emitter_end_color,
+            ui_scale: 1.0,
             ui_scene_path: scene_path,
             ui_scene_status: None,
             inspector_status: None,
@@ -296,7 +298,7 @@ impl ApplicationHandler for App {
         let size = self.renderer.size();
         self.egui_screen = Some(ScreenDescriptor {
             size_in_pixels: [size.width, size.height],
-            pixels_per_point: self.renderer.pixels_per_point(),
+            pixels_per_point: self.renderer.pixels_per_point() * self.ui_scale,
         });
     }
 
@@ -324,7 +326,7 @@ impl ApplicationHandler for App {
                 self.renderer.resize(*size);
                 if let Some(sd) = &mut self.egui_screen {
                     sd.size_in_pixels = [size.width, size.height];
-                    sd.pixels_per_point = self.renderer.pixels_per_point();
+                    sd.pixels_per_point = self.renderer.pixels_per_point() * self.ui_scale;
                 }
             }
             WindowEvent::KeyboardInput { event: KeyEvent { logical_key, state, .. }, .. } => {
@@ -440,13 +442,18 @@ impl ApplicationHandler for App {
         if self.egui_winit.is_none() {
             return;
         }
-        let pixels_per_point = self.renderer.pixels_per_point();
 
         let raw_input = {
             let Some(window) = self.renderer.window() else {
                 return;
             };
             self.egui_winit.as_mut().unwrap().take_egui_input(window)
+        };
+        let base_pixels_per_point = self.renderer.pixels_per_point();
+        self.egui_ctx.set_pixels_per_point(base_pixels_per_point * self.ui_scale);
+        let mut ui_pixels_per_point = self.egui_ctx.pixels_per_point();
+        if let Some(screen) = self.egui_screen.as_mut() {
+            screen.pixels_per_point = ui_pixels_per_point;
         };
         let dt_ms = dt * 1000.0;
         self.ui_hist.push(dt_ms);
@@ -489,8 +496,8 @@ impl ApplicationHandler for App {
                 if let Some((min_px, max_px)) = self.camera.world_rect_to_screen_bounds(min, max, window_size)
                 {
                     highlight_rect = Some(egui::Rect::from_two_pos(
-                        egui::pos2(min_px.x / pixels_per_point, min_px.y / pixels_per_point),
-                        egui::pos2(max_px.x / pixels_per_point, max_px.y / pixels_per_point),
+                        egui::pos2(min_px.x / ui_pixels_per_point, min_px.y / ui_pixels_per_point),
+                        egui::pos2(max_px.x / ui_pixels_per_point, max_px.y / ui_pixels_per_point),
                     ));
                     gizmo_center_px = Some((min_px + max_px) * 0.5);
                 }
@@ -509,10 +516,47 @@ impl ApplicationHandler for App {
         let mut actions = UiActions::default();
 
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
-            egui::Window::new("Kestrel Debug").resizable(true).show(ctx, |ui| {
+            egui::SidePanel::left("kestrel_left_panel").default_width(300.0).show(ctx, |ui| {
+                ui.heading("Stats");
                 ui.label(format!("Entities: {}", entity_count));
                 ui.label(format!("Instances drawn: {}", instances_drawn));
                 ui.separator();
+                ui.label("Frame time (ms)");
+                let hist = eplot::Plot::new("fps_plot").height(120.0).include_y(0.0).include_y(40.0);
+                hist.show(ui, |plot_ui| {
+                    plot_ui.line(eplot::Line::new("ms/frame", eplot::PlotPoints::from(hist_points.clone())));
+                });
+                ui.label("Target: 16.7ms for 60 FPS");
+
+                ui.separator();
+                ui.heading("UI & Camera");
+                if ui.add(egui::Slider::new(&mut self.ui_scale, 0.5..=2.0).text("UI scale")).changed() {
+                    self.ui_scale = self.ui_scale.clamp(0.5, 2.0);
+                    self.egui_ctx.set_pixels_per_point(base_pixels_per_point * self.ui_scale);
+                    if let Some(screen) = self.egui_screen.as_mut() {
+                        screen.pixels_per_point = self.egui_ctx.pixels_per_point();
+                    }
+                    ui_pixels_per_point = self.egui_ctx.pixels_per_point();
+                }
+                ui.label(format!(
+                    "Camera: pos({:.2}, {:.2}) zoom {:.2}",
+                    camera_position.x, camera_position.y, camera_zoom
+                ));
+                let display_mode = if self.config.window.fullscreen { "Fullscreen" } else { "Windowed" };
+                ui.label(format!(
+                    "Display: {}x{} {}",
+                    self.config.window.width, self.config.window.height, display_mode
+                ));
+                ui.label(format!("VSync: {}", if self.config.window.vsync { "On" } else { "Off" }));
+                if let Some(cursor) = cursor_world {
+                    ui.label(format!("Cursor world: ({:.2}, {:.2})", cursor.x, cursor.y));
+                } else {
+                    ui.label("Cursor world: n/a");
+                }
+            });
+
+            egui::SidePanel::right("kestrel_right_panel").default_width(360.0).show(ctx, |ui| {
+                ui.heading("Spawn & Emitters");
                 ui.add(egui::Slider::new(&mut ui_cell_size, 0.05..=0.8).text("Spatial cell size"));
                 ui.add(egui::Slider::new(&mut ui_spawn_per_press, 1..=5000).text("Spawn per press"));
                 ui.add(
@@ -547,28 +591,7 @@ impl ApplicationHandler for App {
                 if ui.button("Reset world").clicked() {
                     actions.reset_world = true;
                 }
-                ui.separator();
-                let hist = eplot::Plot::new("fps_plot").height(120.0).include_y(0.0).include_y(40.0);
-                hist.show(ui, |plot_ui| {
-                    plot_ui.line(eplot::Line::new("ms/frame", eplot::PlotPoints::from(hist_points.clone())));
-                });
-                ui.label("Target: 16.7ms for 60 FPS");
-                ui.separator();
-                ui.label(format!(
-                    "Camera: pos({:.2}, {:.2}) zoom {:.2}",
-                    camera_position.x, camera_position.y, camera_zoom
-                ));
-                let display_mode = if self.config.window.fullscreen { "Fullscreen" } else { "Windowed" };
-                ui.label(format!(
-                    "Display: {}x{} {}",
-                    self.config.window.width, self.config.window.height, display_mode
-                ));
-                ui.label(format!("VSync: {}", if self.config.window.vsync { "On" } else { "Off" }));
-                if let Some(cursor) = cursor_world {
-                    ui.label(format!("Cursor world: ({:.2}, {:.2})", cursor.x, cursor.y));
-                } else {
-                    ui.label("Cursor world: n/a");
-                }
+
                 ui.separator();
                 if let Some(entity) = selected_entity {
                     ui.heading("Entity Inspector");
@@ -695,7 +718,7 @@ impl ApplicationHandler for App {
                         selection_details = inspector_info;
                     }
                     if let Some(status) = &self.inspector_status {
-                        ui.label(status);
+                        ui.colored_label(egui::Color32::YELLOW, status);
                     }
                     if ui.button("Delete selected").clicked() {
                         actions.delete_entity = Some(entity);
@@ -708,6 +731,7 @@ impl ApplicationHandler for App {
                 } else {
                     ui.label("No entity selected");
                 }
+
                 ui.separator();
                 ui.heading("Scripts");
                 ui.label(format!("Path: {}", self.scripts.script_path().display()));
@@ -727,6 +751,7 @@ impl ApplicationHandler for App {
                 } else {
                     ui.label("Scripts disabled");
                 }
+
                 ui.separator();
                 ui.heading("Scene");
                 ui.horizontal(|ui| {
@@ -742,6 +767,7 @@ impl ApplicationHandler for App {
                 if let Some(status) = &self.ui_scene_status {
                     ui.label(status);
                 }
+
                 ui.separator();
                 ui.heading("Recent Events");
                 if recent_events.is_empty() {
@@ -751,6 +777,7 @@ impl ApplicationHandler for App {
                         ui.label(event.to_string());
                     }
                 }
+
                 ui.separator();
                 ui.heading("Audio Debug");
                 if ui.checkbox(&mut audio_enabled, "Enable audio triggers").changed() {
@@ -773,7 +800,6 @@ impl ApplicationHandler for App {
                     }
                 }
             });
-
             let painter = ctx.debug_painter();
             if let Some(rect) = highlight_rect {
                 painter.rect_stroke(
@@ -784,8 +810,8 @@ impl ApplicationHandler for App {
                 );
             }
             if let Some(center_px) = gizmo_center_px {
-                let center = egui::pos2(center_px.x / pixels_per_point, center_px.y / pixels_per_point);
-                let extent = 8.0 / pixels_per_point;
+                let center = egui::pos2(center_px.x / ui_pixels_per_point, center_px.y / ui_pixels_per_point);
+                let extent = 8.0 / ui_pixels_per_point;
                 painter.line_segment(
                     [egui::pos2(center.x - extent, center.y), egui::pos2(center.x + extent, center.y)],
                     egui::Stroke::new(2.0, egui::Color32::YELLOW),
@@ -796,7 +822,7 @@ impl ApplicationHandler for App {
                 );
                 painter.circle_stroke(
                     center,
-                    3.0 / pixels_per_point,
+                    3.0 / ui_pixels_per_point,
                     egui::Stroke::new(2.0, egui::Color32::YELLOW),
                 );
             }
