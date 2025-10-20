@@ -18,7 +18,7 @@ impl AudioManager {
         let capacity = capacity.max(1);
         match OutputStream::try_default() {
             Ok((stream, handle)) => Self {
-                enabled: true,
+                enabled: false,
                 capacity,
                 triggers: VecDeque::new(),
                 _stream: Some(stream),
