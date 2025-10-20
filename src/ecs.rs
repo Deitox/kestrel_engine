@@ -13,6 +13,7 @@ use rand::Rng;
 use rapier2d::geometry::{CollisionEvent, CollisionEventFlags};
 use rapier2d::pipeline::{ActiveEvents, EventHandler};
 use rapier2d::prelude::*;
+use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::Path;
@@ -137,6 +138,11 @@ pub struct EmitterSnapshot {
 pub struct PhysicsParams {
     pub gravity: Vec2,
     pub linear_damping: f32,
+}
+
+pub enum CollisionLifecycle {
+    Started,
+    Stopped,
 }
 
 struct CollisionEventCollector {
@@ -274,6 +280,12 @@ impl RapierState {
         (body_handle, collider_handle)
     }
 
+    pub fn resize_collider(&mut self, handle: ColliderHandle, half: Vec2) {
+        if let Some(collider) = self.colliders.get_mut(handle) {
+            collider.set_shape(SharedShape::cuboid(half.x, half.y));
+        }
+    }
+
     pub fn remove_body(&mut self, handle: RigidBodyHandle) {
         let collider_handles: Vec<ColliderHandle> = self
             .bodies
@@ -334,21 +346,33 @@ impl RapierState {
         self.collider_entities.remove(&collider);
     }
 
-    pub fn drain_collision_pairs(&mut self) -> Vec<(Entity, Entity)> {
-        let mut pairs = Vec::new();
+    pub fn drain_collision_events(&mut self) -> Vec<(CollisionLifecycle, Entity, Entity)> {
+        let mut out = Vec::new();
         for event in self.event_collector.drain() {
-            if let CollisionEvent::Started(a, b, flags) = event {
-                if flags.contains(CollisionEventFlags::SENSOR) {
-                    continue;
+            match event {
+                CollisionEvent::Started(a, b, flags) => {
+                    if flags.contains(CollisionEventFlags::SENSOR) {
+                        continue;
+                    }
+                    if let (Some(entity_a), Some(entity_b)) =
+                        (self.collider_entities.get(&a), self.collider_entities.get(&b))
+                    {
+                        out.push((CollisionLifecycle::Started, *entity_a, *entity_b));
+                    }
                 }
-                if let (Some(entity_a), Some(entity_b)) =
-                    (self.collider_entities.get(&a), self.collider_entities.get(&b))
-                {
-                    pairs.push((*entity_a, *entity_b));
+                CollisionEvent::Stopped(a, b, flags) => {
+                    if flags.contains(CollisionEventFlags::SENSOR) {
+                        continue;
+                    }
+                    if let (Some(entity_a), Some(entity_b)) =
+                        (self.collider_entities.get(&a), self.collider_entities.get(&b))
+                    {
+                        out.push((CollisionLifecycle::Stopped, *entity_a, *entity_b));
+                    }
                 }
             }
         }
-        pairs
+        out
     }
 
     pub fn body(&self, handle: RigidBodyHandle) -> Option<&RigidBody> {
@@ -835,8 +859,14 @@ impl EcsWorld {
             transform.scale = scale;
             changed = true;
         }
+        let half = Vec2::new(scale.x.abs(), scale.y.abs()) * 0.5;
         if let Some(mut aabb) = self.world.get_mut::<Aabb>(entity) {
-            aabb.half = Vec2::new(scale.x.abs(), scale.y.abs()) * 0.5;
+            aabb.half = half;
+            changed = true;
+        }
+        if let Some(collider_handle) = self.world.get::<RapierCollider>(entity).map(|c| c.handle) {
+            let mut rapier = self.world.resource_mut::<RapierState>();
+            rapier.resize_collider(collider_handle, half);
             changed = true;
         }
         changed
@@ -1284,8 +1314,11 @@ fn sys_step_rapier(mut rapier: ResMut<RapierState>, mut events: ResMut<EventBus>
     if dt.0 > 0.0 {
         rapier.step(dt.0);
     }
-    for (a, b) in rapier.drain_collision_pairs() {
-        events.push(GameEvent::describes_collision_between(a, b));
+    for (phase, a, b) in rapier.drain_collision_events() {
+        match phase {
+            CollisionLifecycle::Started => events.push(GameEvent::collision_started(a, b)),
+            CollisionLifecycle::Stopped => events.push(GameEvent::collision_ended(a, b)),
+        }
     }
 }
 
@@ -1448,7 +1481,7 @@ fn sys_collide_spatial(
     mut events: ResMut<EventBus>,
 ) {
     let neighbors = [(-1, -1), (0, -1), (1, -1), (-1, 0), (0, 0), (1, 0), (-1, 1), (0, 1), (1, 1)];
-    let mut checked = Vec::with_capacity(8);
+    let mut checked: SmallVec<[Entity; 16]> = SmallVec::new();
     for (e, t, a, mut v) in &mut movers {
         let key = grid.key(t.translation);
         let mut impulse = Vec2::ZERO;
@@ -1456,7 +1489,7 @@ fn sys_collide_spatial(
         for (dx, dy) in neighbors {
             if let Some(list) = grid.grid.get(&(key.0 + dx, key.1 + dy)) {
                 for &other in list {
-                    if other == e || checked.contains(&other) {
+                    if other == e || checked.iter().any(|&c| c == other) {
                         continue;
                     }
                     checked.push(other);
@@ -1466,7 +1499,7 @@ fn sys_collide_spatial(
                             let dir = delta.signum();
                             impulse += dir * 0.04;
                             if e.index() < other.index() {
-                                events.push(GameEvent::describes_collision_between(e, other));
+                                events.push(GameEvent::collision_started(e, other));
                             }
                         }
                     }

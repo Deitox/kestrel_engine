@@ -5,14 +5,25 @@ use std::fmt;
 pub enum GameEvent {
     SpriteSpawned { entity: Entity, atlas: String, region: String },
     EntityDespawned { entity: Entity },
-    Collision2d { a: Entity, b: Entity },
+    CollisionStarted { a: Entity, b: Entity },
+    CollisionEnded { a: Entity, b: Entity },
     ScriptMessage { message: String },
 }
 
 impl GameEvent {
-    pub fn describes_collision_between(a: Entity, b: Entity) -> Self {
+    fn ordered_pair(a: Entity, b: Entity) -> (Entity, Entity) {
         let (first, second) = if a.index() <= b.index() { (a, b) } else { (b, a) };
-        GameEvent::Collision2d { a: first, b: second }
+        (first, second)
+    }
+
+    pub fn collision_started(a: Entity, b: Entity) -> Self {
+        let (a, b) = Self::ordered_pair(a, b);
+        GameEvent::CollisionStarted { a, b }
+    }
+
+    pub fn collision_ended(a: Entity, b: Entity) -> Self {
+        let (a, b) = Self::ordered_pair(a, b);
+        GameEvent::CollisionEnded { a, b }
     }
 }
 
@@ -25,8 +36,11 @@ impl fmt::Display for GameEvent {
             GameEvent::EntityDespawned { entity } => {
                 write!(f, "EntityDespawned entity={}", entity.index())
             }
-            GameEvent::Collision2d { a, b } => {
-                write!(f, "Collision2d a={} b={}", a.index(), b.index())
+            GameEvent::CollisionStarted { a, b } => {
+                write!(f, "CollisionStarted a={} b={}", a.index(), b.index())
+            }
+            GameEvent::CollisionEnded { a, b } => {
+                write!(f, "CollisionEnded a={} b={}", a.index(), b.index())
             }
             GameEvent::ScriptMessage { message } => write!(f, "ScriptMessage {message}"),
         }

@@ -22,6 +22,7 @@ egui_plot = "0.34"
 rhai = { version = "1.17", default-features = false, features = ["std"] }
 rapier2d = "0.26"
 rodio = "0.17"
+smallvec = "1.13"
 
 [profile.dev]
 opt-level = 1

@@ -67,7 +67,8 @@ impl AudioManager {
         let label = match event {
             GameEvent::SpriteSpawned { atlas, region, .. } => format!("spawn:{}:{}", atlas, region),
             GameEvent::EntityDespawned { .. } => String::from("despawn"),
-            GameEvent::Collision2d { .. } => String::from("collision"),
+            GameEvent::CollisionStarted { .. } => String::from("collision"),
+            GameEvent::CollisionEnded { .. } => String::from("collision_end"),
             GameEvent::ScriptMessage { .. } => return,
         };
         self.push_trigger(label.clone());
@@ -94,6 +95,8 @@ impl AudioManager {
             330.0
         } else if label == "collision" {
             560.0
+        } else if label == "collision_end" {
+            280.0
         } else {
             return;
         };

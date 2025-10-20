@@ -1581,6 +1581,7 @@ dependencies = [
  "rodio",
  "serde",
  "serde_json",
+ "smallvec",
  "wgpu",
  "winit",
 ]
