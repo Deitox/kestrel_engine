@@ -850,13 +850,13 @@ impl ApplicationHandler for App {
         }
 
         if actions.save_scene {
-            match self.ecs.save_scene_to_path(&self.ui_scene_path) {
+            match self.ecs.save_scene_to_path(&self.ui_scene_path, &self.assets) {
                 Ok(_) => self.ui_scene_status = Some(format!("Saved {}", self.ui_scene_path)),
                 Err(err) => self.ui_scene_status = Some(format!("Save failed: {err}")),
             }
         }
         if actions.load_scene {
-            match self.ecs.load_scene_from_path(&self.ui_scene_path, &self.assets) {
+            match self.ecs.load_scene_from_path(&self.ui_scene_path, &mut self.assets) {
                 Ok(_) => {
                     self.ui_scene_status = Some(format!("Loaded {}", self.ui_scene_path));
                     self.selected_entity = None;

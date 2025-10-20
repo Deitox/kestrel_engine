@@ -1041,22 +1041,44 @@ impl EcsWorld {
 }
 
 impl EcsWorld {
-    pub fn save_scene_to_path(&mut self, path: impl AsRef<Path>) -> Result<()> {
-        let scene = self.export_scene();
+    pub fn save_scene_to_path(&mut self, path: impl AsRef<Path>, assets: &AssetManager) -> Result<()> {
+        let scene = self.export_scene(assets);
         scene.save_to_path(path)
     }
 
-    pub fn load_scene_from_path(&mut self, path: impl AsRef<Path>, assets: &AssetManager) -> Result<()> {
+    pub fn load_scene_from_path(&mut self, path: impl AsRef<Path>, assets: &mut AssetManager) -> Result<()> {
         let scene = Scene::load_from_path(path)?;
+        self.ensure_scene_dependencies(&scene, assets)?;
         self.load_scene(&scene, assets)
     }
 
+    fn ensure_scene_dependencies(&self, scene: &Scene, assets: &mut AssetManager) -> Result<()> {
+        let mut missing = Vec::new();
+        for dep in scene.dependencies.atlas_dependencies() {
+            if assets.has_atlas(dep.key()) {
+                continue;
+            }
+            if let Some(path) = dep.path() {
+                if let Err(err) = assets.load_atlas(dep.key(), path) {
+                    missing.push(format!("{} ({}): {err}", dep.key(), path));
+                }
+            } else {
+                missing.push(format!("{} (no path provided)", dep.key()));
+            }
+        }
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(anyhow!("Scene requires atlases that could not be loaded: {}", missing.join(", ")))
+        }
+    }
+
     pub fn load_scene(&mut self, scene: &Scene, assets: &AssetManager) -> Result<()> {
-        for atlas in &scene.dependencies.atlases {
-            if !assets.has_atlas(atlas) {
+        for dep in scene.dependencies.atlas_dependencies() {
+            if !assets.has_atlas(dep.key()) {
                 return Err(anyhow!(
                     "Scene requires atlas '{}' which is not loaded. Call AssetManager::load_atlas before loading the scene.",
-                    atlas
+                    dep.key()
                 ));
             }
         }
@@ -1085,7 +1107,7 @@ impl EcsWorld {
         Ok(())
     }
 
-    pub fn export_scene(&mut self) -> Scene {
+    pub fn export_scene(&mut self, assets: &AssetManager) -> Scene {
         let mut scene = Scene::default();
         let mut query = self.world.query::<(Entity, Option<&Parent>, Option<&Transform>)>();
         let mut roots = Vec::new();
@@ -1097,7 +1119,7 @@ impl EcsWorld {
         for root in roots {
             self.collect_scene_entity(root, None, &mut scene.entities);
         }
-        scene.dependencies = SceneDependencies::from_entities(&scene.entities);
+        scene.dependencies = SceneDependencies::from_entities(&scene.entities, assets);
         scene
     }
 

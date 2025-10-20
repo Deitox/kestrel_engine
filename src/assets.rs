@@ -9,6 +9,7 @@ pub struct AssetManager {
     device: Option<wgpu::Device>,
     queue: Option<wgpu::Queue>,
     texture_cache: HashMap<String, (wgpu::TextureView, (u32, u32))>,
+    atlas_sources: HashMap<String, String>,
 }
 
 #[derive(Clone)]
@@ -41,6 +42,7 @@ impl AssetManager {
             device: None,
             queue: None,
             texture_cache: HashMap::new(),
+            atlas_sources: HashMap::new(),
         }
     }
     pub fn set_device(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
@@ -70,6 +72,7 @@ impl AssetManager {
             regions: af.regions,
         };
         self.atlases.insert(key.to_string(), atlas);
+        self.atlas_sources.insert(key.to_string(), json_path.to_string());
         Ok(())
     }
     pub fn atlas_texture_view(&mut self, key: &str) -> Result<wgpu::TextureView> {
@@ -131,5 +134,8 @@ impl AssetManager {
     }
     pub fn has_atlas(&self, key: &str) -> bool {
         self.atlases.contains_key(key)
+    }
+    pub fn atlas_source(&self, key: &str) -> Option<&str> {
+        self.atlas_sources.get(key).map(|s| s.as_str())
     }
 }

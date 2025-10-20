@@ -1,6 +1,7 @@
+use crate::assets::AssetManager;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
@@ -18,25 +19,132 @@ impl Default for Scene {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct AtlasDependency {
+    key: String,
+    path: Option<String>,
+}
+
+impl AtlasDependency {
+    pub fn new(key: String, path: Option<String>) -> Self {
+        Self { key, path }
+    }
+
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    pub fn path(&self) -> Option<&str> {
+        self.path.as_deref()
+    }
+}
+
+pub struct AtlasDependencyView<'a> {
+    key: &'a str,
+    path: Option<&'a str>,
+}
+
+impl<'a> AtlasDependencyView<'a> {
+    fn new(key: &'a str, path: Option<&'a str>) -> Self {
+        Self { key, path }
+    }
+
+    pub fn key(&self) -> &str {
+        self.key
+    }
+
+    pub fn path(&self) -> Option<&str> {
+        self.path
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum AtlasDependencyRepr {
+    Key(String),
+    Detailed {
+        key: String,
+        #[serde(default)]
+        path: Option<String>,
+    },
+}
+
+impl From<AtlasDependency> for AtlasDependencyRepr {
+    fn from(dep: AtlasDependency) -> Self {
+        if let Some(path) = dep.path {
+            AtlasDependencyRepr::Detailed { key: dep.key, path: Some(path) }
+        } else {
+            AtlasDependencyRepr::Key(dep.key)
+        }
+    }
+}
+
+impl From<AtlasDependencyRepr> for AtlasDependency {
+    fn from(repr: AtlasDependencyRepr) -> Self {
+        match repr {
+            AtlasDependencyRepr::Key(key) => AtlasDependency::new(key, None),
+            AtlasDependencyRepr::Detailed { key, path } => AtlasDependency::new(key, path),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SceneDependencies {
     #[serde(default)]
-    pub atlases: Vec<String>,
+    atlases: Vec<AtlasDependencyRepr>,
 }
 
 impl SceneDependencies {
-    pub fn from_entities(entities: &[SceneEntity]) -> Self {
+    pub fn from_entities(entities: &[SceneEntity], assets: &AssetManager) -> Self {
         let mut set = BTreeSet::new();
         for entity in entities {
             if let Some(sprite) = &entity.sprite {
                 set.insert(sprite.atlas.clone());
             }
         }
-        Self { atlases: set.into_iter().collect() }
+        let mut deps = SceneDependencies {
+            atlases: set
+                .into_iter()
+                .map(|key| {
+                    let path = assets.atlas_source(&key).map(|p| p.to_string());
+                    AtlasDependencyRepr::from(AtlasDependency::new(key, path))
+                })
+                .collect(),
+        };
+        deps.normalize();
+        deps
     }
 
     pub fn contains_atlas(&self, key: &str) -> bool {
-        self.atlases.iter().any(|atlas| atlas == key)
+        self.atlas_dependencies().any(|dep| dep.key() == key)
+    }
+
+    pub fn atlas_dependencies(&self) -> impl Iterator<Item = AtlasDependencyView<'_>> {
+        self.atlases.iter().map(|repr| match repr {
+            AtlasDependencyRepr::Key(key) => AtlasDependencyView::new(key, None),
+            AtlasDependencyRepr::Detailed { key, path } => AtlasDependencyView::new(key, path.as_deref()),
+        })
+    }
+
+    pub fn normalize(&mut self) {
+        let mut map: BTreeMap<String, AtlasDependency> = BTreeMap::new();
+        for repr in std::mem::take(&mut self.atlases) {
+            let dep = AtlasDependency::from(repr);
+            let key = dep.key().to_string();
+            let path_opt = dep.path().map(|s| s.to_string());
+            match map.entry(key) {
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    if entry.get().path.is_none() {
+                        entry.get_mut().path = path_opt;
+                    }
+                }
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    let key_clone = entry.key().clone();
+                    entry.insert(AtlasDependency::new(key_clone, path_opt));
+                }
+            }
+        }
+        self.atlases = map.into_iter().map(|(_, dep)| AtlasDependencyRepr::from(dep)).collect();
     }
 }
 
@@ -121,8 +229,7 @@ impl Scene {
         let bytes = fs::read(path).with_context(|| format!("Reading scene file {}", path.display()))?;
         let mut scene = serde_json::from_slice::<Scene>(&bytes)
             .with_context(|| format!("Parsing scene file {}", path.display()))?;
-        scene.dependencies.atlases.sort();
-        scene.dependencies.atlases.dedup();
+        scene.dependencies.normalize();
         Ok(scene)
     }
 
@@ -133,8 +240,7 @@ impl Scene {
                 .with_context(|| format!("Creating scene directory {}", parent.display()))?;
         }
         let mut normalized = self.clone();
-        normalized.dependencies.atlases.sort();
-        normalized.dependencies.atlases.dedup();
+        normalized.dependencies.normalize();
         let json = serde_json::to_string_pretty(&normalized)?;
         fs::write(path, json.as_bytes()).with_context(|| format!("Writing scene file {}", path.display()))?;
         Ok(())
