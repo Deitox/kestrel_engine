@@ -15,7 +15,7 @@ use rapier2d::pipeline::{ActiveEvents, EventHandler};
 use rapier2d::prelude::*;
 use smallvec::SmallVec;
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -204,10 +204,11 @@ pub struct RapierState {
     query_pipeline: QueryPipeline,
     collider_entities: HashMap<ColliderHandle, Entity>,
     event_collector: CollisionEventCollector,
+    boundary_entity: Entity,
 }
 
 impl RapierState {
-    pub fn new(gravity: Vec2) -> Self {
+    pub fn new(gravity: Vec2, boundary_entity: Entity) -> Self {
         let mut state = Self {
             pipeline: PhysicsPipeline::new(),
             gravity: vec_to_rapier(gravity),
@@ -223,6 +224,7 @@ impl RapierState {
             query_pipeline: QueryPipeline::new(),
             collider_entities: HashMap::new(),
             event_collector: CollisionEventCollector::new(),
+            boundary_entity,
         };
         state.init_bounds();
         state
@@ -252,7 +254,8 @@ impl RapierState {
         let body = RigidBodyBuilder::fixed().translation(center).build();
         let body_handle = self.bodies.insert(body);
         let collider = ColliderBuilder::cuboid(half.x, half.y).restitution(0.4).friction(0.8).build();
-        let _ = self.colliders.insert_with_parent(collider, body_handle, &mut self.bodies);
+        let handle = self.colliders.insert_with_parent(collider, body_handle, &mut self.bodies);
+        self.collider_entities.insert(handle, self.boundary_entity);
     }
 
     pub fn spawn_dynamic_body(
@@ -283,6 +286,12 @@ impl RapierState {
     pub fn resize_collider(&mut self, handle: ColliderHandle, half: Vec2) {
         if let Some(collider) = self.colliders.get_mut(handle) {
             collider.set_shape(SharedShape::cuboid(half.x, half.y));
+        }
+    }
+
+    pub fn set_body_mass(&mut self, handle: RigidBodyHandle, mass: f32) {
+        if let Some(body) = self.bodies.get_mut(handle) {
+            body.set_additional_mass(mass, true);
         }
     }
 
@@ -375,6 +384,10 @@ impl RapierState {
         out
     }
 
+    pub fn boundary_entity(&self) -> Entity {
+        self.boundary_entity
+    }
+
     pub fn body(&self, handle: RigidBodyHandle) -> Option<&RigidBody> {
         self.bodies.get(handle)
     }
@@ -433,8 +446,10 @@ impl EcsWorld {
         let mut world = World::new();
         world.insert_resource(TimeDelta(0.0));
         world.insert_resource(SpatialHash::new(0.25));
+        world.insert_resource(ParticleContacts::default());
         world.insert_resource(PhysicsParams { gravity: Vec2::new(0.0, -0.6), linear_damping: 0.3 });
-        world.insert_resource(RapierState::new(Vec2::new(0.0, -0.6)));
+        let boundary_entity = world.spawn_empty().id();
+        world.insert_resource(RapierState::new(Vec2::new(0.0, -0.6), boundary_entity));
         world.insert_resource(EventBus::default());
 
         let mut schedule_var = Schedule::default();
@@ -860,13 +875,32 @@ impl EcsWorld {
             changed = true;
         }
         let half = Vec2::new(scale.x.abs(), scale.y.abs()) * 0.5;
+        let previous_half = self.world.get::<Aabb>(entity).map(|a| a.half);
         if let Some(mut aabb) = self.world.get_mut::<Aabb>(entity) {
             aabb.half = half;
             changed = true;
         }
-        if let Some(collider_handle) = self.world.get::<RapierCollider>(entity).map(|c| c.handle) {
+        let mut new_mass_value = None;
+        if let Some(mut mass) = self.world.get_mut::<Mass>(entity) {
+            let prev = previous_half.unwrap_or(half);
+            let old_area = (prev.x.max(0.01) * 2.0) * (prev.y.max(0.01) * 2.0);
+            let new_area = (half.x.max(0.01) * 2.0) * (half.y.max(0.01) * 2.0);
+            if old_area > 0.0 {
+                mass.0 = (mass.0 * (new_area / old_area)).max(0.01);
+                new_mass_value = Some(mass.0);
+                changed = true;
+            }
+        }
+        let collider_handle = self.world.get::<RapierCollider>(entity).map(|c| c.handle);
+        let body_handle = self.world.get::<RapierBody>(entity).map(|b| b.handle);
+        if collider_handle.is_some() || (body_handle.is_some() && new_mass_value.is_some()) {
             let mut rapier = self.world.resource_mut::<RapierState>();
-            rapier.resize_collider(collider_handle, half);
+            if let Some(handle) = collider_handle {
+                rapier.resize_collider(handle, half);
+            }
+            if let (Some(handle), Some(mass_value)) = (body_handle, new_mass_value) {
+                rapier.set_body_mass(handle, mass_value);
+            }
             changed = true;
         }
         changed
@@ -921,7 +955,8 @@ impl EcsWorld {
         Ok((out, atlas_key))
     }
     pub fn entity_count(&self) -> usize {
-        self.world.entities().len() as usize
+        let boundary = self.world.resource::<RapierState>().boundary_entity();
+        self.world.iter_entities().filter(|entity_ref| entity_ref.id() != boundary).count()
     }
     pub fn set_spatial_cell(&mut self, cell: f32) {
         let mut grid = self.world.resource_mut::<SpatialHash>();
@@ -1322,6 +1357,11 @@ fn sys_step_rapier(mut rapier: ResMut<RapierState>, mut events: ResMut<EventBus>
     }
 }
 
+#[derive(Resource, Default)]
+pub struct ParticleContacts {
+    pairs: HashSet<(Entity, Entity)>,
+}
+
 fn sys_sync_from_rapier(
     rapier: Res<RapierState>,
     mut query: Query<(&RapierBody, &mut Transform, Option<&mut Velocity>)>,
@@ -1479,9 +1519,11 @@ fn sys_collide_spatial(
     mut movers: Query<(Entity, &Transform, &Aabb, &mut Velocity), Without<RapierBody>>,
     positions: Query<(&Transform, &Aabb), Without<RapierBody>>,
     mut events: ResMut<EventBus>,
+    mut contacts: ResMut<ParticleContacts>,
 ) {
     let neighbors = [(-1, -1), (0, -1), (1, -1), (-1, 0), (0, 0), (1, 0), (-1, 1), (0, 1), (1, 1)];
     let mut checked: SmallVec<[Entity; 16]> = SmallVec::new();
+    let mut current_pairs: HashSet<(Entity, Entity)> = HashSet::with_capacity(contacts.pairs.len());
     for (e, t, a, mut v) in &mut movers {
         let key = grid.key(t.translation);
         let mut impulse = Vec2::ZERO;
@@ -1498,8 +1540,9 @@ fn sys_collide_spatial(
                             let delta = t.translation - ot.translation;
                             let dir = delta.signum();
                             impulse += dir * 0.04;
-                            if e.index() < other.index() {
-                                events.push(GameEvent::collision_started(e, other));
+                            let pair = if e.index() <= other.index() { (e, other) } else { (other, e) };
+                            if current_pairs.insert(pair) && !contacts.pairs.contains(&pair) {
+                                events.push(GameEvent::collision_started(pair.0, pair.1));
                             }
                         }
                     }
@@ -1508,6 +1551,12 @@ fn sys_collide_spatial(
         }
         v.0 += impulse;
     }
+    for pair in contacts.pairs.iter() {
+        if !current_pairs.contains(pair) {
+            events.push(GameEvent::collision_ended(pair.0, pair.1));
+        }
+    }
+    contacts.pairs = current_pairs;
 }
 
 fn mat_from_transform(t: Transform) -> Mat4 {
