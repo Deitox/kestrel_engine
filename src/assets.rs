@@ -10,6 +10,7 @@ pub struct AssetManager {
     queue: Option<wgpu::Queue>,
     texture_cache: HashMap<String, (wgpu::TextureView, (u32, u32))>,
     atlas_sources: HashMap<String, String>,
+    atlas_refs: HashMap<String, usize>,
 }
 
 #[derive(Clone)]
@@ -43,6 +44,7 @@ impl AssetManager {
             queue: None,
             texture_cache: HashMap::new(),
             atlas_sources: HashMap::new(),
+            atlas_refs: HashMap::new(),
         }
     }
     pub fn set_device(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
@@ -63,6 +65,10 @@ impl AssetManager {
         self.sampler.as_ref().expect("sampler")
     }
     pub fn load_atlas(&mut self, key: &str, json_path: &str) -> Result<()> {
+        self.load_atlas_internal(key, json_path)?;
+        Ok(())
+    }
+    fn load_atlas_internal(&mut self, key: &str, json_path: &str) -> Result<()> {
         let bytes = fs::read(json_path)?;
         let af: AtlasFile = serde_json::from_slice(&bytes)?;
         let atlas = TextureAtlas {
@@ -74,6 +80,48 @@ impl AssetManager {
         self.atlases.insert(key.to_string(), atlas);
         self.atlas_sources.insert(key.to_string(), json_path.to_string());
         Ok(())
+    }
+    pub fn retain_atlas(&mut self, key: &str, json_path: Option<&str>) -> Result<()> {
+        if self.atlases.contains_key(key) {
+            *self.atlas_refs.entry(key.to_string()).or_insert(0) += 1;
+            if let Some(path) = json_path {
+                self.atlas_sources.insert(key.to_string(), path.to_string());
+            }
+            return Ok(());
+        }
+        let path_owned = if let Some(path) = json_path {
+            path.to_string()
+        } else if let Some(stored) = self.atlas_sources.get(key) {
+            stored.clone()
+        } else {
+            return Err(anyhow!(
+                "Atlas '{key}' is not loaded and no JSON path provided to retain it."
+            ));
+        };
+        self.load_atlas_internal(key, &path_owned)?;
+        self.atlas_sources.insert(key.to_string(), path_owned);
+        self.atlas_refs.insert(key.to_string(), 1);
+        Ok(())
+    }
+    pub fn release_atlas(&mut self, key: &str) -> bool {
+        if let Some(count) = self.atlas_refs.get_mut(key) {
+            if *count > 0 {
+                *count -= 1;
+                if *count == 0 {
+                    self.atlas_refs.remove(key);
+                    if let Some(atlas) = self.atlases.remove(key) {
+                        let image_path = format!("assets/images/{}", atlas.image_key);
+                        self.texture_cache.remove(&image_path);
+                    }
+                    self.atlas_sources.remove(key);
+                }
+                return true;
+            }
+        }
+        false
+    }
+    pub fn atlas_ref_count(&self, key: &str) -> usize {
+        self.atlas_refs.get(key).copied().unwrap_or(0)
     }
     pub fn atlas_texture_view(&mut self, key: &str) -> Result<wgpu::TextureView> {
         self.load_or_reload_view(key, false)

@@ -9,7 +9,7 @@ fn scene_roundtrip_preserves_entity_count() {
     let original_count = world.entity_count();
     let mut assets = AssetManager::new();
     assets
-        .load_atlas("main", "assets/images/atlas.json")
+        .retain_atlas("main", Some("assets/images/atlas.json"))
         .expect("main atlas should load before exporting scene");
     let scene = world.export_scene(&assets);
     assert!(scene.dependencies.contains_atlas("main"), "scene should track atlas dependency");
@@ -33,7 +33,7 @@ fn scene_roundtrip_preserves_entity_count() {
 
     let mut autoload_world = EcsWorld::new();
     let mut autoload_assets = AssetManager::new();
-    autoload_world
+    let _autoload_scene = autoload_world
         .load_scene_from_path(path, &mut autoload_assets)
         .expect("scene load with auto dependency resolution");
     assert_eq!(autoload_world.entity_count(), original_count);

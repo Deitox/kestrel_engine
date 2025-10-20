@@ -1069,10 +1069,15 @@ impl EcsWorld {
         scene.save_to_path(path)
     }
 
-    pub fn load_scene_from_path(&mut self, path: impl AsRef<Path>, assets: &mut AssetManager) -> Result<()> {
+    pub fn load_scene_from_path(
+        &mut self,
+        path: impl AsRef<Path>,
+        assets: &mut AssetManager,
+    ) -> Result<Scene> {
         let scene = Scene::load_from_path(path)?;
         self.ensure_scene_dependencies(&scene, assets)?;
-        self.load_scene(&scene, assets)
+        self.load_scene(&scene, assets)?;
+        Ok(scene)
     }
 
     fn ensure_scene_dependencies(&self, scene: &Scene, assets: &mut AssetManager) -> Result<()> {

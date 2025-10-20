@@ -18,6 +18,7 @@ use crate::ecs::{EcsWorld, SpriteInfo};
 use crate::events::GameEvent;
 use crate::input::{Input, InputEvent};
 use crate::renderer::{RenderViewport, Renderer};
+use crate::scene::SceneDependencies;
 use crate::scripts::{ScriptCommand, ScriptHost};
 use crate::time::Time;
 
@@ -25,7 +26,7 @@ use bevy_ecs::prelude::Entity;
 use glam::{Vec2, Vec4};
 
 use anyhow::{Context, Result};
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -157,6 +158,9 @@ pub struct App {
     // Configuration
     config: AppConfig,
 
+    scene_atlas_refs: HashSet<String>,
+    persistent_atlases: HashSet<String>,
+
     viewport: Viewport,
 
     // Particles
@@ -261,6 +265,8 @@ impl App {
             selected_entity: None,
             gizmo_mode: GizmoMode::default(),
             gizmo_interaction: None,
+            scene_atlas_refs: HashSet::new(),
+            persistent_atlases: HashSet::new(),
             viewport: Viewport::new(
                 Vec2::ZERO,
                 Vec2::new(config.window.width as f32, config.window.height as f32),
@@ -303,6 +309,42 @@ impl App {
         }
     }
 
+    fn update_scene_dependencies(&mut self, deps: &SceneDependencies) -> Result<()> {
+        let previous = self.scene_atlas_refs.clone();
+        let mut next = self.persistent_atlases.clone();
+        for dep in deps.atlas_dependencies() {
+            let key = dep.key().to_string();
+            if !next.contains(&key) {
+                if !previous.contains(&key) {
+                    self.assets
+                        .retain_atlas(dep.key(), dep.path())
+                        .with_context(|| format!("Failed to retain atlas '{}'", dep.key()))?;
+                }
+                next.insert(key);
+            }
+        }
+        for key in previous {
+            if !next.contains(&key) && !self.persistent_atlases.contains(&key) {
+                self.assets.release_atlas(&key);
+            }
+        }
+        self.scene_atlas_refs = next;
+        Ok(())
+    }
+
+    fn clear_scene_atlases(&mut self) {
+        let to_release: Vec<String> = self
+            .scene_atlas_refs
+            .iter()
+            .filter(|key| !self.persistent_atlases.contains(*key))
+            .cloned()
+            .collect();
+        for key in to_release {
+            self.assets.release_atlas(&key);
+        }
+        self.scene_atlas_refs = self.persistent_atlases.clone();
+    }
+
     fn viewport_physical_size(&self) -> PhysicalSize<u32> {
         self.viewport.size_physical()
     }
@@ -337,10 +379,18 @@ impl ApplicationHandler for App {
             }
         };
         self.assets.set_device(device, queue);
-        if let Err(err) = self.assets.load_atlas("main", "assets/images/atlas.json") {
-            eprintln!("Failed to load atlas: {err:?}");
-            self.should_close = true;
-            return;
+        if !self.scene_atlas_refs.contains("main") {
+            match self.assets.retain_atlas("main", Some("assets/images/atlas.json")) {
+                Ok(()) => {
+                    self.scene_atlas_refs.insert("main".to_string());
+                    self.persistent_atlases.insert("main".to_string());
+                }
+                Err(err) => {
+                    eprintln!("Failed to retain atlas: {err:?}");
+                    self.should_close = true;
+                    return;
+                }
+            }
         }
         let atlas_view = match self.assets.atlas_texture_view("main") {
             Ok(view) => view,
@@ -1155,14 +1205,28 @@ impl ApplicationHandler for App {
         }
         if actions.load_scene {
             match self.ecs.load_scene_from_path(&self.ui_scene_path, &mut self.assets) {
-                Ok(_) => {
-                    self.ui_scene_status = Some(format!("Loaded {}", self.ui_scene_path));
-                    self.selected_entity = None;
-                    self.gizmo_interaction = None;
-                    self.scripts.clear_handles();
-                    self.ui_hist.clear();
-                    self.sync_emitter_ui();
-                    self.inspector_status = None;
+                Ok(scene) => {
+                    match self.update_scene_dependencies(&scene.dependencies) {
+                        Ok(()) => {
+                            self.ui_scene_status = Some(format!("Loaded {}", self.ui_scene_path));
+                            self.selected_entity = None;
+                            self.gizmo_interaction = None;
+                            self.scripts.clear_handles();
+                            self.ui_hist.clear();
+                            self.sync_emitter_ui();
+                            self.inspector_status = None;
+                        }
+                        Err(err) => {
+                            self.ui_scene_status = Some(format!("Load failed: {err}"));
+                            self.ecs.clear_world();
+                            self.clear_scene_atlases();
+                            self.selected_entity = None;
+                            self.gizmo_interaction = None;
+                            self.scripts.clear_handles();
+                            self.sync_emitter_ui();
+                            self.inspector_status = None;
+                        }
+                    }
                 }
                 Err(err) => {
                     self.ui_scene_status = Some(format!("Load failed: {err}"));
@@ -1206,6 +1270,7 @@ impl ApplicationHandler for App {
         }
         if actions.reset_world {
             self.ecs.clear_world();
+            self.clear_scene_atlases();
             self.selected_entity = None;
             self.gizmo_interaction = None;
             self.scripts.clear_handles();
