@@ -59,6 +59,17 @@ enum GizmoInteraction {
     Rotate { entity: Entity, start_rotation: f32, start_angle: f32 },
 }
 
+fn wrap_angle(mut radians: f32) -> f32 {
+    let two_pi = 2.0 * std::f32::consts::PI;
+    while radians > std::f32::consts::PI {
+        radians -= two_pi;
+    }
+    while radians < -std::f32::consts::PI {
+        radians += two_pi;
+    }
+    radians
+}
+
 pub async fn run() -> Result<()> {
     let config = AppConfig::load_or_default("config/app.json");
     let event_loop = EventLoop::new().context("Failed to create winit event loop")?;
@@ -329,6 +340,8 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, _el: &ActiveEventLoop, id: winit::window::WindowId, event: WindowEvent) {
         // egui wants the events too
         let mut consumed = false;
+        let input_event = InputEvent::from_window_event(&event);
+        let is_cursor_event = matches!(&input_event, InputEvent::CursorPos { .. });
         if let (Some(window), Some(state)) = (self.renderer.window(), self.egui_winit.as_mut()) {
             if id == window.id() {
                 let resp = state.on_window_event(window, &event);
@@ -337,8 +350,9 @@ impl ApplicationHandler for App {
                 }
             }
         }
-        let input_event = InputEvent::from_window_event(&event);
-        self.input.push(input_event);
+        if !consumed || is_cursor_event {
+            self.input.push(input_event);
+        }
 
         if consumed {
             return;
@@ -504,7 +518,7 @@ impl ApplicationHandler for App {
                             let vec = pointer_world - info.translation;
                             if vec.length_squared() > f32::EPSILON {
                                 let current_angle = vec.y.atan2(vec.x);
-                                let delta = current_angle - *start_angle;
+                                let delta = wrap_angle(current_angle - *start_angle);
                                 self.ecs.set_rotation(*entity, *start_rotation + delta);
                             }
                         } else {
