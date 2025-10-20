@@ -17,6 +17,12 @@ struct Globals {
     proj: [[f32; 4]; 4],
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct RenderViewport {
+    pub origin: (f32, f32),
+    pub size: (f32, f32),
+}
+
 pub struct Renderer {
     surface: Option<wgpu::Surface<'static>>,
     device: Option<wgpu::Device>,
@@ -397,7 +403,12 @@ impl Renderer {
         Ok(())
     }
 
-    pub fn render_batch(&mut self, instances: &[InstanceData], view_proj: Mat4) -> Result<()> {
+    pub fn render_batch(
+        &mut self,
+        instances: &[InstanceData],
+        view_proj: Mat4,
+        viewport: RenderViewport,
+    ) -> Result<()> {
         {
             let queue = self.queue.as_ref().context("GPU queue not initialized")?;
             let globals = self.globals_buf.as_ref().context("Globals buffer missing")?;
@@ -450,6 +461,34 @@ impl Renderer {
                 self.vertex_buffer.as_ref().context("Vertex buffer missing")?.slice(..),
             );
             pass.set_vertex_buffer(1, instance_buffer.slice(..));
+            let (vp_x, vp_y) = viewport.origin;
+            let (vp_w, vp_h) = viewport.size;
+            let vp_w = vp_w.max(1.0);
+            let vp_h = vp_h.max(1.0);
+            pass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
+            let mut sc_x = vp_x.max(0.0).floor() as u32;
+            let mut sc_y = vp_y.max(0.0).floor() as u32;
+            let mut sc_w = vp_w.floor() as u32;
+            let mut sc_h = vp_h.floor() as u32;
+            if sc_w == 0 {
+                sc_w = 1;
+            }
+            if sc_h == 0 {
+                sc_h = 1;
+            }
+            let limit_w = self.size.width.max(1);
+            let limit_h = self.size.height.max(1);
+            if sc_x >= limit_w {
+                sc_x = limit_w.saturating_sub(1);
+            }
+            if sc_y >= limit_h {
+                sc_y = limit_h.saturating_sub(1);
+            }
+            let avail_w = limit_w.saturating_sub(sc_x).max(1);
+            let avail_h = limit_h.saturating_sub(sc_y).max(1);
+            sc_w = sc_w.min(avail_w);
+            sc_h = sc_h.min(avail_h);
+            pass.set_scissor_rect(sc_x, sc_y, sc_w, sc_h);
             pass.set_index_buffer(
                 self.index_buffer.as_ref().context("Index buffer missing")?.slice(..),
                 wgpu::IndexFormat::Uint16,

@@ -17,7 +17,7 @@ use crate::config::AppConfig;
 use crate::ecs::{EcsWorld, SpriteInfo};
 use crate::events::GameEvent;
 use crate::input::{Input, InputEvent};
-use crate::renderer::Renderer;
+use crate::renderer::{RenderViewport, Renderer};
 use crate::scripts::{ScriptCommand, ScriptHost};
 use crate::time::Time;
 
@@ -30,6 +30,7 @@ use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, NamedKey};
+use winit::dpi::PhysicalSize;
 
 // egui
 use egui::Context as EguiCtx;
@@ -57,6 +58,32 @@ impl Default for GizmoMode {
 enum GizmoInteraction {
     Translate { entity: Entity, offset: Vec2 },
     Rotate { entity: Entity, start_rotation: f32, start_angle: f32 },
+}
+
+#[derive(Clone, Copy)]
+struct Viewport {
+    origin: Vec2,
+    size: Vec2,
+}
+
+impl Viewport {
+    fn new(origin: Vec2, size: Vec2) -> Self {
+        Self { origin, size }
+    }
+
+    fn contains(&self, point: Vec2) -> bool {
+        point.x >= self.origin.x
+            && point.y >= self.origin.y
+            && point.x <= self.origin.x + self.size.x
+            && point.y <= self.origin.y + self.size.y
+    }
+
+    fn size_physical(&self) -> PhysicalSize<u32> {
+        PhysicalSize::new(
+            self.size.x.max(1.0).round() as u32,
+            self.size.y.max(1.0).round() as u32,
+        )
+    }
 }
 
 fn wrap_angle(mut radians: f32) -> f32 {
@@ -128,6 +155,8 @@ pub struct App {
 
     // Configuration
     config: AppConfig,
+
+    viewport: Viewport,
 
     // Particles
     emitter_entity: Option<Entity>,
@@ -231,6 +260,10 @@ impl App {
             selected_entity: None,
             gizmo_mode: GizmoMode::default(),
             gizmo_interaction: None,
+            viewport: Viewport::new(
+                Vec2::ZERO,
+                Vec2::new(config.window.width as f32, config.window.height as f32),
+            ),
             config,
             emitter_entity: Some(emitter),
             scripts,
@@ -267,6 +300,27 @@ impl App {
         } else {
             self.emitter_entity = None;
         }
+    }
+
+    fn viewport_physical_size(&self) -> PhysicalSize<u32> {
+        self.viewport.size_physical()
+    }
+
+    fn screen_to_viewport(&self, screen: Vec2) -> Option<Vec2> {
+        if self.viewport.contains(screen) {
+            Some(screen - self.viewport.origin)
+        } else {
+            None
+        }
+    }
+
+    fn viewport_to_screen(&self, viewport_pos: Vec2) -> Vec2 {
+        viewport_pos + self.viewport.origin
+    }
+
+    fn update_viewport(&mut self, origin: Vec2, size: Vec2) {
+        let clamped = Vec2::new(size.x.max(1.0), size.y.max(1.0));
+        self.viewport = Viewport::new(origin, clamped);
     }
 }
 
@@ -412,13 +466,19 @@ impl ApplicationHandler for App {
         }
 
         let window_size = self.renderer.size();
-        let cursor_screen = self.input.cursor_position();
+        let viewport_size = self.viewport_physical_size();
+        let cursor_screen = self
+            .input
+            .cursor_position()
+            .map(|(sx, sy)| Vec2::new(sx, sy));
+        let cursor_viewport = cursor_screen.and_then(|pos| self.screen_to_viewport(pos));
         let cursor_world_pos =
-            cursor_screen.and_then(|(sx, sy)| self.camera.screen_to_world(Vec2::new(sx, sy), window_size));
+            cursor_viewport.and_then(|pos| self.camera.screen_to_world(pos, viewport_size));
+        let cursor_in_viewport = cursor_viewport.is_some();
         let mut selected_info = self.selected_entity.and_then(|entity| self.ecs.entity_info(entity));
-        let gizmo_center_screen = selected_info
+        let gizmo_center_viewport = selected_info
             .as_ref()
-            .and_then(|info| self.camera.world_to_screen_pixels(info.translation, window_size));
+            .and_then(|info| self.camera.world_to_screen_pixels(info.translation, viewport_size));
 
         if let Some(delta) = self.input.consume_wheel_delta() {
             self.camera.apply_scroll_zoom(delta);
@@ -427,19 +487,18 @@ impl ApplicationHandler for App {
         if self.input.right_held() {
             let (dx, dy) = self.input.mouse_delta;
             if dx.abs() > f32::EPSILON || dy.abs() > f32::EPSILON {
-                self.camera.pan_screen_delta(Vec2::new(dx, dy), window_size);
+                self.camera.pan_screen_delta(Vec2::new(dx, dy), viewport_size);
             }
         }
 
-        let view_proj = self.camera.view_projection(window_size);
+        let view_proj = self.camera.view_projection(viewport_size);
 
         let mut gizmo_click_consumed = false;
         if self.input.take_left_click() {
-            if let (Some(entity), Some(center_px), Some((sx, sy))) =
-                (self.selected_entity, gizmo_center_screen, cursor_screen)
+            if let (Some(entity), Some(center_viewport), Some(pointer_viewport)) =
+                (self.selected_entity, gizmo_center_viewport, cursor_viewport)
             {
-                let pointer_px = Vec2::new(sx, sy);
-                let dist = pointer_px.distance(center_px);
+                let dist = pointer_viewport.distance(center_viewport);
                 match self.gizmo_mode {
                     GizmoMode::Translate => {
                         if dist <= GIZMO_TRANSLATE_RADIUS_PX {
@@ -481,11 +540,13 @@ impl ApplicationHandler for App {
                 if let Some(world) = cursor_world_pos {
                     self.selected_entity = self.ecs.pick_entity(world);
                     self.inspector_status = None;
-                } else {
+                } else if cursor_in_viewport {
                     self.selected_entity = None;
                     self.inspector_status = None;
                 }
-                self.gizmo_interaction = None;
+                if cursor_in_viewport {
+                    self.gizmo_interaction = None;
+                }
             }
         }
 
@@ -571,7 +632,11 @@ impl ApplicationHandler for App {
                 return;
             }
         };
-        if let Err(err) = self.renderer.render_batch(&instances, view_proj) {
+        let render_viewport = RenderViewport {
+            origin: (self.viewport.origin.x, self.viewport.origin.y),
+            size: (self.viewport.size.x, self.viewport.size.y),
+        };
+        if let Err(err) = self.renderer.render_batch(&instances, view_proj, render_viewport) {
             eprintln!("Render error: {err:?}");
         }
 
@@ -625,13 +690,16 @@ impl ApplicationHandler for App {
 
         if let Some(entity) = selected_entity {
             if let Some((min, max)) = self.ecs.entity_bounds(entity) {
-                if let Some((min_px, max_px)) = self.camera.world_rect_to_screen_bounds(min, max, window_size)
+                if let Some((min_px_view, max_px_view)) =
+                    self.camera.world_rect_to_screen_bounds(min, max, viewport_size)
                 {
+                    let min_screen = self.viewport_to_screen(min_px_view);
+                    let max_screen = self.viewport_to_screen(max_px_view);
                     highlight_rect = Some(egui::Rect::from_two_pos(
-                        egui::pos2(min_px.x / ui_pixels_per_point, min_px.y / ui_pixels_per_point),
-                        egui::pos2(max_px.x / ui_pixels_per_point, max_px.y / ui_pixels_per_point),
+                        egui::pos2(min_screen.x / ui_pixels_per_point, min_screen.y / ui_pixels_per_point),
+                        egui::pos2(max_screen.x / ui_pixels_per_point, max_screen.y / ui_pixels_per_point),
                     ));
-                    gizmo_center_px = Some((min_px + max_px) * 0.5);
+                    gizmo_center_px = Some((min_screen + max_screen) * 0.5);
                 }
             }
         }
@@ -646,9 +714,13 @@ impl ApplicationHandler for App {
             load_scene: bool,
         }
         let mut actions = UiActions::default();
+        let mut pending_viewport: Option<(Vec2, Vec2)> = None;
+        let mut left_panel_width_px = 0.0;
+        let mut right_panel_width_px = 0.0;
 
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
-            egui::SidePanel::left("kestrel_left_panel").default_width(300.0).show(ctx, |ui| {
+            let left_panel =
+                egui::SidePanel::left("kestrel_left_panel").default_width(300.0).show(ctx, |ui| {
                 ui.heading("Stats");
                 ui.label(format!("Entities: {}", entity_count));
                 ui.label(format!("Instances drawn: {}", instances_drawn));
@@ -687,7 +759,8 @@ impl ApplicationHandler for App {
                 }
             });
 
-            egui::SidePanel::right("kestrel_right_panel").default_width(360.0).show(ctx, |ui| {
+            let right_panel =
+                egui::SidePanel::right("kestrel_right_panel").default_width(360.0).show(ctx, |ui| {
                 ui.heading("Spawn & Emitters");
                 ui.add(egui::Slider::new(&mut ui_cell_size, 0.05..=0.8).text("Spatial cell size"));
                 ui.add(egui::Slider::new(&mut ui_spawn_per_press, 1..=5000).text("Spawn per press"));
@@ -947,7 +1020,33 @@ impl ApplicationHandler for App {
                     }
                 }
             });
+            left_panel_width_px = left_panel.response.rect.width() * ui_pixels_per_point;
+            right_panel_width_px = right_panel.response.rect.width() * ui_pixels_per_point;
+            let window_width_px = window_size.width as f32;
+            let window_height_px = window_size.height as f32;
+            let viewport_width_px =
+                (window_width_px - left_panel_width_px - right_panel_width_px).max(1.0);
+            pending_viewport = Some((
+                Vec2::new(left_panel_width_px, 0.0),
+                Vec2::new(viewport_width_px, window_height_px),
+            ));
             let painter = ctx.debug_painter();
+            let viewport_outline = egui::Rect::from_min_size(
+                egui::pos2(
+                    self.viewport.origin.x / ui_pixels_per_point,
+                    self.viewport.origin.y / ui_pixels_per_point,
+                ),
+                egui::vec2(
+                    self.viewport.size.x / ui_pixels_per_point,
+                    self.viewport.size.y / ui_pixels_per_point,
+                ),
+            );
+            painter.rect_stroke(
+                viewport_outline,
+                0.0,
+                egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(220, 220, 240, 80)),
+                egui::StrokeKind::Outside,
+            );
             if let Some(rect) = highlight_rect {
                 painter.rect_stroke(
                     rect,
@@ -1018,6 +1117,10 @@ impl ApplicationHandler for App {
             self.egui_winit.as_mut().unwrap().handle_platform_output(window, platform_output);
         } else {
             return;
+        }
+
+        if let Some((origin, size)) = pending_viewport {
+            self.update_viewport(origin, size);
         }
 
         if actions.save_scene {
