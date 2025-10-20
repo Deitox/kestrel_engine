@@ -7,6 +7,7 @@ pub enum GameEvent {
     EntityDespawned { entity: Entity },
     CollisionStarted { a: Entity, b: Entity },
     CollisionEnded { a: Entity, b: Entity },
+    CollisionForce { a: Entity, b: Entity, force: f32 },
     ScriptMessage { message: String },
 }
 
@@ -25,6 +26,11 @@ impl GameEvent {
         let (a, b) = Self::ordered_pair(a, b);
         GameEvent::CollisionEnded { a, b }
     }
+
+    pub fn collision_force(a: Entity, b: Entity, force: f32) -> Self {
+        let (a, b) = Self::ordered_pair(a, b);
+        GameEvent::CollisionForce { a, b, force }
+    }
 }
 
 impl fmt::Display for GameEvent {
@@ -41,6 +47,9 @@ impl fmt::Display for GameEvent {
             }
             GameEvent::CollisionEnded { a, b } => {
                 write!(f, "CollisionEnded a={} b={}", a.index(), b.index())
+            }
+            GameEvent::CollisionForce { a, b, force } => {
+                write!(f, "CollisionForce a={} b={} force={:.3}", a.index(), b.index(), force)
             }
             GameEvent::ScriptMessage { message } => write!(f, "ScriptMessage {message}"),
         }

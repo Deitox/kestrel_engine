@@ -140,26 +140,34 @@ pub struct PhysicsParams {
     pub linear_damping: f32,
 }
 
-pub enum CollisionLifecycle {
+pub enum CollisionEventKind {
     Started,
     Stopped,
+    Force(f32),
 }
 
 struct CollisionEventCollector {
-    events: Mutex<Vec<CollisionEvent>>,
+    collision_events: Mutex<Vec<CollisionEvent>>,
+    force_events: Mutex<Vec<(ColliderHandle, ColliderHandle, f32)>>,
 }
 
 impl CollisionEventCollector {
     fn new() -> Self {
-        Self { events: Mutex::new(Vec::new()) }
+        Self { collision_events: Mutex::new(Vec::new()), force_events: Mutex::new(Vec::new()) }
     }
 
-    fn drain(&self) -> Vec<CollisionEvent> {
-        if let Ok(mut events) = self.events.lock() {
+    fn drain(&self) -> (Vec<CollisionEvent>, Vec<(ColliderHandle, ColliderHandle, f32)>) {
+        let collisions = if let Ok(mut events) = self.collision_events.lock() {
             std::mem::take(&mut *events)
         } else {
             Vec::new()
-        }
+        };
+        let forces = if let Ok(mut events) = self.force_events.lock() {
+            std::mem::take(&mut *events)
+        } else {
+            Vec::new()
+        };
+        (collisions, forces)
     }
 }
 
@@ -171,7 +179,7 @@ impl EventHandler for CollisionEventCollector {
         event: CollisionEvent,
         _contact_pair: Option<&ContactPair>,
     ) {
-        if let Ok(mut events) = self.events.lock() {
+        if let Ok(mut events) = self.collision_events.lock() {
             events.push(event);
         }
     }
@@ -181,10 +189,12 @@ impl EventHandler for CollisionEventCollector {
         _dt: Real,
         _bodies: &RigidBodySet,
         _colliders: &ColliderSet,
-        _contact_pair: &ContactPair,
-        _total_force_magnitude: Real,
+        contact_pair: &ContactPair,
+        total_force_magnitude: Real,
     ) {
-        // Contact force events are not used for the current milestone.
+        if let Ok(mut events) = self.force_events.lock() {
+            events.push((contact_pair.collider1, contact_pair.collider2, total_force_magnitude));
+        }
     }
 }
 
@@ -253,7 +263,12 @@ impl RapierState {
     fn insert_static_collider(&mut self, center: Vector<Real>, half: Vector<Real>) {
         let body = RigidBodyBuilder::fixed().translation(center).build();
         let body_handle = self.bodies.insert(body);
-        let collider = ColliderBuilder::cuboid(half.x, half.y).restitution(0.4).friction(0.8).build();
+        let collider = ColliderBuilder::cuboid(half.x, half.y)
+            .restitution(0.4)
+            .friction(0.8)
+            .active_events(ActiveEvents::COLLISION_EVENTS | ActiveEvents::CONTACT_FORCE_EVENTS)
+            .contact_force_event_threshold(0.0)
+            .build();
         let handle = self.colliders.insert_with_parent(collider, body_handle, &mut self.bodies);
         self.collider_entities.insert(handle, self.boundary_entity);
     }
@@ -355,9 +370,10 @@ impl RapierState {
         self.collider_entities.remove(&collider);
     }
 
-    pub fn drain_collision_events(&mut self) -> Vec<(CollisionLifecycle, Entity, Entity)> {
+    pub fn drain_collision_events(&mut self) -> Vec<(CollisionEventKind, Entity, Entity)> {
+        let (collision_events, force_events) = self.event_collector.drain();
         let mut out = Vec::new();
-        for event in self.event_collector.drain() {
+        for event in collision_events {
             match event {
                 CollisionEvent::Started(a, b, flags) => {
                     if flags.contains(CollisionEventFlags::SENSOR) {
@@ -366,7 +382,7 @@ impl RapierState {
                     if let (Some(entity_a), Some(entity_b)) =
                         (self.collider_entities.get(&a), self.collider_entities.get(&b))
                     {
-                        out.push((CollisionLifecycle::Started, *entity_a, *entity_b));
+                        out.push((CollisionEventKind::Started, *entity_a, *entity_b));
                     }
                 }
                 CollisionEvent::Stopped(a, b, flags) => {
@@ -376,9 +392,16 @@ impl RapierState {
                     if let (Some(entity_a), Some(entity_b)) =
                         (self.collider_entities.get(&a), self.collider_entities.get(&b))
                     {
-                        out.push((CollisionLifecycle::Stopped, *entity_a, *entity_b));
+                        out.push((CollisionEventKind::Stopped, *entity_a, *entity_b));
                     }
                 }
+            }
+        }
+        for (a, b, magnitude) in force_events {
+            if let (Some(entity_a), Some(entity_b)) =
+                (self.collider_entities.get(&a), self.collider_entities.get(&b))
+            {
+                out.push((CollisionEventKind::Force(magnitude), *entity_a, *entity_b));
             }
         }
         out
@@ -1388,8 +1411,9 @@ fn sys_step_rapier(mut rapier: ResMut<RapierState>, mut events: ResMut<EventBus>
     }
     for (phase, a, b) in rapier.drain_collision_events() {
         match phase {
-            CollisionLifecycle::Started => events.push(GameEvent::collision_started(a, b)),
-            CollisionLifecycle::Stopped => events.push(GameEvent::collision_ended(a, b)),
+            CollisionEventKind::Started => events.push(GameEvent::collision_started(a, b)),
+            CollisionEventKind::Stopped => events.push(GameEvent::collision_ended(a, b)),
+            CollisionEventKind::Force(force) => events.push(GameEvent::collision_force(a, b, force)),
         }
     }
 }

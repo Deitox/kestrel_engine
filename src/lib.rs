@@ -38,6 +38,26 @@ use egui_wgpu::{Renderer as EguiRenderer, RendererOptions, ScreenDescriptor};
 use egui_winit::State as EguiWinit;
 
 const CAMERA_BASE_HALF_HEIGHT: f32 = 1.2;
+const GIZMO_TRANSLATE_RADIUS_PX: f32 = 18.0;
+const GIZMO_ROTATE_INNER_RADIUS_PX: f32 = 26.0;
+const GIZMO_ROTATE_OUTER_RADIUS_PX: f32 = 42.0;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GizmoMode {
+    Translate,
+    Rotate,
+}
+
+impl Default for GizmoMode {
+    fn default() -> Self {
+        GizmoMode::Translate
+    }
+}
+
+enum GizmoInteraction {
+    Translate { entity: Entity, offset: Vec2 },
+    Rotate { entity: Entity, start_rotation: f32, start_angle: f32 },
+}
 
 pub async fn run() -> Result<()> {
     let config = AppConfig::load_or_default("config/app.json");
@@ -92,6 +112,8 @@ pub struct App {
     // Camera / selection
     camera: Camera2D,
     selected_entity: Option<Entity>,
+    gizmo_mode: GizmoMode,
+    gizmo_interaction: Option<GizmoInteraction>,
 
     // Configuration
     config: AppConfig,
@@ -196,6 +218,8 @@ impl App {
             event_log_limit,
             camera: Camera2D::new(CAMERA_BASE_HALF_HEIGHT),
             selected_entity: None,
+            gizmo_mode: GizmoMode::default(),
+            gizmo_interaction: None,
             config,
             emitter_entity: Some(emitter),
             scripts,
@@ -374,6 +398,13 @@ impl ApplicationHandler for App {
         }
 
         let window_size = self.renderer.size();
+        let cursor_screen = self.input.cursor_position();
+        let cursor_world_pos =
+            cursor_screen.and_then(|(sx, sy)| self.camera.screen_to_world(Vec2::new(sx, sy), window_size));
+        let mut selected_info = self.selected_entity.and_then(|entity| self.ecs.entity_info(entity));
+        let gizmo_center_screen = selected_info
+            .as_ref()
+            .and_then(|info| self.camera.world_to_screen_pixels(info.translation, window_size));
 
         if let Some(delta) = self.input.consume_wheel_delta() {
             self.camera.apply_scroll_zoom(delta);
@@ -388,17 +419,108 @@ impl ApplicationHandler for App {
 
         let view_proj = self.camera.view_projection(window_size);
 
+        let mut gizmo_click_consumed = false;
         if self.input.take_left_click() {
-            if let Some((sx, sy)) = self.input.cursor_position() {
-                if let Some(world) = self.camera.screen_to_world(Vec2::new(sx, sy), window_size) {
+            if let (Some(entity), Some(center_px), Some((sx, sy))) =
+                (self.selected_entity, gizmo_center_screen, cursor_screen)
+            {
+                let pointer_px = Vec2::new(sx, sy);
+                let dist = pointer_px.distance(center_px);
+                match self.gizmo_mode {
+                    GizmoMode::Translate => {
+                        if dist <= GIZMO_TRANSLATE_RADIUS_PX {
+                            if let Some(pointer_world) = cursor_world_pos {
+                                let offset = selected_info
+                                    .as_ref()
+                                    .map(|info| info.translation - pointer_world)
+                                    .unwrap_or(Vec2::ZERO);
+                                self.gizmo_interaction = Some(GizmoInteraction::Translate { entity, offset });
+                                gizmo_click_consumed = true;
+                                self.inspector_status = None;
+                            }
+                        }
+                    }
+                    GizmoMode::Rotate => {
+                        if dist >= GIZMO_ROTATE_INNER_RADIUS_PX && dist <= GIZMO_ROTATE_OUTER_RADIUS_PX {
+                            if let (Some(pointer_world), Some(info)) =
+                                (cursor_world_pos, selected_info.as_ref())
+                            {
+                                let center = info.translation;
+                                let vec = pointer_world - center;
+                                if vec.length_squared() > f32::EPSILON {
+                                    let start_angle = vec.y.atan2(vec.x);
+                                    self.gizmo_interaction = Some(GizmoInteraction::Rotate {
+                                        entity,
+                                        start_rotation: info.rotation,
+                                        start_angle,
+                                    });
+                                    gizmo_click_consumed = true;
+                                    self.inspector_status = None;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !gizmo_click_consumed {
+                if let Some(world) = cursor_world_pos {
                     self.selected_entity = self.ecs.pick_entity(world);
                     self.inspector_status = None;
                 } else {
                     self.selected_entity = None;
                     self.inspector_status = None;
                 }
+                self.gizmo_interaction = None;
             }
         }
+
+        if self.selected_entity.is_none() {
+            self.gizmo_interaction = None;
+        }
+
+        if let Some(interaction) = self.gizmo_interaction.as_mut() {
+            let mut keep_active = true;
+            match interaction {
+                GizmoInteraction::Translate { entity, offset } => {
+                    if !self.input.left_held() {
+                        keep_active = false;
+                    } else if let Some(pointer_world) = cursor_world_pos {
+                        if self.ecs.entity_exists(*entity) {
+                            let new_translation = pointer_world + *offset;
+                            self.ecs.set_translation(*entity, new_translation);
+                        } else {
+                            keep_active = false;
+                        }
+                    } else {
+                        keep_active = false;
+                    }
+                }
+                GizmoInteraction::Rotate { entity, start_rotation, start_angle } => {
+                    if !self.input.left_held() {
+                        keep_active = false;
+                    } else if let Some(pointer_world) = cursor_world_pos {
+                        if let Some(info) = self.ecs.entity_info(*entity) {
+                            let vec = pointer_world - info.translation;
+                            if vec.length_squared() > f32::EPSILON {
+                                let current_angle = vec.y.atan2(vec.x);
+                                let delta = current_angle - *start_angle;
+                                self.ecs.set_rotation(*entity, *start_rotation + delta);
+                            }
+                        } else {
+                            keep_active = false;
+                        }
+                    } else {
+                        keep_active = false;
+                    }
+                }
+            }
+            if !keep_active {
+                self.gizmo_interaction = None;
+            }
+        }
+
+        selected_info = self.selected_entity.and_then(|entity| self.ecs.entity_info(entity));
 
         self.ecs.set_spatial_cell(self.ui_cell_size.max(0.05));
         if let Some(emitter) = self.emitter_entity {
@@ -478,11 +600,7 @@ impl ApplicationHandler for App {
         let mut ui_emitter_start_color = self.ui_emitter_start_color;
         let mut ui_emitter_end_color = self.ui_emitter_end_color;
         let mut selected_entity = self.selected_entity;
-        let mut selection_details = selected_entity.and_then(|entity| self.ecs.entity_info(entity));
-        let cursor_world = self
-            .input
-            .cursor_position()
-            .and_then(|(sx, sy)| self.camera.screen_to_world(Vec2::new(sx, sy), window_size));
+        let mut selection_details = selected_info.clone();
         let mut highlight_rect = None;
         let mut gizmo_center_px = None;
         let camera_position = self.camera.position;
@@ -548,7 +666,7 @@ impl ApplicationHandler for App {
                     self.config.window.width, self.config.window.height, display_mode
                 ));
                 ui.label(format!("VSync: {}", if self.config.window.vsync { "On" } else { "Off" }));
-                if let Some(cursor) = cursor_world {
+                if let Some(cursor) = cursor_world_pos {
                     ui.label(format!("Cursor world: ({:.2}, {:.2})", cursor.x, cursor.y));
                 } else {
                     ui.label("Cursor world: n/a");
@@ -596,6 +714,21 @@ impl ApplicationHandler for App {
                 if let Some(entity) = selected_entity {
                     ui.heading("Entity Inspector");
                     ui.label(format!("Entity: {:?}", entity));
+                    ui.horizontal(|ui| {
+                        ui.label("Gizmo");
+                        ui.selectable_value(&mut self.gizmo_mode, GizmoMode::Translate, "Translate");
+                        ui.selectable_value(&mut self.gizmo_mode, GizmoMode::Rotate, "Rotate");
+                    });
+                    if let Some(interaction) = &self.gizmo_interaction {
+                        match interaction {
+                            GizmoInteraction::Translate { .. } => {
+                                ui.colored_label(egui::Color32::LIGHT_GREEN, "Translate gizmo active");
+                            }
+                            GizmoInteraction::Rotate { .. } => {
+                                ui.colored_label(egui::Color32::LIGHT_GREEN, "Rotate gizmo active");
+                            }
+                        }
+                    }
                     let mut inspector_refresh = false;
                     let mut inspector_info = selection_details.clone();
                     if let Some(mut info) = inspector_info {
@@ -811,15 +944,39 @@ impl ApplicationHandler for App {
             }
             if let Some(center_px) = gizmo_center_px {
                 let center = egui::pos2(center_px.x / ui_pixels_per_point, center_px.y / ui_pixels_per_point);
-                let extent = 8.0 / ui_pixels_per_point;
-                painter.line_segment(
-                    [egui::pos2(center.x - extent, center.y), egui::pos2(center.x + extent, center.y)],
-                    egui::Stroke::new(2.0, egui::Color32::YELLOW),
-                );
-                painter.line_segment(
-                    [egui::pos2(center.x, center.y - extent), egui::pos2(center.x, center.y + extent)],
-                    egui::Stroke::new(2.0, egui::Color32::YELLOW),
-                );
+                match self.gizmo_mode {
+                    GizmoMode::Translate => {
+                        let extent = 8.0 / ui_pixels_per_point;
+                        painter.line_segment(
+                            [
+                                egui::pos2(center.x - extent, center.y),
+                                egui::pos2(center.x + extent, center.y),
+                            ],
+                            egui::Stroke::new(2.0, egui::Color32::YELLOW),
+                        );
+                        painter.line_segment(
+                            [
+                                egui::pos2(center.x, center.y - extent),
+                                egui::pos2(center.x, center.y + extent),
+                            ],
+                            egui::Stroke::new(2.0, egui::Color32::YELLOW),
+                        );
+                    }
+                    GizmoMode::Rotate => {
+                        let inner = GIZMO_ROTATE_INNER_RADIUS_PX / ui_pixels_per_point;
+                        let outer = GIZMO_ROTATE_OUTER_RADIUS_PX / ui_pixels_per_point;
+                        painter.circle_stroke(
+                            center,
+                            outer,
+                            egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 210, 40)),
+                        );
+                        painter.circle_stroke(
+                            center,
+                            inner,
+                            egui::Stroke::new(1.0, egui::Color32::from_rgb(180, 160, 40)),
+                        );
+                    }
+                }
                 painter.circle_stroke(
                     center,
                     3.0 / ui_pixels_per_point,
@@ -860,6 +1017,7 @@ impl ApplicationHandler for App {
                 Ok(_) => {
                     self.ui_scene_status = Some(format!("Loaded {}", self.ui_scene_path));
                     self.selected_entity = None;
+                    self.gizmo_interaction = None;
                     self.scripts.clear_handles();
                     self.ui_hist.clear();
                     self.sync_emitter_ui();
@@ -878,6 +1036,7 @@ impl ApplicationHandler for App {
                 self.scripts.forget_entity(entity);
             }
             self.selected_entity = None;
+            self.gizmo_interaction = None;
         }
         if actions.clear_particles {
             self.ecs.clear_particles();
@@ -890,6 +1049,7 @@ impl ApplicationHandler for App {
             self.ui_emitter_start_color = [1.0, 1.0, 1.0, 1.0];
             self.ui_emitter_end_color = [1.0, 1.0, 1.0, 0.0];
             self.scripts.clear_handles();
+            self.gizmo_interaction = None;
             if let Some(emitter) = self.emitter_entity {
                 self.ecs.set_emitter_rate(emitter, self.ui_emitter_rate);
                 self.ecs.set_emitter_spread(emitter, self.ui_emitter_spread);
@@ -906,6 +1066,7 @@ impl ApplicationHandler for App {
         if actions.reset_world {
             self.ecs.clear_world();
             self.selected_entity = None;
+            self.gizmo_interaction = None;
             self.scripts.clear_handles();
             self.sync_emitter_ui();
             self.inspector_status = None;

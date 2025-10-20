@@ -69,6 +69,7 @@ impl AudioManager {
             GameEvent::EntityDespawned { .. } => String::from("despawn"),
             GameEvent::CollisionStarted { .. } => String::from("collision"),
             GameEvent::CollisionEnded { .. } => String::from("collision_end"),
+            GameEvent::CollisionForce { force, .. } => format!("collision_force:{force:.3}"),
             GameEvent::ScriptMessage { .. } => return,
         };
         self.push_trigger(label.clone());
@@ -89,6 +90,7 @@ impl AudioManager {
             Some(handle) => handle,
             None => return,
         };
+        let mut force_magnitude = None;
         let frequency_hz = if label.starts_with("spawn") {
             440.0
         } else if label == "despawn" {
@@ -97,11 +99,21 @@ impl AudioManager {
             560.0
         } else if label == "collision_end" {
             280.0
+        } else if let Some(force_str) = label.strip_prefix("collision_force:") {
+            if let Ok(force) = force_str.parse::<f32>() {
+                let clamped = force.clamp(0.0, 2000.0);
+                force_magnitude = Some(clamped);
+                360.0 + clamped * 0.12
+            } else {
+                return;
+            }
         } else {
             return;
         };
         if let Ok(sink) = Sink::try_new(handle) {
-            let source = SineWave::new(frequency_hz).take_duration(Duration::from_millis(140)).amplify(0.18);
+            let amplitude = force_magnitude.map_or(0.18, |force| 0.12 + (force / 2000.0) * 0.2);
+            let source =
+                SineWave::new(frequency_hz).take_duration(Duration::from_millis(140)).amplify(amplitude);
             sink.append(source);
             sink.detach();
         }

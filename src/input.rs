@@ -97,6 +97,9 @@ impl Input {
     pub fn right_held(&self) -> bool {
         self.right_pressed
     }
+    pub fn left_held(&self) -> bool {
+        self.left_pressed
+    }
     pub fn cursor_position(&self) -> Option<(f32, f32)> {
         self.cursor_pos
     }
