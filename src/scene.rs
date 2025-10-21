@@ -88,14 +88,88 @@ impl From<AtlasDependencyRepr> for AtlasDependency {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct MeshDependency {
+    key: String,
+    path: Option<String>,
+}
+
+impl MeshDependency {
+    pub fn new(key: String, path: Option<String>) -> Self {
+        Self { key, path }
+    }
+
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    pub fn path(&self) -> Option<&str> {
+        self.path.as_deref()
+    }
+}
+
+pub struct MeshDependencyView<'a> {
+    key: &'a str,
+    path: Option<&'a str>,
+}
+
+impl<'a> MeshDependencyView<'a> {
+    fn new(key: &'a str, path: Option<&'a str>) -> Self {
+        Self { key, path }
+    }
+
+    pub fn key(&self) -> &str {
+        self.key
+    }
+
+    pub fn path(&self) -> Option<&str> {
+        self.path
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum MeshDependencyRepr {
+    Key(String),
+    Detailed {
+        key: String,
+        #[serde(default)]
+        path: Option<String>,
+    },
+}
+
+impl From<MeshDependency> for MeshDependencyRepr {
+    fn from(dep: MeshDependency) -> Self {
+        if let Some(path) = dep.path {
+            MeshDependencyRepr::Detailed { key: dep.key, path: Some(path) }
+        } else {
+            MeshDependencyRepr::Key(dep.key)
+        }
+    }
+}
+
+impl From<MeshDependencyRepr> for MeshDependency {
+    fn from(repr: MeshDependencyRepr) -> Self {
+        match repr {
+            MeshDependencyRepr::Key(key) => MeshDependency::new(key, None),
+            MeshDependencyRepr::Detailed { key, path } => MeshDependency::new(key, path),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SceneDependencies {
     #[serde(default)]
     atlases: Vec<AtlasDependencyRepr>,
+    #[serde(default)]
+    meshes: Vec<MeshDependencyRepr>,
 }
 
 impl SceneDependencies {
-    pub fn from_entities(entities: &[SceneEntity], assets: &AssetManager) -> Self {
+    pub fn from_entities<F>(entities: &[SceneEntity], assets: &AssetManager, mesh_source: F) -> Self
+    where
+        F: Fn(&str) -> Option<String>,
+    {
         let mut set = BTreeSet::new();
         for entity in entities {
             if let Some(sprite) = &entity.sprite {
@@ -110,7 +184,21 @@ impl SceneDependencies {
                     AtlasDependencyRepr::from(AtlasDependency::new(key, path))
                 })
                 .collect(),
+            meshes: Vec::new(),
         };
+        let mut mesh_set = BTreeSet::new();
+        for entity in entities {
+            if let Some(mesh) = &entity.mesh {
+                mesh_set.insert(mesh.key.clone());
+            }
+        }
+        deps.meshes = mesh_set
+            .into_iter()
+            .map(|key| {
+                let path = mesh_source(&key);
+                MeshDependencyRepr::from(MeshDependency::new(key, path))
+            })
+            .collect();
         deps.normalize();
         deps
     }
@@ -124,6 +212,39 @@ impl SceneDependencies {
             AtlasDependencyRepr::Key(key) => AtlasDependencyView::new(key, None),
             AtlasDependencyRepr::Detailed { key, path } => AtlasDependencyView::new(key, path.as_deref()),
         })
+    }
+
+    pub fn contains_mesh(&self, key: &str) -> bool {
+        self.mesh_dependencies().any(|dep| dep.key() == key)
+    }
+
+    pub fn mesh_dependencies(&self) -> impl Iterator<Item = MeshDependencyView<'_>> {
+        self.meshes.iter().map(|repr| match repr {
+            MeshDependencyRepr::Key(key) => MeshDependencyView::new(key, None),
+            MeshDependencyRepr::Detailed { key, path } => MeshDependencyView::new(key, path.as_deref()),
+        })
+    }
+
+    pub fn fill_mesh_sources<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&str) -> Option<String>,
+    {
+        for repr in &mut self.meshes {
+            match repr {
+                MeshDependencyRepr::Key(key) => {
+                    if let Some(path) = f(key) {
+                        *repr = MeshDependencyRepr::Detailed { key: key.clone(), path: Some(path) };
+                    }
+                }
+                MeshDependencyRepr::Detailed { key, path } => {
+                    if path.is_none() {
+                        if let Some(new_path) = f(key) {
+                            *path = Some(new_path);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     pub fn normalize(&mut self) {
@@ -145,6 +266,25 @@ impl SceneDependencies {
             }
         }
         self.atlases = map.into_iter().map(|(_, dep)| AtlasDependencyRepr::from(dep)).collect();
+
+        let mut mesh_map: BTreeMap<String, MeshDependency> = BTreeMap::new();
+        for repr in std::mem::take(&mut self.meshes) {
+            let dep = MeshDependency::from(repr);
+            let key = dep.key().to_string();
+            let path_opt = dep.path().map(|s| s.to_string());
+            match mesh_map.entry(key) {
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    if entry.get().path.is_none() {
+                        entry.get_mut().path = path_opt;
+                    }
+                }
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    let key_clone = entry.key().clone();
+                    entry.insert(MeshDependency::new(key_clone, path_opt));
+                }
+            }
+        }
+        self.meshes = mesh_map.into_iter().map(|(_, dep)| MeshDependencyRepr::from(dep)).collect();
     }
 }
 
@@ -155,6 +295,8 @@ pub struct SceneEntity {
     pub transform: TransformData,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sprite: Option<SpriteData>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh: Option<MeshData>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tint: Option<ColorData>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -184,6 +326,11 @@ pub struct TransformData {
 pub struct SpriteData {
     pub atlas: String,
     pub region: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeshData {
+    pub key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

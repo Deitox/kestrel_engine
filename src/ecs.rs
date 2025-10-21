@@ -1,8 +1,8 @@
 use crate::assets::AssetManager;
 use crate::events::{EventBus, GameEvent};
 use crate::scene::{
-    ColliderData, ColorData, OrbitControllerData, ParticleEmitterData, Scene, SceneDependencies, SceneEntity,
-    SpriteData, TransformData,
+    ColliderData, ColorData, MeshData, OrbitControllerData, ParticleEmitterData, Scene, SceneDependencies,
+    SceneEntity, SpriteData, TransformData,
 };
 use anyhow::{anyhow, Context, Result};
 use bevy_ecs::prelude::*;
@@ -45,6 +45,10 @@ pub struct Spin {
 pub struct Sprite {
     pub atlas_key: Cow<'static, str>,
     pub region: Cow<'static, str>,
+}
+#[derive(Component, Clone)]
+pub struct MeshRef {
+    pub key: String,
 }
 #[derive(Component, Clone, Copy)]
 pub struct Velocity(pub Vec2);
@@ -114,6 +118,7 @@ pub struct EntityInfo {
     pub scale: Vec2,
     pub velocity: Option<Vec2>,
     pub sprite: Option<SpriteInfo>,
+    pub mesh: Option<MeshInfo>,
     pub tint: Option<Vec4>,
 }
 
@@ -121,6 +126,17 @@ pub struct EntityInfo {
 pub struct SpriteInfo {
     pub atlas: String,
     pub region: String,
+}
+
+#[derive(Clone)]
+pub struct MeshInfo {
+    pub key: String,
+}
+
+#[derive(Clone)]
+pub struct MeshInstance {
+    pub key: String,
+    pub model: Mat4,
 }
 
 pub struct EmitterSnapshot {
@@ -844,6 +860,18 @@ impl EcsWorld {
         self.emit(GameEvent::SpriteSpawned { entity, atlas: atlas.to_string(), region: region.to_string() });
         Ok(entity)
     }
+
+    pub fn spawn_mesh_entity(&mut self, mesh_key: &str, translation: Vec2, scale: Vec2) -> Entity {
+        let entity = self
+            .world
+            .spawn((
+                Transform { translation, rotation: 0.0, scale },
+                WorldTransform::default(),
+                MeshRef { key: mesh_key.to_string() },
+            ))
+            .id();
+        entity
+    }
     pub fn set_velocity(&mut self, entity: Entity, velocity: Vec2) -> bool {
         let mut updated = false;
         {
@@ -984,6 +1012,15 @@ impl EcsWorld {
         }
         Ok((out, atlas_key))
     }
+
+    pub fn collect_mesh_instances(&mut self) -> Vec<MeshInstance> {
+        let mut instances = Vec::new();
+        let mut query = self.world.query::<(&WorldTransform, &MeshRef)>();
+        for (wt, mesh) in query.iter(&self.world) {
+            instances.push(MeshInstance { key: mesh.key.clone(), model: wt.0 });
+        }
+        instances
+    }
     pub fn entity_count(&self) -> usize {
         let boundary = self.world.resource::<RapierState>().boundary_entity();
         self.world.iter_entities().filter(|entity_ref| entity_ref.id() != boundary).count()
@@ -1019,6 +1056,7 @@ impl EcsWorld {
             atlas: sprite.atlas_key.to_string(),
             region: sprite.region.to_string(),
         });
+        let mesh = self.world.get::<MeshRef>(entity).map(|mesh| MeshInfo { key: mesh.key.clone() });
         let tint = self.world.get::<Tint>(entity).map(|t| t.0);
         Some(EntityInfo {
             translation,
@@ -1026,6 +1064,7 @@ impl EcsWorld {
             scale: transform.scale,
             velocity,
             sprite,
+            mesh,
             tint,
         })
     }
@@ -1147,7 +1186,7 @@ impl EcsWorld {
         for root in roots {
             self.collect_scene_entity(root, None, &mut scene.entities);
         }
-        scene.dependencies = SceneDependencies::from_entities(&scene.entities, assets);
+        scene.dependencies = SceneDependencies::from_entities(&scene.entities, assets, |_| None);
         scene
     }
 
@@ -1240,6 +1279,10 @@ impl EcsWorld {
             sprite_event = Some((sprite.atlas.clone(), sprite.region.clone()));
         }
 
+        if let Some(mesh) = data.mesh.as_ref() {
+            entity.insert(MeshRef { key: mesh.key.clone() });
+        }
+
         if let Some(body) = body_handle {
             entity.insert(RapierBody { handle: body });
         }
@@ -1282,6 +1325,7 @@ impl EcsWorld {
                 atlas: sprite.atlas_key.to_string(),
                 region: sprite.region.to_string(),
             }),
+            mesh: self.world.get::<MeshRef>(entity).map(|mesh| MeshData { key: mesh.key.clone() }),
             tint: self.world.get::<Tint>(entity).map(|t| ColorData::from(t.0)),
             velocity: self.world.get::<Velocity>(entity).map(|v| v.0.into()),
             mass: self.world.get::<Mass>(entity).map(|m| m.0),

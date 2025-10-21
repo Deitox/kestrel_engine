@@ -3,6 +3,7 @@ pub mod audio;
 pub mod camera;
 pub mod camera3d;
 pub mod mesh;
+pub mod mesh_registry;
 pub mod config;
 pub mod ecs;
 pub mod events;
@@ -20,14 +21,15 @@ use crate::config::AppConfig;
 use crate::ecs::{EcsWorld, SpriteInfo};
 use crate::events::GameEvent;
 use crate::input::{Input, InputEvent};
-use crate::mesh::Mesh;
-use crate::renderer::{GpuMesh, MeshDraw, RenderViewport, Renderer};
+use crate::mesh_registry::MeshRegistry;
+use crate::renderer::{MeshDraw, RenderViewport, Renderer};
 use crate::scene::SceneDependencies;
 use crate::scripts::{ScriptCommand, ScriptHost};
 use crate::time::Time;
 
 use bevy_ecs::prelude::Entity;
 use glam::{Mat4, Vec2, Vec3, Vec4};
+use rand::Rng;
 
 use anyhow::{Context, Result};
 use std::collections::{HashSet, VecDeque};
@@ -167,9 +169,10 @@ pub struct App {
 
     scene_atlas_refs: HashSet<String>,
     persistent_atlases: HashSet<String>,
+    scene_mesh_refs: HashSet<String>,
 
-    mesh_cpu: Mesh,
-    mesh_gpu: Option<GpuMesh>,
+    mesh_registry: MeshRegistry,
+    preview_mesh_key: String,
     mesh_orbit: OrbitCamera,
     mesh_camera: Camera3D,
     mesh_model: Mat4,
@@ -239,13 +242,9 @@ impl App {
         let input = Input::new();
         let assets = AssetManager::new();
 
-        let (mesh_cpu, mesh_status_initial) = match Mesh::load_gltf("assets/models/demo_triangle.gltf") {
-            Ok(mesh) => (mesh, Some("Loaded demo_triangle.gltf".to_string())),
-            Err(err) => {
-                eprintln!("[mesh] Falling back to procedural cube: {err:?}");
-                (Mesh::cube(1.0), Some("Falling back to procedural cube mesh.".to_string()))
-            }
-        };
+        let mesh_registry = MeshRegistry::new();
+        let preview_mesh_key = mesh_registry.default_key().to_string();
+        let mesh_status_initial = Some(format!("Preview mesh: {}", preview_mesh_key));
         let mesh_orbit = OrbitCamera::new(Vec3::ZERO, 5.0);
         let mesh_camera = mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
         let mesh_model = Mat4::IDENTITY;
@@ -294,8 +293,9 @@ impl App {
             gizmo_interaction: None,
             scene_atlas_refs: HashSet::new(),
             persistent_atlases: HashSet::new(),
-            mesh_cpu,
-            mesh_gpu: None,
+            scene_mesh_refs: HashSet::new(),
+            mesh_registry,
+            preview_mesh_key,
             mesh_orbit,
             mesh_camera,
             mesh_model,
@@ -380,6 +380,23 @@ impl App {
         self.mesh_status = Some("Mesh camera reset.".to_string());
     }
 
+    fn spawn_mesh_entity(&mut self, mesh_key: &str) {
+        if let Err(err) = self.mesh_registry.ensure_mesh(mesh_key, None) {
+            self.mesh_status = Some(format!("Mesh '{}' unavailable: {err}", mesh_key));
+            return;
+        }
+        if let Err(err) = self.mesh_registry.ensure_gpu(mesh_key, &mut self.renderer) {
+            self.mesh_status = Some(format!("Failed to upload mesh '{}': {err}", mesh_key));
+            return;
+        }
+        let mut rng = rand::thread_rng();
+        let position = Vec2::new(rng.gen_range(-1.2..1.2), rng.gen_range(-0.6..0.8));
+        let scale = Vec2::splat(0.6);
+        let entity = self.ecs.spawn_mesh_entity(mesh_key, position, scale);
+        self.selected_entity = Some(entity);
+        self.mesh_status = Some(format!("Spawned mesh '{}' as entity {:?}", mesh_key, entity));
+    }
+
     fn sync_emitter_ui(&mut self) {
         if let Some(entity) = self.ecs.first_emitter() {
             self.emitter_entity = Some(entity);
@@ -418,6 +435,21 @@ impl App {
             }
         }
         self.scene_atlas_refs = next;
+
+        let previous_mesh = self.scene_mesh_refs.clone();
+        let mut next_mesh = HashSet::new();
+        for dep in deps.mesh_dependencies() {
+            let key = dep.key().to_string();
+            if !next_mesh.contains(&key) {
+                if !previous_mesh.contains(&key) {
+                    self.mesh_registry
+                        .ensure_mesh(dep.key(), dep.path())
+                        .with_context(|| format!("Failed to prepare mesh '{}'", dep.key()))?;
+                }
+                next_mesh.insert(key);
+            }
+        }
+        self.scene_mesh_refs = next_mesh;
         Ok(())
     }
 
@@ -432,6 +464,7 @@ impl App {
             self.assets.release_atlas(&key);
         }
         self.scene_atlas_refs = self.persistent_atlases.clone();
+        self.scene_mesh_refs.clear();
     }
 
     fn viewport_physical_size(&self) -> PhysicalSize<u32> {
@@ -526,15 +559,9 @@ impl ApplicationHandler for App {
             pixels_per_point: self.renderer.pixels_per_point() * self.ui_scale,
         });
 
-        if self.mesh_gpu.is_none() {
-            match self.renderer.create_gpu_mesh(&self.mesh_cpu) {
-                Ok(mesh) => {
-                    self.mesh_gpu = Some(mesh);
-                }
-                Err(err) => {
-                    eprintln!("Failed to upload demo mesh: {err:?}");
-                }
-            }
+        if let Err(err) = self.mesh_registry.ensure_gpu(&self.preview_mesh_key, &mut self.renderer) {
+            eprintln!("Failed to upload preview mesh '{}': {err:?}", self.preview_mesh_key);
+            self.mesh_status = Some(format!("Mesh upload failed: {err}"));
         }
         if let Err(err) = self.renderer.init_mesh_pipeline() {
             eprintln!("Failed to initialize mesh pipeline: {err:?}");
@@ -797,16 +824,29 @@ impl ApplicationHandler for App {
             origin: (self.viewport.origin.x, self.viewport.origin.y),
             size: (self.viewport.size.x, self.viewport.size.y),
         };
-        let mesh_draws: Vec<MeshDraw> = self
-            .mesh_gpu
-            .as_ref()
-            .map(|mesh| vec![MeshDraw { mesh, model: self.mesh_model }])
-            .unwrap_or_default();
-        let mesh_camera_opt = if mesh_draws.is_empty() {
-            None
-        } else {
-            Some(&self.mesh_camera)
-        };
+        let mut mesh_draw_infos: Vec<(String, Mat4)> = Vec::new();
+        match self.mesh_registry.ensure_gpu(&self.preview_mesh_key, &mut self.renderer) {
+            Ok(_) => mesh_draw_infos.push((self.preview_mesh_key.clone(), self.mesh_model)),
+            Err(err) => {
+                self.mesh_status = Some(format!("Mesh upload failed: {err}"));
+            }
+        }
+        let scene_meshes = self.ecs.collect_mesh_instances();
+        for instance in scene_meshes {
+            match self.mesh_registry.ensure_gpu(&instance.key, &mut self.renderer) {
+                Ok(_) => mesh_draw_infos.push((instance.key.clone(), instance.model)),
+                Err(err) => {
+                    eprintln!("[mesh] Unable to prepare '{}': {err:?}", instance.key);
+                }
+            }
+        }
+        let mut mesh_draws: Vec<MeshDraw> = Vec::new();
+        for (key, model) in mesh_draw_infos {
+            if let Some(mesh) = self.mesh_registry.gpu_mesh(&key) {
+                mesh_draws.push(MeshDraw { mesh, model });
+            }
+        }
+        let mesh_camera_opt = if mesh_draws.is_empty() { None } else { Some(&self.mesh_camera) };
         if let Err(err) = self.renderer.render_frame(
             &instances,
             view_proj,
@@ -871,10 +911,14 @@ impl ApplicationHandler for App {
             reset_world: bool,
             save_scene: bool,
             load_scene: bool,
+            spawn_mesh: Option<String>,
         }
         let mut actions = UiActions::default();
         let mut mesh_control_request: Option<bool> = None;
         let mut mesh_reset_request = false;
+        let mut mesh_selection_request: Option<String> = None;
+        let mut mesh_keys: Vec<String> = self.mesh_registry.keys().map(|k| k.to_string()).collect();
+        mesh_keys.sort();
         let mut pending_viewport: Option<(Vec2, Vec2)> = None;
         let mut left_panel_width_px = 0.0;
         let mut right_panel_width_px = 0.0;
@@ -960,12 +1004,25 @@ impl ApplicationHandler for App {
 
                 ui.separator();
                 ui.heading("3D Preview");
+                egui::ComboBox::from_label("Mesh asset")
+                    .selected_text(&self.preview_mesh_key)
+                    .show_ui(ui, |ui| {
+                        for key in &mesh_keys {
+                            let selected = self.preview_mesh_key == *key;
+                            if ui.selectable_label(selected, key).clicked() && !selected {
+                                mesh_selection_request = Some(key.clone());
+                            }
+                        }
+                    });
                 let mut mesh_control = self.mesh_control_enabled;
                 if ui.checkbox(&mut mesh_control, "Enable orbit control (M)").changed() {
                     mesh_control_request = Some(mesh_control);
                 }
                 if ui.button("Reset camera").clicked() {
                     mesh_reset_request = true;
+                }
+                if ui.button("Spawn mesh entity").clicked() {
+                    actions.spawn_mesh = Some(self.preview_mesh_key.clone());
                 }
                 let radius = self.mesh_orbit.radius;
                 ui.label(format!("Radius: {:.2}", radius));
@@ -1077,6 +1134,10 @@ impl ApplicationHandler for App {
                             }
                         } else {
                             ui.label("Sprite: n/a");
+                        }
+
+                        if let Some(mesh) = info.mesh.clone() {
+                            ui.label(format!("Mesh: {}", mesh.key));
                         }
 
                         ui.separator();
@@ -1339,6 +1400,13 @@ impl ApplicationHandler for App {
         if mesh_reset_request {
             self.reset_mesh_camera();
         }
+        if let Some(key) = mesh_selection_request {
+            self.preview_mesh_key = key.clone();
+            self.mesh_status = Some(format!("Preview mesh: {}", key));
+            if let Err(err) = self.mesh_registry.ensure_gpu(&self.preview_mesh_key, &mut self.renderer) {
+                self.mesh_status = Some(format!("Mesh upload failed: {err}"));
+            }
+        }
 
         let egui::FullOutput { platform_output, textures_delta, shapes, .. } = full_output;
         if let Some(window) = self.renderer.window() {
@@ -1352,7 +1420,11 @@ impl ApplicationHandler for App {
         }
 
         if actions.save_scene {
-            match self.ecs.save_scene_to_path(&self.ui_scene_path, &self.assets) {
+            let mut scene = self.ecs.export_scene(&self.assets);
+            scene.dependencies.fill_mesh_sources(|key| {
+                self.mesh_registry.mesh_source(key).map(|path| path.to_string_lossy().into_owned())
+            });
+            match scene.save_to_path(&self.ui_scene_path) {
                 Ok(_) => self.ui_scene_status = Some(format!("Saved {}", self.ui_scene_path)),
                 Err(err) => self.ui_scene_status = Some(format!("Save failed: {err}")),
             }
@@ -1389,6 +1461,9 @@ impl ApplicationHandler for App {
         }
         if actions.spawn_now {
             self.ecs.spawn_burst(&self.assets, self.ui_spawn_per_press as usize);
+        }
+        if let Some(mesh_key) = actions.spawn_mesh {
+            self.spawn_mesh_entity(&mesh_key);
         }
         if let Some(entity) = actions.delete_entity {
             if self.ecs.despawn_entity(entity) {
