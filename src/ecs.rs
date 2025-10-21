@@ -1181,7 +1181,19 @@ impl EcsWorld {
 
 impl EcsWorld {
     pub fn save_scene_to_path(&mut self, path: impl AsRef<Path>, assets: &AssetManager) -> Result<()> {
-        let scene = self.export_scene_with_mesh_source(assets, |_| None);
+        self.save_scene_to_path_with_mesh_source(path, assets, |_| None)
+    }
+
+    pub fn save_scene_to_path_with_mesh_source<F>(
+        &mut self,
+        path: impl AsRef<Path>,
+        assets: &AssetManager,
+        mesh_source: F,
+    ) -> Result<()>
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        let scene = self.export_scene_with_mesh_source(assets, mesh_source);
         scene.save_to_path(path)
     }
 

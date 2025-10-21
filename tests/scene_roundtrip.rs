@@ -38,7 +38,11 @@ fn scene_roundtrip_preserves_entity_count() {
     assert_eq!(mesh_dep.path(), Some("assets/models/demo_triangle.gltf"));
 
     let path = std::path::Path::new("target/test_scene_roundtrip.json");
-    scene.save_to_path(path).expect("scene save should succeed");
+    world
+        .save_scene_to_path_with_mesh_source(&path, &assets, |key| {
+            mesh_registry.mesh_source(key).map(|p| p.to_string_lossy().into_owned())
+        })
+        .expect("scene save should succeed");
 
     let loaded = Scene::load_from_path(path).expect("scene load should succeed");
     assert_eq!(loaded.entities.len(), scene.entities.len());

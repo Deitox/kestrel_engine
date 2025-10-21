@@ -1533,10 +1533,11 @@ impl ApplicationHandler for App {
                         .map(|path| (key.to_string(), path.to_string_lossy().into_owned()))
                 })
                 .collect();
-            let scene = self.ecs.export_scene_with_mesh_source(&self.assets, |key| {
-                mesh_source_map.get(key).cloned()
-            });
-            match scene.save_to_path(&self.ui_scene_path) {
+            match self.ecs.save_scene_to_path_with_mesh_source(
+                &self.ui_scene_path,
+                &self.assets,
+                move |key| mesh_source_map.get(key).cloned(),
+            ) {
                 Ok(_) => self.ui_scene_status = Some(format!("Saved {}", self.ui_scene_path)),
                 Err(err) => self.ui_scene_status = Some(format!("Save failed: {err}")),
             }
