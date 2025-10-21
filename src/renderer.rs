@@ -46,6 +46,24 @@ pub struct MeshDraw<'a> {
     pub model: Mat4,
 }
 
+pub struct SurfaceFrame {
+    surface: wgpu::SurfaceTexture,
+}
+
+impl SurfaceFrame {
+    fn new(surface: wgpu::SurfaceTexture) -> Self {
+        Self { surface }
+    }
+
+    pub fn view(&self) -> wgpu::TextureView {
+        self.surface.texture.create_view(&wgpu::TextureViewDescriptor::default())
+    }
+
+    pub fn present(self) {
+        self.surface.present();
+    }
+}
+
 struct MeshPipelineResources {
     pipeline: wgpu::RenderPipeline,
     globals_buf: wgpu::Buffer,
@@ -672,7 +690,7 @@ impl Renderer {
         viewport: RenderViewport,
         mesh_draws: &[MeshDraw],
         mesh_camera: Option<&Camera3D>,
-    ) -> Result<()> {
+    ) -> Result<SurfaceFrame> {
         {
             let queue = self.queue.as_ref().context("GPU queue not initialized")?;
             let globals = self.globals_buf.as_ref().context("Globals buffer missing")?;
@@ -695,7 +713,22 @@ impl Renderer {
         let surface = self.surface.as_ref().context("Surface not initialized")?;
         let device = self.device.as_ref().context("GPU device not initialized")?;
 
-        let frame = surface.get_current_texture().context("Acquiring swapchain texture")?;
+        let frame = match surface.get_current_texture() {
+            Ok(frame) => frame,
+            Err(wgpu::SurfaceError::Lost) | Err(wgpu::SurfaceError::Outdated) => {
+                self.resize(self.size);
+                return Err(anyhow!("Surface lost or outdated; reconfigured surface"));
+            }
+            Err(wgpu::SurfaceError::Timeout) => {
+                return Err(anyhow!("Surface acquisition timed out"));
+            }
+            Err(wgpu::SurfaceError::OutOfMemory) => {
+                return Err(anyhow!("Surface out of memory"));
+            }
+            Err(wgpu::SurfaceError::Other) => {
+                return Err(anyhow!("Surface reported an unknown error"));
+            }
+        };
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Encoder") });
@@ -771,8 +804,7 @@ impl Renderer {
         } else {
             return Err(anyhow!("GPU queue not initialized"));
         }
-        frame.present();
-        Ok(())
+        Ok(SurfaceFrame::new(frame))
     }
 
     pub fn render_egui(
@@ -780,12 +812,11 @@ impl Renderer {
         painter: &mut EguiRenderer,
         paint_jobs: &[egui::ClippedPrimitive],
         screen: &ScreenDescriptor,
+        frame: SurfaceFrame,
     ) -> Result<()> {
-        let surface = self.surface.as_ref().context("Surface not initialized")?;
         let device = self.device.as_ref().context("GPU device not initialized")?;
         let queue = self.queue.as_ref().context("GPU queue not initialized")?;
-        let frame = surface.get_current_texture().context("Acquiring swapchain texture")?;
-        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = frame.view();
 
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Egui Encoder") });
@@ -799,7 +830,7 @@ impl Renderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.05, g: 0.06, b: 0.1, a: 1.0 }),
+                        load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
                     },
                 })],

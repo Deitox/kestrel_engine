@@ -1181,7 +1181,7 @@ impl EcsWorld {
 
 impl EcsWorld {
     pub fn save_scene_to_path(&mut self, path: impl AsRef<Path>, assets: &AssetManager) -> Result<()> {
-        let scene = self.export_scene(assets);
+        let scene = self.export_scene_with_mesh_source(assets, |_| None);
         scene.save_to_path(path)
     }
 
@@ -1252,6 +1252,13 @@ impl EcsWorld {
     }
 
     pub fn export_scene(&mut self, assets: &AssetManager) -> Scene {
+        self.export_scene_with_mesh_source(assets, |_| None)
+    }
+
+    pub fn export_scene_with_mesh_source<F>(&mut self, assets: &AssetManager, mesh_source: F) -> Scene
+    where
+        F: Fn(&str) -> Option<String>,
+    {
         let mut scene = Scene::default();
         let mut query = self.world.query::<(Entity, Option<&Parent>, Option<&Transform>)>();
         let mut roots = Vec::new();
@@ -1263,7 +1270,7 @@ impl EcsWorld {
         for root in roots {
             self.collect_scene_entity(root, None, &mut scene.entities);
         }
-        scene.dependencies = SceneDependencies::from_entities(&scene.entities, assets, |_| None);
+        scene.dependencies = SceneDependencies::from_entities(&scene.entities, assets, mesh_source);
         scene
     }
 

@@ -32,7 +32,7 @@ use glam::{EulerRot, Mat4, Quat, Vec2, Vec3, Vec4};
 use rand::Rng;
 
 use anyhow::{Context, Result};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{DeviceEvent, ElementState, KeyEvent, WindowEvent};
@@ -842,13 +842,20 @@ impl ApplicationHandler for App {
             }
         }
         let mesh_camera_opt = if mesh_draws.is_empty() { None } else { Some(&self.mesh_camera) };
-        if let Err(err) =
-            self.renderer.render_frame(&instances, view_proj, render_viewport, &mesh_draws, mesh_camera_opt)
+        let frame = match self
+            .renderer
+            .render_frame(&instances, view_proj, render_viewport, &mesh_draws, mesh_camera_opt)
         {
-            eprintln!("Render error: {err:?}");
-        }
+            Ok(frame) => frame,
+            Err(err) => {
+                eprintln!("Render error: {err:?}");
+                self.input.clear_frame();
+                return;
+            }
+        };
 
         if self.egui_winit.is_none() {
+            frame.present();
             return;
         }
 
@@ -1517,9 +1524,17 @@ impl ApplicationHandler for App {
         }
 
         if actions.save_scene {
-            let mut scene = self.ecs.export_scene(&self.assets);
-            scene.dependencies.fill_mesh_sources(|key| {
-                self.mesh_registry.mesh_source(key).map(|path| path.to_string_lossy().into_owned())
+            let mesh_source_map: HashMap<String, String> = self
+                .mesh_registry
+                .keys()
+                .filter_map(|key| {
+                    self.mesh_registry
+                        .mesh_source(key)
+                        .map(|path| (key.to_string(), path.to_string_lossy().into_owned()))
+                })
+                .collect();
+            let scene = self.ecs.export_scene_with_mesh_source(&self.assets, |key| {
+                mesh_source_map.get(key).cloned()
             });
             match scene.save_to_path(&self.ui_scene_path) {
                 Ok(_) => self.ui_scene_status = Some(format!("Saved {}", self.ui_scene_path)),
@@ -1609,12 +1624,14 @@ impl ApplicationHandler for App {
                 }
             }
             let meshes = self.egui_ctx.tessellate(shapes, screen.pixels_per_point);
-            if let Err(err) = self.renderer.render_egui(ren, &meshes, screen) {
+            if let Err(err) = self.renderer.render_egui(ren, &meshes, screen, frame) {
                 eprintln!("Egui render error: {err:?}");
             }
             for id in &textures_delta.free {
                 ren.free_texture(id);
             }
+        } else {
+            frame.present();
         }
 
         self.ecs.set_root_spin(self.ui_root_spin);
