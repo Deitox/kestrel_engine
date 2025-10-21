@@ -15,17 +15,19 @@ pub mod time;
 use crate::assets::AssetManager;
 use crate::audio::AudioManager;
 use crate::camera::Camera2D;
+use crate::camera3d::{Camera3D, OrbitCamera};
 use crate::config::AppConfig;
 use crate::ecs::{EcsWorld, SpriteInfo};
 use crate::events::GameEvent;
 use crate::input::{Input, InputEvent};
-use crate::renderer::{RenderViewport, Renderer};
+use crate::mesh::Mesh;
+use crate::renderer::{GpuMesh, MeshDraw, RenderViewport, Renderer};
 use crate::scene::SceneDependencies;
 use crate::scripts::{ScriptCommand, ScriptHost};
 use crate::time::Time;
 
 use bevy_ecs::prelude::Entity;
-use glam::{Vec2, Vec4};
+use glam::{Mat4, Vec2, Vec3, Vec4};
 
 use anyhow::{Context, Result};
 use std::collections::{HashSet, VecDeque};
@@ -163,6 +165,13 @@ pub struct App {
     scene_atlas_refs: HashSet<String>,
     persistent_atlases: HashSet<String>,
 
+    mesh_cpu: Mesh,
+    mesh_gpu: Option<GpuMesh>,
+    mesh_orbit: OrbitCamera,
+    mesh_camera: Camera3D,
+    mesh_model: Mat4,
+    mesh_angle: f32,
+
     viewport: Viewport,
 
     // Particles
@@ -225,6 +234,11 @@ impl App {
         let input = Input::new();
         let assets = AssetManager::new();
 
+        let mesh_cpu = Mesh::cube(1.0);
+        let mesh_orbit = OrbitCamera::new(Vec3::ZERO, 5.0);
+        let mesh_camera = mesh_orbit.to_camera(60.0_f32.to_radians(), 0.1, 100.0);
+        let mesh_model = Mat4::IDENTITY;
+
         // egui context and state
         let egui_ctx = EguiCtx::default();
         let egui_winit = None;
@@ -269,6 +283,12 @@ impl App {
             gizmo_interaction: None,
             scene_atlas_refs: HashSet::new(),
             persistent_atlases: HashSet::new(),
+            mesh_cpu,
+            mesh_gpu: None,
+            mesh_orbit,
+            mesh_camera,
+            mesh_model,
+            mesh_angle: 0.0,
             viewport: Viewport::new(
                 Vec2::ZERO,
                 Vec2::new(config.window.width as f32, config.window.height as f32),
@@ -438,6 +458,20 @@ impl ApplicationHandler for App {
             size_in_pixels: [size.width, size.height],
             pixels_per_point: self.renderer.pixels_per_point() * self.ui_scale,
         });
+
+        if self.mesh_gpu.is_none() {
+            match self.renderer.create_gpu_mesh(&self.mesh_cpu) {
+                Ok(mesh) => {
+                    self.mesh_gpu = Some(mesh);
+                }
+                Err(err) => {
+                    eprintln!("Failed to upload demo mesh: {err:?}");
+                }
+            }
+        }
+        if let Err(err) = self.renderer.init_mesh_pipeline() {
+            eprintln!("Failed to initialize mesh pipeline: {err:?}");
+        }
     }
 
     fn window_event(&mut self, _el: &ActiveEventLoop, id: winit::window::WindowId, event: WindowEvent) {
@@ -493,6 +527,12 @@ impl ApplicationHandler for App {
         self.time.tick();
         let dt = self.time.delta_seconds();
         self.accumulator += dt;
+
+        const MESH_FOV: f32 = 60.0_f32.to_radians();
+        self.mesh_angle = (self.mesh_angle + dt * 0.5) % (std::f32::consts::TAU);
+        self.mesh_model = Mat4::from_rotation_y(self.mesh_angle);
+        self.mesh_orbit.orbit(Vec2::new(0.2 * dt, 0.1 * dt));
+        self.mesh_camera = self.mesh_orbit.to_camera(MESH_FOV, 0.1, 100.0);
 
         if let Some(entity) = self.selected_entity {
             if !self.ecs.entity_exists(entity) {
@@ -689,7 +729,23 @@ impl ApplicationHandler for App {
             origin: (self.viewport.origin.x, self.viewport.origin.y),
             size: (self.viewport.size.x, self.viewport.size.y),
         };
-        if let Err(err) = self.renderer.render_batch(&instances, view_proj, render_viewport) {
+        let mesh_draws: Vec<MeshDraw> = self
+            .mesh_gpu
+            .as_ref()
+            .map(|mesh| vec![MeshDraw { mesh, model: self.mesh_model }])
+            .unwrap_or_default();
+        let mesh_camera_opt = if mesh_draws.is_empty() {
+            None
+        } else {
+            Some(&self.mesh_camera)
+        };
+        if let Err(err) = self.renderer.render_frame(
+            &instances,
+            view_proj,
+            render_viewport,
+            &mesh_draws,
+            mesh_camera_opt,
+        ) {
             eprintln!("Render error: {err:?}");
         }
 

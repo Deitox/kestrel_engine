@@ -2,7 +2,7 @@ use crate::camera3d::Camera3D;
 use crate::config::WindowConfig;
 use crate::ecs::InstanceData;
 use crate::mesh::{Mesh, MeshVertex};
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use glam::Mat4;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
@@ -485,6 +485,7 @@ impl Renderer {
         viewport: RenderViewport,
         draws: &[MeshDraw],
         camera: &Camera3D,
+        clear_color: wgpu::Color,
     ) -> Result<()> {
         if draws.is_empty() {
             return Ok(());
@@ -510,7 +511,7 @@ impl Renderer {
                 view: color_target,
                 depth_slice: None,
                 resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(clear_color), store: wgpu::StoreOp::Store },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: depth_view,
@@ -666,11 +667,13 @@ impl Renderer {
         Ok((texture, view))
     }
 
-    pub fn render_batch(
+    pub fn render_frame(
         &mut self,
         instances: &[InstanceData],
-        view_proj: Mat4,
+        sprite_view_proj: Mat4,
         viewport: RenderViewport,
+        mesh_draws: &[MeshDraw],
+        mesh_camera: Option<&Camera3D>,
     ) -> Result<()> {
         {
             let queue = self.queue.as_ref().context("GPU queue not initialized")?;
@@ -678,27 +681,35 @@ impl Renderer {
             queue.write_buffer(
                 globals,
                 0,
-                bytemuck::bytes_of(&Globals { proj: view_proj.to_cols_array_2d() }),
+                bytemuck::bytes_of(&Globals { proj: sprite_view_proj.to_cols_array_2d() }),
             );
         }
 
         self.ensure_instance_capacity(instances.len())?;
 
-        let instance_buffer = self.instance_buffer.as_ref().context("Instance buffer missing")?;
         let byte_data = bytemuck::cast_slice(instances);
         {
+            let instance_buffer = self.instance_buffer.as_ref().context("Instance buffer missing")?;
             let queue = self.queue.as_ref().context("GPU queue not initialized")?;
             queue.write_buffer(instance_buffer, 0, byte_data);
         }
 
         let surface = self.surface.as_ref().context("Surface not initialized")?;
         let device = self.device.as_ref().context("GPU device not initialized")?;
-        let queue = self.queue.as_ref().context("GPU queue not initialized")?;
 
         let frame = surface.get_current_texture().context("Acquiring swapchain texture")?;
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Encoder") });
+
+        let clear_color = wgpu::Color { r: 0.05, g: 0.06, b: 0.1, a: 1.0 };
+        let mut sprite_load_op = wgpu::LoadOp::Clear(clear_color);
+        if let Some(camera) = mesh_camera {
+            if !mesh_draws.is_empty() {
+                self.encode_mesh_pass(&mut encoder, &view, viewport, mesh_draws, camera, clear_color)?;
+                sprite_load_op = wgpu::LoadOp::Load;
+            }
+        }
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -707,10 +718,7 @@ impl Renderer {
                     view: &view,
                     depth_slice: None,
                     resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.05, g: 0.06, b: 0.1, a: 1.0 }),
-                        store: wgpu::StoreOp::Store,
-                    },
+                    ops: wgpu::Operations { load: sprite_load_op, store: wgpu::StoreOp::Store },
                 })],
                 depth_stencil_attachment: None,
                 occlusion_query_set: None,
@@ -723,6 +731,7 @@ impl Renderer {
                 0,
                 self.vertex_buffer.as_ref().context("Vertex buffer missing")?.slice(..),
             );
+            let instance_buffer = self.instance_buffer.as_ref().context("Instance buffer missing")?;
             pass.set_vertex_buffer(1, instance_buffer.slice(..));
             let (vp_x, vp_y) = viewport.origin;
             let (vp_w, vp_h) = viewport.size;
@@ -759,7 +768,11 @@ impl Renderer {
             pass.draw_indexed(0..6, 0, 0..(instances.len() as u32));
         }
 
-        queue.submit(std::iter::once(encoder.finish()));
+        if let Some(queue) = self.queue.as_ref() {
+            queue.submit(std::iter::once(encoder.finish()));
+        } else {
+            return Err(anyhow!("GPU queue not initialized"));
+        }
         frame.present();
         Ok(())
     }
