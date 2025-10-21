@@ -821,3 +821,43 @@ impl Renderer {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use winit::dpi::PhysicalSize;
+
+    #[test]
+    fn depth_texture_respects_size() {
+        pollster::block_on(async {
+            let instance = wgpu::Instance::default();
+            let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::LowPower,
+                    compatible_surface: None,
+                    force_fallback_adapter: false,
+                })
+                .await
+                .expect("adapter");
+            let device_desc = wgpu::DeviceDescriptor {
+                label: Some("depth-test-device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::downlevel_defaults(),
+                experimental_features: wgpu::ExperimentalFeatures::default(),
+                memory_hints: wgpu::MemoryHints::default(),
+                trace: wgpu::Trace::default(),
+            };
+            let (device, _) = adapter
+                .request_device(&device_desc)
+                .await
+                .expect("device");
+            let size = PhysicalSize::new(321, 123);
+            let (texture, view) = Renderer::create_depth_texture(&device, size).expect("depth texture");
+            let extent = texture.size();
+            assert_eq!(extent.width, 321);
+            assert_eq!(extent.height, 123);
+            assert_eq!(texture.dimension(), wgpu::TextureDimension::D2);
+            let _ = view;
+        });
+    }
+}

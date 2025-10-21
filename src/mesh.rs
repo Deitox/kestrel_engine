@@ -1,4 +1,7 @@
+use anyhow::{anyhow, Context, Result};
 use glam::Vec3;
+use gltf::mesh::Mode;
+use std::path::Path;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -93,5 +96,107 @@ impl Mesh {
         }
 
         Self { vertices, indices }
+    }
+
+    pub fn load_gltf(path: impl AsRef<Path>) -> Result<Self> {
+        let path_ref = path.as_ref();
+        let (document, buffers, _) = gltf::import(path_ref)
+            .with_context(|| format!("Failed to import glTF from {}", path_ref.display()))?;
+
+        let mesh = document
+            .meshes()
+            .next()
+            .ok_or_else(|| anyhow!("No meshes found in {}", path_ref.display()))?;
+        let primitive = mesh
+            .primitives()
+            .next()
+            .ok_or_else(|| anyhow!("Mesh contains no primitives in {}", path_ref.display()))?;
+        if primitive.mode() != Mode::Triangles {
+            return Err(anyhow!("Only triangle primitives are supported ({}).", path_ref.display()));
+        }
+
+        let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
+        let positions_iter = reader
+            .read_positions()
+            .ok_or_else(|| anyhow!("POSITION attribute missing in {}", path_ref.display()))?;
+        let positions: Vec<Vec3> = positions_iter.map(Vec3::from_array).collect();
+        if positions.is_empty() {
+            return Err(anyhow!("Mesh in {} has no vertices", path_ref.display()));
+        }
+
+        let mut normals: Vec<Vec3> = reader
+            .read_normals()
+            .map(|it| it.map(Vec3::from_array).collect())
+            .unwrap_or_else(|| vec![Vec3::ZERO; positions.len()]);
+
+        let indices: Vec<u32> = reader
+            .read_indices()
+            .map(|read| read.into_u32().collect())
+            .unwrap_or_else(|| (0..positions.len() as u32).collect());
+
+        if normals.is_empty() || normals.len() != positions.len() || normals.iter().all(|n| n.length_squared() == 0.0)
+        {
+            normals = compute_normals(&positions, &indices);
+        }
+
+        let vertices = positions
+            .iter()
+            .zip(normals.iter())
+            .map(|(pos, norm)| MeshVertex::new(*pos, norm.normalize_or_zero()))
+            .collect();
+
+        Ok(Mesh { vertices, indices })
+    }
+}
+
+fn compute_normals(positions: &[Vec3], indices: &[u32]) -> Vec<Vec3> {
+    let mut normals = vec![Vec3::ZERO; positions.len()];
+    for tri in indices.chunks(3) {
+        if tri.len() < 3 {
+            continue;
+        }
+        let i0 = tri[0] as usize;
+        let i1 = tri[1] as usize;
+        let i2 = tri[2] as usize;
+        if i0 >= positions.len() || i1 >= positions.len() || i2 >= positions.len() {
+            continue;
+        }
+        let a = positions[i0];
+        let b = positions[i1];
+        let c = positions[i2];
+        let normal = (b - a).cross(c - a);
+        if normal.length_squared() > 0.0 {
+            normals[i0] += normal;
+            normals[i1] += normal;
+            normals[i2] += normal;
+        }
+    }
+    for normal in &mut normals {
+        if normal.length_squared() > 0.0 {
+            *normal = normal.normalize();
+        } else {
+            *normal = Vec3::Y;
+        }
+    }
+    normals
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_demo_gltf_mesh() {
+        let mesh = Mesh::load_gltf("assets/models/demo_triangle.gltf").expect("demo gltf should load");
+        assert_eq!(mesh.vertices.len(), 3);
+        assert_eq!(mesh.indices, vec![0, 1, 2]);
+        let normals: Vec<Vec3> = mesh
+            .vertices
+            .iter()
+            .map(|v| Vec3::from_array(v.normal))
+            .collect();
+        for normal in normals {
+            assert!((normal - Vec3::Z).length_squared() < 1e-4);
+        }
     }
 }

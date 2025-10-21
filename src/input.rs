@@ -8,6 +8,7 @@ pub struct Input {
     pub events: Vec<InputEvent>,
     space_pressed: bool,
     b_pressed: bool,
+    mesh_toggle_pressed: bool,
     cursor_pos: Option<(f32, f32)>,
     left_pressed: bool,
     left_clicked: bool,
@@ -26,6 +27,7 @@ impl Input {
                     match key {
                         Key::Named(NamedKey::Space) => self.space_pressed = true,
                         Key::Character(ch) if ch.eq_ignore_ascii_case("b") => self.b_pressed = true,
+                        Key::Character(ch) if ch.eq_ignore_ascii_case("m") => self.mesh_toggle_pressed = true,
                         _ => {}
                     }
                 }
@@ -64,6 +66,7 @@ impl Input {
         self.mouse_delta = (0.0, 0.0);
         self.wheel = 0.0;
         self.left_clicked = false;
+        self.mesh_toggle_pressed = false;
     }
 
     pub fn consume_wheel_delta(&mut self) -> Option<f32> {
@@ -85,6 +88,12 @@ impl Input {
     pub fn take_b_pressed(&mut self) -> bool {
         let v = self.b_pressed;
         self.b_pressed = false;
+        v
+    }
+
+    pub fn take_mesh_toggle(&mut self) -> bool {
+        let v = self.mesh_toggle_pressed;
+        self.mesh_toggle_pressed = false;
         v
     }
 

@@ -47,6 +47,9 @@ const CAMERA_BASE_HALF_HEIGHT: f32 = 1.2;
 const GIZMO_TRANSLATE_RADIUS_PX: f32 = 18.0;
 const GIZMO_ROTATE_INNER_RADIUS_PX: f32 = 26.0;
 const GIZMO_ROTATE_OUTER_RADIUS_PX: f32 = 42.0;
+const MESH_CAMERA_FOV_RADIANS: f32 = 60.0_f32.to_radians();
+const MESH_CAMERA_NEAR: f32 = 0.1;
+const MESH_CAMERA_FAR: f32 = 100.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum GizmoMode {
@@ -171,6 +174,8 @@ pub struct App {
     mesh_camera: Camera3D,
     mesh_model: Mat4,
     mesh_angle: f32,
+    mesh_control_enabled: bool,
+    mesh_status: Option<String>,
 
     viewport: Viewport,
 
@@ -234,9 +239,15 @@ impl App {
         let input = Input::new();
         let assets = AssetManager::new();
 
-        let mesh_cpu = Mesh::cube(1.0);
+        let (mesh_cpu, mesh_status_initial) = match Mesh::load_gltf("assets/models/demo_triangle.gltf") {
+            Ok(mesh) => (mesh, Some("Loaded demo_triangle.gltf".to_string())),
+            Err(err) => {
+                eprintln!("[mesh] Falling back to procedural cube: {err:?}");
+                (Mesh::cube(1.0), Some("Falling back to procedural cube mesh.".to_string()))
+            }
+        };
         let mesh_orbit = OrbitCamera::new(Vec3::ZERO, 5.0);
-        let mesh_camera = mesh_orbit.to_camera(60.0_f32.to_radians(), 0.1, 100.0);
+        let mesh_camera = mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
         let mesh_model = Mat4::IDENTITY;
 
         // egui context and state
@@ -289,6 +300,8 @@ impl App {
             mesh_camera,
             mesh_model,
             mesh_angle: 0.0,
+            mesh_control_enabled: false,
+            mesh_status: mesh_status_initial,
             viewport: Viewport::new(
                 Vec2::ZERO,
                 Vec2::new(config.window.width as f32, config.window.height as f32),
@@ -311,6 +324,60 @@ impl App {
             }
             self.recent_events.push_back(event);
         }
+    }
+
+    fn update_mesh_camera(&mut self, dt: f32) {
+        if !self.mesh_control_enabled {
+            let auto_delta = Vec2::new(0.25 * dt, 0.12 * dt);
+            self.mesh_orbit.orbit(auto_delta);
+            self.mesh_camera =
+                self.mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
+            return;
+        }
+
+        let (dx, dy) = self.input.mouse_delta;
+        if self.input.right_held() && (dx.abs() > f32::EPSILON || dy.abs() > f32::EPSILON) {
+            let sensitivity = 0.008;
+            self.mesh_orbit.orbit(Vec2::new(dx * sensitivity, dy * sensitivity));
+        }
+
+        if self.input.wheel.abs() > 0.0 {
+            let sensitivity = 0.12;
+            let factor = (self.input.wheel * sensitivity).exp();
+            self.mesh_orbit.zoom(factor);
+            self.input.wheel = 0.0;
+        }
+
+        self.mesh_camera =
+            self.mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
+    }
+
+    fn set_mesh_control(&mut self, enabled: bool) {
+        if self.mesh_control_enabled != enabled {
+            self.mesh_control_enabled = enabled;
+            self.mesh_status = Some(if enabled {
+                "Orbit control enabled (right-drag to orbit, scroll to zoom).".to_string()
+            } else {
+                "Scripted orbit restored.".to_string()
+            });
+            self.input.wheel = 0.0;
+            self.input.mouse_delta = (0.0, 0.0);
+        }
+    }
+
+    fn handle_mesh_control_input(&mut self) {
+        if self.input.take_mesh_toggle() {
+            let next = !self.mesh_control_enabled;
+            self.set_mesh_control(next);
+        }
+    }
+
+    fn reset_mesh_camera(&mut self) {
+        let radius = self.mesh_orbit.radius;
+        self.mesh_orbit = OrbitCamera::new(self.mesh_orbit.target, radius);
+        self.mesh_camera =
+            self.mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
+        self.mesh_status = Some("Mesh camera reset.".to_string());
     }
 
     fn sync_emitter_ui(&mut self) {
@@ -528,11 +595,10 @@ impl ApplicationHandler for App {
         let dt = self.time.delta_seconds();
         self.accumulator += dt;
 
-        const MESH_FOV: f32 = 60.0_f32.to_radians();
         self.mesh_angle = (self.mesh_angle + dt * 0.5) % (std::f32::consts::TAU);
         self.mesh_model = Mat4::from_rotation_y(self.mesh_angle);
-        self.mesh_orbit.orbit(Vec2::new(0.2 * dt, 0.1 * dt));
-        self.mesh_camera = self.mesh_orbit.to_camera(MESH_FOV, 0.1, 100.0);
+        self.handle_mesh_control_input();
+        self.update_mesh_camera(dt);
 
         if let Some(entity) = self.selected_entity {
             if !self.ecs.entity_exists(entity) {
@@ -571,14 +637,16 @@ impl ApplicationHandler for App {
         let prev_selected_entity = self.selected_entity;
         let prev_gizmo_interaction = self.gizmo_interaction;
 
-        if let Some(delta) = self.input.consume_wheel_delta() {
-            self.camera.apply_scroll_zoom(delta);
-        }
+        if !self.mesh_control_enabled {
+            if let Some(delta) = self.input.consume_wheel_delta() {
+                self.camera.apply_scroll_zoom(delta);
+            }
 
-        if self.input.right_held() {
-            let (dx, dy) = self.input.mouse_delta;
-            if dx.abs() > f32::EPSILON || dy.abs() > f32::EPSILON {
-                self.camera.pan_screen_delta(Vec2::new(dx, dy), viewport_size);
+            if self.input.right_held() {
+                let (dx, dy) = self.input.mouse_delta;
+                if dx.abs() > f32::EPSILON || dy.abs() > f32::EPSILON {
+                    self.camera.pan_screen_delta(Vec2::new(dx, dy), viewport_size);
+                }
             }
         }
 
@@ -805,6 +873,8 @@ impl ApplicationHandler for App {
             load_scene: bool,
         }
         let mut actions = UiActions::default();
+        let mut mesh_control_request: Option<bool> = None;
+        let mut mesh_reset_request = false;
         let mut pending_viewport: Option<(Vec2, Vec2)> = None;
         let mut left_panel_width_px = 0.0;
         let mut right_panel_width_px = 0.0;
@@ -886,6 +956,25 @@ impl ApplicationHandler for App {
                 }
                 if ui.button("Reset world").clicked() {
                     actions.reset_world = true;
+                }
+
+                ui.separator();
+                ui.heading("3D Preview");
+                let mut mesh_control = self.mesh_control_enabled;
+                if ui.checkbox(&mut mesh_control, "Enable orbit control (M)").changed() {
+                    mesh_control_request = Some(mesh_control);
+                }
+                if ui.button("Reset camera").clicked() {
+                    mesh_reset_request = true;
+                }
+                let radius = self.mesh_orbit.radius;
+                ui.label(format!("Radius: {:.2}", radius));
+                if let Some(status) = &self.mesh_status {
+                    ui.label(status);
+                } else if self.mesh_control_enabled {
+                    ui.label("Right drag to orbit, scroll to zoom.");
+                } else {
+                    ui.label("Scripted orbit animates the camera.");
                 }
 
                 ui.separator();
@@ -1243,6 +1332,13 @@ impl ApplicationHandler for App {
         self.ui_emitter_start_color = ui_emitter_start_color;
         self.ui_emitter_end_color = ui_emitter_end_color;
         self.selected_entity = selected_entity;
+
+        if let Some(enabled) = mesh_control_request {
+            self.set_mesh_control(enabled);
+        }
+        if mesh_reset_request {
+            self.reset_mesh_camera();
+        }
 
         let egui::FullOutput { platform_output, textures_delta, shapes, .. } = full_output;
         if let Some(window) = self.renderer.window() {
