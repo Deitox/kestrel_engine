@@ -1181,7 +1181,17 @@ impl EcsWorld {
 
 impl EcsWorld {
     pub fn save_scene_to_path(&mut self, path: impl AsRef<Path>, assets: &AssetManager) -> Result<()> {
-        self.save_scene_to_path_with_mesh_source(path, assets, |_| None)
+        let scene = self.export_scene_with_mesh_source(assets, |_| None);
+        let missing_mesh: Vec<String> =
+            scene.dependencies.mesh_dependencies().map(|dep| dep.key().to_string()).collect();
+        if !missing_mesh.is_empty() {
+            return Err(anyhow!(
+                "Scene references meshes ({}) but no mesh source exporter was provided. Use \
+                 save_scene_to_path_with_mesh_source to record mesh paths.",
+                missing_mesh.join(", ")
+            ));
+        }
+        scene.save_to_path(path)
     }
 
     pub fn save_scene_to_path_with_mesh_source<F>(
@@ -1202,13 +1212,37 @@ impl EcsWorld {
         path: impl AsRef<Path>,
         assets: &mut AssetManager,
     ) -> Result<Scene> {
+        self.load_scene_from_path_with_mesh(path, assets, |_key, _path| {
+            Err(anyhow!(
+                "Scene references meshes but no mesh resolver was provided. Use load_scene_from_path_with_mesh."
+            ))
+        })
+    }
+
+    pub fn load_scene_from_path_with_mesh<F>(
+        &mut self,
+        path: impl AsRef<Path>,
+        assets: &mut AssetManager,
+        mesh_loader: F,
+    ) -> Result<Scene>
+    where
+        F: FnMut(&str, Option<&str>) -> Result<()>,
+    {
         let scene = Scene::load_from_path(path)?;
-        self.ensure_scene_dependencies(&scene, assets)?;
-        self.load_scene(&scene, assets)?;
+        self.ensure_scene_dependencies_with_mesh(&scene, assets, mesh_loader)?;
+        self.load_scene_internal(&scene, assets)?;
         Ok(scene)
     }
 
-    fn ensure_scene_dependencies(&self, scene: &Scene, assets: &mut AssetManager) -> Result<()> {
+    fn ensure_scene_dependencies_with_mesh<F>(
+        &self,
+        scene: &Scene,
+        assets: &mut AssetManager,
+        mut mesh_loader: F,
+    ) -> Result<()>
+    where
+        F: FnMut(&str, Option<&str>) -> Result<()>,
+    {
         let mut missing = Vec::new();
         for dep in scene.dependencies.atlas_dependencies() {
             if assets.has_atlas(dep.key()) {
@@ -1222,14 +1256,43 @@ impl EcsWorld {
                 missing.push(format!("{} (no path provided)", dep.key()));
             }
         }
-        if missing.is_empty() {
-            Ok(())
-        } else {
-            Err(anyhow!("Scene requires atlases that could not be loaded: {}", missing.join(", ")))
+        if !missing.is_empty() {
+            return Err(anyhow!("Scene requires atlases that could not be loaded: {}", missing.join(", ")));
         }
+
+        let mut mesh_missing = Vec::new();
+        for dep in scene.dependencies.mesh_dependencies() {
+            if let Err(err) = mesh_loader(dep.key(), dep.path()) {
+                let source = dep.path().unwrap_or("no path provided");
+                mesh_missing.push(format!("{} ({source}) : {err}", dep.key()));
+            }
+        }
+        if !mesh_missing.is_empty() {
+            return Err(anyhow!(
+                "Scene requires meshes that could not be prepared: {}",
+                mesh_missing.join(", ")
+            ));
+        }
+        Ok(())
     }
 
     pub fn load_scene(&mut self, scene: &Scene, assets: &AssetManager) -> Result<()> {
+        self.load_scene_with_mesh(scene, assets, |_key, _path| {
+            Err(anyhow!(
+                "Scene references meshes but no mesh resolver was provided. Use load_scene_with_mesh."
+            ))
+        })
+    }
+
+    pub fn load_scene_with_mesh<F>(
+        &mut self,
+        scene: &Scene,
+        assets: &AssetManager,
+        mut mesh_loader: F,
+    ) -> Result<()>
+    where
+        F: FnMut(&str, Option<&str>) -> Result<()>,
+    {
         for dep in scene.dependencies.atlas_dependencies() {
             if !assets.has_atlas(dep.key()) {
                 return Err(anyhow!(
@@ -1238,6 +1301,20 @@ impl EcsWorld {
                 ));
             }
         }
+        let mut mesh_missing = Vec::new();
+        for dep in scene.dependencies.mesh_dependencies() {
+            if let Err(err) = mesh_loader(dep.key(), dep.path()) {
+                let source = dep.path().unwrap_or("no path provided");
+                mesh_missing.push(format!("{} ({source}) : {err}", dep.key()));
+            }
+        }
+        if !mesh_missing.is_empty() {
+            return Err(anyhow!("Scene requires meshes that are unavailable: {}", mesh_missing.join(", ")));
+        }
+        self.load_scene_internal(scene, assets)
+    }
+
+    fn load_scene_internal(&mut self, scene: &Scene, assets: &AssetManager) -> Result<()> {
         self.clear_scene_entities();
         let mut entity_map = Vec::with_capacity(scene.entities.len());
         for entity_data in &scene.entities {
@@ -1329,10 +1406,15 @@ impl EcsWorld {
             let (translation3, rotation3, scale3) = transform3d.components();
             let transform3d = Transform3D { translation: translation3, rotation: rotation3, scale: scale3 };
             entity.insert(transform3d);
-            entity.insert(WorldTransform3D(Mat4::from_scale_rotation_translation(scale3, rotation3, translation3)));
+            entity.insert(WorldTransform3D(Mat4::from_scale_rotation_translation(
+                scale3,
+                rotation3,
+                translation3,
+            )));
         } else if data.mesh.is_some() {
             let translation3 = Vec3::new(translation.x, translation.y, 0.0);
-            let transform3d = Transform3D { translation: translation3, rotation: Quat::IDENTITY, scale: Vec3::ONE };
+            let transform3d =
+                Transform3D { translation: translation3, rotation: Quat::IDENTITY, scale: Vec3::ONE };
             entity.insert(transform3d);
             entity.insert(WorldTransform3D(Mat4::from_scale_rotation_translation(
                 transform3d.scale,

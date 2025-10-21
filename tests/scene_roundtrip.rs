@@ -54,14 +54,20 @@ fn scene_roundtrip_preserves_entity_count() {
     assert_eq!(loaded_mesh_dep.path(), Some("assets/models/demo_triangle.gltf"));
 
     let mut new_world = EcsWorld::new();
-    new_world.load_scene(&loaded, &assets).expect("scene load into world");
+    let mut new_registry = MeshRegistry::new();
+    new_world
+        .load_scene_with_mesh(&loaded, &assets, |key, path| new_registry.ensure_mesh(key, path))
+        .expect("scene load into world");
     assert_eq!(new_world.entity_count(), original_count);
     assert!(new_world.first_emitter().is_some());
 
     let mut autoload_world = EcsWorld::new();
     let mut autoload_assets = AssetManager::new();
+    let mut autoload_registry = MeshRegistry::new();
     let _autoload_scene = autoload_world
-        .load_scene_from_path(path, &mut autoload_assets)
+        .load_scene_from_path_with_mesh(path, &mut autoload_assets, |key, path| {
+            autoload_registry.ensure_mesh(key, path)
+        })
         .expect("scene load with auto dependency resolution");
     assert_eq!(autoload_world.entity_count(), original_count);
 
@@ -70,5 +76,12 @@ fn scene_roundtrip_preserves_entity_count() {
     assert!(
         missing_world.load_scene(&loaded, &missing_assets).is_err(),
         "loading without required assets should error"
+    );
+
+    let save_without_mesh =
+        world.save_scene_to_path(path, &assets).expect_err("saving without mesh sources should fail");
+    assert!(
+        save_without_mesh.to_string().contains("save_scene_to_path_with_mesh_source"),
+        "error should mention mesh-aware save helper"
     );
 }

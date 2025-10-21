@@ -842,10 +842,13 @@ impl ApplicationHandler for App {
             }
         }
         let mesh_camera_opt = if mesh_draws.is_empty() { None } else { Some(&self.mesh_camera) };
-        let frame = match self
-            .renderer
-            .render_frame(&instances, view_proj, render_viewport, &mesh_draws, mesh_camera_opt)
-        {
+        let frame = match self.renderer.render_frame(
+            &instances,
+            view_proj,
+            render_viewport,
+            &mesh_draws,
+            mesh_camera_opt,
+        ) {
             Ok(frame) => frame,
             Err(err) => {
                 eprintln!("Render error: {err:?}");
@@ -1171,8 +1174,8 @@ impl ApplicationHandler for App {
                                         }
                                     });
 
-                                let rotation_euler = mesh_tx.rotation.to_euler(EulerRot::XYZ);
-                                let mut rotation_deg = Vec3::new(
+                                    let rotation_euler = mesh_tx.rotation.to_euler(EulerRot::XYZ);
+                                    let mut rotation_deg = Vec3::new(
                                         rotation_euler.0.to_degrees(),
                                         rotation_euler.1.to_degrees(),
                                         rotation_euler.2.to_degrees(),
@@ -1543,7 +1546,11 @@ impl ApplicationHandler for App {
             }
         }
         if actions.load_scene {
-            match self.ecs.load_scene_from_path(&self.ui_scene_path, &mut self.assets) {
+            match self.ecs.load_scene_from_path_with_mesh(
+                &self.ui_scene_path,
+                &mut self.assets,
+                |key, path| self.mesh_registry.ensure_mesh(key, path),
+            ) {
                 Ok(scene) => match self.update_scene_dependencies(&scene.dependencies) {
                     Ok(()) => {
                         self.ui_scene_status = Some(format!("Loaded {}", self.ui_scene_path));
