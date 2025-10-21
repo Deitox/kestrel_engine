@@ -515,7 +515,10 @@ impl Renderer {
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: depth_view,
-                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
                 stencil_ops: None,
             }),
             occlusion_query_set: None,
@@ -550,10 +553,8 @@ impl Renderer {
         pass.set_scissor_rect(sc_x, sc_y, sc_w, sc_h);
 
         for draw in draws {
-            let globals = MeshGlobals {
-                view_proj: view_proj.to_cols_array_2d(),
-                model: draw.model.to_cols_array_2d(),
-            };
+            let globals =
+                MeshGlobals { view_proj: view_proj.to_cols_array_2d(), model: draw.model.to_cols_array_2d() };
             queue.write_buffer(&mesh_pipeline.globals_buf, 0, bytemuck::bytes_of(&globals));
             pass.set_bind_group(0, &mesh_pipeline.globals_bg, &[]);
             pass.set_vertex_buffer(0, draw.mesh.vertex_buffer.slice(..));
@@ -648,11 +649,8 @@ impl Renderer {
         device: &wgpu::Device,
         size: PhysicalSize<u32>,
     ) -> Result<(wgpu::Texture, wgpu::TextureView)> {
-        let extent = wgpu::Extent3d {
-            width: size.width.max(1),
-            height: size.height.max(1),
-            depth_or_array_layers: 1,
-        };
+        let extent =
+            wgpu::Extent3d { width: size.width.max(1), height: size.height.max(1), depth_or_array_layers: 1 };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Depth Texture"),
             size: extent,
@@ -847,10 +845,7 @@ mod tests {
                 memory_hints: wgpu::MemoryHints::default(),
                 trace: wgpu::Trace::default(),
             };
-            let (device, _) = adapter
-                .request_device(&device_desc)
-                .await
-                .expect("device");
+            let (device, _) = adapter.request_device(&device_desc).await.expect("device");
             let size = PhysicalSize::new(321, 123);
             let (texture, view) = Renderer::create_depth_texture(&device, size).expect("depth texture");
             let extent = texture.size();

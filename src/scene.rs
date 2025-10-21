@@ -296,6 +296,8 @@ pub struct SceneEntity {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sprite: Option<SpriteData>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform3d: Option<Transform3DData>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mesh: Option<MeshData>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tint: Option<ColorData>,
@@ -323,6 +325,13 @@ pub struct TransformData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Transform3DData {
+    pub translation: Vec3Data,
+    pub rotation: QuatData,
+    pub scale: Vec3Data,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpriteData {
     pub atlas: String,
     pub region: String,
@@ -337,6 +346,21 @@ pub struct MeshData {
 pub struct Vec2Data {
     pub x: f32,
     pub y: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Vec3Data {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuatData {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub w: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -400,6 +424,16 @@ impl TransformData {
     }
 }
 
+impl Transform3DData {
+    pub fn from_components(translation: glam::Vec3, rotation: glam::Quat, scale: glam::Vec3) -> Self {
+        Self { translation: translation.into(), rotation: rotation.into(), scale: scale.into() }
+    }
+
+    pub fn components(&self) -> (glam::Vec3, glam::Quat, glam::Vec3) {
+        (self.translation.clone().into(), self.rotation.clone().into(), self.scale.clone().into())
+    }
+}
+
 impl From<glam::Vec2> for Vec2Data {
     fn from(value: glam::Vec2) -> Self {
         Self { x: value.x, y: value.y }
@@ -409,6 +443,31 @@ impl From<glam::Vec2> for Vec2Data {
 impl From<Vec2Data> for glam::Vec2 {
     fn from(value: Vec2Data) -> Self {
         glam::Vec2::new(value.x, value.y)
+    }
+}
+
+impl From<glam::Vec3> for Vec3Data {
+    fn from(value: glam::Vec3) -> Self {
+        Self { x: value.x, y: value.y, z: value.z }
+    }
+}
+
+impl From<Vec3Data> for glam::Vec3 {
+    fn from(value: Vec3Data) -> Self {
+        glam::Vec3::new(value.x, value.y, value.z)
+    }
+}
+
+impl From<glam::Quat> for QuatData {
+    fn from(value: glam::Quat) -> Self {
+        let v = value.normalize();
+        Self { x: v.x, y: v.y, z: v.z, w: v.w }
+    }
+}
+
+impl From<QuatData> for glam::Quat {
+    fn from(value: QuatData) -> Self {
+        glam::Quat::from_xyzw(value.x, value.y, value.z, value.w)
     }
 }
 

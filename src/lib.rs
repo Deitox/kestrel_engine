@@ -2,12 +2,12 @@ pub mod assets;
 pub mod audio;
 pub mod camera;
 pub mod camera3d;
-pub mod mesh;
-pub mod mesh_registry;
 pub mod config;
 pub mod ecs;
 pub mod events;
 pub mod input;
+pub mod mesh;
+pub mod mesh_registry;
 pub mod renderer;
 pub mod scene;
 pub mod scripts;
@@ -28,16 +28,16 @@ use crate::scripts::{ScriptCommand, ScriptHost};
 use crate::time::Time;
 
 use bevy_ecs::prelude::Entity;
-use glam::{Mat4, Vec2, Vec3, Vec4};
+use glam::{EulerRot, Mat4, Quat, Vec2, Vec3, Vec4};
 use rand::Rng;
 
 use anyhow::{Context, Result};
 use std::collections::{HashSet, VecDeque};
 use winit::application::ApplicationHandler;
+use winit::dpi::PhysicalSize;
 use winit::event::{DeviceEvent, ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, NamedKey};
-use winit::dpi::PhysicalSize;
 
 // egui
 use egui::Context as EguiCtx;
@@ -90,10 +90,7 @@ impl Viewport {
     }
 
     fn size_physical(&self) -> PhysicalSize<u32> {
-        PhysicalSize::new(
-            self.size.x.max(1.0).round() as u32,
-            self.size.y.max(1.0).round() as u32,
-        )
+        PhysicalSize::new(self.size.x.max(1.0).round() as u32, self.size.y.max(1.0).round() as u32)
     }
 }
 
@@ -390,8 +387,9 @@ impl App {
             return;
         }
         let mut rng = rand::thread_rng();
-        let position = Vec2::new(rng.gen_range(-1.2..1.2), rng.gen_range(-0.6..0.8));
-        let scale = Vec2::splat(0.6);
+        let position =
+            Vec3::new(rng.gen_range(-1.2..1.2), rng.gen_range(-0.6..0.8), rng.gen_range(-1.0..1.0));
+        let scale = Vec3::splat(0.6);
         let entity = self.ecs.spawn_mesh_entity(mesh_key, position, scale);
         self.selected_entity = Some(entity);
         self.mesh_status = Some(format!("Spawned mesh '{}' as entity {:?}", mesh_key, entity));
@@ -649,10 +647,7 @@ impl ApplicationHandler for App {
 
         let window_size = self.renderer.size();
         let viewport_size = self.viewport_physical_size();
-        let cursor_screen = self
-            .input
-            .cursor_position()
-            .map(|(sx, sy)| Vec2::new(sx, sy));
+        let cursor_screen = self.input.cursor_position().map(|(sx, sy)| Vec2::new(sx, sy));
         let cursor_viewport = cursor_screen.and_then(|pos| self.screen_to_viewport(pos));
         let cursor_world_pos =
             cursor_viewport.and_then(|pos| self.camera.screen_to_world(pos, viewport_size));
@@ -847,13 +842,9 @@ impl ApplicationHandler for App {
             }
         }
         let mesh_camera_opt = if mesh_draws.is_empty() { None } else { Some(&self.mesh_camera) };
-        if let Err(err) = self.renderer.render_frame(
-            &instances,
-            view_proj,
-            render_viewport,
-            &mesh_draws,
-            mesh_camera_opt,
-        ) {
+        if let Err(err) =
+            self.renderer.render_frame(&instances, view_proj, render_viewport, &mesh_draws, mesh_camera_opt)
+        {
             eprintln!("Render error: {err:?}");
         }
 
@@ -926,345 +917,445 @@ impl ApplicationHandler for App {
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
             let left_panel =
                 egui::SidePanel::left("kestrel_left_panel").default_width(300.0).show(ctx, |ui| {
-                ui.heading("Stats");
-                ui.label(format!("Entities: {}", entity_count));
-                ui.label(format!("Instances drawn: {}", instances_drawn));
-                ui.separator();
-                ui.label("Frame time (ms)");
-                let hist = eplot::Plot::new("fps_plot").height(120.0).include_y(0.0).include_y(40.0);
-                hist.show(ui, |plot_ui| {
-                    plot_ui.line(eplot::Line::new("ms/frame", eplot::PlotPoints::from(hist_points.clone())));
-                });
-                ui.label("Target: 16.7ms for 60 FPS");
+                    ui.heading("Stats");
+                    ui.label(format!("Entities: {}", entity_count));
+                    ui.label(format!("Instances drawn: {}", instances_drawn));
+                    ui.separator();
+                    ui.label("Frame time (ms)");
+                    let hist = eplot::Plot::new("fps_plot").height(120.0).include_y(0.0).include_y(40.0);
+                    hist.show(ui, |plot_ui| {
+                        plot_ui
+                            .line(eplot::Line::new("ms/frame", eplot::PlotPoints::from(hist_points.clone())));
+                    });
+                    ui.label("Target: 16.7ms for 60 FPS");
 
-                ui.separator();
-                ui.heading("UI & Camera");
-                if ui.add(egui::Slider::new(&mut self.ui_scale, 0.5..=2.0).text("UI scale")).changed() {
-                    self.ui_scale = self.ui_scale.clamp(0.5, 2.0);
-                    self.egui_ctx.set_pixels_per_point(base_pixels_per_point * self.ui_scale);
-                    if let Some(screen) = self.egui_screen.as_mut() {
-                        screen.pixels_per_point = self.egui_ctx.pixels_per_point();
+                    ui.separator();
+                    ui.heading("UI & Camera");
+                    if ui.add(egui::Slider::new(&mut self.ui_scale, 0.5..=2.0).text("UI scale")).changed() {
+                        self.ui_scale = self.ui_scale.clamp(0.5, 2.0);
+                        self.egui_ctx.set_pixels_per_point(base_pixels_per_point * self.ui_scale);
+                        if let Some(screen) = self.egui_screen.as_mut() {
+                            screen.pixels_per_point = self.egui_ctx.pixels_per_point();
+                        }
+                        ui_pixels_per_point = self.egui_ctx.pixels_per_point();
                     }
-                    ui_pixels_per_point = self.egui_ctx.pixels_per_point();
-                }
-                ui.label(format!(
-                    "Camera: pos({:.2}, {:.2}) zoom {:.2}",
-                    camera_position.x, camera_position.y, camera_zoom
-                ));
-                let display_mode = if self.config.window.fullscreen { "Fullscreen" } else { "Windowed" };
-                ui.label(format!(
-                    "Display: {}x{} {}",
-                    self.config.window.width, self.config.window.height, display_mode
-                ));
-                ui.label(format!("VSync: {}", if self.config.window.vsync { "On" } else { "Off" }));
-                if let Some(cursor) = cursor_world_pos {
-                    ui.label(format!("Cursor world: ({:.2}, {:.2})", cursor.x, cursor.y));
-                } else {
-                    ui.label("Cursor world: n/a");
-                }
-            });
+                    ui.label(format!(
+                        "Camera: pos({:.2}, {:.2}) zoom {:.2}",
+                        camera_position.x, camera_position.y, camera_zoom
+                    ));
+                    let display_mode = if self.config.window.fullscreen { "Fullscreen" } else { "Windowed" };
+                    ui.label(format!(
+                        "Display: {}x{} {}",
+                        self.config.window.width, self.config.window.height, display_mode
+                    ));
+                    ui.label(format!("VSync: {}", if self.config.window.vsync { "On" } else { "Off" }));
+                    if let Some(cursor) = cursor_world_pos {
+                        ui.label(format!("Cursor world: ({:.2}, {:.2})", cursor.x, cursor.y));
+                    } else {
+                        ui.label("Cursor world: n/a");
+                    }
+                });
 
             let right_panel =
                 egui::SidePanel::right("kestrel_right_panel").default_width(360.0).show(ctx, |ui| {
-                ui.heading("Spawn & Emitters");
-                ui.add(egui::Slider::new(&mut ui_cell_size, 0.05..=0.8).text("Spatial cell size"));
-                ui.add(egui::Slider::new(&mut ui_spawn_per_press, 1..=5000).text("Spawn per press"));
-                ui.add(
-                    egui::Slider::new(&mut ui_auto_spawn_rate, 0.0..=5000.0).text("Auto-spawn per second"),
-                );
-                ui.add(
-                    egui::Slider::new(&mut ui_emitter_rate, 0.0..=200.0).text("Emitter rate (particles/s)"),
-                );
-                ui.add(
-                    egui::Slider::new(&mut ui_emitter_spread, 0.0..=std::f32::consts::PI)
-                        .text("Emitter spread (rad)"),
-                );
-                ui.add(egui::Slider::new(&mut ui_emitter_speed, 0.0..=3.0).text("Emitter speed"));
-                ui.add(egui::Slider::new(&mut ui_emitter_lifetime, 0.1..=5.0).text("Particle lifetime (s)"));
-                ui.add(egui::Slider::new(&mut ui_emitter_start_size, 0.01..=0.5).text("Particle start size"));
-                ui.add(egui::Slider::new(&mut ui_emitter_end_size, 0.01..=0.5).text("Particle end size"));
-                ui.horizontal(|ui| {
-                    ui.label("Start color");
-                    ui.color_edit_button_rgba_unmultiplied(&mut ui_emitter_start_color);
-                });
-                ui.horizontal(|ui| {
-                    ui.label("End color");
-                    ui.color_edit_button_rgba_unmultiplied(&mut ui_emitter_end_color);
-                });
-                ui.add(egui::Slider::new(&mut ui_root_spin, -5.0..=5.0).text("Root spin speed"));
-                if ui.button("Spawn now").clicked() {
-                    actions.spawn_now = true;
-                }
-                if ui.button("Clear particles").clicked() {
-                    actions.clear_particles = true;
-                }
-                if ui.button("Reset world").clicked() {
-                    actions.reset_world = true;
-                }
-
-                ui.separator();
-                ui.heading("3D Preview");
-                egui::ComboBox::from_label("Mesh asset")
-                    .selected_text(&self.preview_mesh_key)
-                    .show_ui(ui, |ui| {
-                        for key in &mesh_keys {
-                            let selected = self.preview_mesh_key == *key;
-                            if ui.selectable_label(selected, key).clicked() && !selected {
-                                mesh_selection_request = Some(key.clone());
-                            }
-                        }
-                    });
-                let mut mesh_control = self.mesh_control_enabled;
-                if ui.checkbox(&mut mesh_control, "Enable orbit control (M)").changed() {
-                    mesh_control_request = Some(mesh_control);
-                }
-                if ui.button("Reset camera").clicked() {
-                    mesh_reset_request = true;
-                }
-                if ui.button("Spawn mesh entity").clicked() {
-                    actions.spawn_mesh = Some(self.preview_mesh_key.clone());
-                }
-                let radius = self.mesh_orbit.radius;
-                ui.label(format!("Radius: {:.2}", radius));
-                if let Some(status) = &self.mesh_status {
-                    ui.label(status);
-                } else if self.mesh_control_enabled {
-                    ui.label("Right drag to orbit, scroll to zoom.");
-                } else {
-                    ui.label("Scripted orbit animates the camera.");
-                }
-
-                ui.separator();
-                if let Some(entity) = selected_entity {
-                    ui.heading("Entity Inspector");
-                    ui.label(format!("Entity: {:?}", entity));
+                    ui.heading("Spawn & Emitters");
+                    ui.add(egui::Slider::new(&mut ui_cell_size, 0.05..=0.8).text("Spatial cell size"));
+                    ui.add(egui::Slider::new(&mut ui_spawn_per_press, 1..=5000).text("Spawn per press"));
+                    ui.add(
+                        egui::Slider::new(&mut ui_auto_spawn_rate, 0.0..=5000.0)
+                            .text("Auto-spawn per second"),
+                    );
+                    ui.add(
+                        egui::Slider::new(&mut ui_emitter_rate, 0.0..=200.0)
+                            .text("Emitter rate (particles/s)"),
+                    );
+                    ui.add(
+                        egui::Slider::new(&mut ui_emitter_spread, 0.0..=std::f32::consts::PI)
+                            .text("Emitter spread (rad)"),
+                    );
+                    ui.add(egui::Slider::new(&mut ui_emitter_speed, 0.0..=3.0).text("Emitter speed"));
+                    ui.add(
+                        egui::Slider::new(&mut ui_emitter_lifetime, 0.1..=5.0).text("Particle lifetime (s)"),
+                    );
+                    ui.add(
+                        egui::Slider::new(&mut ui_emitter_start_size, 0.01..=0.5).text("Particle start size"),
+                    );
+                    ui.add(egui::Slider::new(&mut ui_emitter_end_size, 0.01..=0.5).text("Particle end size"));
                     ui.horizontal(|ui| {
-                        ui.label("Gizmo");
-                        ui.selectable_value(&mut self.gizmo_mode, GizmoMode::Translate, "Translate");
-                        ui.selectable_value(&mut self.gizmo_mode, GizmoMode::Rotate, "Rotate");
+                        ui.label("Start color");
+                        ui.color_edit_button_rgba_unmultiplied(&mut ui_emitter_start_color);
                     });
-                    if let Some(interaction) = &self.gizmo_interaction {
-                        match interaction {
-                            GizmoInteraction::Translate { .. } => {
-                                ui.colored_label(egui::Color32::LIGHT_GREEN, "Translate gizmo active");
-                            }
-                            GizmoInteraction::Rotate { .. } => {
-                                ui.colored_label(egui::Color32::LIGHT_GREEN, "Rotate gizmo active");
-                            }
-                        }
+                    ui.horizontal(|ui| {
+                        ui.label("End color");
+                        ui.color_edit_button_rgba_unmultiplied(&mut ui_emitter_end_color);
+                    });
+                    ui.add(egui::Slider::new(&mut ui_root_spin, -5.0..=5.0).text("Root spin speed"));
+                    if ui.button("Spawn now").clicked() {
+                        actions.spawn_now = true;
                     }
-                    let mut inspector_refresh = false;
-                    let mut inspector_info = selection_details.clone();
-                    if let Some(mut info) = inspector_info {
-                        let mut translation = info.translation;
-                        ui.horizontal(|ui| {
-                            ui.label("Position");
-                            if ui.add(egui::DragValue::new(&mut translation.x).speed(0.01)).changed()
-                                | ui.add(egui::DragValue::new(&mut translation.y).speed(0.01)).changed()
-                            {
-                                if self.ecs.set_translation(entity, translation) {
-                                    info.translation = translation;
-                                    inspector_refresh = true;
-                                    self.inspector_status = None;
+                    if ui.button("Clear particles").clicked() {
+                        actions.clear_particles = true;
+                    }
+                    if ui.button("Reset world").clicked() {
+                        actions.reset_world = true;
+                    }
+
+                    ui.separator();
+                    ui.heading("3D Preview");
+                    egui::ComboBox::from_label("Mesh asset").selected_text(&self.preview_mesh_key).show_ui(
+                        ui,
+                        |ui| {
+                            for key in &mesh_keys {
+                                let selected = self.preview_mesh_key == *key;
+                                if ui.selectable_label(selected, key).clicked() && !selected {
+                                    mesh_selection_request = Some(key.clone());
                                 }
                             }
-                        });
+                        },
+                    );
+                    let mut mesh_control = self.mesh_control_enabled;
+                    if ui.checkbox(&mut mesh_control, "Enable orbit control (M)").changed() {
+                        mesh_control_request = Some(mesh_control);
+                    }
+                    if ui.button("Reset camera").clicked() {
+                        mesh_reset_request = true;
+                    }
+                    if ui.button("Spawn mesh entity").clicked() {
+                        actions.spawn_mesh = Some(self.preview_mesh_key.clone());
+                    }
+                    let radius = self.mesh_orbit.radius;
+                    ui.label(format!("Radius: {:.2}", radius));
+                    if let Some(status) = &self.mesh_status {
+                        ui.label(status);
+                    } else if self.mesh_control_enabled {
+                        ui.label("Right drag to orbit, scroll to zoom.");
+                    } else {
+                        ui.label("Scripted orbit animates the camera.");
+                    }
 
-                        let mut rotation_deg = info.rotation.to_degrees();
-                        if ui.add(egui::DragValue::new(&mut rotation_deg).speed(1.0).suffix(" deg")).changed()
-                        {
-                            let rotation_rad = rotation_deg.to_radians();
-                            if self.ecs.set_rotation(entity, rotation_rad) {
-                                info.rotation = rotation_rad;
-                                inspector_refresh = true;
-                                self.inspector_status = None;
+                    ui.separator();
+                    if let Some(entity) = selected_entity {
+                        ui.heading("Entity Inspector");
+                        ui.label(format!("Entity: {:?}", entity));
+                        ui.horizontal(|ui| {
+                            ui.label("Gizmo");
+                            ui.selectable_value(&mut self.gizmo_mode, GizmoMode::Translate, "Translate");
+                            ui.selectable_value(&mut self.gizmo_mode, GizmoMode::Rotate, "Rotate");
+                        });
+                        if let Some(interaction) = &self.gizmo_interaction {
+                            match interaction {
+                                GizmoInteraction::Translate { .. } => {
+                                    ui.colored_label(egui::Color32::LIGHT_GREEN, "Translate gizmo active");
+                                }
+                                GizmoInteraction::Rotate { .. } => {
+                                    ui.colored_label(egui::Color32::LIGHT_GREEN, "Rotate gizmo active");
+                                }
                             }
                         }
-
-                        let mut scale = info.scale;
-                        ui.horizontal(|ui| {
-                            ui.label("Scale");
-                            if ui.add(egui::DragValue::new(&mut scale.x).speed(0.01)).changed()
-                                | ui.add(egui::DragValue::new(&mut scale.y).speed(0.01)).changed()
-                            {
-                                let clamped = Vec2::new(scale.x.max(0.01), scale.y.max(0.01));
-                                if self.ecs.set_scale(entity, clamped) {
-                                    info.scale = clamped;
-                                    inspector_refresh = true;
-                                    self.inspector_status = None;
-                                }
-                            }
-                        });
-
-                        if let Some(mut velocity) = info.velocity {
+                        let mut inspector_refresh = false;
+                        let mut inspector_info = selection_details.clone();
+                        if let Some(mut info) = inspector_info {
+                            let mut translation = info.translation;
                             ui.horizontal(|ui| {
-                                ui.label("Velocity");
-                                if ui.add(egui::DragValue::new(&mut velocity.x).speed(0.01)).changed()
-                                    | ui.add(egui::DragValue::new(&mut velocity.y).speed(0.01)).changed()
+                                ui.label("Position");
+                                if ui.add(egui::DragValue::new(&mut translation.x).speed(0.01)).changed()
+                                    | ui.add(egui::DragValue::new(&mut translation.y).speed(0.01)).changed()
                                 {
-                                    if self.ecs.set_velocity(entity, velocity) {
-                                        info.velocity = Some(velocity);
+                                    if self.ecs.set_translation(entity, translation) {
+                                        info.translation = translation;
                                         inspector_refresh = true;
                                         self.inspector_status = None;
                                     }
                                 }
                             });
-                        } else {
-                            ui.label("Velocity: n/a");
-                        }
 
-                        if let Some(sprite) = info.sprite.clone() {
-                            ui.separator();
-                            ui.label(format!("Atlas: {}", sprite.atlas));
-                            let mut region = sprite.region.clone();
-                            if ui.text_edit_singleline(&mut region).changed() {
-                                if self.ecs.set_sprite_region(entity, &self.assets, &region) {
-                                    info.sprite = Some(SpriteInfo {
-                                        atlas: sprite.atlas.clone(),
-                                        region: region.clone(),
+                            let mut rotation_deg = info.rotation.to_degrees();
+                            if ui
+                                .add(egui::DragValue::new(&mut rotation_deg).speed(1.0).suffix(" deg"))
+                                .changed()
+                            {
+                                let rotation_rad = rotation_deg.to_radians();
+                                if self.ecs.set_rotation(entity, rotation_rad) {
+                                    info.rotation = rotation_rad;
+                                    inspector_refresh = true;
+                                    self.inspector_status = None;
+                                }
+                            }
+
+                            let mut scale = info.scale;
+                            ui.horizontal(|ui| {
+                                ui.label("Scale");
+                                if ui.add(egui::DragValue::new(&mut scale.x).speed(0.01)).changed()
+                                    | ui.add(egui::DragValue::new(&mut scale.y).speed(0.01)).changed()
+                                {
+                                    let clamped = Vec2::new(scale.x.max(0.01), scale.y.max(0.01));
+                                    if self.ecs.set_scale(entity, clamped) {
+                                        info.scale = clamped;
+                                        inspector_refresh = true;
+                                        self.inspector_status = None;
+                                    }
+                                }
+                            });
+
+                            if let Some(mut velocity) = info.velocity {
+                                ui.horizontal(|ui| {
+                                    ui.label("Velocity");
+                                    if ui.add(egui::DragValue::new(&mut velocity.x).speed(0.01)).changed()
+                                        | ui.add(egui::DragValue::new(&mut velocity.y).speed(0.01)).changed()
+                                    {
+                                        if self.ecs.set_velocity(entity, velocity) {
+                                            info.velocity = Some(velocity);
+                                            inspector_refresh = true;
+                                            self.inspector_status = None;
+                                        }
+                                    }
+                                });
+                            } else {
+                                ui.label("Velocity: n/a");
+                            }
+
+                            if let Some(sprite) = info.sprite.clone() {
+                                ui.separator();
+                                ui.label(format!("Atlas: {}", sprite.atlas));
+                                let mut region = sprite.region.clone();
+                                if ui.text_edit_singleline(&mut region).changed() {
+                                    if self.ecs.set_sprite_region(entity, &self.assets, &region) {
+                                        info.sprite = Some(SpriteInfo {
+                                            atlas: sprite.atlas.clone(),
+                                            region: region.clone(),
+                                        });
+                                        inspector_refresh = true;
+                                        self.inspector_status =
+                                            Some(format!("Sprite region set to {}", region));
+                                    } else {
+                                        self.inspector_status = Some(format!(
+                                            "Region '{}' not found in atlas {}",
+                                            region, sprite.atlas
+                                        ));
+                                    }
+                                }
+                            } else {
+                                ui.label("Sprite: n/a");
+                            }
+
+                            if let Some(mesh) = info.mesh.clone() {
+                                ui.separator();
+                                ui.label(format!("Mesh: {}", mesh.key));
+                                if let Some(mut mesh_tx) = info.mesh_transform.clone() {
+                                    let mut translation3 = mesh_tx.translation;
+                                    ui.horizontal(|ui| {
+                                        ui.label("Position (X/Y/Z)");
+                                        let mut changed = false;
+                                        changed |= ui
+                                            .add(egui::DragValue::new(&mut translation3.x).speed(0.01))
+                                            .changed();
+                                        changed |= ui
+                                            .add(egui::DragValue::new(&mut translation3.y).speed(0.01))
+                                            .changed();
+                                        changed |= ui
+                                            .add(egui::DragValue::new(&mut translation3.z).speed(0.01))
+                                            .changed();
+                                        if changed {
+                                            if self.ecs.set_mesh_translation(entity, translation3) {
+                                                mesh_tx.translation = translation3;
+                                                inspector_refresh = true;
+                                                self.inspector_status = None;
+                                            }
+                                        }
                                     });
-                                    inspector_refresh = true;
-                                    self.inspector_status = Some(format!("Sprite region set to {}", region));
+
+                                let rotation_euler = mesh_tx.rotation.to_euler(EulerRot::XYZ);
+                                let mut rotation_deg = Vec3::new(
+                                        rotation_euler.0.to_degrees(),
+                                        rotation_euler.1.to_degrees(),
+                                        rotation_euler.2.to_degrees(),
+                                    );
+                                    ui.horizontal(|ui| {
+                                        ui.label("Rotation (deg)");
+                                        let mut changed = false;
+                                        changed |= ui
+                                            .add(egui::DragValue::new(&mut rotation_deg.x).speed(0.5))
+                                            .changed();
+                                        changed |= ui
+                                            .add(egui::DragValue::new(&mut rotation_deg.y).speed(0.5))
+                                            .changed();
+                                        changed |= ui
+                                            .add(egui::DragValue::new(&mut rotation_deg.z).speed(0.5))
+                                            .changed();
+                                        if changed {
+                                            let radians = Vec3::new(
+                                                rotation_deg.x.to_radians(),
+                                                rotation_deg.y.to_radians(),
+                                                rotation_deg.z.to_radians(),
+                                            );
+                                            if self.ecs.set_mesh_rotation_euler(entity, radians) {
+                                                mesh_tx.rotation = Quat::from_euler(
+                                                    EulerRot::XYZ,
+                                                    radians.x,
+                                                    radians.y,
+                                                    radians.z,
+                                                );
+                                                inspector_refresh = true;
+                                                self.inspector_status = None;
+                                            }
+                                        }
+                                    });
+
+                                    let mut scale3 = mesh_tx.scale;
+                                    ui.horizontal(|ui| {
+                                        ui.label("Scale (XYZ)");
+                                        let mut changed = false;
+                                        changed |=
+                                            ui.add(egui::DragValue::new(&mut scale3.x).speed(0.01)).changed();
+                                        changed |=
+                                            ui.add(egui::DragValue::new(&mut scale3.y).speed(0.01)).changed();
+                                        changed |=
+                                            ui.add(egui::DragValue::new(&mut scale3.z).speed(0.01)).changed();
+                                        if changed {
+                                            let clamped = Vec3::new(
+                                                scale3.x.max(0.01),
+                                                scale3.y.max(0.01),
+                                                scale3.z.max(0.01),
+                                            );
+                                            if self.ecs.set_mesh_scale(entity, clamped) {
+                                                mesh_tx.scale = clamped;
+                                                inspector_refresh = true;
+                                                self.inspector_status = None;
+                                            }
+                                        }
+                                    });
+
+                                    info.mesh_transform = Some(mesh_tx);
                                 } else {
-                                    self.inspector_status = Some(format!(
-                                        "Region '{}' not found in atlas {}",
-                                        region, sprite.atlas
-                                    ));
+                                    ui.label("Mesh transform: n/a");
                                 }
                             }
+
+                            ui.separator();
+                            let mut tinted = info.tint.is_some();
+                            if ui.checkbox(&mut tinted, "Tint override").changed() {
+                                if tinted {
+                                    let color = Vec4::splat(1.0);
+                                    if self.ecs.set_tint(entity, Some(color)) {
+                                        info.tint = Some(color);
+                                        inspector_refresh = true;
+                                        self.inspector_status = None;
+                                    }
+                                } else if self.ecs.set_tint(entity, None) {
+                                    info.tint = None;
+                                    inspector_refresh = true;
+                                    self.inspector_status = None;
+                                }
+                            }
+                            if let Some(color) = info.tint {
+                                let mut color_arr = color.to_array();
+                                if ui.color_edit_button_rgba_unmultiplied(&mut color_arr).changed() {
+                                    let vec = Vec4::from_array(color_arr);
+                                    if self.ecs.set_tint(entity, Some(vec)) {
+                                        info.tint = Some(vec);
+                                        inspector_refresh = true;
+                                        self.inspector_status = None;
+                                    }
+                                }
+                            }
+
+                            inspector_info = Some(info);
                         } else {
-                            ui.label("Sprite: n/a");
+                            ui.label("Selection data unavailable");
                         }
 
-                        if let Some(mesh) = info.mesh.clone() {
-                            ui.label(format!("Mesh: {}", mesh.key));
+                        if inspector_refresh {
+                            selection_details =
+                                selected_entity.and_then(|entity| self.ecs.entity_info(entity));
+                        } else {
+                            selection_details = inspector_info;
                         }
-
-                        ui.separator();
-                        let mut tinted = info.tint.is_some();
-                        if ui.checkbox(&mut tinted, "Tint override").changed() {
-                            if tinted {
-                                let color = Vec4::splat(1.0);
-                                if self.ecs.set_tint(entity, Some(color)) {
-                                    info.tint = Some(color);
-                                    inspector_refresh = true;
-                                    self.inspector_status = None;
-                                }
-                            } else if self.ecs.set_tint(entity, None) {
-                                info.tint = None;
-                                inspector_refresh = true;
-                                self.inspector_status = None;
-                            }
+                        if let Some(status) = &self.inspector_status {
+                            ui.colored_label(egui::Color32::YELLOW, status);
                         }
-                        if let Some(color) = info.tint {
-                            let mut color_arr = color.to_array();
-                            if ui.color_edit_button_rgba_unmultiplied(&mut color_arr).changed() {
-                                let vec = Vec4::from_array(color_arr);
-                                if self.ecs.set_tint(entity, Some(vec)) {
-                                    info.tint = Some(vec);
-                                    inspector_refresh = true;
-                                    self.inspector_status = None;
-                                }
-                            }
+                        if ui.button("Delete selected").clicked() {
+                            actions.delete_entity = Some(entity);
+                            selected_entity = None;
+                            selection_details = None;
+                            self.inspector_status = None;
                         }
-
-                        inspector_info = Some(info);
                     } else {
-                        ui.label("Selection data unavailable");
+                        ui.label("No entity selected");
                     }
 
-                    if inspector_refresh {
-                        selection_details = selected_entity.and_then(|entity| self.ecs.entity_info(entity));
+                    ui.separator();
+                    ui.heading("Scripts");
+                    ui.label(format!("Path: {}", self.scripts.script_path().display()));
+                    let mut scripts_enabled = self.scripts.enabled();
+                    if ui.checkbox(&mut scripts_enabled, "Enable scripts").changed() {
+                        self.scripts.set_enabled(scripts_enabled);
+                    }
+                    if ui.button("Reload script").clicked() {
+                        if let Err(err) = self.scripts.force_reload() {
+                            self.scripts.set_error_message(err.to_string());
+                        }
+                    }
+                    if let Some(err) = self.scripts.last_error() {
+                        ui.colored_label(egui::Color32::RED, format!("Error: {err}"));
+                    } else if self.scripts.enabled() {
+                        ui.label("Script running");
                     } else {
-                        selection_details = inspector_info;
+                        ui.label("Scripts disabled");
                     }
-                    if let Some(status) = &self.inspector_status {
-                        ui.colored_label(egui::Color32::YELLOW, status);
-                    }
-                    if ui.button("Delete selected").clicked() {
-                        actions.delete_entity = Some(entity);
-                        selected_entity = None;
-                        selection_details = None;
-                        self.inspector_status = None;
-                    }
-                } else {
-                    ui.label("No entity selected");
-                }
 
-                ui.separator();
-                ui.heading("Scripts");
-                ui.label(format!("Path: {}", self.scripts.script_path().display()));
-                let mut scripts_enabled = self.scripts.enabled();
-                if ui.checkbox(&mut scripts_enabled, "Enable scripts").changed() {
-                    self.scripts.set_enabled(scripts_enabled);
-                }
-                if ui.button("Reload script").clicked() {
-                    if let Err(err) = self.scripts.force_reload() {
-                        self.scripts.set_error_message(err.to_string());
+                    ui.separator();
+                    ui.heading("Scene");
+                    ui.horizontal(|ui| {
+                        ui.label("Path");
+                        ui.text_edit_singleline(&mut self.ui_scene_path);
+                        if ui.button("Save").clicked() {
+                            actions.save_scene = true;
+                        }
+                        if ui.button("Load").clicked() {
+                            actions.load_scene = true;
+                        }
+                    });
+                    if let Some(status) = &self.ui_scene_status {
+                        ui.label(status);
                     }
-                }
-                if let Some(err) = self.scripts.last_error() {
-                    ui.colored_label(egui::Color32::RED, format!("Error: {err}"));
-                } else if self.scripts.enabled() {
-                    ui.label("Script running");
-                } else {
-                    ui.label("Scripts disabled");
-                }
 
-                ui.separator();
-                ui.heading("Scene");
-                ui.horizontal(|ui| {
-                    ui.label("Path");
-                    ui.text_edit_singleline(&mut self.ui_scene_path);
-                    if ui.button("Save").clicked() {
-                        actions.save_scene = true;
+                    ui.separator();
+                    ui.heading("Recent Events");
+                    if recent_events.is_empty() {
+                        ui.label("No events recorded");
+                    } else {
+                        for event in recent_events.iter().rev().take(10) {
+                            ui.label(event.to_string());
+                        }
                     }
-                    if ui.button("Load").clicked() {
-                        actions.load_scene = true;
+
+                    ui.separator();
+                    ui.heading("Audio Debug");
+                    if ui.checkbox(&mut audio_enabled, "Enable audio triggers").changed() {
+                        self.audio.set_enabled(audio_enabled);
+                    }
+                    if !self.audio.available() {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(200, 80, 80),
+                            "Audio device unavailable; triggers will be silent.",
+                        );
+                    }
+                    if ui.button("Clear audio log").clicked() {
+                        self.audio.clear();
+                    }
+                    if audio_triggers.is_empty() {
+                        ui.label("No audio triggers");
+                    } else {
+                        for trigger in audio_triggers.iter().rev() {
+                            ui.label(trigger);
+                        }
                     }
                 });
-                if let Some(status) = &self.ui_scene_status {
-                    ui.label(status);
-                }
-
-                ui.separator();
-                ui.heading("Recent Events");
-                if recent_events.is_empty() {
-                    ui.label("No events recorded");
-                } else {
-                    for event in recent_events.iter().rev().take(10) {
-                        ui.label(event.to_string());
-                    }
-                }
-
-                ui.separator();
-                ui.heading("Audio Debug");
-                if ui.checkbox(&mut audio_enabled, "Enable audio triggers").changed() {
-                    self.audio.set_enabled(audio_enabled);
-                }
-                if !self.audio.available() {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(200, 80, 80),
-                        "Audio device unavailable; triggers will be silent.",
-                    );
-                }
-                if ui.button("Clear audio log").clicked() {
-                    self.audio.clear();
-                }
-                if audio_triggers.is_empty() {
-                    ui.label("No audio triggers");
-                } else {
-                    for trigger in audio_triggers.iter().rev() {
-                        ui.label(trigger);
-                    }
-                }
-            });
             left_panel_width_px = left_panel.response.rect.width() * ui_pixels_per_point;
             right_panel_width_px = right_panel.response.rect.width() * ui_pixels_per_point;
             let window_width_px = window_size.width as f32;
             let window_height_px = window_size.height as f32;
-            let viewport_width_px =
-                (window_width_px - left_panel_width_px - right_panel_width_px).max(1.0);
+            let viewport_width_px = (window_width_px - left_panel_width_px - right_panel_width_px).max(1.0);
             let viewport_origin_vec2 = Vec2::new(left_panel_width_px, 0.0);
             let viewport_size_vec2 = Vec2::new(viewport_width_px, window_height_px);
             let viewport_size_physical = PhysicalSize::new(
@@ -1304,8 +1395,14 @@ impl ApplicationHandler for App {
                         let min_screen = min_px_view + viewport_origin_vec2;
                         let max_screen = max_px_view + viewport_origin_vec2;
                         highlight_rect = Some(egui::Rect::from_two_pos(
-                            egui::pos2(min_screen.x / ui_pixels_per_point, min_screen.y / ui_pixels_per_point),
-                            egui::pos2(max_screen.x / ui_pixels_per_point, max_screen.y / ui_pixels_per_point),
+                            egui::pos2(
+                                min_screen.x / ui_pixels_per_point,
+                                min_screen.y / ui_pixels_per_point,
+                            ),
+                            egui::pos2(
+                                max_screen.x / ui_pixels_per_point,
+                                max_screen.y / ui_pixels_per_point,
+                            ),
                         ));
                         gizmo_center_px = Some((min_screen + max_screen) * 0.5);
                     }
@@ -1431,29 +1528,27 @@ impl ApplicationHandler for App {
         }
         if actions.load_scene {
             match self.ecs.load_scene_from_path(&self.ui_scene_path, &mut self.assets) {
-                Ok(scene) => {
-                    match self.update_scene_dependencies(&scene.dependencies) {
-                        Ok(()) => {
-                            self.ui_scene_status = Some(format!("Loaded {}", self.ui_scene_path));
-                            self.selected_entity = None;
-                            self.gizmo_interaction = None;
-                            self.scripts.clear_handles();
-                            self.ui_hist.clear();
-                            self.sync_emitter_ui();
-                            self.inspector_status = None;
-                        }
-                        Err(err) => {
-                            self.ui_scene_status = Some(format!("Load failed: {err}"));
-                            self.ecs.clear_world();
-                            self.clear_scene_atlases();
-                            self.selected_entity = None;
-                            self.gizmo_interaction = None;
-                            self.scripts.clear_handles();
-                            self.sync_emitter_ui();
-                            self.inspector_status = None;
-                        }
+                Ok(scene) => match self.update_scene_dependencies(&scene.dependencies) {
+                    Ok(()) => {
+                        self.ui_scene_status = Some(format!("Loaded {}", self.ui_scene_path));
+                        self.selected_entity = None;
+                        self.gizmo_interaction = None;
+                        self.scripts.clear_handles();
+                        self.ui_hist.clear();
+                        self.sync_emitter_ui();
+                        self.inspector_status = None;
                     }
-                }
+                    Err(err) => {
+                        self.ui_scene_status = Some(format!("Load failed: {err}"));
+                        self.ecs.clear_world();
+                        self.clear_scene_atlases();
+                        self.selected_entity = None;
+                        self.gizmo_interaction = None;
+                        self.scripts.clear_handles();
+                        self.sync_emitter_ui();
+                        self.inspector_status = None;
+                    }
+                },
                 Err(err) => {
                     self.ui_scene_status = Some(format!("Load failed: {err}"));
                 }

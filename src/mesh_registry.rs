@@ -21,12 +21,14 @@ struct MeshEntry {
 impl MeshRegistry {
     pub fn new() -> Self {
         let mut registry = MeshRegistry { entries: HashMap::new(), default: String::new() };
-        registry
-            .insert_entry("cube", Mesh::cube(1.0), None)
-            .expect("cube mesh should insert");
+        registry.insert_entry("cube", Mesh::cube(1.0), None).expect("cube mesh should insert");
         match Mesh::load_gltf("assets/models/demo_triangle.gltf") {
             Ok(mesh) => {
-                let _ = registry.insert_entry("demo_triangle", mesh, Some(PathBuf::from("assets/models/demo_triangle.gltf")));
+                let _ = registry.insert_entry(
+                    "demo_triangle",
+                    mesh,
+                    Some(PathBuf::from("assets/models/demo_triangle.gltf")),
+                );
                 registry.default = "demo_triangle".to_string();
             }
             Err(err) => {
@@ -74,18 +76,14 @@ impl MeshRegistry {
     pub fn load_from_path(&mut self, key: &str, path: impl AsRef<Path>) -> Result<()> {
         let path_ref = path.as_ref();
         let mesh = Mesh::load_gltf(path_ref)?;
-        self.entries.insert(
-            key.to_string(),
-            MeshEntry { mesh, gpu: None, source: Some(path_ref.to_path_buf()) },
-        );
+        self.entries
+            .insert(key.to_string(), MeshEntry { mesh, gpu: None, source: Some(path_ref.to_path_buf()) });
         Ok(())
     }
 
     pub fn ensure_gpu<'a>(&'a mut self, key: &str, renderer: &mut Renderer) -> Result<&'a GpuMesh> {
-        let entry = self
-            .entries
-            .get_mut(key)
-            .ok_or_else(|| anyhow!("Mesh '{key}' not registered in registry"))?;
+        let entry =
+            self.entries.get_mut(key).ok_or_else(|| anyhow!("Mesh '{key}' not registered in registry"))?;
         if entry.gpu.is_none() {
             let gpu = renderer.create_gpu_mesh(&entry.mesh)?;
             entry.gpu = Some(gpu);

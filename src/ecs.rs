@@ -2,13 +2,13 @@ use crate::assets::AssetManager;
 use crate::events::{EventBus, GameEvent};
 use crate::scene::{
     ColliderData, ColorData, MeshData, OrbitControllerData, ParticleEmitterData, Scene, SceneDependencies,
-    SceneEntity, SpriteData, TransformData,
+    SceneEntity, SpriteData, Transform3DData, TransformData,
 };
 use anyhow::{anyhow, Context, Result};
 use bevy_ecs::prelude::*;
 use bevy_ecs::query::{With, Without};
 use bevy_ecs::system::{Commands, Res, ResMut};
-use glam::{Mat4, Vec2, Vec4};
+use glam::{EulerRot, Mat4, Quat, Vec2, Vec3, Vec4};
 use rand::Rng;
 use rapier2d::geometry::{CollisionEvent, CollisionEventFlags};
 use rapier2d::pipeline::{ActiveEvents, EventHandler};
@@ -33,6 +33,8 @@ impl Default for Transform {
 }
 #[derive(Component, Clone, Copy, Default)]
 pub struct WorldTransform(pub Mat4);
+#[derive(Component, Clone, Copy, Default)]
+pub struct WorldTransform3D(pub Mat4);
 #[derive(Component, Clone, Copy)]
 pub struct Parent(pub Entity);
 #[derive(Component, Default)]
@@ -49,6 +51,17 @@ pub struct Sprite {
 #[derive(Component, Clone)]
 pub struct MeshRef {
     pub key: String,
+}
+#[derive(Component, Clone, Copy)]
+pub struct Transform3D {
+    pub translation: Vec3,
+    pub rotation: Quat,
+    pub scale: Vec3,
+}
+impl Default for Transform3D {
+    fn default() -> Self {
+        Self { translation: Vec3::ZERO, rotation: Quat::IDENTITY, scale: Vec3::ONE }
+    }
 }
 #[derive(Component, Clone, Copy)]
 pub struct Velocity(pub Vec2);
@@ -119,6 +132,7 @@ pub struct EntityInfo {
     pub velocity: Option<Vec2>,
     pub sprite: Option<SpriteInfo>,
     pub mesh: Option<MeshInfo>,
+    pub mesh_transform: Option<Transform3DInfo>,
     pub tint: Option<Vec4>,
 }
 
@@ -137,6 +151,13 @@ pub struct MeshInfo {
 pub struct MeshInstance {
     pub key: String,
     pub model: Mat4,
+}
+
+#[derive(Clone)]
+pub struct Transform3DInfo {
+    pub translation: Vec3,
+    pub rotation: Quat,
+    pub scale: Vec3,
 }
 
 pub struct EmitterSnapshot {
@@ -495,6 +516,7 @@ impl EcsWorld {
         schedule_var.add_systems((
             sys_apply_spin,
             sys_propagate_transforms,
+            sys_propagate_transforms3d,
             sys_update_emitters,
             sys_update_particles,
         ));
@@ -861,16 +883,19 @@ impl EcsWorld {
         Ok(entity)
     }
 
-    pub fn spawn_mesh_entity(&mut self, mesh_key: &str, translation: Vec2, scale: Vec2) -> Entity {
-        let entity = self
-            .world
+    pub fn spawn_mesh_entity(&mut self, mesh_key: &str, translation: Vec3, scale: Vec3) -> Entity {
+        let transform3d = Transform3D { translation, rotation: Quat::IDENTITY, scale };
+        let world3d =
+            WorldTransform3D(Mat4::from_scale_rotation_translation(scale, Quat::IDENTITY, translation));
+        self.world
             .spawn((
-                Transform { translation, rotation: 0.0, scale },
+                Transform::default(),
                 WorldTransform::default(),
+                transform3d,
+                world3d,
                 MeshRef { key: mesh_key.to_string() },
             ))
-            .id();
-        entity
+            .id()
     }
     pub fn set_velocity(&mut self, entity: Entity, velocity: Vec2) -> bool {
         let mut updated = false;
@@ -1015,11 +1040,57 @@ impl EcsWorld {
 
     pub fn collect_mesh_instances(&mut self) -> Vec<MeshInstance> {
         let mut instances = Vec::new();
-        let mut query = self.world.query::<(&WorldTransform, &MeshRef)>();
+        let mut query = self.world.query::<(&WorldTransform3D, &MeshRef)>();
         for (wt, mesh) in query.iter(&self.world) {
             instances.push(MeshInstance { key: mesh.key.clone(), model: wt.0 });
         }
         instances
+    }
+
+    pub fn set_mesh_translation(&mut self, entity: Entity, translation: Vec3) -> bool {
+        if let Some(mut transform) = self.world.get_mut::<Transform3D>(entity) {
+            transform.translation = translation;
+            let updated = *transform;
+            drop(transform);
+            self.update_world_transform3d(entity, updated);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_mesh_scale(&mut self, entity: Entity, scale: Vec3) -> bool {
+        if let Some(mut transform) = self.world.get_mut::<Transform3D>(entity) {
+            transform.scale = scale;
+            let updated = *transform;
+            drop(transform);
+            self.update_world_transform3d(entity, updated);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_mesh_rotation_euler(&mut self, entity: Entity, euler: Vec3) -> bool {
+        if let Some(mut transform) = self.world.get_mut::<Transform3D>(entity) {
+            transform.rotation = Quat::from_euler(EulerRot::XYZ, euler.x, euler.y, euler.z);
+            let updated = *transform;
+            drop(transform);
+            self.update_world_transform3d(entity, updated);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn update_world_transform3d(&mut self, entity: Entity, transform: Transform3D) {
+        if let Some(mut world) = self.world.get_mut::<WorldTransform3D>(entity) {
+            world.0 = Mat4::from_scale_rotation_translation(
+                transform.scale,
+                transform.rotation,
+                transform.translation,
+            );
+        }
     }
     pub fn entity_count(&self) -> usize {
         let boundary = self.world.resource::<RapierState>().boundary_entity();
@@ -1057,6 +1128,11 @@ impl EcsWorld {
             region: sprite.region.to_string(),
         });
         let mesh = self.world.get::<MeshRef>(entity).map(|mesh| MeshInfo { key: mesh.key.clone() });
+        let mesh_transform = self.world.get::<Transform3D>(entity).map(|transform| Transform3DInfo {
+            translation: transform.translation,
+            rotation: transform.rotation,
+            scale: transform.scale,
+        });
         let tint = self.world.get::<Tint>(entity).map(|t| t.0);
         Some(EntityInfo {
             translation,
@@ -1065,6 +1141,7 @@ impl EcsWorld {
             velocity,
             sprite,
             mesh,
+            mesh_transform,
             tint,
         })
     }
@@ -1229,6 +1306,22 @@ impl EcsWorld {
         let mut entity =
             self.world.spawn((Transform { translation, rotation, scale }, WorldTransform::default()));
 
+        if let Some(transform3d) = data.transform3d.as_ref() {
+            let (translation3, rotation3, scale3) = transform3d.components();
+            let transform3d = Transform3D { translation: translation3, rotation: rotation3, scale: scale3 };
+            entity.insert(transform3d);
+            entity.insert(WorldTransform3D(Mat4::from_scale_rotation_translation(scale3, rotation3, translation3)));
+        } else if data.mesh.is_some() {
+            let translation3 = Vec3::new(translation.x, translation.y, 0.0);
+            let transform3d = Transform3D { translation: translation3, rotation: Quat::IDENTITY, scale: Vec3::ONE };
+            entity.insert(transform3d);
+            entity.insert(WorldTransform3D(Mat4::from_scale_rotation_translation(
+                transform3d.scale,
+                transform3d.rotation,
+                transform3d.translation,
+            )));
+        }
+
         if let Some(spin) = data.spin {
             entity.insert(Spin { speed: spin });
         }
@@ -1325,6 +1418,10 @@ impl EcsWorld {
                 atlas: sprite.atlas_key.to_string(),
                 region: sprite.region.to_string(),
             }),
+            transform3d: self
+                .world
+                .get::<Transform3D>(entity)
+                .map(|t| Transform3DData::from_components(t.translation, t.rotation, t.scale)),
             mesh: self.world.get::<MeshRef>(entity).map(|mesh| MeshData { key: mesh.key.clone() }),
             tint: self.world.get::<Tint>(entity).map(|t| ColorData::from(t.0)),
             velocity: self.world.get::<Velocity>(entity).map(|v| v.0.into()),
@@ -1420,6 +1517,13 @@ fn sys_propagate_transforms(
                 }
             }
         }
+    }
+}
+
+fn sys_propagate_transforms3d(mut query: Query<(&Transform3D, &mut WorldTransform3D)>) {
+    for (transform, mut world) in &mut query {
+        world.0 =
+            Mat4::from_scale_rotation_translation(transform.scale, transform.rotation, transform.translation);
     }
 }
 

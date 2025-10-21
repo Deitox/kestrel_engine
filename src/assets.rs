@@ -94,9 +94,7 @@ impl AssetManager {
         } else if let Some(stored) = self.atlas_sources.get(key) {
             stored.clone()
         } else {
-            return Err(anyhow!(
-                "Atlas '{key}' is not loaded and no JSON path provided to retain it."
-            ));
+            return Err(anyhow!("Atlas '{key}' is not loaded and no JSON path provided to retain it."));
         };
         self.load_atlas_internal(key, &path_owned)?;
         self.atlas_sources.insert(key.to_string(), path_owned);

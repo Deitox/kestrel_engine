@@ -85,14 +85,7 @@ impl Mesh {
         let mut indices = Vec::with_capacity(36);
         for face in 0..6 {
             let base = face * 4;
-            indices.extend_from_slice(&[
-                base,
-                base + 1,
-                base + 2,
-                base,
-                base + 2,
-                base + 3,
-            ]);
+            indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
         }
 
         Self { vertices, indices }
@@ -103,10 +96,8 @@ impl Mesh {
         let (document, buffers, _) = gltf::import(path_ref)
             .with_context(|| format!("Failed to import glTF from {}", path_ref.display()))?;
 
-        let mesh = document
-            .meshes()
-            .next()
-            .ok_or_else(|| anyhow!("No meshes found in {}", path_ref.display()))?;
+        let mesh =
+            document.meshes().next().ok_or_else(|| anyhow!("No meshes found in {}", path_ref.display()))?;
         let primitive = mesh
             .primitives()
             .next()
@@ -134,7 +125,9 @@ impl Mesh {
             .map(|read| read.into_u32().collect())
             .unwrap_or_else(|| (0..positions.len() as u32).collect());
 
-        if normals.is_empty() || normals.len() != positions.len() || normals.iter().all(|n| n.length_squared() == 0.0)
+        if normals.is_empty()
+            || normals.len() != positions.len()
+            || normals.iter().all(|n| n.length_squared() == 0.0)
         {
             normals = compute_normals(&positions, &indices);
         }
@@ -190,11 +183,7 @@ mod tests {
         let mesh = Mesh::load_gltf("assets/models/demo_triangle.gltf").expect("demo gltf should load");
         assert_eq!(mesh.vertices.len(), 3);
         assert_eq!(mesh.indices, vec![0, 1, 2]);
-        let normals: Vec<Vec3> = mesh
-            .vertices
-            .iter()
-            .map(|v| Vec3::from_array(v.normal))
-            .collect();
+        let normals: Vec<Vec3> = mesh.vertices.iter().map(|v| Vec3::from_array(v.normal)).collect();
         for normal in normals {
             assert!((normal - Vec3::Z).length_squared() < 1e-4);
         }

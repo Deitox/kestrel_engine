@@ -28,11 +28,7 @@ impl Camera3D {
     }
 
     pub fn view_projection(&self, viewport: PhysicalSize<u32>) -> Mat4 {
-        let aspect = if viewport.height > 0 {
-            viewport.width as f32 / viewport.height as f32
-        } else {
-            1.0
-        };
+        let aspect = if viewport.height > 0 { viewport.width as f32 / viewport.height as f32 } else { 1.0 };
         self.projection_matrix(aspect) * self.view_matrix()
     }
 
@@ -81,7 +77,8 @@ impl OrbitCamera {
 
     pub fn orbit(&mut self, delta: Vec2) {
         self.yaw_radians += delta.x;
-        self.pitch_radians = (self.pitch_radians + delta.y).clamp(-std::f32::consts::FRAC_PI_2 + 0.01, std::f32::consts::FRAC_PI_2 - 0.01);
+        self.pitch_radians = (self.pitch_radians + delta.y)
+            .clamp(-std::f32::consts::FRAC_PI_2 + 0.01, std::f32::consts::FRAC_PI_2 - 0.01);
     }
 
     pub fn zoom(&mut self, factor: f32) {
