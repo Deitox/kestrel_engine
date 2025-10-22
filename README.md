@@ -1,33 +1,30 @@
-# Kestrel Engine - Milestone 8+
+# Kestrel Engine – Milestone 9
 
-**Rapier-driven physics with resilient particles and an emerging 3D toolchain**
+**Rapier-driven physics, hot-reloadable scripting, and a maturing 3D toolchain**
 
-## New
-- Rapier2D now drives rigid body motion: sprites carry collider/rigid-body handles that live in the ECS alongside `Transform`/`Velocity`.
-- Static boundary colliders keep bursts and scripted spawns inside the arena with restitution and friction authored in one place.
-- Script and UI helpers (`set_velocity`, `set_position`, spawn burst) all push updates through Rapier, so the physics state stays authoritative even after hot-reloads.
-- Demo scene and random bursts automatically attach dynamic colliders while the existing particle emitter keeps using the lightweight force integrator for thousands of billboards.
-- Debug UI now offers scene quick-save/load, serializing the active entity hierarchy to JSON to bootstrap Milestone 10.
-- Inspect and tweak the selected entity directly in the debug UI (position, rotation, scale, sprite region, tint).
-- Event-driven audio cues now play synthesized beeps via rodio whenever spawn/despawn/collision events fire.
-- Experimental mesh pipeline: the renderer now manages a depth buffer, a dedicated mesh shader, and a per-frame mesh pass that draws both the preview object and ECS-authored mesh entities before sprites.
-- Mesh registry with glTF ingestion keeps CPU/GPU copies of reusable meshes, tracks dependencies for scene serialization, and exposes them through the editor UI.
-- 3D preview controls live in the right-hand panel: pick a mesh asset, toggle orbit navigation, reset the camera, or spawn mesh-backed entities directly into the scene.
+## Highlights
+- **Hybrid transform graph** – 2D sprites and 3D meshes now share the same parent/child hierarchy, so scene parenting “just works” regardless of space. A unified transform propagator keeps world matrices in sync for both billboards and meshes.
+- **Mesh metadata** – Mesh entities carry material identifiers plus lighting flags (cast/receive shadows, emissive tint). The scene format and round-trip loader persist that data, paving the way for the PBR upgrade planned for Milestone 12.
+- **Camera tooling** – The mesh preview offers three modes (Disabled, Orbit, Free-fly). Free-fly introduces WASD/QE + Shift navigation with mouse look, while orbit mode remains available for quick turntable previews.
+- **Scene I/O guardrails** – Mesh-aware helpers (`save_scene_to_path_with_mesh_source`, `load_scene_with_mesh`) ensure custom assets keep their source paths and metadata during save/load workflows.
 
-## Still here
-- Hot-reloadable Rhai scripting with emitter controls, spawn automation, and script-driven entity management.
-- egui overlay shows camera status, cursor world position, selection info, and exposes particle + spawn tuning.
-- Camera pan/zoom (RMB + wheel), selection gizmo with deletion, and deterministic fixed-step integration for particles.
-- Lightweight particle emitter with color/size gradients and lifetime control for quick visual iteration.
-- Sprite batching continues to render thousands of billboards efficiently while the mesh pass executes in the same frame, keeping 2D and 3D content synchronized.
+## Core Systems
+- **Physics** – Rapier2D simulates rigid bodies. ECS components (`Transform`, `Velocity`, `RapierBody`, `RapierCollider`) mirror state back into the world every fixed step.
+- **Rendering** – A WGPU renderer performs depth-tested mesh draws, batched sprite passes, and egui compositing inside a single swapchain frame.
+- **Scripting** – Rhai scripts hot-reload, queue gameplay commands, and surface log output through the debug UI.
+- **Assets** – The asset manager loads texture atlases on demand, while the mesh registry keeps CPU/GPU copies of glTF data and tracks dependencies for scenes.
+- **Audio** – Lightweight rodio-backed cues highlight spawn/despawn/collision events.
+- **Scene management** – JSON scenes capture the full entity graph (including materials/lighting) and can be saved/loaded from the UI or tests.
 
 ## Controls
-- Space - spawn N sprites (configurable)
-- B - spawn 5xN (>=1000)
-- Right mouse - pan 2D camera (when mesh orbit control is disabled) / orbit the preview camera (when enabled)
-- Mouse wheel - zoom (2D camera or mesh orbit depending on mode)
-- M - toggle mesh preview orbit control
-- Esc - quit
+- `Space` – spawn the configured burst count
+- `B` – spawn 5× as many sprites (minimum 1000)
+- `Right Mouse` – pan the 2D camera (Disabled mode) / orbit preview (Orbit mode) / look around (Free-fly)
+- `Mouse Wheel` – zoom the 2D camera (Disabled) / adjust orbit radius (Orbit) / tune fly speed (Free-fly)
+- `M` – cycle mesh preview camera mode (Disabled → Orbit → Free-fly)
+- `W`, `A`, `S`, `D`, `Q`, `E` – move the preview camera in Free-fly
+- `Shift` – boost movement speed in Free-fly
+- `Esc` – quit
 
 ## Build
 ```bash
@@ -38,8 +35,7 @@ cargo run
 - Edit `config/app.json` to tweak window title, resolution, vsync, or fullscreen defaults.
 - The engine falls back to built-in defaults and logs a warning if the file is missing or malformed.
 
-## Docs
-- `docs/ARCHITECTURE.md` outlines subsystem responsibilities, now including the mesh registry and dual-pass renderer.
-- `docs/DECISIONS.md` records crate and technology choices, including the `gltf` importer powering mesh assets.
-- `docs/CODE_STYLE.md` captures formatting, linting, and error-handling guidelines.
-
+## Documentation
+- `docs/ARCHITECTURE.md` – subsystem responsibilities, frame flow, and notes on the hybrid transform pipeline.
+- `docs/DECISIONS.md` – crate and technology choices (e.g., winit, wgpu, gltf, Rapier).
+- `docs/CODE_STYLE.md` – formatting, linting, and error-handling guidelines.
