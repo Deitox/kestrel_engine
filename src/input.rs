@@ -9,6 +9,13 @@ pub struct Input {
     space_pressed: bool,
     b_pressed: bool,
     mesh_toggle_pressed: bool,
+    forward_held: bool,
+    backward_held: bool,
+    left_held: bool,
+    right_held: bool,
+    ascend_held: bool,
+    descend_held: bool,
+    boost_held: bool,
     cursor_pos: Option<(f32, f32)>,
     left_pressed: bool,
     left_clicked: bool,
@@ -30,6 +37,17 @@ impl Input {
                         Key::Character(ch) if ch.eq_ignore_ascii_case("m") => self.mesh_toggle_pressed = true,
                         _ => {}
                     }
+                }
+                let is_down = *pressed;
+                match key {
+                    Key::Character(ch) if ch.eq_ignore_ascii_case("w") => self.forward_held = is_down,
+                    Key::Character(ch) if ch.eq_ignore_ascii_case("s") => self.backward_held = is_down,
+                    Key::Character(ch) if ch.eq_ignore_ascii_case("a") => self.left_held = is_down,
+                    Key::Character(ch) if ch.eq_ignore_ascii_case("d") => self.right_held = is_down,
+                    Key::Character(ch) if ch.eq_ignore_ascii_case("e") => self.ascend_held = is_down,
+                    Key::Character(ch) if ch.eq_ignore_ascii_case("q") => self.descend_held = is_down,
+                    Key::Named(NamedKey::Shift) => self.boost_held = is_down,
+                    _ => {}
                 }
             }
             InputEvent::MouseMove { dx, dy } => {
@@ -111,6 +129,27 @@ impl Input {
     }
     pub fn cursor_position(&self) -> Option<(f32, f32)> {
         self.cursor_pos
+    }
+    pub fn freefly_forward(&self) -> bool {
+        self.forward_held
+    }
+    pub fn freefly_backward(&self) -> bool {
+        self.backward_held
+    }
+    pub fn freefly_left(&self) -> bool {
+        self.left_held
+    }
+    pub fn freefly_right(&self) -> bool {
+        self.right_held
+    }
+    pub fn freefly_ascend(&self) -> bool {
+        self.ascend_held
+    }
+    pub fn freefly_descend(&self) -> bool {
+        self.descend_held
+    }
+    pub fn freefly_boost(&self) -> bool {
+        self.boost_held
     }
 }
 

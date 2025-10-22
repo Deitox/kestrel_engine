@@ -65,6 +65,37 @@ impl Default for GizmoMode {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MeshControlMode {
+    Disabled,
+    Orbit,
+    Freefly,
+}
+
+impl Default for MeshControlMode {
+    fn default() -> Self {
+        MeshControlMode::Disabled
+    }
+}
+
+impl MeshControlMode {
+    fn next(self) -> Self {
+        match self {
+            MeshControlMode::Disabled => MeshControlMode::Orbit,
+            MeshControlMode::Orbit => MeshControlMode::Freefly,
+            MeshControlMode::Freefly => MeshControlMode::Disabled,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            MeshControlMode::Disabled => "Disabled",
+            MeshControlMode::Orbit => "Orbit",
+            MeshControlMode::Freefly => "Free-fly",
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum GizmoInteraction {
     Translate { entity: Entity, offset: Vec2 },
@@ -75,6 +106,44 @@ enum GizmoInteraction {
 struct Viewport {
     origin: Vec2,
     size: Vec2,
+}
+
+#[derive(Clone, Copy)]
+struct FreeflyController {
+    position: Vec3,
+    yaw: f32,
+    pitch: f32,
+}
+
+impl FreeflyController {
+    fn from_camera(camera: &Camera3D) -> Self {
+        let forward = (camera.target - camera.position).normalize_or_zero();
+        let yaw = forward.x.atan2(forward.z);
+        let pitch =
+            forward.y.asin().clamp(-std::f32::consts::FRAC_PI_2 + 0.01, std::f32::consts::FRAC_PI_2 - 0.01);
+        Self { position: camera.position, yaw, pitch }
+    }
+
+    fn forward(&self) -> Vec3 {
+        let rotation = Quat::from_euler(glam::EulerRot::YXZ, self.yaw, self.pitch, 0.0);
+        rotation * Vec3::new(0.0, 0.0, -1.0)
+    }
+
+    fn right(&self) -> Vec3 {
+        let rotation = Quat::from_euler(glam::EulerRot::YXZ, self.yaw, self.pitch, 0.0);
+        rotation * Vec3::new(1.0, 0.0, 0.0)
+    }
+
+    fn to_camera(&self) -> Camera3D {
+        let forward = self.forward();
+        Camera3D::new(
+            self.position,
+            self.position + forward,
+            MESH_CAMERA_FOV_RADIANS,
+            MESH_CAMERA_NEAR,
+            MESH_CAMERA_FAR,
+        )
+    }
 }
 
 impl Viewport {
@@ -174,7 +243,9 @@ pub struct App {
     mesh_camera: Camera3D,
     mesh_model: Mat4,
     mesh_angle: f32,
-    mesh_control_enabled: bool,
+    mesh_control_mode: MeshControlMode,
+    mesh_freefly: FreeflyController,
+    mesh_freefly_speed: f32,
     mesh_status: Option<String>,
 
     viewport: Viewport,
@@ -241,9 +312,11 @@ impl App {
 
         let mesh_registry = MeshRegistry::new();
         let preview_mesh_key = mesh_registry.default_key().to_string();
-        let mesh_status_initial = Some(format!("Preview mesh: {}", preview_mesh_key));
+        let mesh_status_initial =
+            Some(format!("Preview mesh: {} — press M to cycle camera control", preview_mesh_key));
         let mesh_orbit = OrbitCamera::new(Vec3::ZERO, 5.0);
         let mesh_camera = mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
+        let mesh_freefly = FreeflyController::from_camera(&mesh_camera);
         let mesh_model = Mat4::IDENTITY;
 
         // egui context and state
@@ -295,9 +368,11 @@ impl App {
             preview_mesh_key,
             mesh_orbit,
             mesh_camera,
+            mesh_freefly,
             mesh_model,
             mesh_angle: 0.0,
-            mesh_control_enabled: false,
+            mesh_control_mode: MeshControlMode::Disabled,
+            mesh_freefly_speed: 4.0,
             mesh_status: mesh_status_initial,
             viewport: Viewport::new(
                 Vec2::ZERO,
@@ -324,48 +399,132 @@ impl App {
     }
 
     fn update_mesh_camera(&mut self, dt: f32) {
-        if !self.mesh_control_enabled {
-            let auto_delta = Vec2::new(0.25 * dt, 0.12 * dt);
-            self.mesh_orbit.orbit(auto_delta);
-            self.mesh_camera =
-                self.mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
-            return;
-        }
+        match self.mesh_control_mode {
+            MeshControlMode::Disabled => {
+                let auto_delta = Vec2::new(0.25 * dt, 0.12 * dt);
+                self.mesh_orbit.orbit(auto_delta);
+                self.mesh_camera =
+                    self.mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
+                self.mesh_freefly = FreeflyController::from_camera(&self.mesh_camera);
+            }
+            MeshControlMode::Orbit => {
+                let (dx, dy) = self.input.mouse_delta;
+                if self.input.right_held() && (dx.abs() > f32::EPSILON || dy.abs() > f32::EPSILON) {
+                    let sensitivity = 0.008;
+                    self.mesh_orbit.orbit(Vec2::new(dx * sensitivity, dy * sensitivity));
+                }
 
-        let (dx, dy) = self.input.mouse_delta;
-        if self.input.right_held() && (dx.abs() > f32::EPSILON || dy.abs() > f32::EPSILON) {
-            let sensitivity = 0.008;
-            self.mesh_orbit.orbit(Vec2::new(dx * sensitivity, dy * sensitivity));
-        }
+                if self.input.wheel.abs() > 0.0 {
+                    let sensitivity = 0.12;
+                    let factor = (self.input.wheel * sensitivity).exp();
+                    self.mesh_orbit.zoom(factor);
+                    self.input.wheel = 0.0;
+                }
 
-        if self.input.wheel.abs() > 0.0 {
-            let sensitivity = 0.12;
-            let factor = (self.input.wheel * sensitivity).exp();
-            self.mesh_orbit.zoom(factor);
-            self.input.wheel = 0.0;
-        }
+                self.mesh_camera =
+                    self.mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
+                self.mesh_freefly = FreeflyController::from_camera(&self.mesh_camera);
+            }
+            MeshControlMode::Freefly => {
+                let (dx, dy) = self.input.mouse_delta;
+                if self.input.right_held() && (dx.abs() > f32::EPSILON || dy.abs() > f32::EPSILON) {
+                    let sensitivity = 0.006;
+                    self.mesh_freefly.yaw += dx * sensitivity;
+                    self.mesh_freefly.pitch = (self.mesh_freefly.pitch + dy * sensitivity)
+                        .clamp(-std::f32::consts::FRAC_PI_2 + 0.01, std::f32::consts::FRAC_PI_2 - 0.01);
+                }
 
-        self.mesh_camera =
-            self.mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
+                if self.input.wheel.abs() > 0.0 {
+                    let factor = (1.0 + self.input.wheel * 0.08).clamp(0.2, 5.0);
+                    self.mesh_freefly_speed = (self.mesh_freefly_speed * factor).clamp(0.1, 200.0);
+                    self.mesh_status = Some(format!("Free-fly speed: {:.2}", self.mesh_freefly_speed));
+                    self.input.wheel = 0.0;
+                }
+
+                let mut direction = Vec3::ZERO;
+                let forward = self.mesh_freefly.forward().normalize_or_zero();
+                let right = self.mesh_freefly.right().normalize_or_zero();
+                if self.input.freefly_forward() {
+                    direction += forward;
+                }
+                if self.input.freefly_backward() {
+                    direction -= forward;
+                }
+                if self.input.freefly_right() {
+                    direction += right;
+                }
+                if self.input.freefly_left() {
+                    direction -= right;
+                }
+                if self.input.freefly_ascend() {
+                    direction += Vec3::Y;
+                }
+                if self.input.freefly_descend() {
+                    direction -= Vec3::Y;
+                }
+                if direction.length_squared() > 0.0 {
+                    direction = direction.normalize_or_zero();
+                    let boost = if self.input.freefly_boost() { 3.0 } else { 1.0 };
+                    self.mesh_freefly.position += direction * self.mesh_freefly_speed * boost * dt;
+                }
+
+                self.mesh_camera = self.mesh_freefly.to_camera();
+                self.sync_orbit_from_camera_pose();
+            }
+        }
     }
 
-    fn set_mesh_control(&mut self, enabled: bool) {
-        if self.mesh_control_enabled != enabled {
-            self.mesh_control_enabled = enabled;
-            self.mesh_status = Some(if enabled {
-                "Orbit control enabled (right-drag to orbit, scroll to zoom).".to_string()
-            } else {
-                "Scripted orbit restored.".to_string()
-            });
-            self.input.wheel = 0.0;
-            self.input.mouse_delta = (0.0, 0.0);
+    fn set_mesh_control_mode(&mut self, mode: MeshControlMode) {
+        if self.mesh_control_mode == mode {
+            return;
         }
+        match mode {
+            MeshControlMode::Disabled => {
+                self.sync_orbit_from_camera_pose();
+                self.mesh_camera =
+                    self.mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
+                self.mesh_status = Some("Scripted orbit animates the camera.".to_string());
+            }
+            MeshControlMode::Orbit => {
+                self.sync_orbit_from_camera_pose();
+                self.mesh_camera =
+                    self.mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
+                self.mesh_freefly = FreeflyController::from_camera(&self.mesh_camera);
+                self.mesh_status =
+                    Some("Orbit control enabled (right-drag to orbit, scroll to zoom).".to_string());
+            }
+            MeshControlMode::Freefly => {
+                self.mesh_freefly = FreeflyController::from_camera(&self.mesh_camera);
+                self.mesh_camera = self.mesh_freefly.to_camera();
+                self.mesh_status = Some(
+                    "Free-fly enabled (hold RMB + WASD/QE, Shift to boost, wheel adjusts speed).".to_string(),
+                );
+            }
+        }
+        self.mesh_control_mode = mode;
+        self.input.wheel = 0.0;
+        self.input.mouse_delta = (0.0, 0.0);
+    }
+
+    fn sync_orbit_from_camera_pose(&mut self) {
+        let target = self.mesh_orbit.target;
+        let mut offset = self.mesh_camera.position - target;
+        if offset.length_squared() < 1e-5 {
+            offset = Vec3::new(0.0, 0.0, self.mesh_orbit.radius.max(0.1));
+        }
+        let radius = offset.length().max(0.1);
+        let yaw = offset.x.atan2(offset.z);
+        let pitch = (offset.y / radius).clamp(-1.0, 1.0).asin();
+        self.mesh_orbit.radius = radius;
+        self.mesh_orbit.yaw_radians = yaw;
+        self.mesh_orbit.pitch_radians =
+            pitch.clamp(-std::f32::consts::FRAC_PI_2 + 0.01, std::f32::consts::FRAC_PI_2 - 0.01);
     }
 
     fn handle_mesh_control_input(&mut self) {
         if self.input.take_mesh_toggle() {
-            let next = !self.mesh_control_enabled;
-            self.set_mesh_control(next);
+            let next = self.mesh_control_mode.next();
+            self.set_mesh_control_mode(next);
         }
     }
 
@@ -374,6 +533,10 @@ impl App {
         self.mesh_orbit = OrbitCamera::new(self.mesh_orbit.target, radius);
         self.mesh_camera =
             self.mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
+        self.mesh_freefly = FreeflyController::from_camera(&self.mesh_camera);
+        if self.mesh_control_mode == MeshControlMode::Freefly {
+            self.mesh_camera = self.mesh_freefly.to_camera();
+        }
         self.mesh_status = Some("Mesh camera reset.".to_string());
     }
 
@@ -659,7 +822,7 @@ impl ApplicationHandler for App {
         let prev_selected_entity = self.selected_entity;
         let prev_gizmo_interaction = self.gizmo_interaction;
 
-        if !self.mesh_control_enabled {
+        if self.mesh_control_mode == MeshControlMode::Disabled {
             if let Some(delta) = self.input.consume_wheel_delta() {
                 self.camera.apply_scroll_zoom(delta);
             }
@@ -915,7 +1078,7 @@ impl ApplicationHandler for App {
             spawn_mesh: Option<String>,
         }
         let mut actions = UiActions::default();
-        let mut mesh_control_request: Option<bool> = None;
+        let mut mesh_control_request: Option<MeshControlMode> = None;
         let mut mesh_reset_request = false;
         let mut mesh_selection_request: Option<String> = None;
         let mut mesh_keys: Vec<String> = self.mesh_registry.keys().map(|k| k.to_string()).collect();
@@ -1023,9 +1186,20 @@ impl ApplicationHandler for App {
                             }
                         },
                     );
-                    let mut mesh_control = self.mesh_control_enabled;
-                    if ui.checkbox(&mut mesh_control, "Enable orbit control (M)").changed() {
-                        mesh_control_request = Some(mesh_control);
+                    let mut mesh_control_mode = self.mesh_control_mode;
+                    egui::ComboBox::from_id_salt("mesh_control_mode")
+                        .selected_text(mesh_control_mode.label())
+                        .show_ui(ui, |ui| {
+                            for mode in
+                                [MeshControlMode::Disabled, MeshControlMode::Orbit, MeshControlMode::Freefly]
+                            {
+                                if ui.selectable_label(mesh_control_mode == mode, mode.label()).clicked() {
+                                    mesh_control_mode = mode;
+                                }
+                            }
+                        });
+                    if mesh_control_mode != self.mesh_control_mode {
+                        mesh_control_request = Some(mesh_control_mode);
                     }
                     if ui.button("Reset camera").clicked() {
                         mesh_reset_request = true;
@@ -1033,14 +1207,31 @@ impl ApplicationHandler for App {
                     if ui.button("Spawn mesh entity").clicked() {
                         actions.spawn_mesh = Some(self.preview_mesh_key.clone());
                     }
-                    let radius = self.mesh_orbit.radius;
-                    ui.label(format!("Radius: {:.2}", radius));
+                    match self.mesh_control_mode {
+                        MeshControlMode::Orbit => {
+                            ui.label(format!("Orbit radius: {:.2}", self.mesh_orbit.radius));
+                        }
+                        MeshControlMode::Freefly => {
+                            ui.label(format!("Free-fly speed: {:.2}", self.mesh_freefly_speed));
+                        }
+                        MeshControlMode::Disabled => {
+                            ui.label(format!("Orbit radius: {:.2}", self.mesh_orbit.radius));
+                        }
+                    }
                     if let Some(status) = &self.mesh_status {
                         ui.label(status);
-                    } else if self.mesh_control_enabled {
-                        ui.label("Right drag to orbit, scroll to zoom.");
                     } else {
-                        ui.label("Scripted orbit animates the camera.");
+                        match self.mesh_control_mode {
+                            MeshControlMode::Disabled => {
+                                ui.label("Scripted orbit animates the camera.");
+                            }
+                            MeshControlMode::Orbit => {
+                                ui.label("Right drag to orbit, scroll to zoom.");
+                            }
+                            MeshControlMode::Freefly => {
+                                ui.label("Hold RMB to look, use WASD/QE and Shift for boost.");
+                            }
+                        }
                     }
 
                     ui.separator();
@@ -1151,6 +1342,21 @@ impl ApplicationHandler for App {
                             if let Some(mesh) = info.mesh.clone() {
                                 ui.separator();
                                 ui.label(format!("Mesh: {}", mesh.key));
+                                if let Some(material) = mesh.material.as_ref() {
+                                    ui.label(format!("Material: {}", material));
+                                } else {
+                                    ui.label("Material: default");
+                                }
+                                ui.label(format!(
+                                    "Shadows: cast={} receive={}",
+                                    mesh.lighting.cast_shadows, mesh.lighting.receive_shadows
+                                ));
+                                if let Some(emissive) = mesh.lighting.emissive {
+                                    ui.label(format!(
+                                        "Emissive: ({:.2}, {:.2}, {:.2})",
+                                        emissive.x, emissive.y, emissive.z
+                                    ));
+                                }
                                 if let Some(mut mesh_tx) = info.mesh_transform.clone() {
                                     let mut translation3 = mesh_tx.translation;
                                     ui.horizontal(|ui| {
@@ -1501,8 +1707,8 @@ impl ApplicationHandler for App {
         self.ui_emitter_end_color = ui_emitter_end_color;
         self.selected_entity = selected_entity;
 
-        if let Some(enabled) = mesh_control_request {
-            self.set_mesh_control(enabled);
+        if let Some(mode) = mesh_control_request {
+            self.set_mesh_control_mode(mode);
         }
         if mesh_reset_request {
             self.reset_mesh_camera();

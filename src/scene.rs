@@ -340,6 +340,10 @@ pub struct SpriteData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeshData {
     pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material: Option<String>,
+    #[serde(default)]
+    pub lighting: MeshLightingData,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -369,6 +373,16 @@ pub struct ColorData {
     pub g: f32,
     pub b: f32,
     pub a: f32,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MeshLightingData {
+    #[serde(default)]
+    pub cast_shadows: bool,
+    #[serde(default)]
+    pub receive_shadows: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emissive: Option<Vec3Data>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

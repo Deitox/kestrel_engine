@@ -1,8 +1,8 @@
 use crate::assets::AssetManager;
 use crate::events::{EventBus, GameEvent};
 use crate::scene::{
-    ColliderData, ColorData, MeshData, OrbitControllerData, ParticleEmitterData, Scene, SceneDependencies,
-    SceneEntity, SpriteData, Transform3DData, TransformData,
+    ColliderData, ColorData, MeshData, MeshLightingData, OrbitControllerData, ParticleEmitterData, Scene,
+    SceneDependencies, SceneEntity, SpriteData, Transform3DData, TransformData,
 };
 use anyhow::{anyhow, Context, Result};
 use bevy_ecs::prelude::*;
@@ -51,6 +51,27 @@ pub struct Sprite {
 #[derive(Component, Clone)]
 pub struct MeshRef {
     pub key: String,
+}
+#[derive(Component, Clone)]
+pub struct MeshSurface {
+    pub material: Option<String>,
+    pub lighting: MeshLighting,
+}
+impl Default for MeshSurface {
+    fn default() -> Self {
+        Self { material: None, lighting: MeshLighting::default() }
+    }
+}
+#[derive(Clone)]
+pub struct MeshLighting {
+    pub cast_shadows: bool,
+    pub receive_shadows: bool,
+    pub emissive: Option<Vec3>,
+}
+impl Default for MeshLighting {
+    fn default() -> Self {
+        Self { cast_shadows: false, receive_shadows: false, emissive: None }
+    }
 }
 #[derive(Component, Clone, Copy)]
 pub struct Transform3D {
@@ -145,12 +166,53 @@ pub struct SpriteInfo {
 #[derive(Clone)]
 pub struct MeshInfo {
     pub key: String,
+    pub material: Option<String>,
+    pub lighting: MeshLightingInfo,
+}
+
+#[derive(Clone, Default)]
+pub struct MeshLightingInfo {
+    pub cast_shadows: bool,
+    pub receive_shadows: bool,
+    pub emissive: Option<Vec3>,
 }
 
 #[derive(Clone)]
 pub struct MeshInstance {
     pub key: String,
     pub model: Mat4,
+    pub material: Option<String>,
+    pub lighting: MeshLightingInfo,
+}
+
+impl From<&MeshLighting> for MeshLightingInfo {
+    fn from(value: &MeshLighting) -> Self {
+        Self {
+            cast_shadows: value.cast_shadows,
+            receive_shadows: value.receive_shadows,
+            emissive: value.emissive,
+        }
+    }
+}
+
+impl From<MeshLightingData> for MeshLighting {
+    fn from(value: MeshLightingData) -> Self {
+        Self {
+            cast_shadows: value.cast_shadows,
+            receive_shadows: value.receive_shadows,
+            emissive: value.emissive.map(Into::into),
+        }
+    }
+}
+
+impl From<&MeshLighting> for MeshLightingData {
+    fn from(value: &MeshLighting) -> Self {
+        MeshLightingData {
+            cast_shadows: value.cast_shadows,
+            receive_shadows: value.receive_shadows,
+            emissive: value.emissive.map(Into::into),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -515,8 +577,8 @@ impl EcsWorld {
         let mut schedule_var = Schedule::default();
         schedule_var.add_systems((
             sys_apply_spin,
-            sys_propagate_transforms,
-            sys_propagate_transforms3d,
+            sys_propagate_scene_transforms,
+            sys_sync_world3d,
             sys_update_emitters,
             sys_update_particles,
         ));
@@ -894,6 +956,7 @@ impl EcsWorld {
                 transform3d,
                 world3d,
                 MeshRef { key: mesh_key.to_string() },
+                MeshSurface::default(),
             ))
             .id()
     }
@@ -1040,9 +1103,11 @@ impl EcsWorld {
 
     pub fn collect_mesh_instances(&mut self) -> Vec<MeshInstance> {
         let mut instances = Vec::new();
-        let mut query = self.world.query::<(&WorldTransform3D, &MeshRef)>();
-        for (wt, mesh) in query.iter(&self.world) {
-            instances.push(MeshInstance { key: mesh.key.clone(), model: wt.0 });
+        let mut query = self.world.query::<(&WorldTransform3D, &MeshRef, Option<&MeshSurface>)>();
+        for (wt, mesh, surface) in query.iter(&self.world) {
+            let lighting = surface.map(|s| MeshLightingInfo::from(&s.lighting)).unwrap_or_default();
+            let material = surface.and_then(|s| s.material.clone());
+            instances.push(MeshInstance { key: mesh.key.clone(), model: wt.0, material, lighting });
         }
         instances
     }
@@ -1052,6 +1117,9 @@ impl EcsWorld {
             transform.translation = translation;
             let updated = *transform;
             drop(transform);
+            if let Some(mut transform2d) = self.world.get_mut::<Transform>(entity) {
+                transform2d.translation = Vec2::new(translation.x, translation.y);
+            }
             self.update_world_transform3d(entity, updated);
             true
         } else {
@@ -1064,6 +1132,9 @@ impl EcsWorld {
             transform.scale = scale;
             let updated = *transform;
             drop(transform);
+            if let Some(mut transform2d) = self.world.get_mut::<Transform>(entity) {
+                transform2d.scale = Vec2::new(scale.x, scale.y);
+            }
             self.update_world_transform3d(entity, updated);
             true
         } else {
@@ -1085,11 +1156,15 @@ impl EcsWorld {
 
     fn update_world_transform3d(&mut self, entity: Entity, transform: Transform3D) {
         if let Some(mut world) = self.world.get_mut::<WorldTransform3D>(entity) {
-            world.0 = Mat4::from_scale_rotation_translation(
+            let mat = Mat4::from_scale_rotation_translation(
                 transform.scale,
                 transform.rotation,
                 transform.translation,
             );
+            world.0 = mat;
+            if let Some(mut world2d) = self.world.get_mut::<WorldTransform>(entity) {
+                world2d.0 = mat;
+            }
         }
     }
     pub fn entity_count(&self) -> usize {
@@ -1127,7 +1202,13 @@ impl EcsWorld {
             atlas: sprite.atlas_key.to_string(),
             region: sprite.region.to_string(),
         });
-        let mesh = self.world.get::<MeshRef>(entity).map(|mesh| MeshInfo { key: mesh.key.clone() });
+        let mesh_surface = self.world.get::<MeshSurface>(entity);
+        let mesh = self.world.get::<MeshRef>(entity).map(|mesh_ref| {
+            let material = mesh_surface.and_then(|surface| surface.material.clone());
+            let lighting =
+                mesh_surface.map(|surface| MeshLightingInfo::from(&surface.lighting)).unwrap_or_default();
+            MeshInfo { key: mesh_ref.key.clone(), material, lighting }
+        });
         let mesh_transform = self.world.get::<Transform3D>(entity).map(|transform| Transform3DInfo {
             translation: transform.translation,
             rotation: transform.rotation,
@@ -1475,6 +1556,11 @@ impl EcsWorld {
 
         if let Some(mesh) = data.mesh.as_ref() {
             entity.insert(MeshRef { key: mesh.key.clone() });
+            let surface = MeshSurface {
+                material: mesh.material.clone(),
+                lighting: MeshLighting::from(mesh.lighting.clone()),
+            };
+            entity.insert(surface);
         }
 
         if let Some(body) = body_handle {
@@ -1508,6 +1594,7 @@ impl EcsWorld {
         }
 
         let transform = *self.world.get::<Transform>(entity).unwrap();
+        let mesh_surface = self.world.get::<MeshSurface>(entity);
         let scene_entity = SceneEntity {
             name: None,
             transform: TransformData::from_components(
@@ -1523,7 +1610,14 @@ impl EcsWorld {
                 .world
                 .get::<Transform3D>(entity)
                 .map(|t| Transform3DData::from_components(t.translation, t.rotation, t.scale)),
-            mesh: self.world.get::<MeshRef>(entity).map(|mesh| MeshData { key: mesh.key.clone() }),
+            mesh: self.world.get::<MeshRef>(entity).map(|mesh| {
+                let (material, lighting) = if let Some(surface) = mesh_surface {
+                    (surface.material.clone(), MeshLightingData::from(&surface.lighting))
+                } else {
+                    (None, MeshLightingData::default())
+                };
+                MeshData { key: mesh.key.clone(), material, lighting }
+            }),
             tint: self.world.get::<Tint>(entity).map(|t| ColorData::from(t.0)),
             velocity: self.world.get::<Velocity>(entity).map(|v| v.0.into()),
             mass: self.world.get::<Mass>(entity).map(|m| m.0),
@@ -1590,20 +1684,29 @@ fn sys_apply_spin(mut q: Query<(&mut Transform, &Spin)>, dt: Res<TimeDelta>) {
     }
 }
 
-fn sys_propagate_transforms(
+fn sys_propagate_scene_transforms(
     mut sets: ParamSet<(
-        Query<(Entity, &Transform, Option<&Parent>, &WorldTransform)>,
+        Query<(Entity, Option<&Transform>, Option<&Transform3D>, Option<&Parent>, &WorldTransform)>,
         Query<&mut WorldTransform>,
     )>,
 ) {
-    for _ in 0..2 {
+    for _ in 0..3 {
         let mut updates = Vec::new();
         {
             let world_query = sets.p0();
-            for (entity, transform, parent, _current) in world_query.iter() {
-                let local = mat_from_transform(*transform);
+            for (entity, transform2d, transform3d, parent, _) in world_query.iter() {
+                let local = match (transform2d, transform3d) {
+                    (_, Some(t3d)) => {
+                        Mat4::from_scale_rotation_translation(t3d.scale, t3d.rotation, t3d.translation)
+                    }
+                    (Some(t2d), None) => mat_from_transform(*t2d),
+                    (None, None) => Mat4::IDENTITY,
+                };
                 let world_mat = if let Some(parent) = parent {
-                    world_query.get(parent.0).map(|(_, _, _, parent_wt)| parent_wt.0 * local).unwrap_or(local)
+                    world_query
+                        .get(parent.0)
+                        .map(|(_, _, _, _, parent_wt)| parent_wt.0 * local)
+                        .unwrap_or(local)
                 } else {
                     local
                 };
@@ -1621,10 +1724,9 @@ fn sys_propagate_transforms(
     }
 }
 
-fn sys_propagate_transforms3d(mut query: Query<(&Transform3D, &mut WorldTransform3D)>) {
-    for (transform, mut world) in &mut query {
-        world.0 =
-            Mat4::from_scale_rotation_translation(transform.scale, transform.rotation, transform.translation);
+fn sys_sync_world3d(mut query: Query<(&WorldTransform, &mut WorldTransform3D)>) {
+    for (world, mut world3d) in &mut query {
+        world3d.0 = world.0;
     }
 }
 

@@ -1,6 +1,6 @@
 use glam::Vec3;
 use kestrel_engine::assets::AssetManager;
-use kestrel_engine::ecs::EcsWorld;
+use kestrel_engine::ecs::{EcsWorld, MeshLighting, MeshRef, MeshSurface};
 use kestrel_engine::mesh_registry::MeshRegistry;
 use kestrel_engine::scene::Scene;
 
@@ -18,6 +18,14 @@ fn scene_roundtrip_preserves_entity_count() {
         .expect("demo gltf should load for mesh dependency test");
     let mesh_entity = world.spawn_mesh_entity("test_triangle", Vec3::ZERO, Vec3::ONE);
     assert!(world.entity_exists(mesh_entity));
+    world.world.entity_mut(mesh_entity).insert(MeshSurface {
+        material: Some("materials/bronze.mat".to_string()),
+        lighting: MeshLighting {
+            cast_shadows: true,
+            receive_shadows: true,
+            emissive: Some(Vec3::new(0.1, 0.2, 0.3)),
+        },
+    });
     let original_count = world.entity_count();
 
     let scene = world.export_scene_with_mesh_source(&assets, |key| {
@@ -36,6 +44,24 @@ fn scene_roundtrip_preserves_entity_count() {
         .find(|dep| dep.key() == "test_triangle")
         .expect("saved scene should include mesh dependency with path");
     assert_eq!(mesh_dep.path(), Some("assets/models/demo_triangle.gltf"));
+    let saved_mesh_entity = scene
+        .entities
+        .iter()
+        .find(|entity| entity.mesh.as_ref().map(|mesh| mesh.key.as_str()) == Some("test_triangle"))
+        .expect("mesh entity should be serialized");
+    let saved_mesh = saved_mesh_entity.mesh.as_ref().expect("mesh data present");
+    assert_eq!(saved_mesh.material.as_deref(), Some("materials/bronze.mat"));
+    assert!(saved_mesh.lighting.cast_shadows);
+    assert!(saved_mesh.lighting.receive_shadows);
+    let emissive_vec = saved_mesh
+        .lighting
+        .emissive
+        .as_ref()
+        .map(|data| Vec3::from(data.clone()))
+        .expect("emissive color captured");
+    assert!((emissive_vec.x - 0.1).abs() < f32::EPSILON);
+    assert!((emissive_vec.y - 0.2).abs() < f32::EPSILON);
+    assert!((emissive_vec.z - 0.3).abs() < f32::EPSILON);
 
     let path = std::path::Path::new("target/test_scene_roundtrip.json");
     world
@@ -52,12 +78,47 @@ fn scene_roundtrip_preserves_entity_count() {
         .find(|dep| dep.key() == "test_triangle")
         .expect("loaded scene should preserve mesh dependency path");
     assert_eq!(loaded_mesh_dep.path(), Some("assets/models/demo_triangle.gltf"));
+    let loaded_mesh_entity = loaded
+        .entities
+        .iter()
+        .find(|entity| entity.mesh.as_ref().map(|mesh| mesh.key.as_str()) == Some("test_triangle"))
+        .expect("loaded scene should include mesh entity data");
+    let loaded_mesh = loaded_mesh_entity.mesh.as_ref().expect("loaded mesh data");
+    assert_eq!(loaded_mesh.material.as_deref(), Some("materials/bronze.mat"));
+    assert!(loaded_mesh.lighting.cast_shadows);
+    assert!(loaded_mesh.lighting.receive_shadows);
+    let loaded_emissive = loaded_mesh
+        .lighting
+        .emissive
+        .as_ref()
+        .map(|data| Vec3::from(data.clone()))
+        .expect("loaded emissive retained");
+    assert!((loaded_emissive.x - 0.1).abs() < f32::EPSILON);
+    assert!((loaded_emissive.y - 0.2).abs() < f32::EPSILON);
+    assert!((loaded_emissive.z - 0.3).abs() < f32::EPSILON);
 
     let mut new_world = EcsWorld::new();
     let mut new_registry = MeshRegistry::new();
     new_world
         .load_scene_with_mesh(&loaded, &assets, |key, path| new_registry.ensure_mesh(key, path))
         .expect("scene load into world");
+    {
+        let mut query = new_world.world.query::<(&MeshSurface, &MeshRef)>();
+        let mut matched = false;
+        for (surface, mesh_ref) in query.iter(&new_world.world) {
+            if mesh_ref.key == "test_triangle" {
+                assert_eq!(surface.material.as_deref(), Some("materials/bronze.mat"));
+                assert!(surface.lighting.cast_shadows);
+                assert!(surface.lighting.receive_shadows);
+                let emissive = surface.lighting.emissive.expect("emissive should exist");
+                assert!((emissive.x - 0.1).abs() < f32::EPSILON);
+                assert!((emissive.y - 0.2).abs() < f32::EPSILON);
+                assert!((emissive.z - 0.3).abs() < f32::EPSILON);
+                matched = true;
+            }
+        }
+        assert!(matched, "mesh surface metadata should survive load");
+    }
     assert_eq!(new_world.entity_count(), original_count);
     assert!(new_world.first_emitter().is_some());
 
