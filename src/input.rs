@@ -16,6 +16,7 @@ pub struct Input {
     ascend_held: bool,
     descend_held: bool,
     boost_held: bool,
+    ctrl_held: bool,
     roll_left_held: bool,
     roll_right_held: bool,
     frustum_lock_toggle: bool,
@@ -53,6 +54,7 @@ impl Input {
                     Key::Character(ch) if ch.eq_ignore_ascii_case("z") => self.roll_left_held = is_down,
                     Key::Character(ch) if ch.eq_ignore_ascii_case("c") => self.roll_right_held = is_down,
                     Key::Named(NamedKey::Shift) => self.boost_held = is_down,
+                    Key::Named(NamedKey::Control) => self.ctrl_held = is_down,
                     _ => {}
                 }
             }
@@ -157,6 +159,12 @@ impl Input {
     }
     pub fn freefly_boost(&self) -> bool {
         self.boost_held
+    }
+    pub fn shift_held(&self) -> bool {
+        self.boost_held
+    }
+    pub fn ctrl_held(&self) -> bool {
+        self.ctrl_held
     }
     pub fn freefly_roll_left(&self) -> bool {
         self.roll_left_held

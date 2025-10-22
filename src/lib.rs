@@ -50,8 +50,15 @@ const CAMERA_BASE_HALF_HEIGHT: f32 = 1.2;
 const GIZMO_TRANSLATE_RADIUS_PX: f32 = 18.0;
 const GIZMO_SCALE_INNER_RADIUS_PX: f32 = 20.0;
 const GIZMO_SCALE_OUTER_RADIUS_PX: f32 = 32.0;
+const GIZMO_SCALE_AXIS_LENGTH_PX: f32 = 44.0;
+const GIZMO_SCALE_AXIS_THICKNESS_PX: f32 = 8.0;
+const GIZMO_SCALE_AXIS_DEADZONE_PX: f32 = 10.0;
+const GIZMO_SCALE_HANDLE_SIZE_PX: f32 = 12.0;
 const GIZMO_ROTATE_INNER_RADIUS_PX: f32 = 38.0;
 const GIZMO_ROTATE_OUTER_RADIUS_PX: f32 = 52.0;
+const SCALE_MIN_RATIO: f32 = 0.05;
+const SCALE_MAX_RATIO: f32 = 20.0;
+const SCALE_SNAP_STEP: f32 = 0.1;
 const MESH_CAMERA_FOV_RADIANS: f32 = 60.0_f32.to_radians();
 const MESH_CAMERA_NEAR: f32 = 0.1;
 const MESH_CAMERA_FAR: f32 = 100.0;
@@ -104,7 +111,50 @@ impl MeshControlMode {
 enum GizmoInteraction {
     Translate { entity: Entity, offset: Vec2 },
     Rotate { entity: Entity, start_rotation: f32, start_angle: f32 },
-    Scale { entity: Entity, start_scale: Vec2, start_distance: f32 },
+    Scale { entity: Entity, start_scale: Vec2, handle: ScaleHandle },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Axis2 {
+    X,
+    Y,
+}
+
+impl Axis2 {
+    fn label(self) -> &'static str {
+        match self {
+            Axis2::X => "X axis",
+            Axis2::Y => "Y axis",
+        }
+    }
+
+    fn vector(self) -> Vec2 {
+        match self {
+            Axis2::X => Vec2::X,
+            Axis2::Y => Vec2::Y,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum ScaleHandle {
+    Uniform { start_distance: f32 },
+    Axis { axis: Axis2, start_extent: f32 },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScaleHandleKind {
+    Uniform,
+    Axis(Axis2),
+}
+
+impl ScaleHandle {
+    fn kind(self) -> ScaleHandleKind {
+        match self {
+            ScaleHandle::Uniform { .. } => ScaleHandleKind::Uniform,
+            ScaleHandle::Axis { axis, .. } => ScaleHandleKind::Axis(axis),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -188,6 +238,16 @@ fn wrap_angle(mut radians: f32) -> f32 {
         radians += two_pi;
     }
     radians
+}
+
+fn apply_scale_ratio(ratio: f32, snap: bool) -> f32 {
+    let clamped = ratio.clamp(SCALE_MIN_RATIO, SCALE_MAX_RATIO);
+    if snap {
+        let snapped = (clamped / SCALE_SNAP_STEP).round() * SCALE_SNAP_STEP;
+        snapped.clamp(SCALE_MIN_RATIO, SCALE_MAX_RATIO)
+    } else {
+        clamped
+    }
 }
 
 pub async fn run() -> Result<()> {
@@ -782,6 +842,52 @@ impl App {
         self.mesh_status = Some(format!("Spawned mesh '{}' as entity {:?}", mesh_key, entity));
     }
 
+    fn detect_scale_handle(
+        &self,
+        pointer_world: Vec2,
+        pointer_viewport: Vec2,
+        center_world: Vec2,
+        center_viewport: Vec2,
+        shift: bool,
+    ) -> Option<(ScaleHandleKind, ScaleHandle)> {
+        let rel_view = pointer_viewport - center_viewport;
+        let dist = pointer_viewport.distance(center_viewport);
+        let axis_half = GIZMO_SCALE_AXIS_THICKNESS_PX * 0.5;
+        let axis_length = GIZMO_SCALE_AXIS_LENGTH_PX;
+        let deadzone = GIZMO_SCALE_AXIS_DEADZONE_PX;
+        let mut kind = None;
+        if rel_view.x.abs() >= deadzone && rel_view.x.abs() <= axis_length && rel_view.y.abs() <= axis_half {
+            kind = Some(if shift { ScaleHandleKind::Uniform } else { ScaleHandleKind::Axis(Axis2::X) });
+        } else if rel_view.y.abs() >= deadzone
+            && rel_view.y.abs() <= axis_length
+            && rel_view.x.abs() <= axis_half
+        {
+            kind = Some(if shift { ScaleHandleKind::Uniform } else { ScaleHandleKind::Axis(Axis2::Y) });
+        } else if dist >= GIZMO_SCALE_INNER_RADIUS_PX && dist <= GIZMO_SCALE_OUTER_RADIUS_PX {
+            kind = Some(ScaleHandleKind::Uniform);
+        }
+        let kind = kind?;
+        let delta_world = pointer_world - center_world;
+        match kind {
+            ScaleHandleKind::Uniform => {
+                let distance = delta_world.length();
+                if distance > f32::EPSILON {
+                    Some((kind, ScaleHandle::Uniform { start_distance: distance }))
+                } else {
+                    None
+                }
+            }
+            ScaleHandleKind::Axis(axis) => {
+                let extent = delta_world.dot(axis.vector()).abs();
+                if extent > f32::EPSILON {
+                    Some((kind, ScaleHandle::Axis { axis, start_extent: extent }))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
     fn sync_emitter_ui(&mut self) {
         if let Some(entity) = self.ecs.first_emitter() {
             self.emitter_entity = Some(entity);
@@ -1077,6 +1183,25 @@ impl ApplicationHandler for App {
         }
 
         let view_proj = self.camera.view_projection(viewport_size);
+        let shift_held = self.input.shift_held();
+        let hovered_scale_kind = if self.gizmo_mode == GizmoMode::Scale {
+            if let (Some(info), Some(center_viewport), Some(pointer_viewport), Some(pointer_world)) =
+                (selected_info.as_ref(), gizmo_center_viewport, cursor_viewport, cursor_world_pos)
+            {
+                self.detect_scale_handle(
+                    pointer_world,
+                    pointer_viewport,
+                    info.translation,
+                    center_viewport,
+                    shift_held,
+                )
+                .map(|(kind, _)| kind)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         let mut gizmo_click_consumed = false;
         if self.input.take_left_click() {
@@ -1099,22 +1224,19 @@ impl ApplicationHandler for App {
                         }
                     }
                     GizmoMode::Scale => {
-                        if dist >= GIZMO_SCALE_INNER_RADIUS_PX && dist <= GIZMO_SCALE_OUTER_RADIUS_PX {
-                            if let (Some(pointer_world), Some(info)) =
-                                (cursor_world_pos, selected_info.as_ref())
-                            {
-                                let center = info.translation;
-                                let delta = pointer_world - center;
-                                let start_distance = delta.length();
-                                if start_distance > f32::EPSILON {
-                                    self.gizmo_interaction = Some(GizmoInteraction::Scale {
-                                        entity,
-                                        start_scale: info.scale,
-                                        start_distance,
-                                    });
-                                    gizmo_click_consumed = true;
-                                    self.inspector_status = None;
-                                }
+                        if let (Some(pointer_world), Some(info)) = (cursor_world_pos, selected_info.as_ref())
+                        {
+                            if let Some((_kind, handle)) = self.detect_scale_handle(
+                                pointer_world,
+                                pointer_viewport,
+                                info.translation,
+                                center_viewport,
+                                shift_held,
+                            ) {
+                                self.gizmo_interaction =
+                                    Some(GizmoInteraction::Scale { entity, start_scale: info.scale, handle });
+                                gizmo_click_consumed = true;
+                                self.inspector_status = None;
                             }
                         }
                     }
@@ -1194,20 +1316,50 @@ impl ApplicationHandler for App {
                         keep_active = false;
                     }
                 }
-                GizmoInteraction::Scale { entity, start_scale, start_distance } => {
+                GizmoInteraction::Scale { entity, start_scale, handle } => {
                     if !self.input.left_held() {
                         keep_active = false;
                     } else if let Some(pointer_world) = cursor_world_pos {
                         if let Some(info) = self.ecs.entity_info(*entity) {
-                            let delta = pointer_world - info.translation;
-                            let len_sq = delta.length_squared();
-                            if len_sq > f32::EPSILON && *start_distance > f32::EPSILON {
-                                let distance = len_sq.sqrt();
-                                let ratio = (distance / *start_distance).clamp(0.05, 20.0);
-                                let new_scale = Vec2::new(
-                                    (start_scale.x * ratio).max(0.01),
-                                    (start_scale.y * ratio).max(0.01),
-                                );
+                            let center = info.translation;
+                            let mut new_scale = *start_scale;
+                            let snap = self.input.ctrl_held();
+                            match handle {
+                                ScaleHandle::Uniform { start_distance } => {
+                                    let delta = pointer_world - center;
+                                    let len_sq = delta.length_squared();
+                                    if len_sq > f32::EPSILON && *start_distance > f32::EPSILON {
+                                        let distance = len_sq.sqrt();
+                                        let ratio = apply_scale_ratio(distance / *start_distance, snap);
+                                        new_scale = Vec2::new(
+                                            (start_scale.x * ratio).max(0.01),
+                                            (start_scale.y * ratio).max(0.01),
+                                        );
+                                    }
+                                }
+                                ScaleHandle::Axis { axis, start_extent } => {
+                                    let axis_vec = axis.vector();
+                                    let extent = (pointer_world - center).dot(axis_vec).abs();
+                                    if extent > f32::EPSILON && *start_extent > f32::EPSILON {
+                                        let ratio = apply_scale_ratio(extent / *start_extent, snap);
+                                        match axis {
+                                            Axis2::X => {
+                                                new_scale.x = (start_scale.x * ratio).max(0.01);
+                                                if self.input.shift_held() {
+                                                    new_scale.y = (start_scale.y * ratio).max(0.01);
+                                                }
+                                            }
+                                            Axis2::Y => {
+                                                new_scale.y = (start_scale.y * ratio).max(0.01);
+                                                if self.input.shift_held() {
+                                                    new_scale.x = (start_scale.x * ratio).max(0.01);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if new_scale != *start_scale {
                                 self.ecs.set_scale(*entity, new_scale);
                             }
                         } else {
@@ -1618,6 +1770,9 @@ impl ApplicationHandler for App {
                             ui.selectable_value(&mut self.gizmo_mode, GizmoMode::Rotate, "Rotate");
                             ui.selectable_value(&mut self.gizmo_mode, GizmoMode::Scale, "Scale");
                         });
+                        if self.gizmo_mode == GizmoMode::Scale {
+                            ui.small("Shift = uniform scale, Ctrl = snap steps");
+                        }
                         if let Some(interaction) = &self.gizmo_interaction {
                             match interaction {
                                 GizmoInteraction::Translate { .. } => {
@@ -1626,8 +1781,17 @@ impl ApplicationHandler for App {
                                 GizmoInteraction::Rotate { .. } => {
                                     ui.colored_label(egui::Color32::LIGHT_GREEN, "Rotate gizmo active");
                                 }
-                                GizmoInteraction::Scale { .. } => {
-                                    ui.colored_label(egui::Color32::LIGHT_GREEN, "Scale gizmo active");
+                                GizmoInteraction::Scale { handle, .. } => {
+                                    match handle {
+                                        ScaleHandle::Uniform { .. } => ui.colored_label(
+                                            egui::Color32::LIGHT_GREEN,
+                                            "Scale gizmo active (uniform)",
+                                        ),
+                                        ScaleHandle::Axis { axis, .. } => ui.colored_label(
+                                            egui::Color32::LIGHT_GREEN,
+                                            format!("Scale gizmo active ({})", axis.label()),
+                                        ),
+                                    };
                                 }
                             }
                         }
@@ -2058,6 +2222,12 @@ impl ApplicationHandler for App {
                     egui::StrokeKind::Inside,
                 );
             }
+            let active_scale_handle_kind =
+                self.gizmo_interaction.as_ref().and_then(|interaction| match interaction {
+                    GizmoInteraction::Scale { handle, .. } => Some(handle.kind()),
+                    _ => None,
+                });
+            let scale_highlight_kind = active_scale_handle_kind.or(hovered_scale_kind);
             if let Some(center_px) = gizmo_center_px {
                 let center = egui::pos2(center_px.x / ui_pixels_per_point, center_px.y / ui_pixels_per_point);
                 match self.gizmo_mode {
@@ -2081,20 +2251,95 @@ impl ApplicationHandler for App {
                     GizmoMode::Scale => {
                         let inner = GIZMO_SCALE_INNER_RADIUS_PX / ui_pixels_per_point;
                         let outer = GIZMO_SCALE_OUTER_RADIUS_PX / ui_pixels_per_point;
-                        let stroke_outer = egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 210, 90));
-                        let stroke_inner = egui::Stroke::new(1.0, egui::Color32::from_rgb(180, 160, 60));
-                        painter.rect_stroke(
-                            egui::Rect::from_center_size(center, egui::vec2(outer * 2.0, outer * 2.0)),
-                            0.0,
-                            stroke_outer,
-                            egui::StrokeKind::Outside,
+                        let axis_length = GIZMO_SCALE_AXIS_LENGTH_PX / ui_pixels_per_point;
+                        let axis_half = (GIZMO_SCALE_AXIS_THICKNESS_PX * 0.5) / ui_pixels_per_point;
+                        let handle_half = (GIZMO_SCALE_HANDLE_SIZE_PX * 0.5) / ui_pixels_per_point;
+
+                        let active_uniform = matches!(scale_highlight_kind, Some(ScaleHandleKind::Uniform));
+                        let active_axis = match scale_highlight_kind {
+                            Some(ScaleHandleKind::Axis(axis)) => Some(axis),
+                            _ => None,
+                        };
+
+                        let base_x = if matches!(active_axis, Some(Axis2::X)) {
+                            egui::Color32::from_rgb(255, 185, 185)
+                        } else {
+                            egui::Color32::from_rgb(240, 120, 120)
+                        };
+                        let base_y = if matches!(active_axis, Some(Axis2::Y)) {
+                            egui::Color32::from_rgb(185, 225, 255)
+                        } else {
+                            egui::Color32::from_rgb(120, 180, 255)
+                        };
+
+                        let horiz_pos = egui::Rect::from_min_max(
+                            egui::pos2(center.x, center.y - axis_half),
+                            egui::pos2(center.x + axis_length, center.y + axis_half),
                         );
-                        painter.rect_stroke(
-                            egui::Rect::from_center_size(center, egui::vec2(inner * 2.0, inner * 2.0)),
-                            0.0,
-                            stroke_inner,
-                            egui::StrokeKind::Inside,
+                        let horiz_neg = egui::Rect::from_min_max(
+                            egui::pos2(center.x - axis_length, center.y - axis_half),
+                            egui::pos2(center.x, center.y + axis_half),
                         );
+                        painter.rect_filled(horiz_pos, 0.0, base_x);
+                        painter.rect_filled(horiz_neg, 0.0, base_x);
+
+                        let vert_pos = egui::Rect::from_min_max(
+                            egui::pos2(center.x - axis_half, center.y - axis_length),
+                            egui::pos2(center.x + axis_half, center.y),
+                        );
+                        let vert_neg = egui::Rect::from_min_max(
+                            egui::pos2(center.x - axis_half, center.y),
+                            egui::pos2(center.x + axis_half, center.y + axis_length),
+                        );
+                        painter.rect_filled(vert_pos, 0.0, base_y);
+                        painter.rect_filled(vert_neg, 0.0, base_y);
+
+                        let handle_size = egui::vec2(handle_half * 2.0, handle_half * 2.0);
+                        painter.rect_filled(
+                            egui::Rect::from_center_size(
+                                egui::pos2(center.x + axis_length, center.y),
+                                handle_size,
+                            ),
+                            0.0,
+                            base_x,
+                        );
+                        painter.rect_filled(
+                            egui::Rect::from_center_size(
+                                egui::pos2(center.x - axis_length, center.y),
+                                handle_size,
+                            ),
+                            0.0,
+                            base_x,
+                        );
+                        painter.rect_filled(
+                            egui::Rect::from_center_size(
+                                egui::pos2(center.x, center.y - axis_length),
+                                handle_size,
+                            ),
+                            0.0,
+                            base_y,
+                        );
+                        painter.rect_filled(
+                            egui::Rect::from_center_size(
+                                egui::pos2(center.x, center.y + axis_length),
+                                handle_size,
+                            ),
+                            0.0,
+                            base_y,
+                        );
+
+                        let outer_color = if active_uniform {
+                            egui::Color32::from_rgb(255, 235, 150)
+                        } else {
+                            egui::Color32::from_rgb(255, 210, 90)
+                        };
+                        let inner_color = if active_uniform {
+                            egui::Color32::from_rgb(220, 200, 110)
+                        } else {
+                            egui::Color32::from_rgb(180, 160, 60)
+                        };
+                        painter.circle_stroke(center, outer, egui::Stroke::new(2.0, outer_color));
+                        painter.circle_stroke(center, inner, egui::Stroke::new(1.0, inner_color));
                     }
                     GizmoMode::Rotate => {
                         let inner = GIZMO_ROTATE_INNER_RADIUS_PX / ui_pixels_per_point;
