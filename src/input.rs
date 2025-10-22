@@ -16,6 +16,9 @@ pub struct Input {
     ascend_held: bool,
     descend_held: bool,
     boost_held: bool,
+    roll_left_held: bool,
+    roll_right_held: bool,
+    frustum_lock_toggle: bool,
     cursor_pos: Option<(f32, f32)>,
     left_pressed: bool,
     left_clicked: bool,
@@ -35,6 +38,7 @@ impl Input {
                         Key::Named(NamedKey::Space) => self.space_pressed = true,
                         Key::Character(ch) if ch.eq_ignore_ascii_case("b") => self.b_pressed = true,
                         Key::Character(ch) if ch.eq_ignore_ascii_case("m") => self.mesh_toggle_pressed = true,
+                        Key::Character(ch) if ch.eq_ignore_ascii_case("l") => self.frustum_lock_toggle = true,
                         _ => {}
                     }
                 }
@@ -46,6 +50,8 @@ impl Input {
                     Key::Character(ch) if ch.eq_ignore_ascii_case("d") => self.right_held = is_down,
                     Key::Character(ch) if ch.eq_ignore_ascii_case("e") => self.ascend_held = is_down,
                     Key::Character(ch) if ch.eq_ignore_ascii_case("q") => self.descend_held = is_down,
+                    Key::Character(ch) if ch.eq_ignore_ascii_case("z") => self.roll_left_held = is_down,
+                    Key::Character(ch) if ch.eq_ignore_ascii_case("c") => self.roll_right_held = is_down,
                     Key::Named(NamedKey::Shift) => self.boost_held = is_down,
                     _ => {}
                 }
@@ -85,6 +91,7 @@ impl Input {
         self.wheel = 0.0;
         self.left_clicked = false;
         self.mesh_toggle_pressed = false;
+        self.frustum_lock_toggle = false;
     }
 
     pub fn consume_wheel_delta(&mut self) -> Option<f32> {
@@ -150,6 +157,17 @@ impl Input {
     }
     pub fn freefly_boost(&self) -> bool {
         self.boost_held
+    }
+    pub fn freefly_roll_left(&self) -> bool {
+        self.roll_left_held
+    }
+    pub fn freefly_roll_right(&self) -> bool {
+        self.roll_right_held
+    }
+    pub fn take_frustum_lock_toggle(&mut self) -> bool {
+        let pressed = self.frustum_lock_toggle;
+        self.frustum_lock_toggle = false;
+        pressed
     }
 }
 

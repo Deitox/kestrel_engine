@@ -113,6 +113,7 @@ struct FreeflyController {
     position: Vec3,
     yaw: f32,
     pitch: f32,
+    roll: f32,
 }
 
 impl FreeflyController {
@@ -121,28 +122,38 @@ impl FreeflyController {
         let yaw = forward.x.atan2(forward.z);
         let pitch =
             forward.y.asin().clamp(-std::f32::consts::FRAC_PI_2 + 0.01, std::f32::consts::FRAC_PI_2 - 0.01);
-        Self { position: camera.position, yaw, pitch }
+        let roll = 0.0;
+        Self { position: camera.position, yaw, pitch, roll }
+    }
+
+    fn orientation(&self) -> Quat {
+        Quat::from_euler(glam::EulerRot::YXZ, self.yaw, self.pitch, self.roll)
     }
 
     fn forward(&self) -> Vec3 {
-        let rotation = Quat::from_euler(glam::EulerRot::YXZ, self.yaw, self.pitch, 0.0);
-        rotation * Vec3::new(0.0, 0.0, -1.0)
+        self.orientation() * Vec3::new(0.0, 0.0, -1.0)
     }
 
     fn right(&self) -> Vec3 {
-        let rotation = Quat::from_euler(glam::EulerRot::YXZ, self.yaw, self.pitch, 0.0);
-        rotation * Vec3::new(1.0, 0.0, 0.0)
+        self.orientation() * Vec3::new(1.0, 0.0, 0.0)
+    }
+
+    fn up(&self) -> Vec3 {
+        self.orientation() * Vec3::Y
     }
 
     fn to_camera(&self) -> Camera3D {
         let forward = self.forward();
-        Camera3D::new(
+        let mut camera = Camera3D::new(
             self.position,
             self.position + forward,
             MESH_CAMERA_FOV_RADIANS,
             MESH_CAMERA_NEAR,
             MESH_CAMERA_FAR,
-        )
+        );
+        let up = self.up().normalize_or_zero();
+        camera.up = if up.length_squared() > 0.0 { up } else { Vec3::Y };
+        camera
     }
 }
 
@@ -246,6 +257,11 @@ pub struct App {
     mesh_control_mode: MeshControlMode,
     mesh_freefly: FreeflyController,
     mesh_freefly_speed: f32,
+    mesh_freefly_velocity: Vec3,
+    mesh_freefly_rot_velocity: Vec3,
+    mesh_frustum_lock: bool,
+    mesh_frustum_focus: Vec3,
+    mesh_frustum_distance: f32,
     mesh_status: Option<String>,
 
     viewport: Viewport,
@@ -313,9 +329,11 @@ impl App {
         let mesh_registry = MeshRegistry::new();
         let preview_mesh_key = mesh_registry.default_key().to_string();
         let mesh_status_initial =
-            Some(format!("Preview mesh: {} — press M to cycle camera control", preview_mesh_key));
+            Some(format!("Preview mesh: {} - press M to cycle camera control", preview_mesh_key));
         let mesh_orbit = OrbitCamera::new(Vec3::ZERO, 5.0);
         let mesh_camera = mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
+        let mesh_frustum_focus = mesh_orbit.target;
+        let mesh_frustum_distance = mesh_orbit.radius;
         let mesh_freefly = FreeflyController::from_camera(&mesh_camera);
         let mesh_model = Mat4::IDENTITY;
 
@@ -373,6 +391,11 @@ impl App {
             mesh_angle: 0.0,
             mesh_control_mode: MeshControlMode::Disabled,
             mesh_freefly_speed: 4.0,
+            mesh_freefly_velocity: Vec3::ZERO,
+            mesh_freefly_rot_velocity: Vec3::ZERO,
+            mesh_frustum_lock: false,
+            mesh_frustum_focus,
+            mesh_frustum_distance,
             mesh_status: mesh_status_initial,
             viewport: Viewport::new(
                 Vec2::ZERO,
@@ -401,6 +424,8 @@ impl App {
     fn update_mesh_camera(&mut self, dt: f32) {
         match self.mesh_control_mode {
             MeshControlMode::Disabled => {
+                self.mesh_freefly_velocity = Vec3::ZERO;
+                self.mesh_freefly_rot_velocity = Vec3::ZERO;
                 let auto_delta = Vec2::new(0.25 * dt, 0.12 * dt);
                 self.mesh_orbit.orbit(auto_delta);
                 self.mesh_camera =
@@ -408,102 +433,225 @@ impl App {
                 self.mesh_freefly = FreeflyController::from_camera(&self.mesh_camera);
             }
             MeshControlMode::Orbit => {
+                self.mesh_freefly_velocity = Vec3::ZERO;
+                self.mesh_freefly_rot_velocity = Vec3::ZERO;
                 let (dx, dy) = self.input.mouse_delta;
                 if self.input.right_held() && (dx.abs() > f32::EPSILON || dy.abs() > f32::EPSILON) {
                     let sensitivity = 0.008;
                     self.mesh_orbit.orbit(Vec2::new(dx * sensitivity, dy * sensitivity));
                 }
-
-                if self.input.wheel.abs() > 0.0 {
+                if self.input.wheel.abs() > 0.0 && !self.mesh_frustum_lock {
                     let sensitivity = 0.12;
                     let factor = (self.input.wheel * sensitivity).exp();
                     self.mesh_orbit.zoom(factor);
                     self.input.wheel = 0.0;
                 }
-
                 self.mesh_camera =
                     self.mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
                 self.mesh_freefly = FreeflyController::from_camera(&self.mesh_camera);
             }
             MeshControlMode::Freefly => {
-                let (dx, dy) = self.input.mouse_delta;
-                if self.input.right_held() && (dx.abs() > f32::EPSILON || dy.abs() > f32::EPSILON) {
-                    let sensitivity = 0.006;
-                    self.mesh_freefly.yaw += dx * sensitivity;
-                    self.mesh_freefly.pitch = (self.mesh_freefly.pitch + dy * sensitivity)
-                        .clamp(-std::f32::consts::FRAC_PI_2 + 0.01, std::f32::consts::FRAC_PI_2 - 0.01);
+                let dt = dt.max(1e-6);
+                let mut target_rot = Vec3::ZERO;
+                if self.input.right_held() {
+                    let sensitivity = 0.008;
+                    target_rot.x = self.input.mouse_delta.0 * sensitivity / dt;
+                    target_rot.y = self.input.mouse_delta.1 * sensitivity / dt;
                 }
-
-                if self.input.wheel.abs() > 0.0 {
-                    let factor = (1.0 + self.input.wheel * 0.08).clamp(0.2, 5.0);
-                    self.mesh_freefly_speed = (self.mesh_freefly_speed * factor).clamp(0.1, 200.0);
-                    self.mesh_status = Some(format!("Free-fly speed: {:.2}", self.mesh_freefly_speed));
-                    self.input.wheel = 0.0;
+                let roll_raw =
+                    (self.input.freefly_roll_right() as i32 - self.input.freefly_roll_left() as i32) as f32;
+                if roll_raw.abs() > 0.0 {
+                    target_rot.z = roll_raw * 2.5;
                 }
+                let angular_lerp = 1.0 - (-dt * 14.0).exp();
+                self.mesh_freefly_rot_velocity =
+                    self.mesh_freefly_rot_velocity.lerp(target_rot, angular_lerp);
+                self.mesh_freefly.yaw += self.mesh_freefly_rot_velocity.x * dt;
+                self.mesh_freefly.pitch = (self.mesh_freefly.pitch + self.mesh_freefly_rot_velocity.y * dt)
+                    .clamp(-std::f32::consts::FRAC_PI_2 + 0.01, std::f32::consts::FRAC_PI_2 - 0.01);
+                self.mesh_freefly.roll += self.mesh_freefly_rot_velocity.z * dt;
+                self.mesh_freefly.roll = wrap_angle(self.mesh_freefly.roll);
 
                 let mut direction = Vec3::ZERO;
                 let forward = self.mesh_freefly.forward().normalize_or_zero();
                 let right = self.mesh_freefly.right().normalize_or_zero();
-                if self.input.freefly_forward() {
-                    direction += forward;
+                let up = self.mesh_freefly.up().normalize_or_zero();
+
+                if !self.mesh_frustum_lock {
+                    if self.input.freefly_forward() {
+                        direction += forward;
+                    }
+                    if self.input.freefly_backward() {
+                        direction -= forward;
+                    }
+                    if self.input.freefly_right() {
+                        direction += right;
+                    }
+                    if self.input.freefly_left() {
+                        direction -= right;
+                    }
+                    if self.input.freefly_ascend() {
+                        direction += up;
+                    }
+                    if self.input.freefly_descend() {
+                        direction -= up;
+                    }
                 }
-                if self.input.freefly_backward() {
-                    direction -= forward;
-                }
-                if self.input.freefly_right() {
-                    direction += right;
-                }
-                if self.input.freefly_left() {
-                    direction -= right;
-                }
-                if self.input.freefly_ascend() {
-                    direction += Vec3::Y;
-                }
-                if self.input.freefly_descend() {
-                    direction -= Vec3::Y;
-                }
-                if direction.length_squared() > 0.0 {
-                    direction = direction.normalize_or_zero();
-                    let boost = if self.input.freefly_boost() { 3.0 } else { 1.0 };
-                    self.mesh_freefly.position += direction * self.mesh_freefly_speed * boost * dt;
+
+                let boost = if self.input.freefly_boost() { 3.0 } else { 1.0 };
+                let target_velocity = if direction.length_squared() > 0.0 {
+                    direction.normalize_or_zero() * self.mesh_freefly_speed * boost
+                } else {
+                    Vec3::ZERO
+                };
+                let velocity_lerp = 1.0 - (-dt * 10.0).exp();
+                self.mesh_freefly_velocity = self.mesh_freefly_velocity.lerp(target_velocity, velocity_lerp);
+                self.mesh_freefly.position += self.mesh_freefly_velocity * dt;
+
+                if !self.mesh_frustum_lock && self.input.wheel.abs() > 0.0 {
+                    let factor = (1.0 + self.input.wheel * 0.06).clamp(0.2, 5.0);
+                    self.mesh_freefly_speed = (self.mesh_freefly_speed * factor).clamp(0.1, 200.0);
+                    self.mesh_status = Some(format!("Free-fly speed: {:.2}", self.mesh_freefly_speed));
+                    self.input.wheel = 0.0;
                 }
 
                 self.mesh_camera = self.mesh_freefly.to_camera();
                 self.sync_orbit_from_camera_pose();
             }
         }
-    }
 
+        if self.mesh_frustum_lock {
+            let focus = self.mesh_frustum_focus;
+            match self.mesh_control_mode {
+                MeshControlMode::Freefly => {
+                    if self.input.wheel.abs() > 0.0 {
+                        let factor = (1.0 - self.input.wheel * 0.06).clamp(0.2, 5.0);
+                        self.mesh_frustum_distance = (self.mesh_frustum_distance * factor).clamp(0.1, 500.0);
+                        self.input.wheel = 0.0;
+                    }
+                    self.mesh_frustum_distance = self.mesh_frustum_distance.max(0.1);
+                    let to_focus = (focus - self.mesh_freefly.position).normalize_or_zero();
+                    if to_focus.length_squared() > 0.0 {
+                        self.mesh_freefly.yaw = to_focus.x.atan2(to_focus.z);
+                        self.mesh_freefly.pitch = to_focus
+                            .y
+                            .asin()
+                            .clamp(-std::f32::consts::FRAC_PI_2 + 0.01, std::f32::consts::FRAC_PI_2 - 0.01);
+                    }
+                    self.mesh_freefly.position =
+                        focus - self.mesh_freefly.forward().normalize_or_zero() * self.mesh_frustum_distance;
+                    self.mesh_camera = self.mesh_freefly.to_camera();
+                    self.mesh_camera.target = focus;
+                }
+                MeshControlMode::Orbit | MeshControlMode::Disabled => {
+                    if self.input.wheel.abs() > 0.0 {
+                        let sensitivity = 0.12;
+                        let factor = (self.input.wheel * sensitivity).exp();
+                        self.mesh_frustum_distance = (self.mesh_frustum_distance * factor).clamp(0.1, 500.0);
+                        self.input.wheel = 0.0;
+                    }
+                    self.mesh_orbit.target = focus;
+                    self.mesh_orbit.radius = self.mesh_frustum_distance.max(0.1);
+                    self.mesh_camera =
+                        self.mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
+                    self.mesh_camera.target = focus;
+                }
+            }
+        } else {
+            match self.mesh_control_mode {
+                MeshControlMode::Orbit | MeshControlMode::Disabled => {
+                    self.mesh_frustum_focus = self.mesh_orbit.target;
+                    self.mesh_frustum_distance = self.mesh_orbit.radius;
+                }
+                MeshControlMode::Freefly => {
+                    self.mesh_frustum_focus = self.mesh_camera.target;
+                    self.mesh_frustum_distance =
+                        (self.mesh_frustum_focus - self.mesh_camera.position).length().max(0.1);
+                }
+            }
+        }
+    }
     fn set_mesh_control_mode(&mut self, mode: MeshControlMode) {
         if self.mesh_control_mode == mode {
             return;
         }
+        self.mesh_freefly_velocity = Vec3::ZERO;
+        self.mesh_freefly_rot_velocity = Vec3::ZERO;
         match mode {
             MeshControlMode::Disabled => {
                 self.sync_orbit_from_camera_pose();
                 self.mesh_camera =
                     self.mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
-                self.mesh_status = Some("Scripted orbit animates the camera.".to_string());
+                self.mesh_freefly = FreeflyController::from_camera(&self.mesh_camera);
+                self.mesh_status =
+                    Some("Scripted orbit animates the camera (press M to switch modes).".to_string());
             }
             MeshControlMode::Orbit => {
                 self.sync_orbit_from_camera_pose();
                 self.mesh_camera =
                     self.mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
                 self.mesh_freefly = FreeflyController::from_camera(&self.mesh_camera);
-                self.mesh_status =
-                    Some("Orbit control enabled (right-drag to orbit, scroll to zoom).".to_string());
+                self.mesh_status = Some(
+                    "Orbit control enabled (right-drag to orbit, scroll to zoom, L toggles frustum lock)."
+                        .to_string(),
+                );
             }
             MeshControlMode::Freefly => {
                 self.mesh_freefly = FreeflyController::from_camera(&self.mesh_camera);
                 self.mesh_camera = self.mesh_freefly.to_camera();
                 self.mesh_status = Some(
-                    "Free-fly enabled (hold RMB + WASD/QE, Shift to boost, wheel adjusts speed).".to_string(),
+                    "Free-fly enabled (RMB + WASD/QE to move, Z/C to roll, Shift to boost, L locks frustum)."
+                        .to_string(),
                 );
             }
         }
         self.mesh_control_mode = mode;
         self.input.wheel = 0.0;
         self.input.mouse_delta = (0.0, 0.0);
+        if self.mesh_frustum_lock {
+            self.mesh_frustum_distance =
+                (self.mesh_camera.position - self.mesh_frustum_focus).length().max(0.1);
+        }
+    }
+
+    fn set_frustum_lock(&mut self, enabled: bool) {
+        if self.mesh_frustum_lock == enabled {
+            return;
+        }
+        if enabled {
+            let focus = self.compute_focus_point();
+            self.mesh_frustum_focus = focus;
+            self.mesh_frustum_distance = (self.mesh_camera.position - focus).length().max(0.1);
+            if self.mesh_control_mode == MeshControlMode::Freefly {
+                let direction = (focus - self.mesh_freefly.position).normalize_or_zero();
+                if direction.length_squared() > 0.0 {
+                    self.mesh_freefly.yaw = direction.x.atan2(direction.z);
+                    self.mesh_freefly.pitch = direction
+                        .y
+                        .asin()
+                        .clamp(-std::f32::consts::FRAC_PI_2 + 0.01, std::f32::consts::FRAC_PI_2 - 0.01);
+                }
+            }
+            self.mesh_status = Some("Frustum lock enabled (wheel adjusts focus distance).".to_string());
+        } else {
+            self.mesh_status = Some("Frustum lock disabled.".to_string());
+            self.mesh_frustum_distance = self.mesh_orbit.radius;
+        }
+        self.mesh_frustum_lock = enabled;
+        self.mesh_freefly_velocity = Vec3::ZERO;
+        self.mesh_freefly_rot_velocity = Vec3::ZERO;
+    }
+
+    fn compute_focus_point(&self) -> Vec3 {
+        if let Some(entity) = self.selected_entity {
+            if let Some(info) = self.ecs.entity_info(entity) {
+                if let Some(mesh_tx) = info.mesh_transform {
+                    return mesh_tx.translation;
+                }
+                return Vec3::new(info.translation.x, info.translation.y, 0.0);
+            }
+        }
+        self.mesh_orbit.target
     }
 
     fn sync_orbit_from_camera_pose(&mut self) {
@@ -526,6 +674,10 @@ impl App {
             let next = self.mesh_control_mode.next();
             self.set_mesh_control_mode(next);
         }
+        if self.input.take_frustum_lock_toggle() {
+            let next = !self.mesh_frustum_lock;
+            self.set_frustum_lock(next);
+        }
     }
 
     fn reset_mesh_camera(&mut self) {
@@ -534,8 +686,18 @@ impl App {
         self.mesh_camera =
             self.mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
         self.mesh_freefly = FreeflyController::from_camera(&self.mesh_camera);
+        self.mesh_freefly_velocity = Vec3::ZERO;
+        self.mesh_freefly_rot_velocity = Vec3::ZERO;
+        self.mesh_freefly.roll = 0.0;
         if self.mesh_control_mode == MeshControlMode::Freefly {
             self.mesh_camera = self.mesh_freefly.to_camera();
+        }
+        if self.mesh_frustum_lock {
+            self.mesh_frustum_focus = self.compute_focus_point();
+            self.mesh_frustum_distance =
+                (self.mesh_camera.position - self.mesh_frustum_focus).length().max(0.1);
+        } else {
+            self.mesh_frustum_distance = self.mesh_orbit.radius;
         }
         self.mesh_status = Some("Mesh camera reset.".to_string());
     }
@@ -1049,6 +1211,7 @@ impl ApplicationHandler for App {
         let instances_drawn = instances.len();
         let mut ui_cell_size = self.ui_cell_size;
         let mut ui_spawn_per_press = self.ui_spawn_per_press;
+        let orbit_target = self.mesh_orbit.target;
         let mut ui_auto_spawn_rate = self.ui_auto_spawn_rate;
         let mut ui_root_spin = self.ui_root_spin;
         let mut ui_emitter_rate = self.ui_emitter_rate;
@@ -1079,6 +1242,7 @@ impl ApplicationHandler for App {
         }
         let mut actions = UiActions::default();
         let mut mesh_control_request: Option<MeshControlMode> = None;
+        let mut mesh_frustum_request: Option<bool> = None;
         let mut mesh_reset_request = false;
         let mut mesh_selection_request: Option<String> = None;
         let mut mesh_keys: Vec<String> = self.mesh_registry.keys().map(|k| k.to_string()).collect();
@@ -1200,6 +1364,25 @@ impl ApplicationHandler for App {
                         });
                     if mesh_control_mode != self.mesh_control_mode {
                         mesh_control_request = Some(mesh_control_mode);
+                    }
+                    let mut frustum_lock = self.mesh_frustum_lock;
+                    if ui.checkbox(&mut frustum_lock, "Frustum lock (L)").changed() {
+                        mesh_frustum_request = Some(frustum_lock);
+                    }
+                    if frustum_lock && ui.button("Snap to selection").clicked() {
+                        let focus = selection_details
+                            .as_ref()
+                            .and_then(|info| info.mesh_transform.as_ref().map(|t| t.translation))
+                            .or_else(|| {
+                                selection_details
+                                    .as_ref()
+                                    .map(|info| Vec3::new(info.translation.x, info.translation.y, 0.0))
+                            })
+                            .unwrap_or(orbit_target);
+                        self.mesh_frustum_focus = focus;
+                        self.mesh_frustum_distance =
+                            (self.mesh_camera.position - self.mesh_frustum_focus).length().max(0.1);
+                        self.mesh_status = Some("Frustum focus updated.".to_string());
                     }
                     if ui.button("Reset camera").clicked() {
                         mesh_reset_request = true;
@@ -1709,6 +1892,9 @@ impl ApplicationHandler for App {
 
         if let Some(mode) = mesh_control_request {
             self.set_mesh_control_mode(mode);
+        }
+        if let Some(lock) = mesh_frustum_request {
+            self.set_frustum_lock(lock);
         }
         if mesh_reset_request {
             self.reset_mesh_camera();

@@ -18,7 +18,7 @@
 ```
 
 - `src/lib.rs` drives Winit's `EventLoop`, advances the simulation, runs scripts, renders, and feeds egui.
-- `src/input.rs` accumulates keyboard/mouse state and tracks held keys used by both the 2D camera and the mesh preview’s orbit/free-fly controls.
+- `src/input.rs` accumulates keyboard/mouse state and tracks held keys used by both the 2D camera and the mesh preview's orbit/free-fly controls.
 - `src/time.rs` tracks elapsed time and maintains the fixed 60 Hz timestep.
 - `src/ecs.rs` hosts the Bevy ECS world: sprites, meshes, transforms, Rapier physics, particle emitters, and utility resources.
 - `src/renderer.rs` owns WGPU device and swapchain setup, sprite batching, the mesh pass, and egui rendering.
@@ -34,7 +34,7 @@
 
 ### Frame Flow
 1. **Input ingest** - `ApplicationHandler::window_event` converts Winit events into `InputEvent` values, storing them on `Input`.
-2. **Camera controls** - `App::about_to_wait` applies zoom/pan to the 2D camera and updates the mesh preview camera (cycling Disabled → Orbit → Free-fly as requested via the `M` shortcut).
+2. **Camera controls** - `App::about_to_wait` applies zoom/pan to the 2D camera and updates the mesh preview camera (cycling Disabled -> Orbit -> Free-fly as requested via the `M` shortcut).
 3. **Scripting** - `ScriptHost::update` reloads Rhai scripts, queues commands, and the app drains those commands before the fixed step.
 4. **Physics and simulation** - Rapier advances rigid bodies at the fixed timestep. A hybrid transform system mirrors both 2D (`Transform`) and 3D (`Transform3D`) components into a shared `WorldTransform`, keeping sprites and meshes aligned when they share parents. Particle integration runs alongside and gameplay systems emit `GameEvent` entries (including collision hits and script messages).
 5. **Rendering prep** - ECS collects sprite instances and mesh instances; the mesh registry ensures required GPU buffers exist, and both 2D and 3D cameras produce view-projection matrices.
@@ -60,3 +60,5 @@ The data always flows in the same order - Input -> ECS -> Renderer -> UI - keepi
 - `world.spawn_sprite` returns a negative handle until the engine materializes the entity; use that handle with other `world.*` calls and the app will resolve it when commands are applied.
 - Scripts can override debug UI settings such as spawn counts or auto spawn rate via `set_spawn_per_press` and `set_auto_spawn_rate`.
 - Use the emitter helpers (`set_emitter_rate`, `*_spread`, `*_speed`, `*_lifetime`, `*_start_color`, `*_end_color`, `*_start_size`, `*_end_size`) to tweak the particle system at runtime.
+
+
