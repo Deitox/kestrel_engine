@@ -1,9 +1,9 @@
 use crate::camera3d::Camera3D;
 use crate::config::WindowConfig;
-use crate::ecs::InstanceData;
+use crate::ecs::{InstanceData, MeshLightingInfo};
 use crate::mesh::{Mesh, MeshVertex};
 use anyhow::{anyhow, Context, Result};
-use glam::Mat4;
+use glam::{Mat4, Vec3};
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
@@ -28,6 +28,11 @@ const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 struct MeshGlobals {
     view_proj: [[f32; 4]; 4],
     model: [[f32; 4]; 4],
+    camera_pos: [f32; 4],
+    light_dir: [f32; 4],
+    base_color: [f32; 4],
+    emissive: [f32; 4],
+    material_params: [f32; 4],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -59,6 +64,7 @@ pub struct GpuMesh {
 pub struct MeshDraw<'a> {
     pub mesh: &'a GpuMesh,
     pub model: Mat4,
+    pub lighting: MeshLightingInfo,
 }
 
 pub struct SurfaceFrame {
@@ -242,7 +248,7 @@ impl Renderer {
             label: Some("Globals BGL"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -429,7 +435,7 @@ impl Renderer {
             label: Some("Mesh Globals BGL"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -589,9 +595,23 @@ impl Renderer {
         );
         pass.set_scissor_rect(sc_x, sc_y, sc_w, sc_h);
 
+        let light_dir = Vec3::new(0.4, 0.8, 0.35).normalize();
+        let camera_pos = camera.position;
+
         for draw in draws {
-            let globals =
-                MeshGlobals { view_proj: view_proj.to_cols_array_2d(), model: draw.model.to_cols_array_2d() };
+            let base_color = draw.lighting.base_color;
+            let emissive = draw.lighting.emissive.unwrap_or(Vec3::ZERO);
+            let metallic = draw.lighting.metallic.clamp(0.0, 1.0);
+            let roughness = draw.lighting.roughness.clamp(0.04, 1.0);
+            let globals = MeshGlobals {
+                view_proj: view_proj.to_cols_array_2d(),
+                model: draw.model.to_cols_array_2d(),
+                camera_pos: [camera_pos.x, camera_pos.y, camera_pos.z, 1.0],
+                light_dir: [light_dir.x, light_dir.y, light_dir.z, 0.0],
+                base_color: [base_color.x, base_color.y, base_color.z, 1.0],
+                emissive: [emissive.x, emissive.y, emissive.z, 0.0],
+                material_params: [metallic, roughness, 0.0, 0.0],
+            };
             queue.write_buffer(&mesh_pipeline.globals_buf, 0, bytemuck::bytes_of(&globals));
             pass.set_bind_group(0, &mesh_pipeline.globals_bg, &[]);
             pass.set_vertex_buffer(0, draw.mesh.vertex_buffer.slice(..));

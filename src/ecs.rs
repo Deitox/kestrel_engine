@@ -66,11 +66,21 @@ impl Default for MeshSurface {
 pub struct MeshLighting {
     pub cast_shadows: bool,
     pub receive_shadows: bool,
+    pub base_color: Vec3,
     pub emissive: Option<Vec3>,
+    pub metallic: f32,
+    pub roughness: f32,
 }
 impl Default for MeshLighting {
     fn default() -> Self {
-        Self { cast_shadows: false, receive_shadows: false, emissive: None }
+        Self {
+            cast_shadows: false,
+            receive_shadows: false,
+            base_color: Vec3::splat(1.0),
+            emissive: None,
+            metallic: 0.0,
+            roughness: 0.5,
+        }
     }
 }
 #[derive(Component, Clone, Copy)]
@@ -176,11 +186,26 @@ pub struct MeshInfo {
     pub lighting: MeshLightingInfo,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct MeshLightingInfo {
     pub cast_shadows: bool,
     pub receive_shadows: bool,
+    pub base_color: Vec3,
     pub emissive: Option<Vec3>,
+    pub metallic: f32,
+    pub roughness: f32,
+}
+impl Default for MeshLightingInfo {
+    fn default() -> Self {
+        Self {
+            cast_shadows: false,
+            receive_shadows: false,
+            base_color: Vec3::splat(1.0),
+            emissive: None,
+            metallic: 0.0,
+            roughness: 0.5,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -196,7 +221,10 @@ impl From<&MeshLighting> for MeshLightingInfo {
         Self {
             cast_shadows: value.cast_shadows,
             receive_shadows: value.receive_shadows,
+            base_color: value.base_color,
             emissive: value.emissive,
+            metallic: value.metallic,
+            roughness: value.roughness,
         }
     }
 }
@@ -207,6 +235,9 @@ impl From<MeshLightingData> for MeshLighting {
             cast_shadows: value.cast_shadows,
             receive_shadows: value.receive_shadows,
             emissive: value.emissive.map(Into::into),
+            base_color: value.base_color.into(),
+            metallic: value.metallic,
+            roughness: value.roughness,
         }
     }
 }
@@ -217,6 +248,9 @@ impl From<&MeshLighting> for MeshLightingData {
             cast_shadows: value.cast_shadows,
             receive_shadows: value.receive_shadows,
             emissive: value.emissive.map(Into::into),
+            base_color: value.base_color.into(),
+            metallic: value.metallic,
+            roughness: value.roughness,
         }
     }
 }

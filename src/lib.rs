@@ -18,7 +18,7 @@ use crate::audio::AudioManager;
 use crate::camera::Camera2D;
 use crate::camera3d::{Camera3D, OrbitCamera};
 use crate::config::AppConfig;
-use crate::ecs::{EcsWorld, InstanceData, SpriteInfo};
+use crate::ecs::{EcsWorld, InstanceData, MeshLightingInfo, SpriteInfo};
 use crate::events::GameEvent;
 use crate::input::{Input, InputEvent};
 use crate::mesh_registry::MeshRegistry;
@@ -1205,9 +1205,13 @@ impl ApplicationHandler for App {
             origin: (self.viewport.origin.x, self.viewport.origin.y),
             size: (self.viewport.size.x, self.viewport.size.y),
         };
-        let mut mesh_draw_infos: Vec<(String, Mat4)> = Vec::new();
+        let mut mesh_draw_infos: Vec<(String, Mat4, MeshLightingInfo)> = Vec::new();
         match self.mesh_registry.ensure_gpu(&self.preview_mesh_key, &mut self.renderer) {
-            Ok(_) => mesh_draw_infos.push((self.preview_mesh_key.clone(), self.mesh_model)),
+            Ok(_) => mesh_draw_infos.push((
+                self.preview_mesh_key.clone(),
+                self.mesh_model,
+                MeshLightingInfo::default(),
+            )),
             Err(err) => {
                 self.mesh_status = Some(format!("Mesh upload failed: {err}"));
             }
@@ -1215,16 +1219,18 @@ impl ApplicationHandler for App {
         let scene_meshes = self.ecs.collect_mesh_instances();
         for instance in scene_meshes {
             match self.mesh_registry.ensure_gpu(&instance.key, &mut self.renderer) {
-                Ok(_) => mesh_draw_infos.push((instance.key.clone(), instance.model)),
+                Ok(_) => {
+                    mesh_draw_infos.push((instance.key.clone(), instance.model, instance.lighting.clone()))
+                }
                 Err(err) => {
                     eprintln!("[mesh] Unable to prepare '{}': {err:?}", instance.key);
                 }
             }
         }
         let mut mesh_draws: Vec<MeshDraw> = Vec::new();
-        for (key, model) in mesh_draw_infos {
+        for (key, model, lighting) in mesh_draw_infos {
             if let Some(mesh) = self.mesh_registry.gpu_mesh(&key) {
-                mesh_draws.push(MeshDraw { mesh, model });
+                mesh_draws.push(MeshDraw { mesh, model, lighting });
             }
         }
         let mesh_camera_opt = if mesh_draws.is_empty() { None } else { Some(&self.mesh_camera) };
@@ -1596,6 +1602,12 @@ impl ApplicationHandler for App {
                                 ui.label(format!(
                                     "Shadows: cast={} receive={}",
                                     mesh.lighting.cast_shadows, mesh.lighting.receive_shadows
+                                ));
+                                let bc = mesh.lighting.base_color;
+                                ui.label(format!("Base Color: ({:.2}, {:.2}, {:.2})", bc.x, bc.y, bc.z));
+                                ui.label(format!(
+                                    "Metallic {:.2}  Roughness {:.2}",
+                                    mesh.lighting.metallic, mesh.lighting.roughness
                                 ));
                                 if let Some(emissive) = mesh.lighting.emissive {
                                     ui.label(format!(

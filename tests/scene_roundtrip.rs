@@ -23,7 +23,10 @@ fn scene_roundtrip_preserves_entity_count() {
         lighting: MeshLighting {
             cast_shadows: true,
             receive_shadows: true,
+            base_color: Vec3::new(0.25, 0.55, 0.85),
             emissive: Some(Vec3::new(0.1, 0.2, 0.3)),
+            metallic: 0.35,
+            roughness: 0.42,
         },
     });
     let original_count = world.entity_count();
@@ -53,6 +56,12 @@ fn scene_roundtrip_preserves_entity_count() {
     assert_eq!(saved_mesh.material.as_deref(), Some("materials/bronze.mat"));
     assert!(saved_mesh.lighting.cast_shadows);
     assert!(saved_mesh.lighting.receive_shadows);
+    let saved_base_color = Vec3::from(saved_mesh.lighting.base_color.clone());
+    assert!((saved_base_color.x - 0.25).abs() < f32::EPSILON);
+    assert!((saved_base_color.y - 0.55).abs() < f32::EPSILON);
+    assert!((saved_base_color.z - 0.85).abs() < f32::EPSILON);
+    assert!((saved_mesh.lighting.metallic - 0.35).abs() < f32::EPSILON);
+    assert!((saved_mesh.lighting.roughness - 0.42).abs() < f32::EPSILON);
     let emissive_vec = saved_mesh
         .lighting
         .emissive
@@ -87,6 +96,12 @@ fn scene_roundtrip_preserves_entity_count() {
     assert_eq!(loaded_mesh.material.as_deref(), Some("materials/bronze.mat"));
     assert!(loaded_mesh.lighting.cast_shadows);
     assert!(loaded_mesh.lighting.receive_shadows);
+    let loaded_base_color = Vec3::from(loaded_mesh.lighting.base_color.clone());
+    assert!((loaded_base_color.x - 0.25).abs() < f32::EPSILON);
+    assert!((loaded_base_color.y - 0.55).abs() < f32::EPSILON);
+    assert!((loaded_base_color.z - 0.85).abs() < f32::EPSILON);
+    assert!((loaded_mesh.lighting.metallic - 0.35).abs() < f32::EPSILON);
+    assert!((loaded_mesh.lighting.roughness - 0.42).abs() < f32::EPSILON);
     let loaded_emissive = loaded_mesh
         .lighting
         .emissive
@@ -110,6 +125,11 @@ fn scene_roundtrip_preserves_entity_count() {
                 assert_eq!(surface.material.as_deref(), Some("materials/bronze.mat"));
                 assert!(surface.lighting.cast_shadows);
                 assert!(surface.lighting.receive_shadows);
+                assert!((surface.lighting.base_color.x - 0.25).abs() < f32::EPSILON);
+                assert!((surface.lighting.base_color.y - 0.55).abs() < f32::EPSILON);
+                assert!((surface.lighting.base_color.z - 0.85).abs() < f32::EPSILON);
+                assert!((surface.lighting.metallic - 0.35).abs() < f32::EPSILON);
+                assert!((surface.lighting.roughness - 0.42).abs() < f32::EPSILON);
                 let emissive = surface.lighting.emissive.expect("emissive should exist");
                 assert!((emissive.x - 0.1).abs() < f32::EPSILON);
                 assert!((emissive.y - 0.2).abs() < f32::EPSILON);

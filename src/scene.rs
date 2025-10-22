@@ -375,14 +375,45 @@ pub struct ColorData {
     pub a: f32,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+const fn default_metallic() -> f32 {
+    0.0
+}
+
+const fn default_roughness() -> f32 {
+    0.5
+}
+
+fn default_base_color() -> Vec3Data {
+    Vec3Data { x: 1.0, y: 1.0, z: 1.0 }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeshLightingData {
     #[serde(default)]
     pub cast_shadows: bool,
     #[serde(default)]
     pub receive_shadows: bool,
+    #[serde(default = "default_base_color")]
+    pub base_color: Vec3Data,
+    #[serde(default = "default_metallic")]
+    pub metallic: f32,
+    #[serde(default = "default_roughness")]
+    pub roughness: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub emissive: Option<Vec3Data>,
+}
+
+impl Default for MeshLightingData {
+    fn default() -> Self {
+        Self {
+            cast_shadows: false,
+            receive_shadows: false,
+            base_color: default_base_color(),
+            metallic: default_metallic(),
+            roughness: default_roughness(),
+            emissive: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
