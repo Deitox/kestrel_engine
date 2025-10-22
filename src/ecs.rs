@@ -1192,6 +1192,25 @@ impl EcsWorld {
         }
     }
 
+    pub fn set_mesh_material_params(
+        &mut self,
+        entity: Entity,
+        base_color: Vec3,
+        metallic: f32,
+        roughness: f32,
+        emissive: Option<Vec3>,
+    ) -> bool {
+        if let Some(mut surface) = self.world.get_mut::<MeshSurface>(entity) {
+            surface.lighting.base_color = base_color.clamp(Vec3::ZERO, Vec3::splat(1.0));
+            surface.lighting.metallic = metallic.clamp(0.0, 1.0);
+            surface.lighting.roughness = roughness.clamp(0.04, 1.0);
+            surface.lighting.emissive = emissive;
+            true
+        } else {
+            false
+        }
+    }
+
     fn update_world_transform3d(&mut self, entity: Entity, transform: Transform3D) {
         if let Some(mut world) = self.world.get_mut::<WorldTransform3D>(entity) {
             let mat = Mat4::from_scale_rotation_translation(

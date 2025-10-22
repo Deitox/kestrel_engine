@@ -1603,17 +1603,61 @@ impl ApplicationHandler for App {
                                     "Shadows: cast={} receive={}",
                                     mesh.lighting.cast_shadows, mesh.lighting.receive_shadows
                                 ));
-                                let bc = mesh.lighting.base_color;
-                                ui.label(format!("Base Color: ({:.2}, {:.2}, {:.2})", bc.x, bc.y, bc.z));
-                                ui.label(format!(
-                                    "Metallic {:.2}  Roughness {:.2}",
-                                    mesh.lighting.metallic, mesh.lighting.roughness
-                                ));
-                                if let Some(emissive) = mesh.lighting.emissive {
-                                    ui.label(format!(
-                                        "Emissive: ({:.2}, {:.2}, {:.2})",
-                                        emissive.x, emissive.y, emissive.z
-                                    ));
+                                let mut base_color_arr = mesh.lighting.base_color.to_array();
+                                let mut metallic = mesh.lighting.metallic;
+                                let mut roughness = mesh.lighting.roughness;
+                                let mut emissive_enabled = mesh.lighting.emissive.is_some();
+                                let mut emissive_arr =
+                                    mesh.lighting.emissive.unwrap_or(Vec3::ZERO).to_array();
+
+                                let base_color_changed = ui
+                                    .horizontal(|ui| {
+                                        ui.label("Base Color");
+                                        ui.color_edit_button_rgb(&mut base_color_arr).changed()
+                                    })
+                                    .inner;
+                                let metallic_changed = ui
+                                    .add(egui::Slider::new(&mut metallic, 0.0..=1.0).text("Metallic"))
+                                    .changed();
+                                let roughness_changed = ui
+                                    .add(egui::Slider::new(&mut roughness, 0.04..=1.0).text("Roughness"))
+                                    .changed();
+                                let mut emissive_changed = false;
+                                ui.horizontal(|ui| {
+                                    if ui.checkbox(&mut emissive_enabled, "Emissive").changed() {
+                                        emissive_changed = true;
+                                    }
+                                    if emissive_enabled {
+                                        if ui.color_edit_button_rgb(&mut emissive_arr).changed() {
+                                            emissive_changed = true;
+                                        }
+                                    }
+                                });
+
+                                let material_changed = base_color_changed
+                                    || metallic_changed
+                                    || roughness_changed
+                                    || emissive_changed;
+                                if material_changed {
+                                    let base_color_vec = Vec3::from_array(base_color_arr);
+                                    let emissive_opt = if emissive_enabled {
+                                        Some(Vec3::from_array(emissive_arr))
+                                    } else {
+                                        None
+                                    };
+                                    if self.ecs.set_mesh_material_params(
+                                        entity,
+                                        base_color_vec,
+                                        metallic,
+                                        roughness,
+                                        emissive_opt,
+                                    ) {
+                                        inspector_refresh = true;
+                                        self.inspector_status = None;
+                                    } else {
+                                        self.inspector_status =
+                                            Some("Failed to update mesh material".to_string());
+                                    }
                                 }
                                 if let Some(mut mesh_tx) = info.mesh_transform.clone() {
                                     let mut translation3 = mesh_tx.translation;
