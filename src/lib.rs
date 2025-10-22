@@ -1322,7 +1322,7 @@ impl ApplicationHandler for App {
 
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
             let left_panel =
-                egui::SidePanel::left("kestrel_left_panel").default_width(300.0).show(ctx, |ui| {
+                egui::SidePanel::left("kestrel_left_panel").default_width(340.0).show(ctx, |ui| {
                     ui.heading("Stats");
                     ui.label(format!("Entities: {}", entity_count));
                     ui.label(format!("Instances drawn: {}", instances_drawn));
@@ -1360,10 +1360,8 @@ impl ApplicationHandler for App {
                     } else {
                         ui.label("Cursor world: n/a");
                     }
-                });
 
-            let right_panel =
-                egui::SidePanel::right("kestrel_right_panel").default_width(360.0).show(ctx, |ui| {
+                    ui.separator();
                     ui.heading("Spawn & Emitters");
                     ui.add(egui::Slider::new(&mut ui_cell_size, 0.05..=0.8).text("Spatial cell size"));
                     ui.add(egui::Slider::new(&mut ui_spawn_per_press, 1..=5000).text("Spawn per press"));
@@ -1396,17 +1394,41 @@ impl ApplicationHandler for App {
                         ui.color_edit_button_rgba_unmultiplied(&mut ui_emitter_end_color);
                     });
                     ui.add(egui::Slider::new(&mut ui_root_spin, -5.0..=5.0).text("Root spin speed"));
-                    if ui.button("Spawn now").clicked() {
-                        actions.spawn_now = true;
-                    }
-                    if ui.button("Clear particles").clicked() {
-                        actions.clear_particles = true;
-                    }
-                    if ui.button("Reset world").clicked() {
-                        actions.reset_world = true;
-                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Spawn now").clicked() {
+                            actions.spawn_now = true;
+                        }
+                        if ui.button("Clear particles").clicked() {
+                            actions.clear_particles = true;
+                        }
+                        if ui.button("Reset world").clicked() {
+                            actions.reset_world = true;
+                        }
+                    });
 
                     ui.separator();
+                    ui.heading("Scripts");
+                    ui.label(format!("Path: {}", self.scripts.script_path().display()));
+                    let mut scripts_enabled = self.scripts.enabled();
+                    if ui.checkbox(&mut scripts_enabled, "Enable scripts").changed() {
+                        self.scripts.set_enabled(scripts_enabled);
+                    }
+                    if ui.button("Reload script").clicked() {
+                        if let Err(err) = self.scripts.force_reload() {
+                            self.scripts.set_error_message(err.to_string());
+                        }
+                    }
+                    if let Some(err) = self.scripts.last_error() {
+                        ui.colored_label(egui::Color32::RED, format!("Error: {err}"));
+                    } else if self.scripts.enabled() {
+                        ui.label("Script running");
+                    } else {
+                        ui.label("Scripts disabled");
+                    }
+                });
+
+            let right_panel =
+                egui::SidePanel::right("kestrel_right_panel").default_width(360.0).show(ctx, |ui| {
                     ui.heading("3D Preview");
                     egui::ComboBox::from_label("Mesh asset").selected_text(&self.preview_mesh_key).show_ui(
                         ui,
@@ -1799,26 +1821,6 @@ impl ApplicationHandler for App {
                         }
                     } else {
                         ui.label("No entity selected");
-                    }
-
-                    ui.separator();
-                    ui.heading("Scripts");
-                    ui.label(format!("Path: {}", self.scripts.script_path().display()));
-                    let mut scripts_enabled = self.scripts.enabled();
-                    if ui.checkbox(&mut scripts_enabled, "Enable scripts").changed() {
-                        self.scripts.set_enabled(scripts_enabled);
-                    }
-                    if ui.button("Reload script").clicked() {
-                        if let Err(err) = self.scripts.force_reload() {
-                            self.scripts.set_error_message(err.to_string());
-                        }
-                    }
-                    if let Some(err) = self.scripts.last_error() {
-                        ui.colored_label(egui::Color32::RED, format!("Error: {err}"));
-                    } else if self.scripts.enabled() {
-                        ui.label("Script running");
-                    } else {
-                        ui.label("Scripts disabled");
                     }
 
                     ui.separator();
