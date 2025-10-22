@@ -579,6 +579,7 @@ impl EcsWorld {
         let boundary_entity = world.spawn_empty().id();
         world.insert_resource(RapierState::new(Vec2::new(0.0, -0.6), boundary_entity));
         world.insert_resource(EventBus::default());
+        world.insert_resource(TransformPropagationScratch::default());
 
         let mut schedule_var = Schedule::default();
         schedule_var.add_systems((
@@ -1681,6 +1682,12 @@ impl EcsWorld {
 #[derive(Resource, Clone, Copy)]
 pub struct TimeDelta(pub f32);
 
+#[derive(Resource, Default)]
+pub struct TransformPropagationScratch {
+    pub stack: Vec<(Entity, Mat4)>,
+    pub visited: HashSet<Entity>,
+}
+
 fn sys_apply_spin(mut q: Query<(&mut Transform, &Spin)>, dt: Res<TimeDelta>) {
     for (mut t, s) in &mut q {
         t.rotation += s.speed * dt.0;
@@ -1696,6 +1703,7 @@ fn sys_propagate_scene_transforms(
         &mut WorldTransform,
     )>,
     roots: Query<Entity, (With<WorldTransform>, Without<Parent>)>,
+    mut scratch: ResMut<TransformPropagationScratch>,
 ) {
     fn compose_local(transform2d: Option<&Transform>, transform3d: Option<&Transform3D>) -> Mat4 {
         if let Some(t3d) = transform3d {
@@ -1707,8 +1715,11 @@ fn sys_propagate_scene_transforms(
         }
     }
 
-    let mut stack: Vec<(Entity, Mat4)> = Vec::new();
-    let mut visited: HashSet<Entity> = HashSet::new();
+    let mut stack = std::mem::take(&mut scratch.stack);
+    let mut visited = std::mem::take(&mut scratch.visited);
+
+    stack.clear();
+    visited.clear();
 
     for root in roots.iter() {
         if let Ok((entity, transform2d, transform3d, children, mut world)) = nodes.get_mut(root) {
@@ -1725,14 +1736,14 @@ fn sys_propagate_scene_transforms(
     }
 
     while let Some((entity, parent_world)) = stack.pop() {
-        if visited.contains(&entity) {
-            continue;
-        }
-        if let Ok((node_entity, transform2d, transform3d, children, mut world)) = nodes.get_mut(entity) {
+        if let Ok((current, transform2d, transform3d, children, mut world)) = nodes.get_mut(entity) {
+            if visited.contains(&current) {
+                continue;
+            }
             let local = compose_local(transform2d, transform3d);
             let world_mat = parent_world * local;
             world.0 = world_mat;
-            visited.insert(node_entity);
+            visited.insert(current);
             if let Some(children) = children {
                 for &child in children.0.iter().rev() {
                     stack.push((child, world_mat));
@@ -1741,11 +1752,15 @@ fn sys_propagate_scene_transforms(
         }
     }
 
+    let visited_ref = &visited;
     for (entity, transform2d, transform3d, _, mut world) in nodes.iter_mut() {
-        if !visited.contains(&entity) {
+        if !visited_ref.contains(&entity) {
             world.0 = compose_local(transform2d, transform3d);
         }
     }
+
+    scratch.stack = stack;
+    scratch.visited = visited;
 }
 
 fn sys_sync_world3d(mut query: Query<(&WorldTransform, &mut WorldTransform3D)>) {

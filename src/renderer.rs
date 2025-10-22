@@ -4,7 +4,7 @@ use crate::ecs::InstanceData;
 use crate::mesh::{Mesh, MeshVertex};
 use anyhow::{anyhow, Context, Result};
 use glam::Mat4;
-use std::collections::{hash_map::Entry, HashMap};
+use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
@@ -229,6 +229,7 @@ impl Renderer {
         atlas_view: wgpu::TextureView,
         sampler: wgpu::Sampler,
     ) -> Result<()> {
+        self.clear_sprite_bind_cache();
         let device = self.device.as_ref().context("GPU device not initialized")?;
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -686,39 +687,37 @@ impl Renderer {
         view: &Arc<wgpu::TextureView>,
         sampler: &wgpu::Sampler,
     ) -> Result<Arc<wgpu::BindGroup>> {
-        let device = self.device.as_ref().context("GPU device not initialized")?.clone();
-        let layout = self.texture_bgl.as_ref().context("Texture bind group layout missing")?.clone();
-        let make_bind_group = |view: &Arc<wgpu::TextureView>| {
-            Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Sprite Atlas Bind Group"),
-                layout: &layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(view.as_ref()),
-                    },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
-                ],
-            }))
-        };
-        match self.sprite_bind_cache.entry(atlas.to_string()) {
-            Entry::Occupied(mut occupied) => {
-                if Arc::ptr_eq(&occupied.get().view, view) {
-                    Ok(occupied.get().bind_group.clone())
-                } else {
-                    let bind_group = make_bind_group(view);
-                    let entry = occupied.get_mut();
-                    entry.view = view.clone();
-                    entry.bind_group = bind_group.clone();
-                    Ok(bind_group)
-                }
-            }
-            Entry::Vacant(vacant) => {
-                let bind_group = make_bind_group(view);
-                vacant.insert(SpriteBindCacheEntry { view: view.clone(), bind_group: bind_group.clone() });
-                Ok(bind_group)
+        if let Some(entry) = self.sprite_bind_cache.get(atlas) {
+            if Arc::ptr_eq(&entry.view, view) {
+                return Ok(entry.bind_group.clone());
             }
         }
+
+        let device = self.device.as_ref().context("GPU device not initialized")?;
+        let layout = self.texture_bgl.as_ref().context("Texture bind group layout missing")?;
+        let bind_group = Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Sprite Atlas Bind Group"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(view.as_ref()),
+                },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+            ],
+        }));
+
+        if let Some(entry) = self.sprite_bind_cache.get_mut(atlas) {
+            entry.view = view.clone();
+            entry.bind_group = bind_group.clone();
+        } else {
+            self.sprite_bind_cache.insert(
+                atlas.to_string(),
+                SpriteBindCacheEntry { view: view.clone(), bind_group: bind_group.clone() },
+            );
+        }
+
+        Ok(bind_group)
     }
 
     pub fn clear_sprite_bind_cache(&mut self) {
