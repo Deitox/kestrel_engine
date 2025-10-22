@@ -4,6 +4,8 @@ use crate::ecs::InstanceData;
 use crate::mesh::{Mesh, MeshVertex};
 use anyhow::{anyhow, Context, Result};
 use glam::Mat4;
+use std::collections::{hash_map::Entry, HashMap};
+use std::ops::Range;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use winit::dpi::PhysicalSize;
@@ -32,6 +34,18 @@ struct MeshGlobals {
 pub struct RenderViewport {
     pub origin: (f32, f32),
     pub size: (f32, f32),
+}
+
+#[derive(Clone, Debug)]
+pub struct SpriteBatch {
+    pub atlas: String,
+    pub range: Range<u32>,
+    pub view: Arc<wgpu::TextureView>,
+}
+
+struct SpriteBindCacheEntry {
+    view: Arc<wgpu::TextureView>,
+    bind_group: Arc<wgpu::BindGroup>,
 }
 
 #[derive(Debug)]
@@ -97,6 +111,8 @@ pub struct Renderer {
     depth_texture: Option<wgpu::Texture>,
     depth_view: Option<wgpu::TextureView>,
     mesh_pipeline: Option<MeshPipelineResources>,
+
+    sprite_bind_cache: HashMap<String, SpriteBindCacheEntry>,
 }
 
 impl Renderer {
@@ -124,6 +140,7 @@ impl Renderer {
             depth_texture: None,
             depth_view: None,
             mesh_pipeline: None,
+            sprite_bind_cache: HashMap::new(),
         }
     }
 
@@ -663,6 +680,55 @@ impl Renderer {
         Ok(())
     }
 
+    fn sprite_bind_group(
+        &mut self,
+        atlas: &str,
+        view: &Arc<wgpu::TextureView>,
+        sampler: &wgpu::Sampler,
+    ) -> Result<Arc<wgpu::BindGroup>> {
+        let device = self.device.as_ref().context("GPU device not initialized")?.clone();
+        let layout = self.texture_bgl.as_ref().context("Texture bind group layout missing")?.clone();
+        let make_bind_group = |view: &Arc<wgpu::TextureView>| {
+            Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Sprite Atlas Bind Group"),
+                layout: &layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(view.as_ref()),
+                    },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+                ],
+            }))
+        };
+        match self.sprite_bind_cache.entry(atlas.to_string()) {
+            Entry::Occupied(mut occupied) => {
+                if Arc::ptr_eq(&occupied.get().view, view) {
+                    Ok(occupied.get().bind_group.clone())
+                } else {
+                    let bind_group = make_bind_group(view);
+                    let entry = occupied.get_mut();
+                    entry.view = view.clone();
+                    entry.bind_group = bind_group.clone();
+                    Ok(bind_group)
+                }
+            }
+            Entry::Vacant(vacant) => {
+                let bind_group = make_bind_group(view);
+                vacant.insert(SpriteBindCacheEntry { view: view.clone(), bind_group: bind_group.clone() });
+                Ok(bind_group)
+            }
+        }
+    }
+
+    pub fn clear_sprite_bind_cache(&mut self) {
+        self.sprite_bind_cache.clear();
+    }
+
+    pub fn invalidate_sprite_bind_group(&mut self, atlas: &str) {
+        self.sprite_bind_cache.remove(atlas);
+    }
+
     fn create_depth_texture(
         device: &wgpu::Device,
         size: PhysicalSize<u32>,
@@ -686,6 +752,8 @@ impl Renderer {
     pub fn render_frame(
         &mut self,
         instances: &[InstanceData],
+        sprite_batches: &[SpriteBatch],
+        sampler: &wgpu::Sampler,
         sprite_view_proj: Mat4,
         viewport: RenderViewport,
         mesh_draws: &[MeshDraw],
@@ -733,6 +801,16 @@ impl Renderer {
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Encoder") });
 
+        let mut sprite_bind_groups: Vec<(Range<u32>, Arc<wgpu::BindGroup>)> = Vec::new();
+        for batch in sprite_batches {
+            match self.sprite_bind_group(&batch.atlas, &batch.view, sampler) {
+                Ok(bind_group) => sprite_bind_groups.push((batch.range.clone(), bind_group)),
+                Err(err) => {
+                    eprintln!("Failed to prepare sprite bind group for atlas '{}': {err:?}", batch.atlas);
+                }
+            }
+        }
+
         let clear_color = wgpu::Color { r: 0.05, g: 0.06, b: 0.1, a: 1.0 };
         let mut sprite_load_op = wgpu::LoadOp::Clear(clear_color);
         if let Some(camera) = mesh_camera {
@@ -757,11 +835,8 @@ impl Renderer {
             });
             pass.set_pipeline(self.pipeline.as_ref().context("Sprite pipeline missing")?);
             pass.set_bind_group(0, self.globals_bg.as_ref().context("Globals bind group missing")?, &[]);
-            pass.set_bind_group(1, self.texture_bg.as_ref().context("Texture bind group missing")?, &[]);
-            pass.set_vertex_buffer(
-                0,
-                self.vertex_buffer.as_ref().context("Vertex buffer missing")?.slice(..),
-            );
+            let vertex_buffer = self.vertex_buffer.as_ref().context("Vertex buffer missing")?;
+            pass.set_vertex_buffer(0, vertex_buffer.slice(..));
             let instance_buffer = self.instance_buffer.as_ref().context("Instance buffer missing")?;
             pass.set_vertex_buffer(1, instance_buffer.slice(..));
             let (vp_x, vp_y) = viewport.origin;
@@ -796,7 +871,19 @@ impl Renderer {
                 self.index_buffer.as_ref().context("Index buffer missing")?.slice(..),
                 wgpu::IndexFormat::Uint16,
             );
-            pass.draw_indexed(0..6, 0, 0..(instances.len() as u32));
+            if sprite_bind_groups.is_empty() {
+                if !instances.is_empty() {
+                    if let Some(bg) = self.texture_bg.as_ref() {
+                        pass.set_bind_group(1, bg, &[]);
+                        pass.draw_indexed(0..6, 0, 0..(instances.len() as u32));
+                    }
+                }
+            } else {
+                for (range, bind_group) in sprite_bind_groups.iter() {
+                    pass.set_bind_group(1, bind_group.as_ref(), &[]);
+                    pass.draw_indexed(0..6, 0, range.clone());
+                }
+            }
         }
 
         if let Some(queue) = self.queue.as_ref() {

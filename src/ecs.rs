@@ -146,6 +146,12 @@ pub struct InstanceData {
 }
 
 #[derive(Clone)]
+pub struct SpriteInstance {
+    pub atlas: String,
+    pub data: InstanceData,
+}
+
+#[derive(Clone)]
 pub struct EntityInfo {
     pub translation: Vec2,
     pub rotation: f32,
@@ -912,9 +918,6 @@ impl EcsWorld {
         if scale <= 0.0 {
             return Err(anyhow!("Scale must be positive"));
         }
-        if atlas != "main" {
-            return Err(anyhow!("Only atlas 'main' is supported by the current renderer"));
-        }
         if !assets.atlas_region_exists(atlas, region) {
             return Err(anyhow!("Region '{region}' not found in atlas '{atlas}'"));
         }
@@ -1084,21 +1087,21 @@ impl EcsWorld {
             false
         }
     }
-    pub fn collect_sprite_instances(
-        &mut self,
-        assets: &AssetManager,
-    ) -> Result<(Vec<InstanceData>, &'static str)> {
+    pub fn collect_sprite_instances(&mut self, assets: &AssetManager) -> Result<Vec<SpriteInstance>> {
         let mut out = Vec::new();
-        let atlas_key = "main";
         let mut q = self.world.query::<(&WorldTransform, &Sprite, Option<&Tint>)>();
-        for (wt, s, tint) in q.iter(&self.world) {
-            let uv_rect = assets
-                .atlas_region_uv(atlas_key, s.region.as_ref())
-                .with_context(|| format!("Collecting sprite instance for region '{}'", s.region))?;
+        for (wt, sprite, tint) in q.iter(&self.world) {
+            let atlas_key = sprite.atlas_key.as_ref();
+            let uv_rect = assets.atlas_region_uv(atlas_key, sprite.region.as_ref()).with_context(|| {
+                format!("Collecting sprite instance for atlas '{}' region '{}'", atlas_key, sprite.region)
+            })?;
             let color = tint.map(|t| t.0.to_array()).unwrap_or([1.0, 1.0, 1.0, 1.0]);
-            out.push(InstanceData { model: wt.0.to_cols_array_2d(), uv_rect, tint: color });
+            out.push(SpriteInstance {
+                atlas: atlas_key.to_string(),
+                data: InstanceData { model: wt.0.to_cols_array_2d(), uv_rect, tint: color },
+            });
         }
-        Ok((out, atlas_key))
+        Ok(out)
     }
 
     pub fn collect_mesh_instances(&mut self) -> Vec<MeshInstance> {
@@ -1685,41 +1688,62 @@ fn sys_apply_spin(mut q: Query<(&mut Transform, &Spin)>, dt: Res<TimeDelta>) {
 }
 
 fn sys_propagate_scene_transforms(
-    mut sets: ParamSet<(
-        Query<(Entity, Option<&Transform>, Option<&Transform3D>, Option<&Parent>, &WorldTransform)>,
-        Query<&mut WorldTransform>,
+    mut nodes: Query<(
+        Entity,
+        Option<&Transform>,
+        Option<&Transform3D>,
+        Option<&Children>,
+        &mut WorldTransform,
     )>,
+    roots: Query<Entity, (With<WorldTransform>, Without<Parent>)>,
 ) {
-    for _ in 0..3 {
-        let mut updates = Vec::new();
-        {
-            let world_query = sets.p0();
-            for (entity, transform2d, transform3d, parent, _) in world_query.iter() {
-                let local = match (transform2d, transform3d) {
-                    (_, Some(t3d)) => {
-                        Mat4::from_scale_rotation_translation(t3d.scale, t3d.rotation, t3d.translation)
-                    }
-                    (Some(t2d), None) => mat_from_transform(*t2d),
-                    (None, None) => Mat4::IDENTITY,
-                };
-                let world_mat = if let Some(parent) = parent {
-                    world_query
-                        .get(parent.0)
-                        .map(|(_, _, _, _, parent_wt)| parent_wt.0 * local)
-                        .unwrap_or(local)
-                } else {
-                    local
-                };
-                updates.push((entity, world_mat));
-            }
+    fn compose_local(transform2d: Option<&Transform>, transform3d: Option<&Transform3D>) -> Mat4 {
+        if let Some(t3d) = transform3d {
+            Mat4::from_scale_rotation_translation(t3d.scale, t3d.rotation, t3d.translation)
+        } else if let Some(t2d) = transform2d {
+            mat_from_transform(*t2d)
+        } else {
+            Mat4::IDENTITY
         }
-        {
-            let mut world_mut = sets.p1();
-            for (entity, mat) in updates {
-                if let Ok(mut wt) = world_mut.get_mut(entity) {
-                    wt.0 = mat;
+    }
+
+    let mut stack: Vec<(Entity, Mat4)> = Vec::new();
+    let mut visited: HashSet<Entity> = HashSet::new();
+
+    for root in roots.iter() {
+        if let Ok((entity, transform2d, transform3d, children, mut world)) = nodes.get_mut(root) {
+            let local = compose_local(transform2d, transform3d);
+            world.0 = local;
+            visited.insert(entity);
+            let world_mat = world.0;
+            if let Some(children) = children {
+                for &child in children.0.iter().rev() {
+                    stack.push((child, world_mat));
                 }
             }
+        }
+    }
+
+    while let Some((entity, parent_world)) = stack.pop() {
+        if visited.contains(&entity) {
+            continue;
+        }
+        if let Ok((node_entity, transform2d, transform3d, children, mut world)) = nodes.get_mut(entity) {
+            let local = compose_local(transform2d, transform3d);
+            let world_mat = parent_world * local;
+            world.0 = world_mat;
+            visited.insert(node_entity);
+            if let Some(children) = children {
+                for &child in children.0.iter().rev() {
+                    stack.push((child, world_mat));
+                }
+            }
+        }
+    }
+
+    for (entity, transform2d, transform3d, _, mut world) in nodes.iter_mut() {
+        if !visited.contains(&entity) {
+            world.0 = compose_local(transform2d, transform3d);
         }
     }
 }

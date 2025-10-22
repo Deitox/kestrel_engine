@@ -18,11 +18,11 @@ use crate::audio::AudioManager;
 use crate::camera::Camera2D;
 use crate::camera3d::{Camera3D, OrbitCamera};
 use crate::config::AppConfig;
-use crate::ecs::{EcsWorld, SpriteInfo};
+use crate::ecs::{EcsWorld, InstanceData, SpriteInfo};
 use crate::events::GameEvent;
 use crate::input::{Input, InputEvent};
 use crate::mesh_registry::MeshRegistry;
-use crate::renderer::{MeshDraw, RenderViewport, Renderer};
+use crate::renderer::{MeshDraw, RenderViewport, Renderer, SpriteBatch};
 use crate::scene::SceneDependencies;
 use crate::scripts::{ScriptCommand, ScriptHost};
 use crate::time::Time;
@@ -32,7 +32,8 @@ use glam::{EulerRot, Mat4, Quat, Vec2, Vec3, Vec4};
 use rand::Rng;
 
 use anyhow::{Context, Result};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{DeviceEvent, ElementState, KeyEvent, WindowEvent};
@@ -271,6 +272,8 @@ pub struct App {
 
     // Scripting
     scripts: ScriptHost,
+
+    sprite_atlas_views: HashMap<String, Arc<wgpu::TextureView>>,
 }
 
 impl App {
@@ -404,6 +407,7 @@ impl App {
             config,
             emitter_entity: Some(emitter),
             scripts,
+            sprite_atlas_views: HashMap::new(),
         }
     }
 
@@ -418,6 +422,29 @@ impl App {
                 self.recent_events.pop_front();
             }
             self.recent_events.push_back(event);
+        }
+    }
+
+    fn atlas_view(&mut self, key: &str) -> Result<Arc<wgpu::TextureView>> {
+        if let Some(view) = self.sprite_atlas_views.get(key) {
+            return Ok(view.clone());
+        }
+        let view = self.assets.atlas_texture_view(key)?;
+        let arc = Arc::new(view);
+        self.sprite_atlas_views.insert(key.to_string(), arc.clone());
+        Ok(arc)
+    }
+
+    fn invalidate_atlas_view(&mut self, key: &str) {
+        if self.sprite_atlas_views.remove(key).is_some() {
+            self.renderer.invalidate_sprite_bind_group(key);
+        }
+    }
+
+    fn clear_atlas_view_cache(&mut self) {
+        if !self.sprite_atlas_views.is_empty() {
+            self.sprite_atlas_views.clear();
+            self.renderer.clear_sprite_bind_cache();
         }
     }
 
@@ -755,6 +782,7 @@ impl App {
         for key in previous {
             if !next.contains(&key) && !self.persistent_atlases.contains(&key) {
                 self.assets.release_atlas(&key);
+                self.invalidate_atlas_view(&key);
             }
         }
         self.scene_atlas_refs = next;
@@ -785,6 +813,7 @@ impl App {
             .collect();
         for key in to_release {
             self.assets.release_atlas(&key);
+            self.invalidate_atlas_view(&key);
         }
         self.scene_atlas_refs = self.persistent_atlases.clone();
         self.scene_mesh_refs.clear();
@@ -824,6 +853,7 @@ impl ApplicationHandler for App {
             }
         };
         self.assets.set_device(device, queue);
+        self.clear_atlas_view_cache();
         if !self.scene_atlas_refs.contains("main") {
             match self.assets.retain_atlas("main", Some("assets/images/atlas.json")) {
                 Ok(()) => {
@@ -845,6 +875,7 @@ impl ApplicationHandler for App {
                 return;
             }
         };
+        self.sprite_atlas_views.insert("main".to_string(), Arc::new(atlas_view.clone()));
         let sampler = self.assets.default_sampler().clone();
         if let Err(err) = self.renderer.init_sprite_pipeline_with_atlas(atlas_view, sampler) {
             eprintln!("Failed to initialize sprite pipeline: {err:?}");
@@ -1132,7 +1163,7 @@ impl ApplicationHandler for App {
         self.ecs.update(dt);
         self.record_events();
 
-        let (instances, _atlas) = match self.ecs.collect_sprite_instances(&self.assets) {
+        let sprite_instances = match self.ecs.collect_sprite_instances(&self.assets) {
             Ok(data) => data,
             Err(err) => {
                 eprintln!("Instance collection error: {err:?}");
@@ -1140,6 +1171,36 @@ impl ApplicationHandler for App {
                 return;
             }
         };
+        let mut grouped_instances: BTreeMap<String, Vec<InstanceData>> = BTreeMap::new();
+        for instance in sprite_instances {
+            grouped_instances.entry(instance.atlas).or_default().push(instance.data);
+        }
+        let mut instances: Vec<InstanceData> = Vec::new();
+        let mut sprite_batches: Vec<SpriteBatch> = Vec::new();
+        for (atlas, batch_instances) in grouped_instances {
+            if batch_instances.is_empty() {
+                continue;
+            }
+            let start_len = instances.len();
+            instances.extend(batch_instances.into_iter());
+            if instances.len() > u32::MAX as usize {
+                eprintln!("Too many sprite instances to render ({}).", instances.len());
+                instances.truncate(start_len);
+                break;
+            }
+            let start = start_len as u32;
+            let end = instances.len() as u32;
+            match self.atlas_view(&atlas) {
+                Ok(view) => {
+                    sprite_batches.push(SpriteBatch { atlas, range: start..end, view });
+                }
+                Err(err) => {
+                    eprintln!("Atlas '{}' unavailable for rendering: {err:?}", atlas);
+                    instances.truncate(start_len);
+                    self.invalidate_atlas_view(&atlas);
+                }
+            }
+        }
         let render_viewport = RenderViewport {
             origin: (self.viewport.origin.x, self.viewport.origin.y),
             size: (self.viewport.size.x, self.viewport.size.y),
@@ -1169,6 +1230,8 @@ impl ApplicationHandler for App {
         let mesh_camera_opt = if mesh_draws.is_empty() { None } else { Some(&self.mesh_camera) };
         let frame = match self.renderer.render_frame(
             &instances,
+            &sprite_batches,
+            self.assets.default_sampler(),
             view_proj,
             render_viewport,
             &mesh_draws,
