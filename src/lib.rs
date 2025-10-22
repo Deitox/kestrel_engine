@@ -1323,108 +1323,117 @@ impl ApplicationHandler for App {
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
             let left_panel =
                 egui::SidePanel::left("kestrel_left_panel").default_width(340.0).show(ctx, |ui| {
-                    ui.heading("Stats");
-                    ui.label(format!("Entities: {}", entity_count));
-                    ui.label(format!("Instances drawn: {}", instances_drawn));
-                    ui.separator();
-                    ui.label("Frame time (ms)");
-                    let hist = eplot::Plot::new("fps_plot").height(120.0).include_y(0.0).include_y(40.0);
-                    hist.show(ui, |plot_ui| {
-                        plot_ui
-                            .line(eplot::Line::new("ms/frame", eplot::PlotPoints::from(hist_points.clone())));
+                    egui::CollapsingHeader::new("Stats").default_open(true).show(ui, |ui| {
+                        ui.label(format!("Entities: {}", entity_count));
+                        ui.label(format!("Instances drawn: {}", instances_drawn));
+                        ui.separator();
+                        ui.label("Frame time (ms)");
+                        let hist = eplot::Plot::new("fps_plot").height(120.0).include_y(0.0).include_y(40.0);
+                        hist.show(ui, |plot_ui| {
+                            plot_ui.line(eplot::Line::new(
+                                "ms/frame",
+                                eplot::PlotPoints::from(hist_points.clone()),
+                            ));
+                        });
+                        ui.label("Target: 16.7ms for 60 FPS");
                     });
-                    ui.label("Target: 16.7ms for 60 FPS");
 
-                    ui.separator();
-                    ui.heading("UI & Camera");
-                    if ui.add(egui::Slider::new(&mut self.ui_scale, 0.5..=2.0).text("UI scale")).changed() {
-                        self.ui_scale = self.ui_scale.clamp(0.5, 2.0);
-                        self.egui_ctx.set_pixels_per_point(base_pixels_per_point * self.ui_scale);
-                        if let Some(screen) = self.egui_screen.as_mut() {
-                            screen.pixels_per_point = self.egui_ctx.pixels_per_point();
+                    egui::CollapsingHeader::new("UI & Camera").default_open(true).show(ui, |ui| {
+                        if ui.add(egui::Slider::new(&mut self.ui_scale, 0.5..=2.0).text("UI scale")).changed()
+                        {
+                            self.ui_scale = self.ui_scale.clamp(0.5, 2.0);
+                            self.egui_ctx.set_pixels_per_point(base_pixels_per_point * self.ui_scale);
+                            if let Some(screen) = self.egui_screen.as_mut() {
+                                screen.pixels_per_point = self.egui_ctx.pixels_per_point();
+                            }
+                            ui_pixels_per_point = self.egui_ctx.pixels_per_point();
                         }
-                        ui_pixels_per_point = self.egui_ctx.pixels_per_point();
-                    }
-                    ui.label(format!(
-                        "Camera: pos({:.2}, {:.2}) zoom {:.2}",
-                        camera_position.x, camera_position.y, camera_zoom
-                    ));
-                    let display_mode = if self.config.window.fullscreen { "Fullscreen" } else { "Windowed" };
-                    ui.label(format!(
-                        "Display: {}x{} {}",
-                        self.config.window.width, self.config.window.height, display_mode
-                    ));
-                    ui.label(format!("VSync: {}", if self.config.window.vsync { "On" } else { "Off" }));
-                    if let Some(cursor) = cursor_world_pos {
-                        ui.label(format!("Cursor world: ({:.2}, {:.2})", cursor.x, cursor.y));
-                    } else {
-                        ui.label("Cursor world: n/a");
-                    }
-
-                    ui.separator();
-                    ui.heading("Spawn & Emitters");
-                    ui.add(egui::Slider::new(&mut ui_cell_size, 0.05..=0.8).text("Spatial cell size"));
-                    ui.add(egui::Slider::new(&mut ui_spawn_per_press, 1..=5000).text("Spawn per press"));
-                    ui.add(
-                        egui::Slider::new(&mut ui_auto_spawn_rate, 0.0..=5000.0)
-                            .text("Auto-spawn per second"),
-                    );
-                    ui.add(
-                        egui::Slider::new(&mut ui_emitter_rate, 0.0..=200.0)
-                            .text("Emitter rate (particles/s)"),
-                    );
-                    ui.add(
-                        egui::Slider::new(&mut ui_emitter_spread, 0.0..=std::f32::consts::PI)
-                            .text("Emitter spread (rad)"),
-                    );
-                    ui.add(egui::Slider::new(&mut ui_emitter_speed, 0.0..=3.0).text("Emitter speed"));
-                    ui.add(
-                        egui::Slider::new(&mut ui_emitter_lifetime, 0.1..=5.0).text("Particle lifetime (s)"),
-                    );
-                    ui.add(
-                        egui::Slider::new(&mut ui_emitter_start_size, 0.01..=0.5).text("Particle start size"),
-                    );
-                    ui.add(egui::Slider::new(&mut ui_emitter_end_size, 0.01..=0.5).text("Particle end size"));
-                    ui.horizontal(|ui| {
-                        ui.label("Start color");
-                        ui.color_edit_button_rgba_unmultiplied(&mut ui_emitter_start_color);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("End color");
-                        ui.color_edit_button_rgba_unmultiplied(&mut ui_emitter_end_color);
-                    });
-                    ui.add(egui::Slider::new(&mut ui_root_spin, -5.0..=5.0).text("Root spin speed"));
-                    ui.horizontal(|ui| {
-                        if ui.button("Spawn now").clicked() {
-                            actions.spawn_now = true;
-                        }
-                        if ui.button("Clear particles").clicked() {
-                            actions.clear_particles = true;
-                        }
-                        if ui.button("Reset world").clicked() {
-                            actions.reset_world = true;
+                        ui.label(format!(
+                            "Camera: pos({:.2}, {:.2}) zoom {:.2}",
+                            camera_position.x, camera_position.y, camera_zoom
+                        ));
+                        let display_mode =
+                            if self.config.window.fullscreen { "Fullscreen" } else { "Windowed" };
+                        ui.label(format!(
+                            "Display: {}x{} {}",
+                            self.config.window.width, self.config.window.height, display_mode
+                        ));
+                        ui.label(format!("VSync: {}", if self.config.window.vsync { "On" } else { "Off" }));
+                        if let Some(cursor) = cursor_world_pos {
+                            ui.label(format!("Cursor world: ({:.2}, {:.2})", cursor.x, cursor.y));
+                        } else {
+                            ui.label("Cursor world: n/a");
                         }
                     });
 
-                    ui.separator();
-                    ui.heading("Scripts");
-                    ui.label(format!("Path: {}", self.scripts.script_path().display()));
-                    let mut scripts_enabled = self.scripts.enabled();
-                    if ui.checkbox(&mut scripts_enabled, "Enable scripts").changed() {
-                        self.scripts.set_enabled(scripts_enabled);
-                    }
-                    if ui.button("Reload script").clicked() {
-                        if let Err(err) = self.scripts.force_reload() {
-                            self.scripts.set_error_message(err.to_string());
+                    egui::CollapsingHeader::new("Spawn & Emitters").default_open(true).show(ui, |ui| {
+                        ui.add(egui::Slider::new(&mut ui_cell_size, 0.05..=0.8).text("Spatial cell size"));
+                        ui.add(egui::Slider::new(&mut ui_spawn_per_press, 1..=5000).text("Spawn per press"));
+                        ui.add(
+                            egui::Slider::new(&mut ui_auto_spawn_rate, 0.0..=5000.0)
+                                .text("Auto-spawn per second"),
+                        );
+                        ui.add(
+                            egui::Slider::new(&mut ui_emitter_rate, 0.0..=200.0)
+                                .text("Emitter rate (particles/s)"),
+                        );
+                        ui.add(
+                            egui::Slider::new(&mut ui_emitter_spread, 0.0..=std::f32::consts::PI)
+                                .text("Emitter spread (rad)"),
+                        );
+                        ui.add(egui::Slider::new(&mut ui_emitter_speed, 0.0..=3.0).text("Emitter speed"));
+                        ui.add(
+                            egui::Slider::new(&mut ui_emitter_lifetime, 0.1..=5.0)
+                                .text("Particle lifetime (s)"),
+                        );
+                        ui.add(
+                            egui::Slider::new(&mut ui_emitter_start_size, 0.01..=0.5)
+                                .text("Particle start size"),
+                        );
+                        ui.add(
+                            egui::Slider::new(&mut ui_emitter_end_size, 0.01..=0.5).text("Particle end size"),
+                        );
+                        ui.horizontal(|ui| {
+                            ui.label("Start color");
+                            ui.color_edit_button_rgba_unmultiplied(&mut ui_emitter_start_color);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("End color");
+                            ui.color_edit_button_rgba_unmultiplied(&mut ui_emitter_end_color);
+                        });
+                        ui.add(egui::Slider::new(&mut ui_root_spin, -5.0..=5.0).text("Root spin speed"));
+                        ui.horizontal(|ui| {
+                            if ui.button("Spawn now").clicked() {
+                                actions.spawn_now = true;
+                            }
+                            if ui.button("Clear particles").clicked() {
+                                actions.clear_particles = true;
+                            }
+                            if ui.button("Reset world").clicked() {
+                                actions.reset_world = true;
+                            }
+                        });
+                    });
+
+                    egui::CollapsingHeader::new("Scripts").default_open(false).show(ui, |ui| {
+                        ui.label(format!("Path: {}", self.scripts.script_path().display()));
+                        let mut scripts_enabled = self.scripts.enabled();
+                        if ui.checkbox(&mut scripts_enabled, "Enable scripts").changed() {
+                            self.scripts.set_enabled(scripts_enabled);
                         }
-                    }
-                    if let Some(err) = self.scripts.last_error() {
-                        ui.colored_label(egui::Color32::RED, format!("Error: {err}"));
-                    } else if self.scripts.enabled() {
-                        ui.label("Script running");
-                    } else {
-                        ui.label("Scripts disabled");
-                    }
+                        if ui.button("Reload script").clicked() {
+                            if let Err(err) = self.scripts.force_reload() {
+                                self.scripts.set_error_message(err.to_string());
+                            }
+                        }
+                        if let Some(err) = self.scripts.last_error() {
+                            ui.colored_label(egui::Color32::RED, format!("Error: {err}"));
+                        } else if self.scripts.enabled() {
+                            ui.label("Script running");
+                        } else {
+                            ui.label("Scripts disabled");
+                        }
+                    });
                 });
 
             let right_panel =
