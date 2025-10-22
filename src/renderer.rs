@@ -45,6 +45,7 @@ pub struct SpriteBatch {
 
 struct SpriteBindCacheEntry {
     view: Arc<wgpu::TextureView>,
+    sampler_id: u64,
     bind_group: Arc<wgpu::BindGroup>,
 }
 
@@ -687,8 +688,9 @@ impl Renderer {
         view: &Arc<wgpu::TextureView>,
         sampler: &wgpu::Sampler,
     ) -> Result<Arc<wgpu::BindGroup>> {
+        let sampler_id = sampler as *const wgpu::Sampler as usize as u64;
         if let Some(entry) = self.sprite_bind_cache.get(atlas) {
-            if Arc::ptr_eq(&entry.view, view) {
+            if Arc::ptr_eq(&entry.view, view) && entry.sampler_id == sampler_id {
                 return Ok(entry.bind_group.clone());
             }
         }
@@ -707,15 +709,10 @@ impl Renderer {
             ],
         }));
 
-        if let Some(entry) = self.sprite_bind_cache.get_mut(atlas) {
-            entry.view = view.clone();
-            entry.bind_group = bind_group.clone();
-        } else {
-            self.sprite_bind_cache.insert(
-                atlas.to_string(),
-                SpriteBindCacheEntry { view: view.clone(), bind_group: bind_group.clone() },
-            );
-        }
+        self.sprite_bind_cache.insert(
+            atlas.to_string(),
+            SpriteBindCacheEntry { view: view.clone(), sampler_id, bind_group: bind_group.clone() },
+        );
 
         Ok(bind_group)
     }
@@ -797,8 +794,10 @@ impl Renderer {
             }
         };
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Encoder") });
+        let encoder_label =
+            format!("Frame Encoder (sprites={}, meshes={})", instances.len(), mesh_draws.len());
+        let mut encoder = device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(encoder_label.as_str()) });
 
         let mut sprite_bind_groups: Vec<(Range<u32>, Arc<wgpu::BindGroup>)> = Vec::new();
         for batch in sprite_batches {
