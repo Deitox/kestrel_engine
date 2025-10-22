@@ -16,18 +16,21 @@ struct MeshEntry {
     mesh: Mesh,
     gpu: Option<GpuMesh>,
     source: Option<PathBuf>,
+    ref_count: usize,
+    permanent: bool,
 }
 
 impl MeshRegistry {
     pub fn new() -> Self {
         let mut registry = MeshRegistry { entries: HashMap::new(), default: String::new() };
-        registry.insert_entry("cube", Mesh::cube(1.0), None).expect("cube mesh should insert");
+        registry.insert_entry("cube", Mesh::cube(1.0), None, true).expect("cube mesh should insert");
         match Mesh::load_gltf("assets/models/demo_triangle.gltf") {
             Ok(mesh) => {
                 let _ = registry.insert_entry(
                     "demo_triangle",
                     mesh,
                     Some(PathBuf::from("assets/models/demo_triangle.gltf")),
+                    true,
                 );
                 registry.default = "demo_triangle".to_string();
             }
@@ -42,9 +45,15 @@ impl MeshRegistry {
         registry
     }
 
-    fn insert_entry(&mut self, key: impl Into<String>, mesh: Mesh, source: Option<PathBuf>) -> Result<()> {
+    fn insert_entry(
+        &mut self,
+        key: impl Into<String>,
+        mesh: Mesh,
+        source: Option<PathBuf>,
+        permanent: bool,
+    ) -> Result<()> {
         let key_str = key.into();
-        self.entries.insert(key_str, MeshEntry { mesh, gpu: None, source });
+        self.entries.insert(key_str, MeshEntry { mesh, gpu: None, source, ref_count: 0, permanent });
         Ok(())
     }
 
@@ -76,9 +85,35 @@ impl MeshRegistry {
     pub fn load_from_path(&mut self, key: &str, path: impl AsRef<Path>) -> Result<()> {
         let path_ref = path.as_ref();
         let mesh = Mesh::load_gltf(path_ref)?;
-        self.entries
-            .insert(key.to_string(), MeshEntry { mesh, gpu: None, source: Some(path_ref.to_path_buf()) });
+        self.insert_entry(key.to_string(), mesh, Some(path_ref.to_path_buf()), false)
+    }
+
+    pub fn retain_mesh(&mut self, key: &str, path: Option<&str>) -> Result<()> {
+        self.ensure_mesh(key, path)?;
+        if let Some(entry) = self.entries.get_mut(key) {
+            entry.ref_count = entry.ref_count.saturating_add(1);
+        }
         Ok(())
+    }
+
+    pub fn release_mesh(&mut self, key: &str) {
+        let mut remove = false;
+        if let Some(entry) = self.entries.get_mut(key) {
+            if entry.ref_count == 0 {
+                return;
+            }
+            entry.ref_count -= 1;
+            if entry.ref_count == 0 && !entry.permanent {
+                remove = true;
+            }
+        }
+        if remove {
+            self.entries.remove(key);
+        }
+    }
+
+    pub fn mesh_ref_count(&self, key: &str) -> Option<usize> {
+        self.entries.get(key).map(|entry| entry.ref_count)
     }
 
     pub fn ensure_gpu<'a>(&'a mut self, key: &str, renderer: &mut Renderer) -> Result<&'a GpuMesh> {
@@ -97,5 +132,28 @@ impl MeshRegistry {
 
     pub fn gpu_mesh(&self, key: &str) -> Option<&GpuMesh> {
         self.entries.get(key).and_then(|entry| entry.gpu.as_ref())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retain_release_tracks_counts() {
+        let mut registry = MeshRegistry::new();
+        assert_eq!(registry.mesh_ref_count("cube"), Some(0));
+        registry.retain_mesh("cube", None).expect("retain cube");
+        assert_eq!(registry.mesh_ref_count("cube"), Some(1));
+        registry.release_mesh("cube");
+        assert_eq!(registry.mesh_ref_count("cube"), Some(0));
+
+        registry.load_from_path("temp_triangle", "assets/models/demo_triangle.gltf").expect("load temp mesh");
+        registry
+            .retain_mesh("temp_triangle", Some("assets/models/demo_triangle.gltf"))
+            .expect("retain temp mesh");
+        assert_eq!(registry.mesh_ref_count("temp_triangle"), Some(1));
+        registry.release_mesh("temp_triangle");
+        assert!(!registry.has("temp_triangle"), "non-permanent mesh should be removed at refcount 0");
     }
 }

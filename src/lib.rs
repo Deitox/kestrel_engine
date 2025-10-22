@@ -247,6 +247,7 @@ pub struct App {
 
     scene_atlas_refs: HashSet<String>,
     persistent_atlases: HashSet<String>,
+    persistent_meshes: HashSet<String>,
     scene_mesh_refs: HashSet<String>,
 
     mesh_registry: MeshRegistry,
@@ -329,10 +330,15 @@ impl App {
         let input = Input::new();
         let assets = AssetManager::new();
 
-        let mesh_registry = MeshRegistry::new();
+        let mut mesh_registry = MeshRegistry::new();
         let preview_mesh_key = mesh_registry.default_key().to_string();
+        if let Err(err) = mesh_registry.retain_mesh(&preview_mesh_key, None) {
+            eprintln!("[mesh] failed to retain preview mesh '{preview_mesh_key}': {err:?}");
+        }
         let mesh_status_initial =
             Some(format!("Preview mesh: {} - press M to cycle camera control", preview_mesh_key));
+        let mut persistent_meshes = HashSet::new();
+        persistent_meshes.insert(preview_mesh_key.clone());
         let mesh_orbit = OrbitCamera::new(Vec3::ZERO, 5.0);
         let mesh_camera = mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
         let mesh_frustum_focus = mesh_orbit.target;
@@ -384,6 +390,7 @@ impl App {
             gizmo_interaction: None,
             scene_atlas_refs: HashSet::new(),
             persistent_atlases: HashSet::new(),
+            persistent_meshes,
             scene_mesh_refs: HashSet::new(),
             mesh_registry,
             preview_mesh_key,
@@ -729,6 +736,30 @@ impl App {
         self.mesh_status = Some("Mesh camera reset.".to_string());
     }
 
+    fn set_preview_mesh(&mut self, new_key: String) {
+        if new_key == self.preview_mesh_key {
+            return;
+        }
+        let source_path =
+            self.mesh_registry.mesh_source(&new_key).map(|path| path.to_string_lossy().into_owned());
+        match self.mesh_registry.retain_mesh(&new_key, source_path.as_deref()) {
+            Ok(()) => {
+                let previous = std::mem::replace(&mut self.preview_mesh_key, new_key.clone());
+                self.persistent_meshes.insert(new_key.clone());
+                if self.persistent_meshes.remove(&previous) {
+                    self.mesh_registry.release_mesh(&previous);
+                }
+                self.mesh_status = Some(format!("Preview mesh: {}", new_key));
+                if let Err(err) = self.mesh_registry.ensure_gpu(&self.preview_mesh_key, &mut self.renderer) {
+                    self.mesh_status = Some(format!("Mesh upload failed: {err}"));
+                }
+            }
+            Err(err) => {
+                self.mesh_status = Some(format!("Mesh '{}' unavailable: {err}", new_key));
+            }
+        }
+    }
+
     fn spawn_mesh_entity(&mut self, mesh_key: &str) {
         if let Err(err) = self.mesh_registry.ensure_mesh(mesh_key, None) {
             self.mesh_status = Some(format!("Mesh '{}' unavailable: {err}", mesh_key));
@@ -789,16 +820,27 @@ impl App {
 
         let previous_mesh = self.scene_mesh_refs.clone();
         let mut next_mesh = HashSet::new();
+        let mut newly_required: Vec<String> = Vec::new();
         for dep in deps.mesh_dependencies() {
             let key = dep.key().to_string();
-            if !next_mesh.contains(&key) {
+            if next_mesh.insert(key.clone()) {
+                self.mesh_registry
+                    .ensure_mesh(dep.key(), dep.path())
+                    .with_context(|| format!("Failed to prepare mesh '{}'", dep.key()))?;
                 if !previous_mesh.contains(&key) {
-                    self.mesh_registry
-                        .ensure_mesh(dep.key(), dep.path())
-                        .with_context(|| format!("Failed to prepare mesh '{}'", dep.key()))?;
+                    newly_required.push(key);
                 }
-                next_mesh.insert(key);
             }
+        }
+        for key in previous_mesh {
+            if !next_mesh.contains(&key) {
+                self.mesh_registry.release_mesh(&key);
+            }
+        }
+        for key in &newly_required {
+            self.mesh_registry
+                .retain_mesh(key, None)
+                .with_context(|| format!("Failed to retain mesh '{key}'"))?;
         }
         self.scene_mesh_refs = next_mesh;
         Ok(())
@@ -816,7 +858,9 @@ impl App {
             self.invalidate_atlas_view(&key);
         }
         self.scene_atlas_refs = self.persistent_atlases.clone();
-        self.scene_mesh_refs.clear();
+        for key in std::mem::take(&mut self.scene_mesh_refs) {
+            self.mesh_registry.release_mesh(&key);
+        }
     }
 
     fn viewport_physical_size(&self) -> PhysicalSize<u32> {
@@ -2030,11 +2074,7 @@ impl ApplicationHandler for App {
             self.reset_mesh_camera();
         }
         if let Some(key) = mesh_selection_request {
-            self.preview_mesh_key = key.clone();
-            self.mesh_status = Some(format!("Preview mesh: {}", key));
-            if let Err(err) = self.mesh_registry.ensure_gpu(&self.preview_mesh_key, &mut self.renderer) {
-                self.mesh_status = Some(format!("Mesh upload failed: {err}"));
-            }
+            self.set_preview_mesh(key);
         }
 
         let egui::FullOutput { platform_output, textures_delta, shapes, .. } = full_output;
