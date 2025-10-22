@@ -48,8 +48,10 @@ use egui_winit::State as EguiWinit;
 
 const CAMERA_BASE_HALF_HEIGHT: f32 = 1.2;
 const GIZMO_TRANSLATE_RADIUS_PX: f32 = 18.0;
-const GIZMO_ROTATE_INNER_RADIUS_PX: f32 = 26.0;
-const GIZMO_ROTATE_OUTER_RADIUS_PX: f32 = 42.0;
+const GIZMO_SCALE_INNER_RADIUS_PX: f32 = 20.0;
+const GIZMO_SCALE_OUTER_RADIUS_PX: f32 = 32.0;
+const GIZMO_ROTATE_INNER_RADIUS_PX: f32 = 38.0;
+const GIZMO_ROTATE_OUTER_RADIUS_PX: f32 = 52.0;
 const MESH_CAMERA_FOV_RADIANS: f32 = 60.0_f32.to_radians();
 const MESH_CAMERA_NEAR: f32 = 0.1;
 const MESH_CAMERA_FAR: f32 = 100.0;
@@ -57,6 +59,7 @@ const MESH_CAMERA_FAR: f32 = 100.0;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum GizmoMode {
     Translate,
+    Scale,
     Rotate,
 }
 
@@ -101,6 +104,7 @@ impl MeshControlMode {
 enum GizmoInteraction {
     Translate { entity: Entity, offset: Vec2 },
     Rotate { entity: Entity, start_rotation: f32, start_angle: f32 },
+    Scale { entity: Entity, start_scale: Vec2, start_distance: f32 },
 }
 
 #[derive(Clone, Copy)]
@@ -1094,6 +1098,26 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
+                    GizmoMode::Scale => {
+                        if dist >= GIZMO_SCALE_INNER_RADIUS_PX && dist <= GIZMO_SCALE_OUTER_RADIUS_PX {
+                            if let (Some(pointer_world), Some(info)) =
+                                (cursor_world_pos, selected_info.as_ref())
+                            {
+                                let center = info.translation;
+                                let delta = pointer_world - center;
+                                let start_distance = delta.length();
+                                if start_distance > f32::EPSILON {
+                                    self.gizmo_interaction = Some(GizmoInteraction::Scale {
+                                        entity,
+                                        start_scale: info.scale,
+                                        start_distance,
+                                    });
+                                    gizmo_click_consumed = true;
+                                    self.inspector_status = None;
+                                }
+                            }
+                        }
+                    }
                     GizmoMode::Rotate => {
                         if dist >= GIZMO_ROTATE_INNER_RADIUS_PX && dist <= GIZMO_ROTATE_OUTER_RADIUS_PX {
                             if let (Some(pointer_world), Some(info)) =
@@ -1162,6 +1186,29 @@ impl ApplicationHandler for App {
                                 let current_angle = vec.y.atan2(vec.x);
                                 let delta = wrap_angle(current_angle - *start_angle);
                                 self.ecs.set_rotation(*entity, *start_rotation + delta);
+                            }
+                        } else {
+                            keep_active = false;
+                        }
+                    } else {
+                        keep_active = false;
+                    }
+                }
+                GizmoInteraction::Scale { entity, start_scale, start_distance } => {
+                    if !self.input.left_held() {
+                        keep_active = false;
+                    } else if let Some(pointer_world) = cursor_world_pos {
+                        if let Some(info) = self.ecs.entity_info(*entity) {
+                            let delta = pointer_world - info.translation;
+                            let len_sq = delta.length_squared();
+                            if len_sq > f32::EPSILON && *start_distance > f32::EPSILON {
+                                let distance = len_sq.sqrt();
+                                let ratio = (distance / *start_distance).clamp(0.05, 20.0);
+                                let new_scale = Vec2::new(
+                                    (start_scale.x * ratio).max(0.01),
+                                    (start_scale.y * ratio).max(0.01),
+                                );
+                                self.ecs.set_scale(*entity, new_scale);
                             }
                         } else {
                             keep_active = false;
@@ -1569,6 +1616,7 @@ impl ApplicationHandler for App {
                             ui.label("Gizmo");
                             ui.selectable_value(&mut self.gizmo_mode, GizmoMode::Translate, "Translate");
                             ui.selectable_value(&mut self.gizmo_mode, GizmoMode::Rotate, "Rotate");
+                            ui.selectable_value(&mut self.gizmo_mode, GizmoMode::Scale, "Scale");
                         });
                         if let Some(interaction) = &self.gizmo_interaction {
                             match interaction {
@@ -1577,6 +1625,9 @@ impl ApplicationHandler for App {
                                 }
                                 GizmoInteraction::Rotate { .. } => {
                                     ui.colored_label(egui::Color32::LIGHT_GREEN, "Rotate gizmo active");
+                                }
+                                GizmoInteraction::Scale { .. } => {
+                                    ui.colored_label(egui::Color32::LIGHT_GREEN, "Scale gizmo active");
                                 }
                             }
                         }
@@ -2025,6 +2076,24 @@ impl ApplicationHandler for App {
                                 egui::pos2(center.x, center.y + extent),
                             ],
                             egui::Stroke::new(2.0, egui::Color32::YELLOW),
+                        );
+                    }
+                    GizmoMode::Scale => {
+                        let inner = GIZMO_SCALE_INNER_RADIUS_PX / ui_pixels_per_point;
+                        let outer = GIZMO_SCALE_OUTER_RADIUS_PX / ui_pixels_per_point;
+                        let stroke_outer = egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 210, 90));
+                        let stroke_inner = egui::Stroke::new(1.0, egui::Color32::from_rgb(180, 160, 60));
+                        painter.rect_stroke(
+                            egui::Rect::from_center_size(center, egui::vec2(outer * 2.0, outer * 2.0)),
+                            0.0,
+                            stroke_outer,
+                            egui::StrokeKind::Outside,
+                        );
+                        painter.rect_stroke(
+                            egui::Rect::from_center_size(center, egui::vec2(inner * 2.0, inner * 2.0)),
+                            0.0,
+                            stroke_inner,
+                            egui::StrokeKind::Inside,
                         );
                     }
                     GizmoMode::Rotate => {
