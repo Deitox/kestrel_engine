@@ -59,6 +59,8 @@ const GIZMO_ROTATE_OUTER_RADIUS_PX: f32 = 52.0;
 const SCALE_MIN_RATIO: f32 = 0.05;
 const SCALE_MAX_RATIO: f32 = 20.0;
 const SCALE_SNAP_STEP: f32 = 0.1;
+const TRANSLATE_SNAP_STEP: f32 = 0.05;
+const ROTATE_SNAP_STEP_RADIANS: f32 = 15.0_f32.to_radians();
 const MESH_CAMERA_FOV_RADIANS: f32 = 60.0_f32.to_radians();
 const MESH_CAMERA_NEAR: f32 = 0.1;
 const MESH_CAMERA_FAR: f32 = 100.0;
@@ -109,9 +111,23 @@ impl MeshControlMode {
 
 #[derive(Clone, Copy, PartialEq)]
 enum GizmoInteraction {
-    Translate { entity: Entity, offset: Vec2 },
-    Rotate { entity: Entity, start_rotation: f32, start_angle: f32 },
-    Scale { entity: Entity, start_scale: Vec2, handle: ScaleHandle },
+    Translate {
+        entity: Entity,
+        offset: Vec2,
+        start_translation: Vec2,
+        start_pointer: Vec2,
+        axis_lock: Option<Axis2>,
+    },
+    Rotate {
+        entity: Entity,
+        start_rotation: f32,
+        start_angle: f32,
+    },
+    Scale {
+        entity: Entity,
+        start_scale: Vec2,
+        handle: ScaleHandle,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1217,7 +1233,15 @@ impl ApplicationHandler for App {
                                     .as_ref()
                                     .map(|info| info.translation - pointer_world)
                                     .unwrap_or(Vec2::ZERO);
-                                self.gizmo_interaction = Some(GizmoInteraction::Translate { entity, offset });
+                                if let Some(info) = selected_info.as_ref() {
+                                    self.gizmo_interaction = Some(GizmoInteraction::Translate {
+                                        entity,
+                                        offset,
+                                        start_translation: info.translation,
+                                        start_pointer: pointer_world,
+                                        axis_lock: None,
+                                    });
+                                }
                                 gizmo_click_consumed = true;
                                 self.inspector_status = None;
                             }
@@ -1284,13 +1308,59 @@ impl ApplicationHandler for App {
         if let Some(interaction) = self.gizmo_interaction.as_mut() {
             let mut keep_active = true;
             match interaction {
-                GizmoInteraction::Translate { entity, offset } => {
+                GizmoInteraction::Translate {
+                    entity,
+                    offset,
+                    start_translation,
+                    start_pointer,
+                    axis_lock,
+                } => {
                     if !self.input.left_held() {
                         keep_active = false;
                     } else if let Some(pointer_world) = cursor_world_pos {
                         if self.ecs.entity_exists(*entity) {
-                            let new_translation = pointer_world + *offset;
-                            self.ecs.set_translation(*entity, new_translation);
+                            let mut current_axis = None;
+                            if self.input.shift_held() {
+                                let delta = pointer_world - *start_pointer;
+                                if delta.length_squared() > f32::EPSILON {
+                                    current_axis = Some(if delta.x.abs() >= delta.y.abs() {
+                                        Axis2::X
+                                    } else {
+                                        Axis2::Y
+                                    });
+                                }
+                            }
+                            *axis_lock = current_axis;
+                            let mut translation = if let Some(axis) = current_axis {
+                                let delta = pointer_world - *start_pointer;
+                                let mut result = *start_translation;
+                                match axis {
+                                    Axis2::X => result.x += delta.x,
+                                    Axis2::Y => result.y += delta.y,
+                                }
+                                result
+                            } else {
+                                pointer_world + *offset
+                            };
+                            if self.input.ctrl_held() {
+                                match current_axis {
+                                    Some(Axis2::X) => {
+                                        translation.x = (translation.x / TRANSLATE_SNAP_STEP).round()
+                                            * TRANSLATE_SNAP_STEP;
+                                    }
+                                    Some(Axis2::Y) => {
+                                        translation.y = (translation.y / TRANSLATE_SNAP_STEP).round()
+                                            * TRANSLATE_SNAP_STEP;
+                                    }
+                                    None => {
+                                        translation.x = (translation.x / TRANSLATE_SNAP_STEP).round()
+                                            * TRANSLATE_SNAP_STEP;
+                                        translation.y = (translation.y / TRANSLATE_SNAP_STEP).round()
+                                            * TRANSLATE_SNAP_STEP;
+                                    }
+                                }
+                            }
+                            self.ecs.set_translation(*entity, translation);
                         } else {
                             keep_active = false;
                         }
@@ -1306,7 +1376,11 @@ impl ApplicationHandler for App {
                             let vec = pointer_world - info.translation;
                             if vec.length_squared() > f32::EPSILON {
                                 let current_angle = vec.y.atan2(vec.x);
-                                let delta = wrap_angle(current_angle - *start_angle);
+                                let mut delta = wrap_angle(current_angle - *start_angle);
+                                if self.input.ctrl_held() {
+                                    delta =
+                                        (delta / ROTATE_SNAP_STEP_RADIANS).round() * ROTATE_SNAP_STEP_RADIANS;
+                                }
                                 self.ecs.set_rotation(*entity, *start_rotation + delta);
                             }
                         } else {
@@ -1770,26 +1844,54 @@ impl ApplicationHandler for App {
                             ui.selectable_value(&mut self.gizmo_mode, GizmoMode::Rotate, "Rotate");
                             ui.selectable_value(&mut self.gizmo_mode, GizmoMode::Scale, "Scale");
                         });
-                        if self.gizmo_mode == GizmoMode::Scale {
-                            ui.small("Shift = uniform scale, Ctrl = snap steps");
+                        match self.gizmo_mode {
+                            GizmoMode::Scale => {
+                                ui.small("Shift = uniform scale, Ctrl = snap steps");
+                            }
+                            GizmoMode::Translate => {
+                                ui.small("Shift = lock axis, Ctrl = snap to grid");
+                            }
+                            GizmoMode::Rotate => {
+                                ui.small("Ctrl = snap to 15° increments");
+                            }
                         }
                         if let Some(interaction) = &self.gizmo_interaction {
                             match interaction {
-                                GizmoInteraction::Translate { .. } => {
-                                    ui.colored_label(egui::Color32::LIGHT_GREEN, "Translate gizmo active");
+                                GizmoInteraction::Translate { axis_lock, .. } => {
+                                    let mut msg = String::from("Translate gizmo active");
+                                    if let Some(axis) = axis_lock {
+                                        msg.push_str(&format!(" ({} axis)", axis.label()));
+                                    }
+                                    if self.input.ctrl_held() {
+                                        msg.push_str(" [snap]");
+                                    }
+                                    ui.colored_label(egui::Color32::LIGHT_GREEN, msg);
                                 }
                                 GizmoInteraction::Rotate { .. } => {
-                                    ui.colored_label(egui::Color32::LIGHT_GREEN, "Rotate gizmo active");
+                                    let msg = if self.input.ctrl_held() {
+                                        "Rotate gizmo active [snap]"
+                                    } else {
+                                        "Rotate gizmo active"
+                                    };
+                                    ui.colored_label(egui::Color32::LIGHT_GREEN, msg);
                                 }
                                 GizmoInteraction::Scale { handle, .. } => {
                                     match handle {
                                         ScaleHandle::Uniform { .. } => ui.colored_label(
                                             egui::Color32::LIGHT_GREEN,
-                                            "Scale gizmo active (uniform)",
+                                            if self.input.ctrl_held() {
+                                                "Scale gizmo active (uniform) [snap]"
+                                            } else {
+                                                "Scale gizmo active (uniform)"
+                                            },
                                         ),
                                         ScaleHandle::Axis { axis, .. } => ui.colored_label(
                                             egui::Color32::LIGHT_GREEN,
-                                            format!("Scale gizmo active ({})", axis.label()),
+                                            if self.input.ctrl_held() {
+                                                format!("Scale gizmo active ({}) [snap]", axis.label())
+                                            } else {
+                                                format!("Scale gizmo active ({})", axis.label())
+                                            },
                                         ),
                                     };
                                 }
