@@ -1,15 +1,25 @@
-struct Globals {
+struct FrameUniform {
     view_proj : mat4x4<f32>,
-    model : mat4x4<f32>,
     camera_pos : vec4<f32>,
     light_dir : vec4<f32>,
+    light_color : vec4<f32>,
+    ambient_color : vec4<f32>,
+    exposure : f32,
+    _pad : vec3<f32>,
+}
+
+struct DrawUniform {
+    model : mat4x4<f32>,
     base_color : vec4<f32>,
     emissive : vec4<f32>,
     material_params : vec4<f32>,
 }
 
 @group(0) @binding(0)
-var<uniform> globals : Globals;
+var<uniform> frame : FrameUniform;
+
+@group(1) @binding(0)
+var<uniform> draw : DrawUniform;
 
 struct VertexIn {
     @location(0) position : vec3<f32>,
@@ -25,9 +35,9 @@ struct VertexOut {
 @vertex
 fn vs_main(input : VertexIn) -> VertexOut {
     var out : VertexOut;
-    let world_pos = globals.model * vec4<f32>(input.position, 1.0);
-    out.position = globals.view_proj * world_pos;
-    let world_normal = (globals.model * vec4<f32>(input.normal, 0.0)).xyz;
+    let world_pos = draw.model * vec4<f32>(input.position, 1.0);
+    out.position = frame.view_proj * world_pos;
+    let world_normal = (draw.model * vec4<f32>(input.normal, 0.0)).xyz;
     out.normal = normalize(world_normal);
     out.world_pos = world_pos.xyz;
     return out;
@@ -60,19 +70,19 @@ fn geometry_smith(n : vec3<f32>, v : vec3<f32>, l : vec3<f32>, roughness : f32) 
 @fragment
 fn fs_main(input : VertexOut) -> @location(0) vec4<f32> {
     let N = normalize(input.normal);
-    let camera_pos = globals.camera_pos.xyz;
+    let camera_pos = frame.camera_pos.xyz;
     let V = normalize(camera_pos - input.world_pos);
-    let L = normalize(-globals.light_dir.xyz);
+    let L = normalize(-frame.light_dir.xyz);
     let H = normalize(V + L);
 
-    let metallic = clamp(globals.material_params.x, 0.0, 1.0);
-    let roughness = clamp(globals.material_params.y, 0.04, 1.0);
-    let base_color = globals.base_color.xyz;
-    let emissive = globals.emissive.xyz;
+    let metallic = clamp(draw.material_params.x, 0.0, 1.0);
+    let roughness = clamp(draw.material_params.y, 0.04, 1.0);
+    let base_color = draw.base_color.xyz;
+    let emissive = draw.emissive.xyz;
 
     let n_dot_l = max(dot(N, L), 0.0);
     let n_dot_v = max(dot(N, V), 0.0);
-    let ambient = 0.03 * base_color;
+    let ambient = frame.ambient_color.xyz * base_color;
     var color = ambient + emissive;
 
     if (n_dot_l > 0.0 && n_dot_v > 0.0) {
@@ -84,8 +94,7 @@ fn fs_main(input : VertexOut) -> @location(0) vec4<f32> {
 
         let kd = (vec3<f32>(1.0) - F) * (1.0 - metallic);
         let diffuse = kd * base_color / 3.14159265;
-        let light_color = vec3<f32>(1.05, 0.98, 0.92);
-        let radiance = light_color * n_dot_l;
+        let radiance = frame.light_color.xyz * n_dot_l * frame.exposure;
         color += (diffuse + spec) * radiance;
     }
 

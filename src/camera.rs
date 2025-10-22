@@ -25,6 +25,10 @@ impl Camera2D {
         self.zoom = (self.zoom * multiplier).clamp(self.zoom_limits.0, self.zoom_limits.1);
     }
 
+    pub fn set_zoom(&mut self, zoom: f32) {
+        self.zoom = zoom.clamp(self.zoom_limits.0, self.zoom_limits.1);
+    }
+
     pub fn view_projection(&self, size: PhysicalSize<u32>) -> Mat4 {
         let aspect = Self::aspect(size);
         let half_height = self.base_half_height / self.zoom;

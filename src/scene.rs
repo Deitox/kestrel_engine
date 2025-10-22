@@ -8,6 +8,8 @@ use std::path::Path;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scene {
     #[serde(default)]
+    pub metadata: SceneMetadata,
+    #[serde(default)]
     pub dependencies: SceneDependencies,
     #[serde(default)]
     pub entities: Vec<SceneEntity>,
@@ -15,7 +17,110 @@ pub struct Scene {
 
 impl Default for Scene {
     fn default() -> Self {
-        Self { dependencies: SceneDependencies::default(), entities: Vec::new() }
+        Self {
+            metadata: SceneMetadata::default(),
+            dependencies: SceneDependencies::default(),
+            entities: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SceneMetadata {
+    #[serde(default)]
+    pub viewport: SceneViewportMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera2d: Option<SceneCamera2D>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_camera: Option<ScenePreviewCamera>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SceneCamera2D {
+    pub position: Vec2Data,
+    pub zoom: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScenePreviewCamera {
+    #[serde(default)]
+    pub mode: ScenePreviewCameraMode,
+    #[serde(default)]
+    pub orbit: SceneOrbitCamera,
+    #[serde(default)]
+    pub freefly: SceneFreeflyCamera,
+    #[serde(default)]
+    pub frustum_lock: bool,
+    #[serde(default)]
+    pub frustum_focus: Vec3Data,
+    #[serde(default)]
+    pub frustum_distance: f32,
+}
+
+impl Default for ScenePreviewCamera {
+    fn default() -> Self {
+        Self {
+            mode: ScenePreviewCameraMode::Orbit,
+            orbit: SceneOrbitCamera::default(),
+            freefly: SceneFreeflyCamera::default(),
+            frustum_lock: false,
+            frustum_focus: Vec3Data { x: 0.0, y: 0.0, z: 0.0 },
+            frustum_distance: 5.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SceneOrbitCamera {
+    pub target: Vec3Data,
+    pub radius: f32,
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+impl Default for SceneOrbitCamera {
+    fn default() -> Self {
+        Self { target: Vec3Data { x: 0.0, y: 0.0, z: 0.0 }, radius: 5.0, yaw: 0.0, pitch: 0.0 }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SceneFreeflyCamera {
+    pub position: Vec3Data,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub roll: f32,
+    pub speed: f32,
+}
+
+impl Default for SceneFreeflyCamera {
+    fn default() -> Self {
+        Self { position: Vec3Data { x: 0.0, y: 0.0, z: 5.0 }, yaw: 0.0, pitch: 0.0, roll: 0.0, speed: 4.0 }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ScenePreviewCameraMode {
+    Disabled,
+    Orbit,
+    Freefly,
+}
+
+impl Default for ScenePreviewCameraMode {
+    fn default() -> Self {
+        ScenePreviewCameraMode::Orbit
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SceneViewportMode {
+    Ortho2D,
+    Perspective3D,
+}
+
+impl Default for SceneViewportMode {
+    fn default() -> Self {
+        SceneViewportMode::Ortho2D
     }
 }
 
@@ -352,7 +457,7 @@ pub struct Vec2Data {
     pub y: f32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Vec3Data {
     pub x: f32,
     pub y: f32,

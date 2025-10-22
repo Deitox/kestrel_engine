@@ -1192,6 +1192,15 @@ impl EcsWorld {
         }
     }
 
+    pub fn set_mesh_material(&mut self, entity: Entity, material: Option<String>) -> bool {
+        if let Some(mut surface) = self.world.get_mut::<MeshSurface>(entity) {
+            surface.material = material;
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn set_mesh_material_params(
         &mut self,
         entity: Entity,

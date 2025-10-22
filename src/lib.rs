@@ -23,7 +23,10 @@ use crate::events::GameEvent;
 use crate::input::{Input, InputEvent};
 use crate::mesh_registry::MeshRegistry;
 use crate::renderer::{MeshDraw, RenderViewport, Renderer, SpriteBatch};
-use crate::scene::SceneDependencies;
+use crate::scene::{
+    SceneCamera2D, SceneDependencies, SceneFreeflyCamera, SceneMetadata, SceneOrbitCamera,
+    ScenePreviewCamera, ScenePreviewCameraMode, SceneViewportMode, Vec2Data, Vec3Data,
+};
 use crate::scripts::{ScriptCommand, ScriptHost};
 use crate::time::Time;
 
@@ -79,6 +82,27 @@ impl Default for GizmoMode {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+enum ViewportCameraMode {
+    Ortho2D,
+    Perspective3D,
+}
+
+impl Default for ViewportCameraMode {
+    fn default() -> Self {
+        ViewportCameraMode::Ortho2D
+    }
+}
+
+impl ViewportCameraMode {
+    fn label(self) -> &'static str {
+        match self {
+            ViewportCameraMode::Ortho2D => "Orthographic 2D",
+            ViewportCameraMode::Perspective3D => "Perspective 3D",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum MeshControlMode {
     Disabled,
     Orbit,
@@ -105,6 +129,56 @@ impl MeshControlMode {
             MeshControlMode::Disabled => "Disabled",
             MeshControlMode::Orbit => "Orbit",
             MeshControlMode::Freefly => "Free-fly",
+        }
+    }
+
+    fn status_message(self) -> &'static str {
+        match self {
+            MeshControlMode::Disabled => "Scripted orbit animates the camera (press M to switch modes).",
+            MeshControlMode::Orbit => {
+                "Orbit control enabled (right-drag to orbit, scroll to zoom, L toggles frustum lock)."
+            }
+            MeshControlMode::Freefly => {
+                "Free-fly enabled (RMB + WASD/QE to move, Z/C to roll, Shift to boost, L locks frustum)."
+            }
+        }
+    }
+}
+
+impl From<MeshControlMode> for ScenePreviewCameraMode {
+    fn from(mode: MeshControlMode) -> Self {
+        match mode {
+            MeshControlMode::Disabled => ScenePreviewCameraMode::Disabled,
+            MeshControlMode::Orbit => ScenePreviewCameraMode::Orbit,
+            MeshControlMode::Freefly => ScenePreviewCameraMode::Freefly,
+        }
+    }
+}
+
+impl From<ScenePreviewCameraMode> for MeshControlMode {
+    fn from(mode: ScenePreviewCameraMode) -> Self {
+        match mode {
+            ScenePreviewCameraMode::Disabled => MeshControlMode::Disabled,
+            ScenePreviewCameraMode::Orbit => MeshControlMode::Orbit,
+            ScenePreviewCameraMode::Freefly => MeshControlMode::Freefly,
+        }
+    }
+}
+
+impl From<ViewportCameraMode> for SceneViewportMode {
+    fn from(mode: ViewportCameraMode) -> Self {
+        match mode {
+            ViewportCameraMode::Ortho2D => SceneViewportMode::Ortho2D,
+            ViewportCameraMode::Perspective3D => SceneViewportMode::Perspective3D,
+        }
+    }
+}
+
+impl From<SceneViewportMode> for ViewportCameraMode {
+    fn from(mode: SceneViewportMode) -> Self {
+        match mode {
+            SceneViewportMode::Ortho2D => ViewportCameraMode::Ortho2D,
+            SceneViewportMode::Perspective3D => ViewportCameraMode::Perspective3D,
         }
     }
 }
@@ -318,6 +392,7 @@ pub struct App {
 
     // Camera / selection
     camera: Camera2D,
+    viewport_camera_mode: ViewportCameraMode,
     selected_entity: Option<Entity>,
     gizmo_mode: GizmoMode,
     gizmo_interaction: Option<GizmoInteraction>,
@@ -465,6 +540,7 @@ impl App {
             recent_events,
             event_log_limit,
             camera: Camera2D::new(CAMERA_BASE_HALF_HEIGHT),
+            viewport_camera_mode: ViewportCameraMode::default(),
             selected_entity: None,
             gizmo_mode: GizmoMode::default(),
             gizmo_interaction: None,
@@ -697,34 +773,39 @@ impl App {
                 self.mesh_camera =
                     self.mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
                 self.mesh_freefly = FreeflyController::from_camera(&self.mesh_camera);
-                self.mesh_status =
-                    Some("Scripted orbit animates the camera (press M to switch modes).".to_string());
             }
             MeshControlMode::Orbit => {
                 self.sync_orbit_from_camera_pose();
                 self.mesh_camera =
                     self.mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
                 self.mesh_freefly = FreeflyController::from_camera(&self.mesh_camera);
-                self.mesh_status = Some(
-                    "Orbit control enabled (right-drag to orbit, scroll to zoom, L toggles frustum lock)."
-                        .to_string(),
-                );
             }
             MeshControlMode::Freefly => {
                 self.mesh_freefly = FreeflyController::from_camera(&self.mesh_camera);
                 self.mesh_camera = self.mesh_freefly.to_camera();
-                self.mesh_status = Some(
-                    "Free-fly enabled (RMB + WASD/QE to move, Z/C to roll, Shift to boost, L locks frustum)."
-                        .to_string(),
-                );
             }
         }
         self.mesh_control_mode = mode;
+        self.mesh_status = Some(mode.status_message().to_string());
         self.input.wheel = 0.0;
         self.input.mouse_delta = (0.0, 0.0);
         if self.mesh_frustum_lock {
             self.mesh_frustum_distance =
                 (self.mesh_camera.position - self.mesh_frustum_focus).length().max(0.1);
+        }
+    }
+
+    fn set_viewport_camera_mode(&mut self, mode: ViewportCameraMode) {
+        if self.viewport_camera_mode == mode {
+            return;
+        }
+        self.viewport_camera_mode = mode;
+        if mode == ViewportCameraMode::Perspective3D && self.mesh_control_mode == MeshControlMode::Disabled {
+            self.mesh_control_mode = MeshControlMode::Orbit;
+            self.mesh_camera =
+                self.mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
+            self.mesh_freefly = FreeflyController::from_camera(&self.mesh_camera);
+            self.mesh_status = Some(self.mesh_control_mode.status_message().to_string());
         }
     }
 
@@ -854,6 +935,11 @@ impl App {
             Vec3::new(rng.gen_range(-1.2..1.2), rng.gen_range(-0.6..0.8), rng.gen_range(-1.0..1.0));
         let scale = Vec3::splat(0.6);
         let entity = self.ecs.spawn_mesh_entity(mesh_key, position, scale);
+        if let Some(subsets) = self.mesh_registry.mesh_subsets(mesh_key) {
+            if let Some(material) = subsets.iter().find_map(|subset| subset.material.clone()) {
+                self.ecs.set_mesh_material(entity, Some(material));
+            }
+        }
         self.selected_entity = Some(entity);
         self.mesh_status = Some(format!("Spawned mesh '{}' as entity {:?}", mesh_key, entity));
     }
@@ -970,6 +1056,74 @@ impl App {
         }
         self.scene_mesh_refs = next_mesh;
         Ok(())
+    }
+
+    fn capture_scene_metadata(&self) -> SceneMetadata {
+        let mut metadata = SceneMetadata::default();
+        metadata.viewport = SceneViewportMode::from(self.viewport_camera_mode);
+        metadata.camera2d =
+            Some(SceneCamera2D { position: Vec2Data::from(self.camera.position), zoom: self.camera.zoom });
+        metadata.preview_camera = Some(ScenePreviewCamera {
+            mode: ScenePreviewCameraMode::from(self.mesh_control_mode),
+            orbit: SceneOrbitCamera {
+                target: Vec3Data::from(self.mesh_orbit.target),
+                radius: self.mesh_orbit.radius,
+                yaw: self.mesh_orbit.yaw_radians,
+                pitch: self.mesh_orbit.pitch_radians,
+            },
+            freefly: SceneFreeflyCamera {
+                position: Vec3Data::from(self.mesh_freefly.position),
+                yaw: self.mesh_freefly.yaw,
+                pitch: self.mesh_freefly.pitch,
+                roll: self.mesh_freefly.roll,
+                speed: self.mesh_freefly_speed,
+            },
+            frustum_lock: self.mesh_frustum_lock,
+            frustum_focus: Vec3Data::from(self.mesh_frustum_focus),
+            frustum_distance: self.mesh_frustum_distance,
+        });
+        metadata
+    }
+
+    fn apply_scene_metadata(&mut self, metadata: &SceneMetadata) {
+        self.set_viewport_camera_mode(ViewportCameraMode::from(metadata.viewport));
+        if let Some(cam2d) = metadata.camera2d.as_ref() {
+            self.camera.position = Vec2::from(cam2d.position.clone());
+            self.camera.set_zoom(cam2d.zoom);
+        }
+        if let Some(preview) = metadata.preview_camera.as_ref() {
+            self.mesh_orbit.target = Vec3::from(preview.orbit.target.clone());
+            self.mesh_orbit.radius = preview.orbit.radius.max(0.1);
+            self.mesh_orbit.yaw_radians = preview.orbit.yaw;
+            self.mesh_orbit.pitch_radians = preview
+                .orbit
+                .pitch
+                .clamp(-std::f32::consts::FRAC_PI_2 + 0.01, std::f32::consts::FRAC_PI_2 - 0.01);
+            self.mesh_freefly.position = Vec3::from(preview.freefly.position.clone());
+            self.mesh_freefly.yaw = preview.freefly.yaw;
+            self.mesh_freefly.pitch = preview.freefly.pitch;
+            self.mesh_freefly.roll = preview.freefly.roll;
+            self.mesh_freefly_speed = preview.freefly.speed.max(0.01);
+            self.mesh_frustum_lock = preview.frustum_lock;
+            self.mesh_frustum_focus = Vec3::from(preview.frustum_focus.clone());
+            self.mesh_frustum_distance = preview.frustum_distance.max(0.1);
+            self.mesh_freefly_velocity = Vec3::ZERO;
+            self.mesh_freefly_rot_velocity = Vec3::ZERO;
+
+            let mode = MeshControlMode::from(preview.mode);
+            self.mesh_control_mode = mode;
+            match mode {
+                MeshControlMode::Disabled | MeshControlMode::Orbit => {
+                    self.mesh_camera =
+                        self.mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
+                    self.mesh_freefly = FreeflyController::from_camera(&self.mesh_camera);
+                }
+                MeshControlMode::Freefly => {
+                    self.mesh_camera = self.mesh_freefly.to_camera();
+                }
+            }
+            self.mesh_status = Some(mode.status_message().to_string());
+        }
     }
 
     fn clear_scene_atlases(&mut self) {
@@ -1175,17 +1329,26 @@ impl ApplicationHandler for App {
         let viewport_size = self.viewport_physical_size();
         let cursor_screen = self.input.cursor_position().map(|(sx, sy)| Vec2::new(sx, sy));
         let cursor_viewport = cursor_screen.and_then(|pos| self.screen_to_viewport(pos));
-        let cursor_world_pos =
-            cursor_viewport.and_then(|pos| self.camera.screen_to_world(pos, viewport_size));
+        let cursor_world_pos = if self.viewport_camera_mode == ViewportCameraMode::Ortho2D {
+            cursor_viewport.and_then(|pos| self.camera.screen_to_world(pos, viewport_size))
+        } else {
+            None
+        };
         let cursor_in_viewport = cursor_viewport.is_some();
         let mut selected_info = self.selected_entity.and_then(|entity| self.ecs.entity_info(entity));
-        let gizmo_center_viewport = selected_info
-            .as_ref()
-            .and_then(|info| self.camera.world_to_screen_pixels(info.translation, viewport_size));
+        let gizmo_center_viewport = if self.viewport_camera_mode == ViewportCameraMode::Ortho2D {
+            selected_info
+                .as_ref()
+                .and_then(|info| self.camera.world_to_screen_pixels(info.translation, viewport_size))
+        } else {
+            None
+        };
         let prev_selected_entity = self.selected_entity;
         let prev_gizmo_interaction = self.gizmo_interaction;
 
-        if self.mesh_control_mode == MeshControlMode::Disabled {
+        if self.viewport_camera_mode == ViewportCameraMode::Ortho2D
+            && self.mesh_control_mode == MeshControlMode::Disabled
+        {
             if let Some(delta) = self.input.consume_wheel_delta() {
                 self.camera.apply_scroll_zoom(delta);
             }
@@ -1627,6 +1790,7 @@ impl ApplicationHandler for App {
             spawn_mesh: Option<String>,
         }
         let mut actions = UiActions::default();
+        let mut viewport_mode_request: Option<ViewportCameraMode> = None;
         let mut mesh_control_request: Option<MeshControlMode> = None;
         let mut mesh_frustum_request: Option<bool> = None;
         let mut mesh_reset_request = false;
@@ -1665,10 +1829,27 @@ impl ApplicationHandler for App {
                             }
                             ui_pixels_per_point = self.egui_ctx.pixels_per_point();
                         }
+                        let mut viewport_mode = self.viewport_camera_mode;
+                        egui::ComboBox::from_id_salt("viewport_mode")
+                            .selected_text(viewport_mode.label())
+                            .show_ui(ui, |ui| {
+                                for mode in [ViewportCameraMode::Ortho2D, ViewportCameraMode::Perspective3D] {
+                                    if ui.selectable_label(viewport_mode == mode, mode.label()).clicked() {
+                                        viewport_mode = mode;
+                                    }
+                                }
+                            });
+                        if viewport_mode != self.viewport_camera_mode {
+                            viewport_mode_request = Some(viewport_mode);
+                        }
                         ui.label(format!(
                             "Camera: pos({:.2}, {:.2}) zoom {:.2}",
                             camera_position.x, camera_position.y, camera_zoom
                         ));
+                        if self.viewport_camera_mode == ViewportCameraMode::Perspective3D {
+                            let pos = self.mesh_camera.position;
+                            ui.label(format!("3D camera pos: ({:.2}, {:.2}, {:.2})", pos.x, pos.y, pos.z));
+                        }
                         let display_mode =
                             if self.config.window.fullscreen { "Fullscreen" } else { "Windowed" };
                         ui.label(format!(
@@ -1995,6 +2176,22 @@ impl ApplicationHandler for App {
                                     "Shadows: cast={} receive={}",
                                     mesh.lighting.cast_shadows, mesh.lighting.receive_shadows
                                 ));
+                                if let Some(subsets) = self.mesh_registry.mesh_subsets(&mesh.key) {
+                                    ui.collapsing("Submeshes", |ui| {
+                                        for (index, subset) in subsets.iter().enumerate() {
+                                            let subset_name = subset.name.as_deref().unwrap_or("unnamed");
+                                            let material_label =
+                                                subset.material.as_deref().unwrap_or("default");
+                                            ui.label(format!(
+                                                "#{index}: {} | indices {}-{} | material: {}",
+                                                subset_name,
+                                                subset.index_offset,
+                                                subset.index_offset + subset.index_count,
+                                                material_label
+                                            ));
+                                        }
+                                    });
+                                }
                                 let mut base_color_arr = mesh.lighting.base_color.to_array();
                                 let mut metallic = mesh.lighting.metallic;
                                 let mut roughness = mesh.lighting.roughness;
@@ -2480,6 +2677,9 @@ impl ApplicationHandler for App {
         self.ui_emitter_end_color = ui_emitter_end_color;
         self.selected_entity = selected_entity;
 
+        if let Some(mode) = viewport_mode_request {
+            self.set_viewport_camera_mode(mode);
+        }
         if let Some(mode) = mesh_control_request {
             self.set_mesh_control_mode(mode);
         }
@@ -2514,11 +2714,10 @@ impl ApplicationHandler for App {
                         .map(|path| (key.to_string(), path.to_string_lossy().into_owned()))
                 })
                 .collect();
-            match self.ecs.save_scene_to_path_with_mesh_source(
-                &self.ui_scene_path,
-                &self.assets,
-                move |key| mesh_source_map.get(key).cloned(),
-            ) {
+            let mut scene =
+                self.ecs.export_scene_with_mesh_source(&self.assets, |key| mesh_source_map.get(key).cloned());
+            scene.metadata = self.capture_scene_metadata();
+            match scene.save_to_path(&self.ui_scene_path) {
                 Ok(_) => self.ui_scene_status = Some(format!("Saved {}", self.ui_scene_path)),
                 Err(err) => self.ui_scene_status = Some(format!("Save failed: {err}")),
             }
@@ -2532,6 +2731,7 @@ impl ApplicationHandler for App {
                 Ok(scene) => match self.update_scene_dependencies(&scene.dependencies) {
                     Ok(()) => {
                         self.ui_scene_status = Some(format!("Loaded {}", self.ui_scene_path));
+                        self.apply_scene_metadata(&scene.metadata);
                         self.selected_entity = None;
                         self.gizmo_interaction = None;
                         self.scripts.clear_handles();

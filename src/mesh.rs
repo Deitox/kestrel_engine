@@ -40,11 +40,22 @@ impl MeshVertex {
 pub struct Mesh {
     pub vertices: Vec<MeshVertex>,
     pub indices: Vec<u32>,
+    pub subsets: Vec<MeshSubset>,
+}
+
+#[derive(Clone, Debug)]
+pub struct MeshSubset {
+    pub name: Option<String>,
+    pub index_offset: u32,
+    pub index_count: u32,
+    pub material: Option<String>,
 }
 
 impl Mesh {
     pub fn new(vertices: Vec<MeshVertex>, indices: Vec<u32>) -> Self {
-        Self { vertices, indices }
+        let subset =
+            MeshSubset { name: None, index_offset: 0, index_count: indices.len() as u32, material: None };
+        Self { vertices, indices, subsets: vec![subset] }
     }
 
     pub fn cube(size: f32) -> Self {
@@ -88,7 +99,7 @@ impl Mesh {
             indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
         }
 
-        Self { vertices, indices }
+        Self::new(vertices, indices)
     }
 
     pub fn load_gltf(path: impl AsRef<Path>) -> Result<Self> {
@@ -98,47 +109,64 @@ impl Mesh {
 
         let mesh =
             document.meshes().next().ok_or_else(|| anyhow!("No meshes found in {}", path_ref.display()))?;
-        let primitive = mesh
-            .primitives()
-            .next()
-            .ok_or_else(|| anyhow!("Mesh contains no primitives in {}", path_ref.display()))?;
-        if primitive.mode() != Mode::Triangles {
-            return Err(anyhow!("Only triangle primitives are supported ({}).", path_ref.display()));
+        let mut vertices: Vec<MeshVertex> = Vec::new();
+        let mut indices: Vec<u32> = Vec::new();
+        let mut subsets: Vec<MeshSubset> = Vec::new();
+
+        for (primitive_index, primitive) in mesh.primitives().enumerate() {
+            if primitive.mode() != Mode::Triangles {
+                continue;
+            }
+            let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
+            let positions_iter = reader
+                .read_positions()
+                .ok_or_else(|| anyhow!("POSITION attribute missing in {}", path_ref.display()))?;
+            let positions: Vec<Vec3> = positions_iter.map(Vec3::from_array).collect();
+            if positions.is_empty() {
+                continue;
+            }
+
+            let mut normals: Vec<Vec3> = reader
+                .read_normals()
+                .map(|it| it.map(Vec3::from_array).collect())
+                .unwrap_or_else(|| vec![Vec3::ZERO; positions.len()]);
+
+            let local_indices: Vec<u32> = reader
+                .read_indices()
+                .map(|read| read.into_u32().collect())
+                .unwrap_or_else(|| (0..positions.len() as u32).collect());
+
+            if normals.is_empty()
+                || normals.len() != positions.len()
+                || normals.iter().all(|n| n.length_squared() == 0.0)
+            {
+                normals = compute_normals(&positions, &local_indices);
+            }
+
+            let base_vertex = vertices.len() as u32;
+            vertices.extend(
+                positions
+                    .iter()
+                    .zip(normals.iter())
+                    .map(|(pos, norm)| MeshVertex::new(*pos, norm.normalize_or_zero())),
+            );
+
+            let index_offset = indices.len() as u32;
+            indices.extend(local_indices.iter().map(|idx| idx + base_vertex));
+            let index_count = (indices.len() as u32) - index_offset;
+            let material = primitive.material().name().map(|s| s.to_string());
+            let name = mesh
+                .name()
+                .map(|mesh_name| format!("{}::{}", mesh_name, primitive_index))
+                .or_else(|| Some(format!("primitive_{primitive_index}")));
+            subsets.push(MeshSubset { name, index_offset, index_count, material });
         }
 
-        let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
-        let positions_iter = reader
-            .read_positions()
-            .ok_or_else(|| anyhow!("POSITION attribute missing in {}", path_ref.display()))?;
-        let positions: Vec<Vec3> = positions_iter.map(Vec3::from_array).collect();
-        if positions.is_empty() {
-            return Err(anyhow!("Mesh in {} has no vertices", path_ref.display()));
+        if subsets.is_empty() {
+            return Err(anyhow!("Mesh in {} contains no triangle primitives", path_ref.display()));
         }
 
-        let mut normals: Vec<Vec3> = reader
-            .read_normals()
-            .map(|it| it.map(Vec3::from_array).collect())
-            .unwrap_or_else(|| vec![Vec3::ZERO; positions.len()]);
-
-        let indices: Vec<u32> = reader
-            .read_indices()
-            .map(|read| read.into_u32().collect())
-            .unwrap_or_else(|| (0..positions.len() as u32).collect());
-
-        if normals.is_empty()
-            || normals.len() != positions.len()
-            || normals.iter().all(|n| n.length_squared() == 0.0)
-        {
-            normals = compute_normals(&positions, &indices);
-        }
-
-        let vertices = positions
-            .iter()
-            .zip(normals.iter())
-            .map(|(pos, norm)| MeshVertex::new(*pos, norm.normalize_or_zero()))
-            .collect();
-
-        Ok(Mesh { vertices, indices })
+        Ok(Mesh { vertices, indices, subsets })
     }
 }
 
@@ -183,6 +211,9 @@ mod tests {
         let mesh = Mesh::load_gltf("assets/models/demo_triangle.gltf").expect("demo gltf should load");
         assert_eq!(mesh.vertices.len(), 3);
         assert_eq!(mesh.indices, vec![0, 1, 2]);
+        assert_eq!(mesh.subsets.len(), 1);
+        assert_eq!(mesh.subsets[0].index_offset, 0);
+        assert_eq!(mesh.subsets[0].index_count, 3);
         let normals: Vec<Vec3> = mesh.vertices.iter().map(|v| Vec3::from_array(v.normal)).collect();
         for normal in normals {
             assert!((normal - Vec3::Z).length_squared() < 1e-4);

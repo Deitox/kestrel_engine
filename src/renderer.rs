@@ -25,11 +25,21 @@ const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct MeshGlobals {
+struct MeshFrameData {
     view_proj: [[f32; 4]; 4],
-    model: [[f32; 4]; 4],
     camera_pos: [f32; 4],
     light_dir: [f32; 4],
+    light_color: [f32; 4],
+    ambient_color: [f32; 4],
+    exposure: f32,
+    _pad: [f32; 3],
+    _pad2: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct MeshDrawData {
+    model: [[f32; 4]; 4],
     base_color: [f32; 4],
     emissive: [f32; 4],
     material_params: [f32; 4],
@@ -87,8 +97,34 @@ impl SurfaceFrame {
 
 struct MeshPipelineResources {
     pipeline: wgpu::RenderPipeline,
-    globals_buf: wgpu::Buffer,
-    globals_bg: wgpu::BindGroup,
+    frame_bgl: wgpu::BindGroupLayout,
+    draw_bgl: wgpu::BindGroupLayout,
+}
+
+#[derive(Default)]
+struct MeshPass {
+    resources: Option<MeshPipelineResources>,
+    frame_buffer: Option<wgpu::Buffer>,
+    draw_buffer: Option<wgpu::Buffer>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SceneLightingState {
+    pub direction: Vec3,
+    pub color: Vec3,
+    pub ambient: Vec3,
+    pub exposure: f32,
+}
+
+impl Default for SceneLightingState {
+    fn default() -> Self {
+        Self {
+            direction: Vec3::new(0.4, 0.8, 0.35).normalize(),
+            color: Vec3::new(1.05, 0.98, 0.92),
+            ambient: Vec3::splat(0.03),
+            exposure: 1.0,
+        }
+    }
 }
 
 pub struct Renderer {
@@ -117,7 +153,8 @@ pub struct Renderer {
 
     depth_texture: Option<wgpu::Texture>,
     depth_view: Option<wgpu::TextureView>,
-    mesh_pipeline: Option<MeshPipelineResources>,
+    mesh_pass: MeshPass,
+    lighting: SceneLightingState,
 
     sprite_bind_cache: HashMap<String, SpriteBindCacheEntry>,
 }
@@ -146,7 +183,8 @@ impl Renderer {
             instance_capacity: 0,
             depth_texture: None,
             depth_view: None,
-            mesh_pipeline: None,
+            mesh_pass: MeshPass::default(),
+            lighting: SceneLightingState::default(),
             sprite_bind_cache: HashMap::new(),
         }
     }
@@ -164,6 +202,21 @@ impl Renderer {
         pollster::block_on(self.init_wgpu(&window))?;
         self.window = Some(window);
         Ok(())
+    }
+
+    pub fn set_lighting(&mut self, direction: Vec3, color: Vec3, ambient: Vec3, exposure: f32) {
+        self.lighting.direction = direction;
+        self.lighting.color = color;
+        self.lighting.ambient = ambient;
+        self.lighting.exposure = exposure.max(0.001);
+    }
+
+    pub fn lighting(&self) -> &SceneLightingState {
+        &self.lighting
+    }
+
+    pub fn lighting_mut(&mut self) -> &mut SceneLightingState {
+        &mut self.lighting
     }
 
     fn choose_surface_format(formats: &[wgpu::TextureFormat]) -> wgpu::TextureFormat {
@@ -431,8 +484,8 @@ impl Renderer {
             source: wgpu::ShaderSource::Wgsl(include_str!("../assets/shaders/mesh_basic.wgsl").into()),
         });
 
-        let globals_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Mesh Globals BGL"),
+        let frame_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Mesh Frame BGL"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
@@ -444,21 +497,35 @@ impl Renderer {
                 count: None,
             }],
         });
-        let globals_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Mesh Globals Buffer"),
-            size: std::mem::size_of::<MeshGlobals>() as u64,
+        let draw_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Mesh Draw BGL"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let frame_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Mesh Frame Buffer"),
+            size: std::mem::size_of::<MeshFrameData>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let globals_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Mesh Globals BG"),
-            layout: &globals_bgl,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: globals_buf.as_entire_binding() }],
+        let draw_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Mesh Draw Buffer"),
+            size: std::mem::size_of::<MeshDrawData>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Mesh Pipeline Layout"),
-            bind_group_layouts: &[&globals_bgl],
+            bind_group_layouts: &[&frame_bgl, &draw_bgl],
             push_constant_ranges: &[],
         });
 
@@ -502,7 +569,9 @@ impl Renderer {
             cache: None,
         });
 
-        self.mesh_pipeline = Some(MeshPipelineResources { pipeline, globals_buf, globals_bg });
+        self.mesh_pass.resources = Some(MeshPipelineResources { pipeline, frame_bgl, draw_bgl });
+        self.mesh_pass.frame_buffer = Some(frame_buf);
+        self.mesh_pass.draw_buffer = Some(draw_buf);
         Ok(())
     }
 
@@ -533,20 +602,58 @@ impl Renderer {
         if draws.is_empty() {
             return Ok(());
         }
-        if self.mesh_pipeline.is_none() {
+        if self.mesh_pass.resources.is_none() {
             self.init_mesh_pipeline()?;
         }
         if self.depth_texture.is_none() {
             self.recreate_depth_texture()?;
         }
-        let mesh_pipeline = self.mesh_pipeline.as_ref().context("Mesh pipeline not initialized")?;
+        let mesh_resources = self.mesh_pass.resources.as_ref().context("Mesh pipeline not initialized")?;
         let depth_view = self.depth_view.as_ref().context("Depth texture missing")?;
-        let queue = self.queue()?;
+        let device = self.device()?.clone();
         let vp_size = PhysicalSize::new(
             viewport.size.0.max(1.0).round() as u32,
             viewport.size.1.max(1.0).round() as u32,
         );
         let view_proj = camera.view_projection(vp_size);
+        let lighting_dir = self.lighting.direction.normalize_or_zero();
+        let frame_data = MeshFrameData {
+            view_proj: view_proj.to_cols_array_2d(),
+            camera_pos: [camera.position.x, camera.position.y, camera.position.z, 1.0],
+            light_dir: [lighting_dir.x, lighting_dir.y, lighting_dir.z, 0.0],
+            light_color: [self.lighting.color.x, self.lighting.color.y, self.lighting.color.z, 1.0],
+            ambient_color: [self.lighting.ambient.x, self.lighting.ambient.y, self.lighting.ambient.z, 1.0],
+            exposure: self.lighting.exposure,
+            _pad: [0.0; 3],
+            _pad2: [0.0; 4],
+        };
+
+        let frame_buffer = self.mesh_pass.frame_buffer.as_ref().context("Mesh frame buffer missing")?.clone();
+
+        if self.mesh_pass.draw_buffer.is_none() {
+            let draw_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Mesh Draw Buffer"),
+                size: std::mem::size_of::<MeshDrawData>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.mesh_pass.draw_buffer = Some(draw_buf);
+        }
+        let draw_buffer = self.mesh_pass.draw_buffer.as_ref().context("Mesh draw buffer missing")?.clone();
+
+        let queue = self.queue()?.clone();
+        queue.write_buffer(&frame_buffer, 0, bytemuck::bytes_of(&frame_data));
+
+        let frame_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Mesh Frame BG"),
+            layout: &mesh_resources.frame_bgl,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: frame_buffer.as_entire_binding() }],
+        });
+        let draw_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Mesh Draw BG"),
+            layout: &mesh_resources.draw_bgl,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: draw_buffer.as_entire_binding() }],
+        });
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Mesh Pass"),
@@ -567,7 +674,7 @@ impl Renderer {
             occlusion_query_set: None,
             timestamp_writes: None,
         });
-        pass.set_pipeline(&mesh_pipeline.pipeline);
+        pass.set_pipeline(&mesh_resources.pipeline);
         let mut sc_x = viewport.origin.0.max(0.0).floor() as u32;
         let mut sc_y = viewport.origin.1.max(0.0).floor() as u32;
         let mut sc_w = viewport.size.0.max(1.0).floor() as u32;
@@ -595,25 +702,21 @@ impl Renderer {
         );
         pass.set_scissor_rect(sc_x, sc_y, sc_w, sc_h);
 
-        let light_dir = Vec3::new(0.4, 0.8, 0.35).normalize();
-        let camera_pos = camera.position;
+        pass.set_bind_group(0, &frame_bind_group, &[]);
 
         for draw in draws {
             let base_color = draw.lighting.base_color;
             let emissive = draw.lighting.emissive.unwrap_or(Vec3::ZERO);
             let metallic = draw.lighting.metallic.clamp(0.0, 1.0);
             let roughness = draw.lighting.roughness.clamp(0.04, 1.0);
-            let globals = MeshGlobals {
-                view_proj: view_proj.to_cols_array_2d(),
+            let draw_data = MeshDrawData {
                 model: draw.model.to_cols_array_2d(),
-                camera_pos: [camera_pos.x, camera_pos.y, camera_pos.z, 1.0],
-                light_dir: [light_dir.x, light_dir.y, light_dir.z, 0.0],
                 base_color: [base_color.x, base_color.y, base_color.z, 1.0],
                 emissive: [emissive.x, emissive.y, emissive.z, 0.0],
                 material_params: [metallic, roughness, 0.0, 0.0],
             };
-            queue.write_buffer(&mesh_pipeline.globals_buf, 0, bytemuck::bytes_of(&globals));
-            pass.set_bind_group(0, &mesh_pipeline.globals_bg, &[]);
+            queue.write_buffer(&draw_buffer, 0, bytemuck::bytes_of(&draw_data));
+            pass.set_bind_group(1, &draw_bind_group, &[]);
             pass.set_vertex_buffer(0, draw.mesh.vertex_buffer.slice(..));
             pass.set_index_buffer(draw.mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..draw.mesh.index_count, 0, 0..1);
