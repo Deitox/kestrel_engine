@@ -12,12 +12,22 @@ fn scene_roundtrip_preserves_entity_count() {
     assets
         .retain_atlas("main", Some("assets/images/atlas.json"))
         .expect("main atlas should load before exporting scene");
+    assert!(assets.has_atlas("main"), "atlas retain should keep atlas loaded");
     let mut mesh_registry = MeshRegistry::new();
     mesh_registry
         .load_from_path("test_triangle", "assets/models/demo_triangle.gltf")
         .expect("demo gltf should load for mesh dependency test");
+    mesh_registry
+        .retain_mesh("test_triangle", Some("assets/models/demo_triangle.gltf"))
+        .expect("retaining mesh should succeed");
     let mesh_entity = world.spawn_mesh_entity("test_triangle", Vec3::ZERO, Vec3::ONE);
     assert!(world.entity_exists(mesh_entity));
+    assert!(mesh_registry.has("test_triangle"), "mesh registry should contain retained mesh");
+    assert_eq!(
+        mesh_registry.mesh_ref_count("test_triangle"),
+        Some(1),
+        "retain_mesh should increment ref count"
+    );
     world.world.entity_mut(mesh_entity).insert(MeshSurface {
         material: Some("materials/bronze.mat".to_string()),
         lighting: MeshLighting {
@@ -117,6 +127,15 @@ fn scene_roundtrip_preserves_entity_count() {
     new_world
         .load_scene_with_mesh(&loaded, &assets, |key, path| new_registry.ensure_mesh(key, path))
         .expect("scene load into world");
+    assert!(
+        new_registry.has("test_triangle"),
+        "mesh registry used during load should register mesh dependencies"
+    );
+    assert_eq!(
+        new_registry.mesh_ref_count("test_triangle"),
+        Some(0),
+        "ensure_mesh prepares mesh without incrementing ref count"
+    );
     {
         let mut query = new_world.world.query::<(&MeshSurface, &MeshRef)>();
         let mut matched = false;
@@ -150,6 +169,11 @@ fn scene_roundtrip_preserves_entity_count() {
             autoload_registry.ensure_mesh(key, path)
         })
         .expect("scene load with auto dependency resolution");
+    assert!(autoload_assets.has_atlas("main"), "auto-load should populate required atlases");
+    assert!(
+        autoload_registry.has("test_triangle"),
+        "auto-load should ensure mesh dependencies are registered"
+    );
     assert_eq!(autoload_world.entity_count(), original_count);
 
     let missing_assets = AssetManager::new();

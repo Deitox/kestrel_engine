@@ -1,5 +1,5 @@
-use glam::{Mat4, Quat, Vec3};
-use kestrel_engine::ecs::{EcsWorld, Transform3D, WorldTransform3D};
+use glam::{EulerRot, Mat4, Quat, Vec3};
+use kestrel_engine::ecs::{EcsWorld, WorldTransform3D};
 use kestrel_engine::mesh_registry::MeshRegistry;
 
 #[test]
@@ -19,18 +19,25 @@ fn pick_entity_3d_hits_mesh() {
     let miss = world.pick_entity_3d(origin, miss_direction, &registry);
     assert_ne!(miss, Some(entity));
 
-    {
-        let mut transform = world.world.get_mut::<Transform3D>(entity).expect("transform");
-        transform.translation = Vec3::new(1.5, 0.0, 0.0);
-        transform.rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_4);
-        transform.scale = Vec3::new(0.25, 1.0, 0.5);
+    let translation = Vec3::new(1.5, 0.0, 0.0);
+    let rotation_euler = Vec3::new(0.0, std::f32::consts::FRAC_PI_4, 0.0);
+    let scale = Vec3::new(0.25, 1.0, 0.5);
+    assert!(world.set_mesh_translation(entity, translation));
+    assert!(world.set_mesh_rotation_euler(entity, rotation_euler));
+    assert!(world.set_mesh_scale(entity, scale));
+
+    let world_tx = world.world.get::<WorldTransform3D>(entity).expect("world transform updated");
+    let expected_rotation = Quat::from_euler(EulerRot::XYZ, rotation_euler.x, rotation_euler.y, rotation_euler.z);
+    let expected = Mat4::from_scale_rotation_translation(scale, expected_rotation, translation);
+    let actual = world_tx.0.to_cols_array();
+    let expected_cols = expected.to_cols_array();
+    for (actual_val, expected_val) in actual.iter().zip(expected_cols.iter()) {
+        assert!(
+            (actual_val - expected_val).abs() < 1e-5,
+            "world transform mismatch: actual {actual_val}, expected {expected_val}"
+        );
     }
-    if let Some(mut world_tx) = world.world.get_mut::<WorldTransform3D>(entity) {
-        let scale = Vec3::new(0.25, 1.0, 0.5);
-        let rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_4);
-        let translation = Vec3::new(1.5, 0.0, 0.0);
-        world_tx.0 = Mat4::from_scale_rotation_translation(scale, rotation, translation);
-    }
+
     let origin_rotated = Vec3::new(1.5, 0.25, 4.0);
     let direction_rotated = Vec3::new(0.05, -0.05, -1.0).normalize();
     let picked_rotated = world.pick_entity_3d(origin_rotated, direction_rotated, &registry);
