@@ -5,6 +5,7 @@ pub mod camera3d;
 pub mod config;
 pub mod ecs;
 pub mod events;
+mod gizmo;
 pub mod input;
 pub mod mesh;
 mod mesh_preview;
@@ -21,6 +22,12 @@ use crate::camera3d::{Camera3D, OrbitCamera};
 use crate::config::AppConfig;
 use crate::ecs::{EcsWorld, InstanceData, MeshLightingInfo, SpriteInfo};
 use crate::events::GameEvent;
+use crate::gizmo::{
+    Axis2, GizmoInteraction, GizmoMode, ScaleHandle, ScaleHandleKind, GIZMO_ROTATE_INNER_RADIUS_PX,
+    GIZMO_ROTATE_OUTER_RADIUS_PX, GIZMO_SCALE_AXIS_LENGTH_PX, GIZMO_SCALE_AXIS_THICKNESS_PX,
+    GIZMO_SCALE_HANDLE_SIZE_PX, GIZMO_SCALE_INNER_RADIUS_PX, GIZMO_SCALE_OUTER_RADIUS_PX,
+    GIZMO_TRANSLATE_RADIUS_PX, ROTATE_SNAP_STEP_RADIANS, TRANSLATE_SNAP_STEP,
+};
 use crate::input::{Input, InputEvent};
 use crate::mesh_preview::{
     FreeflyController, MeshControlMode, GIZMO_3D_AXIS_LENGTH_SCALE, GIZMO_3D_AXIS_MAX, GIZMO_3D_AXIS_MIN,
@@ -51,34 +58,6 @@ use egui_wgpu::{Renderer as EguiRenderer, RendererOptions, ScreenDescriptor};
 use egui_winit::State as EguiWinit;
 
 const CAMERA_BASE_HALF_HEIGHT: f32 = 1.2;
-const GIZMO_TRANSLATE_RADIUS_PX: f32 = 18.0;
-const GIZMO_SCALE_INNER_RADIUS_PX: f32 = 20.0;
-const GIZMO_SCALE_OUTER_RADIUS_PX: f32 = 32.0;
-const GIZMO_SCALE_AXIS_LENGTH_PX: f32 = 44.0;
-const GIZMO_SCALE_AXIS_THICKNESS_PX: f32 = 8.0;
-const GIZMO_SCALE_AXIS_DEADZONE_PX: f32 = 10.0;
-const GIZMO_SCALE_HANDLE_SIZE_PX: f32 = 12.0;
-const GIZMO_ROTATE_INNER_RADIUS_PX: f32 = 38.0;
-const GIZMO_ROTATE_OUTER_RADIUS_PX: f32 = 52.0;
-const SCALE_MIN_RATIO: f32 = 0.05;
-const SCALE_MAX_RATIO: f32 = 20.0;
-const SCALE_SNAP_STEP: f32 = 0.1;
-const TRANSLATE_SNAP_STEP: f32 = 0.05;
-const ROTATE_SNAP_STEP_RADIANS: f32 = 15.0_f32.to_radians();
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum GizmoMode {
-    Translate,
-    Scale,
-    Rotate,
-}
-
-impl Default for GizmoMode {
-    fn default() -> Self {
-        GizmoMode::Translate
-    }
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ViewportCameraMode {
     Ortho2D,
@@ -118,88 +97,6 @@ impl From<SceneViewportMode> for ViewportCameraMode {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum GizmoInteraction {
-    Translate {
-        entity: Entity,
-        offset: Vec2,
-        start_translation: Vec2,
-        start_pointer: Vec2,
-        axis_lock: Option<Axis2>,
-    },
-    Translate3D {
-        entity: Entity,
-        offset: Vec3,
-        plane_origin: Vec3,
-        plane_normal: Vec3,
-    },
-    Rotate {
-        entity: Entity,
-        start_rotation: f32,
-        start_angle: f32,
-    },
-    Rotate3D {
-        entity: Entity,
-        axis: Vec3,
-        start_rotation: Quat,
-        start_vector: Vec3,
-    },
-    Scale {
-        entity: Entity,
-        start_scale: Vec2,
-        handle: ScaleHandle,
-    },
-    Scale3D {
-        entity: Entity,
-        start_scale: Vec3,
-        start_distance: f32,
-        plane_normal: Vec3,
-    },
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Axis2 {
-    X,
-    Y,
-}
-
-impl Axis2 {
-    fn label(self) -> &'static str {
-        match self {
-            Axis2::X => "X axis",
-            Axis2::Y => "Y axis",
-        }
-    }
-
-    fn vector(self) -> Vec2 {
-        match self {
-            Axis2::X => Vec2::X,
-            Axis2::Y => Vec2::Y,
-        }
-    }
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum ScaleHandle {
-    Uniform { start_distance: f32 },
-    Axis { axis: Axis2, start_extent: f32 },
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ScaleHandleKind {
-    Uniform,
-    Axis(Axis2),
-}
-
-impl ScaleHandle {
-    fn kind(self) -> ScaleHandleKind {
-        match self {
-            ScaleHandle::Uniform { .. } => ScaleHandleKind::Uniform,
-            ScaleHandle::Axis { axis, .. } => ScaleHandleKind::Axis(axis),
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 struct Viewport {
     origin: Vec2,
@@ -232,16 +129,6 @@ pub(crate) fn wrap_angle(mut radians: f32) -> f32 {
         radians += two_pi;
     }
     radians
-}
-
-fn apply_scale_ratio(ratio: f32, snap: bool) -> f32 {
-    let clamped = ratio.clamp(SCALE_MIN_RATIO, SCALE_MAX_RATIO);
-    if snap {
-        let snapped = (clamped / SCALE_SNAP_STEP).round() * SCALE_SNAP_STEP;
-        snapped.clamp(SCALE_MIN_RATIO, SCALE_MAX_RATIO)
-    } else {
-        clamped
-    }
 }
 
 pub async fn run() -> Result<()> {
@@ -569,52 +456,6 @@ impl App {
 
     fn spawn_mesh_entity(&mut self, mesh_key: &str) {
         mesh_preview::spawn_mesh_entity(self, mesh_key);
-    }
-
-    fn detect_scale_handle(
-        &self,
-        pointer_world: Vec2,
-        pointer_viewport: Vec2,
-        center_world: Vec2,
-        center_viewport: Vec2,
-        shift: bool,
-    ) -> Option<(ScaleHandleKind, ScaleHandle)> {
-        let rel_view = pointer_viewport - center_viewport;
-        let dist = pointer_viewport.distance(center_viewport);
-        let axis_half = GIZMO_SCALE_AXIS_THICKNESS_PX * 0.5;
-        let axis_length = GIZMO_SCALE_AXIS_LENGTH_PX;
-        let deadzone = GIZMO_SCALE_AXIS_DEADZONE_PX;
-        let mut kind = None;
-        if rel_view.x.abs() >= deadzone && rel_view.x.abs() <= axis_length && rel_view.y.abs() <= axis_half {
-            kind = Some(if shift { ScaleHandleKind::Uniform } else { ScaleHandleKind::Axis(Axis2::X) });
-        } else if rel_view.y.abs() >= deadzone
-            && rel_view.y.abs() <= axis_length
-            && rel_view.x.abs() <= axis_half
-        {
-            kind = Some(if shift { ScaleHandleKind::Uniform } else { ScaleHandleKind::Axis(Axis2::Y) });
-        } else if dist >= GIZMO_SCALE_INNER_RADIUS_PX && dist <= GIZMO_SCALE_OUTER_RADIUS_PX {
-            kind = Some(ScaleHandleKind::Uniform);
-        }
-        let kind = kind?;
-        let delta_world = pointer_world - center_world;
-        match kind {
-            ScaleHandleKind::Uniform => {
-                let distance = delta_world.length();
-                if distance > f32::EPSILON {
-                    Some((kind, ScaleHandle::Uniform { start_distance: distance }))
-                } else {
-                    None
-                }
-            }
-            ScaleHandleKind::Axis(axis) => {
-                let extent = delta_world.dot(axis.vector()).abs();
-                if extent > f32::EPSILON {
-                    Some((kind, ScaleHandle::Axis { axis, start_extent: extent }))
-                } else {
-                    None
-                }
-            }
-        }
     }
 
     fn sync_emitter_ui(&mut self) {
@@ -977,7 +818,7 @@ impl ApplicationHandler for App {
             if let (Some(info), Some(center_viewport), Some(pointer_viewport), Some(pointer_world)) =
                 (selected_info.as_ref(), gizmo_center_viewport, cursor_viewport, cursor_world_2d)
             {
-                self.detect_scale_handle(
+                gizmo::detect_scale_handle(
                     pointer_world,
                     pointer_viewport,
                     info.translation,
@@ -1144,7 +985,7 @@ impl ApplicationHandler for App {
                                 selected_info.as_ref(),
                                 gizmo_center_viewport,
                             ) {
-                                if let Some((_kind, handle)) = self.detect_scale_handle(
+                                if let Some((_kind, handle)) = gizmo::detect_scale_handle(
                                     pointer_world,
                                     pointer_viewport,
                                     info.translation,
@@ -1404,7 +1245,8 @@ impl ApplicationHandler for App {
                                     let len_sq = delta.length_squared();
                                     if len_sq > f32::EPSILON && *start_distance > f32::EPSILON {
                                         let distance = len_sq.sqrt();
-                                        let ratio = apply_scale_ratio(distance / *start_distance, snap);
+                                        let ratio =
+                                            gizmo::apply_scale_ratio(distance / *start_distance, snap);
                                         new_scale = Vec2::new(
                                             (start_scale.x * ratio).max(0.01),
                                             (start_scale.y * ratio).max(0.01),
@@ -1415,7 +1257,7 @@ impl ApplicationHandler for App {
                                     let axis_vec = axis.vector();
                                     let extent = (pointer_world - center).dot(axis_vec).abs();
                                     if extent > f32::EPSILON && *start_extent > f32::EPSILON {
-                                        let ratio = apply_scale_ratio(extent / *start_extent, snap);
+                                        let ratio = gizmo::apply_scale_ratio(extent / *start_extent, snap);
                                         match axis {
                                             Axis2::X => {
                                                 new_scale.x = (start_scale.x * ratio).max(0.01);
@@ -1458,8 +1300,10 @@ impl ApplicationHandler for App {
                             {
                                 let distance = (hit - center).length();
                                 if distance > f32::EPSILON && *start_distance > f32::EPSILON {
-                                    let ratio =
-                                        apply_scale_ratio(distance / *start_distance, self.input.ctrl_held());
+                                    let ratio = gizmo::apply_scale_ratio(
+                                        distance / *start_distance,
+                                        self.input.ctrl_held(),
+                                    );
                                     let mut new_scale = Vec3::new(
                                         (start_scale.x * ratio).max(0.01),
                                         (start_scale.y * ratio).max(0.01),
