@@ -392,12 +392,12 @@ pub(crate) fn set_mesh_control_mode(app: &mut App, mode: MeshControlMode) {
     }
 }
 
-pub(crate) fn set_viewport_camera_mode(app: &mut App, mode: super::ViewportCameraMode) {
+pub(crate) fn set_viewport_camera_mode(app: &mut App, mode: crate::app::ViewportCameraMode) {
     if app.viewport_camera_mode == mode {
         return;
     }
     app.viewport_camera_mode = mode;
-    if mode == super::ViewportCameraMode::Perspective3D && app.mesh_control_mode == MeshControlMode::Disabled
+    if mode == crate::app::ViewportCameraMode::Perspective3D && app.mesh_control_mode == MeshControlMode::Disabled
     {
         app.mesh_control_mode = MeshControlMode::Orbit;
         app.mesh_camera =
