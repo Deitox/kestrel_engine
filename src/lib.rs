@@ -567,15 +567,7 @@ impl App {
         };
         self.camera.position = info.translation;
         if let Some(mesh_tx) = info.mesh_transform {
-            self.mesh_frustum_focus = mesh_tx.translation;
-            self.mesh_frustum_distance =
-                (self.mesh_camera.position - self.mesh_frustum_focus).length().max(0.1);
-            self.mesh_orbit.target = mesh_tx.translation;
-            self.mesh_orbit.radius = self.mesh_frustum_distance;
-            self.mesh_camera =
-                self.mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
-            self.mesh_freefly = FreeflyController::from_camera(&self.mesh_camera);
-            self.mesh_status = Some("Framed selection in 3D viewport.".to_string());
+            mesh_preview::focus_mesh_selection(self, mesh_tx.translation);
         } else {
             self.mesh_status = Some("Centered 2D camera on selection.".to_string());
         }

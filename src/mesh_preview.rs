@@ -102,6 +102,16 @@ impl FreeflyController {
     }
 }
 
+pub(crate) fn focus_mesh_selection(app: &mut App, center: Vec3) {
+    app.mesh_frustum_focus = center;
+    app.mesh_frustum_distance = (app.mesh_camera.position - center).length().max(0.1);
+    app.mesh_orbit.target = center;
+    app.mesh_orbit.radius = app.mesh_frustum_distance;
+    app.mesh_camera = app.mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
+    app.mesh_freefly = FreeflyController::from_camera(&app.mesh_camera);
+    app.mesh_status = Some("Framed selection in 3D viewport.".to_string());
+}
+
 pub(crate) fn update_mesh_camera(app: &mut App, dt: f32) {
     match app.mesh_control_mode {
         MeshControlMode::Disabled => {
