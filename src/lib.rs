@@ -7,6 +7,7 @@ pub mod ecs;
 pub mod events;
 pub mod input;
 pub mod mesh;
+mod mesh_preview;
 pub mod mesh_registry;
 pub mod renderer;
 pub mod scene;
@@ -29,6 +30,10 @@ use crate::scene::{
 };
 use crate::scripts::{ScriptCommand, ScriptHost};
 use crate::time::Time;
+use mesh_preview::{
+    FreeflyController, MeshControlMode, GIZMO_3D_AXIS_LENGTH_SCALE, GIZMO_3D_AXIS_MAX, GIZMO_3D_AXIS_MIN,
+    MESH_CAMERA_FAR, MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR,
+};
 
 use bevy_ecs::prelude::Entity;
 use glam::{EulerRot, Mat4, Quat, Vec2, Vec3, Vec4};
@@ -64,12 +69,6 @@ const SCALE_MAX_RATIO: f32 = 20.0;
 const SCALE_SNAP_STEP: f32 = 0.1;
 const TRANSLATE_SNAP_STEP: f32 = 0.05;
 const ROTATE_SNAP_STEP_RADIANS: f32 = 15.0_f32.to_radians();
-const GIZMO_3D_AXIS_LENGTH_SCALE: f32 = 0.2;
-const GIZMO_3D_AXIS_MIN: f32 = 0.1;
-const GIZMO_3D_AXIS_MAX: f32 = 5.0;
-const MESH_CAMERA_FOV_RADIANS: f32 = 60.0_f32.to_radians();
-const MESH_CAMERA_NEAR: f32 = 0.1;
-const MESH_CAMERA_FAR: f32 = 100.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum GizmoMode {
@@ -101,49 +100,6 @@ impl ViewportCameraMode {
         match self {
             ViewportCameraMode::Ortho2D => "Orthographic 2D",
             ViewportCameraMode::Perspective3D => "Perspective 3D",
-        }
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum MeshControlMode {
-    Disabled,
-    Orbit,
-    Freefly,
-}
-
-impl Default for MeshControlMode {
-    fn default() -> Self {
-        MeshControlMode::Disabled
-    }
-}
-
-impl MeshControlMode {
-    fn next(self) -> Self {
-        match self {
-            MeshControlMode::Disabled => MeshControlMode::Orbit,
-            MeshControlMode::Orbit => MeshControlMode::Freefly,
-            MeshControlMode::Freefly => MeshControlMode::Disabled,
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            MeshControlMode::Disabled => "Disabled",
-            MeshControlMode::Orbit => "Orbit",
-            MeshControlMode::Freefly => "Free-fly",
-        }
-    }
-
-    fn status_message(self) -> &'static str {
-        match self {
-            MeshControlMode::Disabled => "Scripted orbit animates the camera (press M to switch modes).",
-            MeshControlMode::Orbit => {
-                "Orbit control enabled (right-drag to orbit, scroll to zoom, L toggles frustum lock)."
-            }
-            MeshControlMode::Freefly => {
-                "Free-fly enabled (RMB + WASD/QE to move, Z/C to roll, Shift to boost, L locks frustum)."
-            }
         }
     }
 }
@@ -272,55 +228,6 @@ impl ScaleHandle {
 struct Viewport {
     origin: Vec2,
     size: Vec2,
-}
-
-#[derive(Clone, Copy)]
-struct FreeflyController {
-    position: Vec3,
-    yaw: f32,
-    pitch: f32,
-    roll: f32,
-}
-
-impl FreeflyController {
-    fn from_camera(camera: &Camera3D) -> Self {
-        let forward = (camera.target - camera.position).normalize_or_zero();
-        let yaw = forward.x.atan2(forward.z);
-        let pitch =
-            forward.y.asin().clamp(-std::f32::consts::FRAC_PI_2 + 0.01, std::f32::consts::FRAC_PI_2 - 0.01);
-        let roll = 0.0;
-        Self { position: camera.position, yaw, pitch, roll }
-    }
-
-    fn orientation(&self) -> Quat {
-        Quat::from_euler(glam::EulerRot::YXZ, self.yaw, self.pitch, self.roll)
-    }
-
-    fn forward(&self) -> Vec3 {
-        self.orientation() * Vec3::new(0.0, 0.0, -1.0)
-    }
-
-    fn right(&self) -> Vec3 {
-        self.orientation() * Vec3::new(1.0, 0.0, 0.0)
-    }
-
-    fn up(&self) -> Vec3 {
-        self.orientation() * Vec3::Y
-    }
-
-    fn to_camera(&self) -> Camera3D {
-        let forward = self.forward();
-        let mut camera = Camera3D::new(
-            self.position,
-            self.position + forward,
-            MESH_CAMERA_FOV_RADIANS,
-            MESH_CAMERA_NEAR,
-            MESH_CAMERA_FAR,
-        );
-        let up = self.up().normalize_or_zero();
-        camera.up = if up.length_squared() > 0.0 { up } else { Vec3::Y };
-        camera
-    }
 }
 
 impl Viewport {
