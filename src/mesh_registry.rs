@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Result};
 
-use crate::mesh::{Mesh, MeshSubset};
+use crate::mesh::{Mesh, MeshBounds, MeshSubset};
 use crate::renderer::{GpuMesh, Renderer};
 
 #[derive(Default)]
@@ -140,6 +140,10 @@ impl MeshRegistry {
 
     pub fn mesh_subsets(&self, key: &str) -> Option<&[MeshSubset]> {
         self.entries.get(key).map(|entry| entry.mesh.subsets.as_slice())
+    }
+
+    pub fn mesh_bounds(&self, key: &str) -> Option<&MeshBounds> {
+        self.entries.get(key).map(|entry| &entry.mesh.bounds)
     }
 }
 

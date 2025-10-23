@@ -1,5 +1,6 @@
 use crate::assets::AssetManager;
 use crate::events::{EventBus, GameEvent};
+use crate::mesh_registry::MeshRegistry;
 use crate::scene::{
     ColliderData, ColorData, MeshData, MeshLightingData, OrbitControllerData, ParticleEmitterData, Scene,
     SceneDependencies, SceneEntity, SpriteData, Transform3DData, TransformData,
@@ -1241,6 +1242,54 @@ impl EcsWorld {
         let mut grid = self.world.resource_mut::<SpatialHash>();
         grid.cell = cell;
     }
+
+    pub fn pick_entity_3d(
+        &mut self,
+        origin: Vec3,
+        direction: Vec3,
+        registry: &MeshRegistry,
+    ) -> Option<Entity> {
+        let dir = direction.normalize_or_zero();
+        if dir.length_squared() <= f32::EPSILON {
+            return None;
+        }
+        let mut query = self.world.query::<(Entity, &Transform3D, &MeshRef)>();
+        let mut closest: Option<(Entity, f32)> = None;
+        for (entity, transform, mesh_ref) in query.iter(&self.world) {
+            let Some(bounds) = registry.mesh_bounds(&mesh_ref.key) else {
+                continue;
+            };
+            let max_scale = transform.scale.x.max(transform.scale.y).max(transform.scale.z).max(0.0001);
+            let radius = bounds.radius * max_scale;
+            if radius <= 0.0 {
+                continue;
+            }
+            let center = transform.translation;
+            let oc = origin - center;
+            let b = oc.dot(dir);
+            let c = oc.length_squared() - radius * radius;
+            let discriminant = b * b - c;
+            if discriminant < 0.0 {
+                continue;
+            }
+            let sqrt_d = discriminant.sqrt();
+            let mut t = -b - sqrt_d;
+            if t < 0.0 {
+                t = -b + sqrt_d;
+            }
+            if t < 0.0 {
+                continue;
+            }
+            match closest {
+                Some((_, best)) if t >= best => continue,
+                _ => {
+                    closest = Some((entity, t));
+                }
+            }
+        }
+        closest.map(|(entity, _)| entity)
+    }
+
     pub fn pick_entity(&mut self, world_pos: Vec2) -> Option<Entity> {
         let mut query = self.world.query::<(Entity, &WorldTransform, Option<&Aabb>)>();
         query.iter(&self.world).find_map(|(entity, wt, aabb)| {

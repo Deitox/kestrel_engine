@@ -7,6 +7,8 @@
 - Scene dependency tracker - Scene exports now record atlas and mesh requirements, and runtime reference counting retains and releases those assets automatically when scenes load or unload.
 - Mesh metadata - Mesh entities carry material identifiers plus lighting flags (cast/receive shadows, emissive tint). The scene format and round-trip loader persist that data, paving the way for the Milestone 12 PBR work.
 - Camera tooling - The mesh preview offers three modes (Disabled, Orbit, Free-fly). Free-fly introduces WASD/QE + Shift navigation with mouse look and roll, while orbit mode remains handy for turntable inspection.
+- Perspective viewport editing - Ray-based picking, 3D gizmos, and a frame-selection helper keep mesh workflows aligned with the inspector.
+- Scene toolbar upgrades - Quick path history and dependency health readouts make Save/Load workflows safer.
 - Scene I/O guardrails - Mesh-aware helpers (save_scene_to_path_with_mesh_source, load_scene_with_mesh) ensure custom assets keep their source paths and metadata during save/load workflows.
 
 ## Core Systems

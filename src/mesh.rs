@@ -41,6 +41,15 @@ pub struct Mesh {
     pub vertices: Vec<MeshVertex>,
     pub indices: Vec<u32>,
     pub subsets: Vec<MeshSubset>,
+    pub bounds: MeshBounds,
+}
+
+#[derive(Clone, Debug)]
+pub struct MeshBounds {
+    pub min: Vec3,
+    pub max: Vec3,
+    pub center: Vec3,
+    pub radius: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -55,7 +64,8 @@ impl Mesh {
     pub fn new(vertices: Vec<MeshVertex>, indices: Vec<u32>) -> Self {
         let subset =
             MeshSubset { name: None, index_offset: 0, index_count: indices.len() as u32, material: None };
-        Self { vertices, indices, subsets: vec![subset] }
+        let bounds = MeshBounds::from_vertices(&vertices);
+        Self { vertices, indices, subsets: vec![subset], bounds }
     }
 
     pub fn cube(size: f32) -> Self {
@@ -166,7 +176,9 @@ impl Mesh {
             return Err(anyhow!("Mesh in {} contains no triangle primitives", path_ref.display()));
         }
 
-        Ok(Mesh { vertices, indices, subsets })
+        let bounds = MeshBounds::from_vertices(&vertices);
+
+        Ok(Mesh { vertices, indices, subsets, bounds })
     }
 }
 
@@ -200,6 +212,28 @@ fn compute_normals(positions: &[Vec3], indices: &[u32]) -> Vec<Vec3> {
         }
     }
     normals
+}
+
+impl MeshBounds {
+    pub fn from_vertices(vertices: &[MeshVertex]) -> Self {
+        let mut min = Vec3::splat(f32::INFINITY);
+        let mut max = Vec3::splat(f32::NEG_INFINITY);
+        for vertex in vertices {
+            let pos = Vec3::from_array(vertex.position);
+            min = min.min(pos);
+            max = max.max(pos);
+        }
+        if vertices.is_empty() {
+            return MeshBounds { min: Vec3::ZERO, max: Vec3::ZERO, center: Vec3::ZERO, radius: 0.0 };
+        }
+        let center = (min + max) * 0.5;
+        let mut radius: f32 = 0.0;
+        for vertex in vertices {
+            let pos = Vec3::from_array(vertex.position);
+            radius = radius.max((pos - center).length());
+        }
+        MeshBounds { min, max, center, radius }
+    }
 }
 
 #[cfg(test)]

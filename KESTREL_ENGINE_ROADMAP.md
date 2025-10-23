@@ -182,7 +182,7 @@
 - Transform gizmos for translate/rotate/scale.
 - Save and load scene buttons.
 
-**Status:** Debug UI now exposes an inspector with editable transform/tint/sprite fields; gizmos and scene toolbar work remain.
+**Status:** Inspector editing spans sprites and meshes with perspective gizmos, a frame-selection helper, and a scene toolbar that tracks paths + dependency health.
 
 **Stretch Ideas**
 - Drag-and-drop prefab creation.

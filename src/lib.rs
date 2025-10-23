@@ -64,6 +64,9 @@ const SCALE_MAX_RATIO: f32 = 20.0;
 const SCALE_SNAP_STEP: f32 = 0.1;
 const TRANSLATE_SNAP_STEP: f32 = 0.05;
 const ROTATE_SNAP_STEP_RADIANS: f32 = 15.0_f32.to_radians();
+const GIZMO_3D_AXIS_LENGTH_SCALE: f32 = 0.2;
+const GIZMO_3D_AXIS_MIN: f32 = 0.1;
+const GIZMO_3D_AXIS_MAX: f32 = 5.0;
 const MESH_CAMERA_FOV_RADIANS: f32 = 60.0_f32.to_radians();
 const MESH_CAMERA_NEAR: f32 = 0.1;
 const MESH_CAMERA_FAR: f32 = 100.0;
@@ -191,6 +194,12 @@ enum GizmoInteraction {
         start_translation: Vec2,
         start_pointer: Vec2,
         axis_lock: Option<Axis2>,
+    },
+    Translate3D {
+        entity: Entity,
+        offset: Vec3,
+        plane_origin: Vec3,
+        plane_normal: Vec3,
     },
     Rotate {
         entity: Entity,
@@ -381,6 +390,7 @@ pub struct App {
     ui_scale: f32,
     ui_scene_path: String,
     ui_scene_status: Option<String>,
+    scene_history: VecDeque<String>,
     inspector_status: Option<String>,
 
     // Audio
@@ -481,6 +491,8 @@ impl App {
             )
         };
         let scene_path = String::from("assets/scenes/quick_save.json");
+        let mut scene_history = VecDeque::with_capacity(8);
+        scene_history.push_back(scene_path.clone());
         let time = Time::new();
         let input = Input::new();
         let assets = AssetManager::new();
@@ -535,6 +547,7 @@ impl App {
             ui_scale: 1.0,
             ui_scene_path: scene_path,
             ui_scene_status: None,
+            scene_history,
             inspector_status: None,
             audio,
             recent_events,
@@ -609,6 +622,44 @@ impl App {
             self.sprite_atlas_views.clear();
             self.renderer.clear_sprite_bind_cache();
         }
+    }
+
+    fn remember_scene_path(&mut self, path: &str) {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        if let Some(pos) = self.scene_history.iter().position(|entry| entry == trimmed) {
+            self.scene_history.remove(pos);
+        }
+        self.scene_history.push_front(trimmed.to_string());
+        while self.scene_history.len() > 8 {
+            self.scene_history.pop_back();
+        }
+    }
+
+    fn focus_selection(&mut self) -> bool {
+        let Some(entity) = self.selected_entity else {
+            return false;
+        };
+        let Some(info) = self.ecs.entity_info(entity) else {
+            return false;
+        };
+        self.camera.position = info.translation;
+        if let Some(mesh_tx) = info.mesh_transform {
+            self.mesh_frustum_focus = mesh_tx.translation;
+            self.mesh_frustum_distance =
+                (self.mesh_camera.position - self.mesh_frustum_focus).length().max(0.1);
+            self.mesh_orbit.target = mesh_tx.translation;
+            self.mesh_orbit.radius = self.mesh_frustum_distance;
+            self.mesh_camera =
+                self.mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
+            self.mesh_freefly = FreeflyController::from_camera(&self.mesh_camera);
+            self.mesh_status = Some("Framed selection in 3D viewport.".to_string());
+        } else {
+            self.mesh_status = Some("Centered 2D camera on selection.".to_string());
+        }
+        true
     }
 
     fn update_mesh_camera(&mut self, dt: f32) {
@@ -1159,6 +1210,22 @@ impl App {
         let clamped = Vec2::new(size.x.max(1.0), size.y.max(1.0));
         self.viewport = Viewport::new(origin, clamped);
     }
+
+    fn mesh_camera_forward(&self) -> Vec3 {
+        (self.mesh_camera.target - self.mesh_camera.position).normalize_or_zero()
+    }
+
+    fn intersect_ray_plane(origin: Vec3, dir: Vec3, plane_origin: Vec3, plane_normal: Vec3) -> Option<Vec3> {
+        let denom = plane_normal.dot(dir);
+        if denom.abs() < 1e-4 {
+            return None;
+        }
+        let t = (plane_origin - origin).dot(plane_normal) / denom;
+        if t < 0.0 {
+            return None;
+        }
+        Some(origin + dir * t)
+    }
 }
 
 impl ApplicationHandler for App {
@@ -1329,8 +1396,13 @@ impl ApplicationHandler for App {
         let viewport_size = self.viewport_physical_size();
         let cursor_screen = self.input.cursor_position().map(|(sx, sy)| Vec2::new(sx, sy));
         let cursor_viewport = cursor_screen.and_then(|pos| self.screen_to_viewport(pos));
-        let cursor_world_pos = if self.viewport_camera_mode == ViewportCameraMode::Ortho2D {
+        let cursor_world_2d = if self.viewport_camera_mode == ViewportCameraMode::Ortho2D {
             cursor_viewport.and_then(|pos| self.camera.screen_to_world(pos, viewport_size))
+        } else {
+            None
+        };
+        let cursor_ray = if self.viewport_camera_mode == ViewportCameraMode::Perspective3D {
+            cursor_viewport.and_then(|pos| self.mesh_camera.screen_ray(pos, viewport_size))
         } else {
             None
         };
@@ -1363,9 +1435,11 @@ impl ApplicationHandler for App {
 
         let view_proj = self.camera.view_projection(viewport_size);
         let shift_held = self.input.shift_held();
-        let hovered_scale_kind = if self.gizmo_mode == GizmoMode::Scale {
+        let hovered_scale_kind = if self.viewport_camera_mode == ViewportCameraMode::Ortho2D
+            && self.gizmo_mode == GizmoMode::Scale
+        {
             if let (Some(info), Some(center_viewport), Some(pointer_viewport), Some(pointer_world)) =
-                (selected_info.as_ref(), gizmo_center_viewport, cursor_viewport, cursor_world_pos)
+                (selected_info.as_ref(), gizmo_center_viewport, cursor_viewport, cursor_world_2d)
             {
                 self.detect_scale_handle(
                     pointer_world,
@@ -1384,35 +1458,75 @@ impl ApplicationHandler for App {
 
         let mut gizmo_click_consumed = false;
         if self.input.take_left_click() {
-            if let (Some(entity), Some(center_viewport), Some(pointer_viewport)) =
-                (self.selected_entity, gizmo_center_viewport, cursor_viewport)
-            {
-                let dist = pointer_viewport.distance(center_viewport);
+            if let Some(entity) = self.selected_entity {
                 match self.gizmo_mode {
                     GizmoMode::Translate => {
-                        if dist <= GIZMO_TRANSLATE_RADIUS_PX {
-                            if let Some(pointer_world) = cursor_world_pos {
-                                let offset = selected_info
-                                    .as_ref()
-                                    .map(|info| info.translation - pointer_world)
-                                    .unwrap_or(Vec2::ZERO);
-                                if let Some(info) = selected_info.as_ref() {
-                                    self.gizmo_interaction = Some(GizmoInteraction::Translate {
-                                        entity,
-                                        offset,
-                                        start_translation: info.translation,
-                                        start_pointer: pointer_world,
-                                        axis_lock: None,
-                                    });
+                        if self.viewport_camera_mode == ViewportCameraMode::Perspective3D {
+                            if let (Some(info), Some((ray_origin, ray_dir))) =
+                                (selected_info.as_ref(), cursor_ray)
+                            {
+                                if let Some(mesh_tx) = info.mesh_transform.as_ref() {
+                                    let plane_origin = mesh_tx.translation;
+                                    let plane_normal = self.mesh_camera_forward();
+                                    if plane_normal.length_squared() > f32::EPSILON {
+                                        if let Some(hit) = App::intersect_ray_plane(
+                                            ray_origin,
+                                            ray_dir,
+                                            plane_origin,
+                                            plane_normal,
+                                        ) {
+                                            let offset = plane_origin - hit;
+                                            self.gizmo_interaction = Some(GizmoInteraction::Translate3D {
+                                                entity,
+                                                offset,
+                                                plane_origin,
+                                                plane_normal,
+                                            });
+                                            gizmo_click_consumed = true;
+                                            self.inspector_status = None;
+                                        }
+                                    }
                                 }
-                                gizmo_click_consumed = true;
-                                self.inspector_status = None;
+                            }
+                        } else if let (Some(center_viewport), Some(pointer_viewport)) =
+                            (gizmo_center_viewport, cursor_viewport)
+                        {
+                            let dist = pointer_viewport.distance(center_viewport);
+                            if dist <= GIZMO_TRANSLATE_RADIUS_PX {
+                                if let Some(pointer_world) = cursor_world_2d {
+                                    let offset = selected_info
+                                        .as_ref()
+                                        .map(|info| info.translation - pointer_world)
+                                        .unwrap_or(Vec2::ZERO);
+                                    if let Some(info) = selected_info.as_ref() {
+                                        self.gizmo_interaction = Some(GizmoInteraction::Translate {
+                                            entity,
+                                            offset,
+                                            start_translation: info.translation,
+                                            start_pointer: pointer_world,
+                                            axis_lock: None,
+                                        });
+                                    }
+                                    gizmo_click_consumed = true;
+                                    self.inspector_status = None;
+                                }
                             }
                         }
                     }
                     GizmoMode::Scale => {
-                        if let (Some(pointer_world), Some(info)) = (cursor_world_pos, selected_info.as_ref())
-                        {
+                        if let (
+                            ViewportCameraMode::Ortho2D,
+                            Some(pointer_world),
+                            Some(pointer_viewport),
+                            Some(info),
+                            Some(center_viewport),
+                        ) = (
+                            self.viewport_camera_mode,
+                            cursor_world_2d,
+                            cursor_viewport,
+                            selected_info.as_ref(),
+                            gizmo_center_viewport,
+                        ) {
                             if let Some((_kind, handle)) = self.detect_scale_handle(
                                 pointer_world,
                                 pointer_viewport,
@@ -1428,21 +1542,30 @@ impl ApplicationHandler for App {
                         }
                     }
                     GizmoMode::Rotate => {
-                        if dist >= GIZMO_ROTATE_INNER_RADIUS_PX && dist <= GIZMO_ROTATE_OUTER_RADIUS_PX {
-                            if let (Some(pointer_world), Some(info)) =
-                                (cursor_world_pos, selected_info.as_ref())
+                        if self.viewport_camera_mode == ViewportCameraMode::Ortho2D {
+                            if let (Some(center_viewport), Some(pointer_viewport)) =
+                                (gizmo_center_viewport, cursor_viewport)
                             {
-                                let center = info.translation;
-                                let vec = pointer_world - center;
-                                if vec.length_squared() > f32::EPSILON {
-                                    let start_angle = vec.y.atan2(vec.x);
-                                    self.gizmo_interaction = Some(GizmoInteraction::Rotate {
-                                        entity,
-                                        start_rotation: info.rotation,
-                                        start_angle,
-                                    });
-                                    gizmo_click_consumed = true;
-                                    self.inspector_status = None;
+                                let dist = pointer_viewport.distance(center_viewport);
+                                if dist >= GIZMO_ROTATE_INNER_RADIUS_PX
+                                    && dist <= GIZMO_ROTATE_OUTER_RADIUS_PX
+                                {
+                                    if let (Some(pointer_world), Some(info)) =
+                                        (cursor_world_2d, selected_info.as_ref())
+                                    {
+                                        let center = info.translation;
+                                        let vec = pointer_world - center;
+                                        if vec.length_squared() > f32::EPSILON {
+                                            let start_angle = vec.y.atan2(vec.x);
+                                            self.gizmo_interaction = Some(GizmoInteraction::Rotate {
+                                                entity,
+                                                start_rotation: info.rotation,
+                                                start_angle,
+                                            });
+                                            gizmo_click_consumed = true;
+                                            self.inspector_status = None;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1451,7 +1574,28 @@ impl ApplicationHandler for App {
             }
 
             if !gizmo_click_consumed {
-                if let Some(world) = cursor_world_pos {
+                if self.viewport_camera_mode == ViewportCameraMode::Perspective3D {
+                    if let Some((ray_origin, ray_dir)) = cursor_ray {
+                        let mut picked = self.ecs.pick_entity_3d(ray_origin, ray_dir, &self.mesh_registry);
+                        if picked.is_none() {
+                            if let Some(hit) =
+                                App::intersect_ray_plane(ray_origin, ray_dir, Vec3::ZERO, Vec3::Z)
+                            {
+                                picked = self.ecs.pick_entity(hit.truncate());
+                            }
+                        }
+                        self.selected_entity = picked;
+                        if self.selected_entity.is_some() {
+                            self.inspector_status = None;
+                        }
+                    } else if cursor_in_viewport {
+                        self.selected_entity = None;
+                        self.inspector_status = None;
+                    }
+                    if self.selected_entity.is_none() && cursor_in_viewport {
+                        self.inspector_status = None;
+                    }
+                } else if let Some(world) = cursor_world_2d {
                     self.selected_entity = self.ecs.pick_entity(world);
                     self.inspector_status = None;
                 } else if cursor_in_viewport {
@@ -1480,7 +1624,7 @@ impl ApplicationHandler for App {
                 } => {
                     if !self.input.left_held() {
                         keep_active = false;
-                    } else if let Some(pointer_world) = cursor_world_pos {
+                    } else if let Some(pointer_world) = cursor_world_2d {
                         if self.ecs.entity_exists(*entity) {
                             let mut current_axis = None;
                             if self.input.shift_held() {
@@ -1531,10 +1675,39 @@ impl ApplicationHandler for App {
                         keep_active = false;
                     }
                 }
+                GizmoInteraction::Translate3D { entity, offset, plane_origin, plane_normal } => {
+                    if !self.input.left_held() {
+                        keep_active = false;
+                    } else if let Some((ray_origin, ray_dir)) = cursor_ray {
+                        if let Some(hit) =
+                            App::intersect_ray_plane(ray_origin, ray_dir, *plane_origin, *plane_normal)
+                        {
+                            if self.ecs.entity_exists(*entity) {
+                                let mut translation = hit + *offset;
+                                if self.input.ctrl_held() {
+                                    translation.x =
+                                        (translation.x / TRANSLATE_SNAP_STEP).round() * TRANSLATE_SNAP_STEP;
+                                    translation.y =
+                                        (translation.y / TRANSLATE_SNAP_STEP).round() * TRANSLATE_SNAP_STEP;
+                                    translation.z =
+                                        (translation.z / TRANSLATE_SNAP_STEP).round() * TRANSLATE_SNAP_STEP;
+                                }
+                                self.ecs.set_mesh_translation(*entity, translation);
+                                self.ecs.set_translation(*entity, translation.truncate());
+                            } else {
+                                keep_active = false;
+                            }
+                        } else {
+                            keep_active = false;
+                        }
+                    } else {
+                        keep_active = false;
+                    }
+                }
                 GizmoInteraction::Rotate { entity, start_rotation, start_angle } => {
                     if !self.input.left_held() {
                         keep_active = false;
-                    } else if let Some(pointer_world) = cursor_world_pos {
+                    } else if let Some(pointer_world) = cursor_world_2d {
                         if let Some(info) = self.ecs.entity_info(*entity) {
                             let vec = pointer_world - info.translation;
                             if vec.length_squared() > f32::EPSILON {
@@ -1556,7 +1729,7 @@ impl ApplicationHandler for App {
                 GizmoInteraction::Scale { entity, start_scale, handle } => {
                     if !self.input.left_held() {
                         keep_active = false;
-                    } else if let Some(pointer_world) = cursor_world_pos {
+                    } else if let Some(pointer_world) = cursor_world_2d {
                         if let Some(info) = self.ecs.entity_info(*entity) {
                             let center = info.translation;
                             let mut new_scale = *start_scale;
@@ -1775,6 +1948,7 @@ impl ApplicationHandler for App {
         let mut selection_details = selected_info.clone();
         let camera_position = self.camera.position;
         let camera_zoom = self.camera.zoom;
+        let mesh_camera_for_ui = self.mesh_camera.clone();
         let recent_events: Vec<GameEvent> = self.recent_events.iter().cloned().collect();
         let audio_triggers: Vec<String> = self.audio.recent_triggers().cloned().collect();
         let mut audio_enabled = self.audio.enabled();
@@ -1795,8 +1969,12 @@ impl ApplicationHandler for App {
         let mut mesh_frustum_request: Option<bool> = None;
         let mut mesh_reset_request = false;
         let mut mesh_selection_request: Option<String> = None;
+        let mut frame_selection_request = false;
         let mut mesh_keys: Vec<String> = self.mesh_registry.keys().map(|k| k.to_string()).collect();
         mesh_keys.sort();
+        let scene_history_list: Vec<String> = self.scene_history.iter().cloned().collect();
+        let atlas_snapshot: Vec<String> = self.scene_atlas_refs.iter().cloned().collect();
+        let mesh_snapshot: Vec<String> = self.scene_mesh_refs.iter().cloned().collect();
         let mut pending_viewport: Option<(Vec2, Vec2)> = None;
         let mut left_panel_width_px = 0.0;
         let mut right_panel_width_px = 0.0;
@@ -1847,7 +2025,7 @@ impl ApplicationHandler for App {
                             camera_position.x, camera_position.y, camera_zoom
                         ));
                         if self.viewport_camera_mode == ViewportCameraMode::Perspective3D {
-                            let pos = self.mesh_camera.position;
+                            let pos = mesh_camera_for_ui.position;
                             ui.label(format!("3D camera pos: ({:.2}, {:.2}, {:.2})", pos.x, pos.y, pos.z));
                         }
                         let display_mode =
@@ -1857,7 +2035,7 @@ impl ApplicationHandler for App {
                             self.config.window.width, self.config.window.height, display_mode
                         ));
                         ui.label(format!("VSync: {}", if self.config.window.vsync { "On" } else { "Off" }));
-                        if let Some(cursor) = cursor_world_pos {
+                        if let Some(cursor) = cursor_world_2d {
                             ui.label(format!("Cursor world: ({:.2}, {:.2})", cursor.x, cursor.y));
                         } else {
                             ui.label("Cursor world: n/a");
@@ -1894,6 +2072,10 @@ impl ApplicationHandler for App {
                         ui.horizontal(|ui| {
                             ui.label("Start color");
                             ui.color_edit_button_rgba_unmultiplied(&mut ui_emitter_start_color);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("End color");
+                            ui.color_edit_button_rgba_unmultiplied(&mut ui_emitter_end_color);
                         });
                         ui.horizontal(|ui| {
                             ui.label("End color");
@@ -2046,6 +2228,14 @@ impl ApplicationHandler for App {
                                     if self.input.ctrl_held() {
                                         msg.push_str(" [snap]");
                                     }
+                                    ui.colored_label(egui::Color32::LIGHT_GREEN, msg);
+                                }
+                                GizmoInteraction::Translate3D { .. } => {
+                                    let msg = if self.input.ctrl_held() {
+                                        "3D translate gizmo active [snap]"
+                                    } else {
+                                        "3D translate gizmo active"
+                                    };
                                     ui.colored_label(egui::Color32::LIGHT_GREEN, msg);
                                 }
                                 GizmoInteraction::Rotate { .. } => {
@@ -2371,6 +2561,12 @@ impl ApplicationHandler for App {
                             ui.label("Selection data unavailable");
                         }
 
+                        ui.horizontal(|ui| {
+                            if ui.button("Frame selection").clicked() {
+                                frame_selection_request = true;
+                            }
+                        });
+
                         if inspector_refresh {
                             selection_details =
                                 selected_entity.and_then(|entity| self.ecs.entity_info(entity));
@@ -2395,6 +2591,23 @@ impl ApplicationHandler for App {
                     ui.horizontal(|ui| {
                         ui.label("Path");
                         ui.text_edit_singleline(&mut self.ui_scene_path);
+                        ui.menu_button("Recent", |menu| {
+                            if scene_history_list.is_empty() {
+                                menu.label("No saved paths yet");
+                            } else {
+                                for entry in &scene_history_list {
+                                    if menu.button(entry).clicked() {
+                                        self.ui_scene_path = entry.clone();
+                                        menu.close();
+                                    }
+                                }
+                                menu.separator();
+                                if menu.button("Clear history").clicked() {
+                                    self.scene_history.clear();
+                                    menu.close();
+                                }
+                            }
+                        });
                         if ui.button("Save").clicked() {
                             actions.save_scene = true;
                         }
@@ -2405,6 +2618,64 @@ impl ApplicationHandler for App {
                     if let Some(status) = &self.ui_scene_status {
                         ui.label(status);
                     }
+                    ui.collapsing("Dependency Summary", |ui| {
+                        if atlas_snapshot.is_empty() {
+                            ui.small("Atlases: none retained");
+                        } else {
+                            ui.label(format!(
+                                "Atlases retained: {} (persistent: {})",
+                                atlas_snapshot.len(),
+                                self.persistent_atlases.len()
+                            ));
+                            for atlas in &atlas_snapshot {
+                                let scope = if self.persistent_atlases.contains(atlas) {
+                                    "persistent"
+                                } else {
+                                    "scene"
+                                };
+                                let loaded = self.assets.has_atlas(atlas);
+                                let color = if loaded {
+                                    egui::Color32::LIGHT_GREEN
+                                } else {
+                                    egui::Color32::from_rgb(220, 120, 120)
+                                };
+                                let status_label = if loaded { "loaded" } else { "missing" };
+                                ui.colored_label(color, format!("- {} ({}, {})", atlas, scope, status_label));
+                            }
+                        }
+                        if mesh_snapshot.is_empty() {
+                            ui.small("Meshes: none retained");
+                        } else {
+                            ui.separator();
+                            ui.label(format!(
+                                "Meshes retained: {} (persistent: {})",
+                                mesh_snapshot.len(),
+                                self.persistent_meshes.len()
+                            ));
+                            for mesh_key in &mesh_snapshot {
+                                let scope = if self.persistent_meshes.contains(mesh_key) {
+                                    "persistent"
+                                } else {
+                                    "scene"
+                                };
+                                let ref_count = self.mesh_registry.mesh_ref_count(mesh_key).unwrap_or(0);
+                                let loaded = self.mesh_registry.has(mesh_key);
+                                let color = if loaded {
+                                    egui::Color32::LIGHT_GREEN
+                                } else {
+                                    egui::Color32::from_rgb(220, 120, 120)
+                                };
+                                let status_label = if loaded { "loaded" } else { "missing" };
+                                ui.colored_label(
+                                    color,
+                                    format!(
+                                        "- {} ({}, refs={}, {})",
+                                        mesh_key, scope, ref_count, status_label
+                                    ),
+                                );
+                            }
+                        }
+                    });
 
                     ui.separator();
                     ui.heading("Recent Events");
@@ -2474,24 +2745,37 @@ impl ApplicationHandler for App {
 
             let mut highlight_rect = None;
             let mut gizmo_center_px = None;
+            let mut gizmo_center_world3d = None;
             if let Some(entity) = self.selected_entity {
-                if let Some((min, max)) = self.ecs.entity_bounds(entity) {
-                    if let Some((min_px_view, max_px_view)) =
-                        self.camera.world_rect_to_screen_bounds(min, max, viewport_size_physical)
-                    {
-                        let min_screen = min_px_view + viewport_origin_vec2;
-                        let max_screen = max_px_view + viewport_origin_vec2;
-                        highlight_rect = Some(egui::Rect::from_two_pos(
-                            egui::pos2(
-                                min_screen.x / ui_pixels_per_point,
-                                min_screen.y / ui_pixels_per_point,
-                            ),
-                            egui::pos2(
-                                max_screen.x / ui_pixels_per_point,
-                                max_screen.y / ui_pixels_per_point,
-                            ),
-                        ));
-                        gizmo_center_px = Some((min_screen + max_screen) * 0.5);
+                if self.viewport_camera_mode == ViewportCameraMode::Ortho2D {
+                    if let Some((min, max)) = self.ecs.entity_bounds(entity) {
+                        if let Some((min_px_view, max_px_view)) =
+                            self.camera.world_rect_to_screen_bounds(min, max, viewport_size_physical)
+                        {
+                            let min_screen = min_px_view + viewport_origin_vec2;
+                            let max_screen = max_px_view + viewport_origin_vec2;
+                            highlight_rect = Some(egui::Rect::from_two_pos(
+                                egui::pos2(
+                                    min_screen.x / ui_pixels_per_point,
+                                    min_screen.y / ui_pixels_per_point,
+                                ),
+                                egui::pos2(
+                                    max_screen.x / ui_pixels_per_point,
+                                    max_screen.y / ui_pixels_per_point,
+                                ),
+                            ));
+                            gizmo_center_px = Some((min_screen + max_screen) * 0.5);
+                        }
+                    }
+                } else if let Some(info) = self.ecs.entity_info(entity) {
+                    if let Some(mesh_tx) = info.mesh_transform {
+                        if let Some(center_view) =
+                            mesh_camera_for_ui.project_point(mesh_tx.translation, viewport_size_physical)
+                        {
+                            let center_screen = center_view + viewport_origin_vec2;
+                            gizmo_center_px = Some(center_screen);
+                            gizmo_center_world3d = Some(mesh_tx.translation);
+                        }
                     }
                 }
             }
@@ -2529,130 +2813,158 @@ impl ApplicationHandler for App {
             let scale_highlight_kind = active_scale_handle_kind.or(hovered_scale_kind);
             if let Some(center_px) = gizmo_center_px {
                 let center = egui::pos2(center_px.x / ui_pixels_per_point, center_px.y / ui_pixels_per_point);
-                match self.gizmo_mode {
-                    GizmoMode::Translate => {
-                        let extent = 8.0 / ui_pixels_per_point;
-                        painter.line_segment(
-                            [
-                                egui::pos2(center.x - extent, center.y),
-                                egui::pos2(center.x + extent, center.y),
-                            ],
-                            egui::Stroke::new(2.0, egui::Color32::YELLOW),
-                        );
-                        painter.line_segment(
-                            [
-                                egui::pos2(center.x, center.y - extent),
-                                egui::pos2(center.x, center.y + extent),
-                            ],
-                            egui::Stroke::new(2.0, egui::Color32::YELLOW),
-                        );
+                if self.viewport_camera_mode == ViewportCameraMode::Perspective3D {
+                    if let Some(center_world) = gizmo_center_world3d {
+                        let distance = (mesh_camera_for_ui.position - center_world).length().max(0.001);
+                        let axis_length = (distance * GIZMO_3D_AXIS_LENGTH_SCALE)
+                            .clamp(GIZMO_3D_AXIS_MIN, GIZMO_3D_AXIS_MAX);
+                        let axes = [
+                            (Vec3::X, egui::Color32::from_rgb(240, 100, 100)),
+                            (Vec3::Y, egui::Color32::from_rgb(100, 220, 100)),
+                            (Vec3::Z, egui::Color32::from_rgb(120, 150, 255)),
+                        ];
+                        for (axis, color) in axes {
+                            let end_world = center_world + axis * axis_length;
+                            if let Some(end_view) =
+                                mesh_camera_for_ui.project_point(end_world, viewport_size_physical)
+                            {
+                                let end_screen = end_view + viewport_origin_vec2;
+                                let end_pos = egui::pos2(
+                                    end_screen.x / ui_pixels_per_point,
+                                    end_screen.y / ui_pixels_per_point,
+                                );
+                                painter.line_segment([center, end_pos], egui::Stroke::new(2.0, color));
+                                painter.circle_filled(end_pos, 3.0 / ui_pixels_per_point, color);
+                            }
+                        }
                     }
-                    GizmoMode::Scale => {
-                        let inner = GIZMO_SCALE_INNER_RADIUS_PX / ui_pixels_per_point;
-                        let outer = GIZMO_SCALE_OUTER_RADIUS_PX / ui_pixels_per_point;
-                        let axis_length = GIZMO_SCALE_AXIS_LENGTH_PX / ui_pixels_per_point;
-                        let axis_half = (GIZMO_SCALE_AXIS_THICKNESS_PX * 0.5) / ui_pixels_per_point;
-                        let handle_half = (GIZMO_SCALE_HANDLE_SIZE_PX * 0.5) / ui_pixels_per_point;
+                } else {
+                    match self.gizmo_mode {
+                        GizmoMode::Translate => {
+                            let extent = 8.0 / ui_pixels_per_point;
+                            painter.line_segment(
+                                [
+                                    egui::pos2(center.x - extent, center.y),
+                                    egui::pos2(center.x + extent, center.y),
+                                ],
+                                egui::Stroke::new(2.0, egui::Color32::YELLOW),
+                            );
+                            painter.line_segment(
+                                [
+                                    egui::pos2(center.x, center.y - extent),
+                                    egui::pos2(center.x, center.y + extent),
+                                ],
+                                egui::Stroke::new(2.0, egui::Color32::YELLOW),
+                            );
+                        }
+                        GizmoMode::Scale => {
+                            let inner = GIZMO_SCALE_INNER_RADIUS_PX / ui_pixels_per_point;
+                            let outer = GIZMO_SCALE_OUTER_RADIUS_PX / ui_pixels_per_point;
+                            let axis_length = GIZMO_SCALE_AXIS_LENGTH_PX / ui_pixels_per_point;
+                            let axis_half = (GIZMO_SCALE_AXIS_THICKNESS_PX * 0.5) / ui_pixels_per_point;
+                            let handle_half = (GIZMO_SCALE_HANDLE_SIZE_PX * 0.5) / ui_pixels_per_point;
 
-                        let active_uniform = matches!(scale_highlight_kind, Some(ScaleHandleKind::Uniform));
-                        let active_axis = match scale_highlight_kind {
-                            Some(ScaleHandleKind::Axis(axis)) => Some(axis),
-                            _ => None,
-                        };
+                            let active_uniform =
+                                matches!(scale_highlight_kind, Some(ScaleHandleKind::Uniform));
+                            let active_axis = match scale_highlight_kind {
+                                Some(ScaleHandleKind::Axis(axis)) => Some(axis),
+                                _ => None,
+                            };
 
-                        let base_x = if matches!(active_axis, Some(Axis2::X)) {
-                            egui::Color32::from_rgb(255, 185, 185)
-                        } else {
-                            egui::Color32::from_rgb(240, 120, 120)
-                        };
-                        let base_y = if matches!(active_axis, Some(Axis2::Y)) {
-                            egui::Color32::from_rgb(185, 225, 255)
-                        } else {
-                            egui::Color32::from_rgb(120, 180, 255)
-                        };
+                            let base_x = if matches!(active_axis, Some(Axis2::X)) {
+                                egui::Color32::from_rgb(255, 185, 185)
+                            } else {
+                                egui::Color32::from_rgb(240, 120, 120)
+                            };
+                            let base_y = if matches!(active_axis, Some(Axis2::Y)) {
+                                egui::Color32::from_rgb(185, 225, 255)
+                            } else {
+                                egui::Color32::from_rgb(120, 180, 255)
+                            };
 
-                        let horiz_pos = egui::Rect::from_min_max(
-                            egui::pos2(center.x, center.y - axis_half),
-                            egui::pos2(center.x + axis_length, center.y + axis_half),
-                        );
-                        let horiz_neg = egui::Rect::from_min_max(
-                            egui::pos2(center.x - axis_length, center.y - axis_half),
-                            egui::pos2(center.x, center.y + axis_half),
-                        );
-                        painter.rect_filled(horiz_pos, 0.0, base_x);
-                        painter.rect_filled(horiz_neg, 0.0, base_x);
+                            let horiz_pos = egui::Rect::from_min_max(
+                                egui::pos2(center.x, center.y - axis_half),
+                                egui::pos2(center.x + axis_length, center.y + axis_half),
+                            );
+                            let horiz_neg = egui::Rect::from_min_max(
+                                egui::pos2(center.x - axis_length, center.y - axis_half),
+                                egui::pos2(center.x, center.y + axis_half),
+                            );
+                            painter.rect_filled(horiz_pos, 0.0, base_x);
+                            painter.rect_filled(horiz_neg, 0.0, base_x);
 
-                        let vert_pos = egui::Rect::from_min_max(
-                            egui::pos2(center.x - axis_half, center.y - axis_length),
-                            egui::pos2(center.x + axis_half, center.y),
-                        );
-                        let vert_neg = egui::Rect::from_min_max(
-                            egui::pos2(center.x - axis_half, center.y),
-                            egui::pos2(center.x + axis_half, center.y + axis_length),
-                        );
-                        painter.rect_filled(vert_pos, 0.0, base_y);
-                        painter.rect_filled(vert_neg, 0.0, base_y);
+                            let vert_pos = egui::Rect::from_min_max(
+                                egui::pos2(center.x - axis_half, center.y - axis_length),
+                                egui::pos2(center.x + axis_half, center.y),
+                            );
+                            let vert_neg = egui::Rect::from_min_max(
+                                egui::pos2(center.x - axis_half, center.y),
+                                egui::pos2(center.x + axis_half, center.y + axis_length),
+                            );
+                            painter.rect_filled(vert_pos, 0.0, base_y);
+                            painter.rect_filled(vert_neg, 0.0, base_y);
 
-                        let handle_size = egui::vec2(handle_half * 2.0, handle_half * 2.0);
-                        painter.rect_filled(
-                            egui::Rect::from_center_size(
-                                egui::pos2(center.x + axis_length, center.y),
-                                handle_size,
-                            ),
-                            0.0,
-                            base_x,
-                        );
-                        painter.rect_filled(
-                            egui::Rect::from_center_size(
-                                egui::pos2(center.x - axis_length, center.y),
-                                handle_size,
-                            ),
-                            0.0,
-                            base_x,
-                        );
-                        painter.rect_filled(
-                            egui::Rect::from_center_size(
-                                egui::pos2(center.x, center.y - axis_length),
-                                handle_size,
-                            ),
-                            0.0,
-                            base_y,
-                        );
-                        painter.rect_filled(
-                            egui::Rect::from_center_size(
-                                egui::pos2(center.x, center.y + axis_length),
-                                handle_size,
-                            ),
-                            0.0,
-                            base_y,
-                        );
+                            let handle_size = egui::vec2(handle_half * 2.0, handle_half * 2.0);
+                            painter.rect_filled(
+                                egui::Rect::from_center_size(
+                                    egui::pos2(center.x + axis_length, center.y),
+                                    handle_size,
+                                ),
+                                0.0,
+                                base_x,
+                            );
+                            painter.rect_filled(
+                                egui::Rect::from_center_size(
+                                    egui::pos2(center.x - axis_length, center.y),
+                                    handle_size,
+                                ),
+                                0.0,
+                                base_x,
+                            );
+                            painter.rect_filled(
+                                egui::Rect::from_center_size(
+                                    egui::pos2(center.x, center.y - axis_length),
+                                    handle_size,
+                                ),
+                                0.0,
+                                base_y,
+                            );
+                            painter.rect_filled(
+                                egui::Rect::from_center_size(
+                                    egui::pos2(center.x, center.y + axis_length),
+                                    handle_size,
+                                ),
+                                0.0,
+                                base_y,
+                            );
 
-                        let outer_color = if active_uniform {
-                            egui::Color32::from_rgb(255, 235, 150)
-                        } else {
-                            egui::Color32::from_rgb(255, 210, 90)
-                        };
-                        let inner_color = if active_uniform {
-                            egui::Color32::from_rgb(220, 200, 110)
-                        } else {
-                            egui::Color32::from_rgb(180, 160, 60)
-                        };
-                        painter.circle_stroke(center, outer, egui::Stroke::new(2.0, outer_color));
-                        painter.circle_stroke(center, inner, egui::Stroke::new(1.0, inner_color));
-                    }
-                    GizmoMode::Rotate => {
-                        let inner = GIZMO_ROTATE_INNER_RADIUS_PX / ui_pixels_per_point;
-                        let outer = GIZMO_ROTATE_OUTER_RADIUS_PX / ui_pixels_per_point;
-                        painter.circle_stroke(
-                            center,
-                            outer,
-                            egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 210, 40)),
-                        );
-                        painter.circle_stroke(
-                            center,
-                            inner,
-                            egui::Stroke::new(1.0, egui::Color32::from_rgb(180, 160, 40)),
-                        );
+                            let outer_color = if active_uniform {
+                                egui::Color32::from_rgb(255, 235, 150)
+                            } else {
+                                egui::Color32::from_rgb(255, 210, 90)
+                            };
+                            let inner_color = if active_uniform {
+                                egui::Color32::from_rgb(220, 200, 110)
+                            } else {
+                                egui::Color32::from_rgb(180, 160, 60)
+                            };
+                            painter.circle_stroke(center, outer, egui::Stroke::new(2.0, outer_color));
+                            painter.circle_stroke(center, inner, egui::Stroke::new(1.0, inner_color));
+                        }
+                        GizmoMode::Rotate => {
+                            let inner = GIZMO_ROTATE_INNER_RADIUS_PX / ui_pixels_per_point;
+                            let outer = GIZMO_ROTATE_OUTER_RADIUS_PX / ui_pixels_per_point;
+                            painter.circle_stroke(
+                                center,
+                                outer,
+                                egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 210, 40)),
+                            );
+                            painter.circle_stroke(
+                                center,
+                                inner,
+                                egui::Stroke::new(1.0, egui::Color32::from_rgb(180, 160, 40)),
+                            );
+                        }
                     }
                 }
                 painter.circle_stroke(
@@ -2703,6 +3015,13 @@ impl ApplicationHandler for App {
         if let Some((origin, size)) = pending_viewport {
             self.update_viewport(origin, size);
         }
+        if frame_selection_request {
+            if self.focus_selection() {
+                self.inspector_status = Some("Viewport framed selection.".to_string());
+            } else {
+                self.inspector_status = Some("Selection unavailable.".to_string());
+            }
+        }
 
         if actions.save_scene {
             let mesh_source_map: HashMap<String, String> = self
@@ -2718,7 +3037,11 @@ impl ApplicationHandler for App {
                 self.ecs.export_scene_with_mesh_source(&self.assets, |key| mesh_source_map.get(key).cloned());
             scene.metadata = self.capture_scene_metadata();
             match scene.save_to_path(&self.ui_scene_path) {
-                Ok(_) => self.ui_scene_status = Some(format!("Saved {}", self.ui_scene_path)),
+                Ok(_) => {
+                    let path = self.ui_scene_path.clone();
+                    self.ui_scene_status = Some(format!("Saved {}", path));
+                    self.remember_scene_path(&path);
+                }
                 Err(err) => self.ui_scene_status = Some(format!("Save failed: {err}")),
             }
         }
@@ -2730,7 +3053,9 @@ impl ApplicationHandler for App {
             ) {
                 Ok(scene) => match self.update_scene_dependencies(&scene.dependencies) {
                     Ok(()) => {
-                        self.ui_scene_status = Some(format!("Loaded {}", self.ui_scene_path));
+                        let path = self.ui_scene_path.clone();
+                        self.ui_scene_status = Some(format!("Loaded {}", path));
+                        self.remember_scene_path(&path);
                         self.apply_scene_metadata(&scene.metadata);
                         self.selected_entity = None;
                         self.gizmo_interaction = None;

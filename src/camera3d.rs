@@ -1,4 +1,4 @@
-use glam::{Mat4, Quat, Vec2, Vec3};
+use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use winit::dpi::PhysicalSize;
 
 const DEFAULT_UP: Vec3 = Vec3::Y;
@@ -39,18 +39,33 @@ impl Camera3D {
         }
         let ndc_x = (2.0 * screen.x / viewport.width as f32) - 1.0;
         let ndc_y = 1.0 - (2.0 * screen.y / viewport.height as f32);
-        let clip = Vec3::new(ndc_x, ndc_y, 1.0);
-        let aspect = viewport.width as f32 / viewport.height as f32;
-
-        let proj = self.projection_matrix(aspect);
-        let inv_proj = proj.inverse();
+        let clip = Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
         let view = self.view_matrix();
-        let inv_view = view.inverse();
-
-        let eye_dir = inv_proj * clip.extend(1.0);
-        let world_dir = (inv_view * Vec3::new(eye_dir.x, eye_dir.y, eye_dir.z).extend(0.0)).truncate();
-        let dir = world_dir.normalize();
+        let proj = self.projection_matrix(viewport.width as f32 / viewport.height as f32);
+        let inv_view_proj = (proj * view).inverse();
+        let world = inv_view_proj * clip;
+        if world.w.abs() < f32::EPSILON {
+            return None;
+        }
+        let world_pos = (world.truncate() / world.w) - self.position;
+        let dir = world_pos.normalize();
         Some((self.position, dir))
+    }
+
+    pub fn project_point(&self, point: Vec3, viewport: PhysicalSize<u32>) -> Option<Vec2> {
+        if viewport.width == 0 || viewport.height == 0 {
+            return None;
+        }
+        let view = self.view_matrix();
+        let proj = self.projection_matrix(viewport.width as f32 / viewport.height as f32);
+        let clip = proj * view * point.extend(1.0);
+        if clip.w.abs() < f32::EPSILON {
+            return None;
+        }
+        let ndc = clip.truncate() / clip.w;
+        let x = (ndc.x + 1.0) * 0.5 * viewport.width as f32;
+        let y = (1.0 - ndc.y) * 0.5 * viewport.height as f32;
+        Some(Vec2::new(x, y))
     }
 }
 

@@ -1,4 +1,45 @@
 {
+  "metadata": {
+    "viewport": "Ortho2D",
+    "camera2d": {
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "zoom": 0.6065307
+    },
+    "preview_camera": {
+      "mode": "Disabled",
+      "orbit": {
+        "target": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "radius": 5.0,
+        "yaw": 37.950413,
+        "pitch": 1.5607964
+      },
+      "freefly": {
+        "position": {
+          "x": 0.012432992,
+          "y": -4.99975,
+          "z": 0.04842875
+        },
+        "yaw": -2.8902924,
+        "pitch": 1.5607964,
+        "roll": 0.0,
+        "speed": 4.0
+      },
+      "frustum_lock": false,
+      "frustum_focus": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "frustum_distance": 5.0
+    }
+  },
   "dependencies": {
     "atlases": [
       {
@@ -13,71 +54,13 @@
       "name": null,
       "transform": {
         "translation": {
-          "x": 0.5729474,
-          "y": -0.31644532
+          "x": 0.3677851,
+          "y": -0.84306616
         },
-        "rotation": 0.0,
+        "rotation": 1.5708076,
         "scale": {
-          "x": 0.16556627,
-          "y": 0.16556627
-        }
-      },
-      "sprite": {
-        "atlas": "main",
-        "region": "bluebox"
-      },
-      "velocity": {
-        "x": 0.004183102,
-        "y": -0.38049346
-      },
-      "mass": 0.8,
-      "collider": {
-        "half_extents": {
-          "x": 0.08278313,
-          "y": 0.08278313
-        }
-      }
-    },
-    {
-      "name": null,
-      "transform": {
-        "translation": {
-          "x": 1.0093309,
-          "y": 0.23783898
-        },
-        "rotation": 0.76184785,
-        "scale": {
-          "x": 0.26982248,
-          "y": 0.26982248
-        }
-      },
-      "sprite": {
-        "atlas": "main",
-        "region": "bluebox"
-      },
-      "velocity": {
-        "x": -0.09989726,
-        "y": -0.12425412
-      },
-      "mass": 0.8,
-      "collider": {
-        "half_extents": {
-          "x": 0.13491124,
-          "y": 0.13491124
-        }
-      }
-    },
-    {
-      "name": null,
-      "transform": {
-        "translation": {
-          "x": 0.5069801,
-          "y": 0.2103857
-        },
-        "rotation": 1.7126826,
-        "scale": {
-          "x": 0.21822566,
-          "y": 0.21822566
+          "x": 0.31448168,
+          "y": 0.31448168
         }
       },
       "sprite": {
@@ -85,14 +68,14 @@
         "region": "redorb"
       },
       "velocity": {
-        "x": -0.53036994,
-        "y": -0.5937718
+        "x": 0.0,
+        "y": 0.0
       },
       "mass": 0.8,
       "collider": {
         "half_extents": {
-          "x": 0.10911283,
-          "y": 0.10911283
+          "x": 0.15724084,
+          "y": 0.15724084
         }
       }
     },
@@ -100,158 +83,13 @@
       "name": null,
       "transform": {
         "translation": {
-          "x": -0.4648591,
-          "y": 0.7593718
+          "x": 0.994091,
+          "y": -0.8295383
         },
-        "rotation": 0.0,
+        "rotation": 0.00005433661,
         "scale": {
-          "x": 0.34719694,
-          "y": 0.34719694
-        }
-      },
-      "sprite": {
-        "atlas": "main",
-        "region": "green"
-      },
-      "velocity": {
-        "x": 0.5991942,
-        "y": 0.07328224
-      },
-      "mass": 0.8,
-      "collider": {
-        "half_extents": {
-          "x": 0.17359847,
-          "y": 0.17359847
-        }
-      }
-    },
-    {
-      "name": null,
-      "transform": {
-        "translation": {
-          "x": -0.5031016,
-          "y": -0.7559396
-        },
-        "rotation": 0.56458896,
-        "scale": {
-          "x": 0.34481293,
-          "y": 0.34481293
-        }
-      },
-      "sprite": {
-        "atlas": "main",
-        "region": "redorb"
-      },
-      "velocity": {
-        "x": 0.23649593,
-        "y": -0.005134403
-      },
-      "mass": 0.8,
-      "collider": {
-        "half_extents": {
-          "x": 0.17240646,
-          "y": 0.17240646
-        }
-      }
-    },
-    {
-      "name": null,
-      "transform": {
-        "translation": {
-          "x": 1.2252417,
-          "y": -0.08008798
-        },
-        "rotation": -0.0070094024,
-        "scale": {
-          "x": 0.30016673,
-          "y": 0.30016673
-        }
-      },
-      "sprite": {
-        "atlas": "main",
-        "region": "redorb"
-      },
-      "velocity": {
-        "x": -0.005065905,
-        "y": -0.22862947
-      },
-      "mass": 0.8,
-      "collider": {
-        "half_extents": {
-          "x": 0.15008336,
-          "y": 0.15008336
-        }
-      }
-    },
-    {
-      "name": null,
-      "transform": {
-        "translation": {
-          "x": 0.23487091,
-          "y": -0.89289194
-        },
-        "rotation": 0.0,
-        "scale": {
-          "x": 0.21535948,
-          "y": 0.21535948
-        }
-      },
-      "sprite": {
-        "atlas": "main",
-        "region": "bluebox"
-      },
-      "velocity": {
-        "x": -0.1707965,
-        "y": -0.6573817
-      },
-      "mass": 0.8,
-      "collider": {
-        "half_extents": {
-          "x": 0.10767974,
-          "y": 0.10767974
-        }
-      }
-    },
-    {
-      "name": null,
-      "transform": {
-        "translation": {
-          "x": -0.96711004,
-          "y": -0.51265633
-        },
-        "rotation": 0.85964936,
-        "scale": {
-          "x": 0.3047133,
-          "y": 0.3047133
-        }
-      },
-      "sprite": {
-        "atlas": "main",
-        "region": "bluebox"
-      },
-      "velocity": {
-        "x": -0.20676666,
-        "y": -0.59902006
-      },
-      "mass": 0.8,
-      "collider": {
-        "half_extents": {
-          "x": 0.15235665,
-          "y": 0.15235665
-        }
-      }
-    },
-    {
-      "name": null,
-      "transform": {
-        "translation": {
-          "x": 0.71954453,
-          "y": 0.80481696
-        },
-        "rotation": 0.0,
-        "scale": {
-          "x": 0.24683805,
-          "y": 0.24683805
+          "x": 0.34165487,
+          "y": 0.34165487
         }
       },
       "sprite": {
@@ -259,43 +97,14 @@
         "region": "checker"
       },
       "velocity": {
-        "x": 0.20128556,
-        "y": -0.27973026
+        "x": 0.0,
+        "y": 0.0
       },
       "mass": 0.8,
       "collider": {
         "half_extents": {
-          "x": 0.123419024,
-          "y": 0.123419024
-        }
-      }
-    },
-    {
-      "name": null,
-      "transform": {
-        "translation": {
-          "x": -0.13120562,
-          "y": -0.650161
-        },
-        "rotation": 0.0,
-        "scale": {
-          "x": 0.20146257,
-          "y": 0.20146257
-        }
-      },
-      "sprite": {
-        "atlas": "main",
-        "region": "redorb"
-      },
-      "velocity": {
-        "x": 0.373627,
-        "y": -0.56176865
-      },
-      "mass": 0.8,
-      "collider": {
-        "half_extents": {
-          "x": 0.10073128,
-          "y": 0.10073128
+          "x": 0.17082743,
+          "y": 0.17082743
         }
       }
     }
