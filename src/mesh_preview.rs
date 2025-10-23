@@ -102,7 +102,23 @@ impl FreeflyController {
     }
 }
 
-pub(crate) fn focus_mesh_selection(app: &mut App, center: Vec3) {
+pub(crate) fn focus_selection(app: &mut App) -> bool {
+    let Some(entity) = app.selected_entity else {
+        return false;
+    };
+    let Some(info) = app.ecs.entity_info(entity) else {
+        return false;
+    };
+    app.camera.position = info.translation;
+    if let Some(mesh_tx) = info.mesh_transform {
+        focus_mesh_center(app, mesh_tx.translation);
+    } else {
+        app.mesh_status = Some("Centered 2D camera on selection.".to_string());
+    }
+    true
+}
+
+pub(crate) fn focus_mesh_center(app: &mut App, center: Vec3) {
     app.mesh_frustum_focus = center;
     app.mesh_frustum_distance = (app.mesh_camera.position - center).length().max(0.1);
     app.mesh_orbit.target = center;

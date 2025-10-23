@@ -559,19 +559,7 @@ impl App {
     }
 
     fn focus_selection(&mut self) -> bool {
-        let Some(entity) = self.selected_entity else {
-            return false;
-        };
-        let Some(info) = self.ecs.entity_info(entity) else {
-            return false;
-        };
-        self.camera.position = info.translation;
-        if let Some(mesh_tx) = info.mesh_transform {
-            mesh_preview::focus_mesh_selection(self, mesh_tx.translation);
-        } else {
-            self.mesh_status = Some("Centered 2D camera on selection.".to_string());
-        }
-        true
+        mesh_preview::focus_selection(self)
     }
 
     fn update_mesh_camera(&mut self, dt: f32) {
