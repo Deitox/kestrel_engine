@@ -1672,6 +1672,7 @@ impl ApplicationHandler for App {
         let mut viewport_mode_request: Option<ViewportCameraMode> = None;
         let mut mesh_control_request: Option<MeshControlMode> = None;
         let mut mesh_frustum_request: Option<bool> = None;
+        let mut mesh_frustum_snap = false;
         let mut mesh_reset_request = false;
         let mut mesh_selection_request: Option<String> = None;
         let mut frame_selection_request = false;
@@ -1851,19 +1852,7 @@ impl ApplicationHandler for App {
                         mesh_frustum_request = Some(frustum_lock);
                     }
                     if frustum_lock && ui.button("Snap to selection").clicked() {
-                        let focus = selection_details
-                            .as_ref()
-                            .and_then(|info| info.mesh_transform.as_ref().map(|t| t.translation))
-                            .or_else(|| {
-                                selection_details
-                                    .as_ref()
-                                    .map(|info| Vec3::new(info.translation.x, info.translation.y, 0.0))
-                            })
-                            .unwrap_or(orbit_target);
-                        self.mesh_frustum_focus = focus;
-                        self.mesh_frustum_distance =
-                            (self.mesh_camera.position - self.mesh_frustum_focus).length().max(0.1);
-                        self.mesh_status = Some("Frustum focus updated.".to_string());
+                        mesh_frustum_snap = true;
                     }
                     if ui.button("Reset camera").clicked() {
                         mesh_reset_request = true;
@@ -2759,6 +2748,9 @@ impl ApplicationHandler for App {
         }
         if let Some(lock) = mesh_frustum_request {
             self.set_frustum_lock(lock);
+        }
+        if mesh_frustum_snap {
+            mesh_preview::snap_frustum_to_selection(self, selection_details.as_ref(), orbit_target);
         }
         if mesh_reset_request {
             self.reset_mesh_camera();

@@ -1,4 +1,5 @@
 use crate::camera3d::{Camera3D, OrbitCamera};
+use crate::ecs::EntityInfo;
 use crate::scene::{
     SceneFreeflyCamera, SceneOrbitCamera, ScenePreviewCamera, ScenePreviewCameraMode, Vec3Data,
 };
@@ -133,12 +134,17 @@ pub(crate) fn focus_selection(app: &mut App) -> bool {
         return false;
     };
     app.camera.position = info.translation;
-    if let Some(mesh_tx) = info.mesh_transform {
+    focus_selection_with_info(app, &info)
+}
+
+pub(crate) fn focus_selection_with_info(app: &mut App, info: &EntityInfo) -> bool {
+    if let Some(mesh_tx) = info.mesh_transform.as_ref() {
         focus_mesh_center(app, mesh_tx.translation);
+        true
     } else {
         app.mesh_status = Some("Centered 2D camera on selection.".to_string());
+        true
     }
-    true
 }
 
 pub(crate) fn focus_mesh_center(app: &mut App, center: Vec3) {
@@ -149,6 +155,19 @@ pub(crate) fn focus_mesh_center(app: &mut App, center: Vec3) {
     app.mesh_camera = app.mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
     app.mesh_freefly = FreeflyController::from_camera(&app.mesh_camera);
     app.mesh_status = Some("Framed selection in 3D viewport.".to_string());
+}
+
+pub(crate) fn snap_frustum_to_selection(
+    app: &mut App,
+    selection: Option<&EntityInfo>,
+    fallback_target: Vec3,
+) {
+    let focus = selection
+        .and_then(|info| info.mesh_transform.as_ref().map(|tx| tx.translation))
+        .or_else(|| selection.map(|info| Vec3::new(info.translation.x, info.translation.y, 0.0)))
+        .unwrap_or(fallback_target);
+    focus_mesh_center(app, focus);
+    app.mesh_status = Some("Frustum focus updated.".to_string());
 }
 
 pub(crate) fn capture_preview_camera(app: &App) -> ScenePreviewCamera {
