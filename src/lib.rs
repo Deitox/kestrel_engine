@@ -206,10 +206,22 @@ enum GizmoInteraction {
         start_rotation: f32,
         start_angle: f32,
     },
+    Rotate3D {
+        entity: Entity,
+        axis: Vec3,
+        start_rotation: Quat,
+        start_vector: Vec3,
+    },
     Scale {
         entity: Entity,
         start_scale: Vec2,
         handle: ScaleHandle,
+    },
+    Scale3D {
+        entity: Entity,
+        start_scale: Vec3,
+        start_distance: f32,
+        plane_normal: Vec3,
     },
 }
 
@@ -390,6 +402,7 @@ pub struct App {
     ui_scale: f32,
     ui_scene_path: String,
     ui_scene_status: Option<String>,
+    scene_dependencies: Option<SceneDependencies>,
     scene_history: VecDeque<String>,
     inspector_status: Option<String>,
 
@@ -547,6 +560,7 @@ impl App {
             ui_scale: 1.0,
             ui_scene_path: scene_path,
             ui_scene_status: None,
+            scene_dependencies: None,
             scene_history,
             inspector_status: None,
             audio,
@@ -1106,6 +1120,7 @@ impl App {
                 .with_context(|| format!("Failed to retain mesh '{key}'"))?;
         }
         self.scene_mesh_refs = next_mesh;
+        self.scene_dependencies = Some(deps.clone());
         Ok(())
     }
 
@@ -1408,12 +1423,19 @@ impl ApplicationHandler for App {
         };
         let cursor_in_viewport = cursor_viewport.is_some();
         let mut selected_info = self.selected_entity.and_then(|entity| self.ecs.entity_info(entity));
-        let gizmo_center_viewport = if self.viewport_camera_mode == ViewportCameraMode::Ortho2D {
-            selected_info
+        let mesh_center_world = selected_info.as_ref().and_then(|info| {
+            info.mesh_transform
                 .as_ref()
-                .and_then(|info| self.camera.world_to_screen_pixels(info.translation, viewport_size))
-        } else {
-            None
+                .map(|tx| tx.translation)
+                .or_else(|| Some(Vec3::new(info.translation.x, info.translation.y, 0.0)))
+        });
+        let gizmo_center_viewport = match self.viewport_camera_mode {
+            ViewportCameraMode::Ortho2D => selected_info
+                .as_ref()
+                .and_then(|info| self.camera.world_to_screen_pixels(info.translation, viewport_size)),
+            ViewportCameraMode::Perspective3D => {
+                mesh_center_world.and_then(|center| self.mesh_camera.project_point(center, viewport_size))
+            }
         };
         let prev_selected_entity = self.selected_entity;
         let prev_gizmo_interaction = self.gizmo_interaction;
@@ -1459,90 +1481,173 @@ impl ApplicationHandler for App {
         let mut gizmo_click_consumed = false;
         if self.input.take_left_click() {
             if let Some(entity) = self.selected_entity {
-                match self.gizmo_mode {
-                    GizmoMode::Translate => {
-                        if self.viewport_camera_mode == ViewportCameraMode::Perspective3D {
-                            if let (Some(info), Some((ray_origin, ray_dir))) =
-                                (selected_info.as_ref(), cursor_ray)
-                            {
-                                if let Some(mesh_tx) = info.mesh_transform.as_ref() {
-                                    let plane_origin = mesh_tx.translation;
-                                    let plane_normal = self.mesh_camera_forward();
-                                    if plane_normal.length_squared() > f32::EPSILON {
-                                        if let Some(hit) = App::intersect_ray_plane(
-                                            ray_origin,
-                                            ray_dir,
-                                            plane_origin,
-                                            plane_normal,
-                                        ) {
-                                            let offset = plane_origin - hit;
-                                            self.gizmo_interaction = Some(GizmoInteraction::Translate3D {
-                                                entity,
-                                                offset,
-                                                plane_origin,
+                match self.viewport_camera_mode {
+                    ViewportCameraMode::Perspective3D => {
+                        if let Some(center_world) = mesh_center_world {
+                            match self.gizmo_mode {
+                                GizmoMode::Translate => {
+                                    if let Some((ray_origin, ray_dir)) = cursor_ray {
+                                        let plane_normal = self.mesh_camera_forward();
+                                        if plane_normal.length_squared() > f32::EPSILON {
+                                            if let Some(hit) = App::intersect_ray_plane(
+                                                ray_origin,
+                                                ray_dir,
+                                                center_world,
                                                 plane_normal,
-                                            });
-                                            gizmo_click_consumed = true;
-                                            self.inspector_status = None;
+                                            ) {
+                                                let offset = center_world - hit;
+                                                self.gizmo_interaction =
+                                                    Some(GizmoInteraction::Translate3D {
+                                                        entity,
+                                                        offset,
+                                                        plane_origin: center_world,
+                                                        plane_normal,
+                                                    });
+                                                gizmo_click_consumed = true;
+                                                self.inspector_status = None;
+                                            }
+                                        }
+                                    }
+                                }
+                                GizmoMode::Scale => {
+                                    if let (
+                                        Some(center_viewport),
+                                        Some(pointer_viewport),
+                                        Some((ray_origin, ray_dir)),
+                                    ) = (gizmo_center_viewport, cursor_viewport, cursor_ray)
+                                    {
+                                        let dist = pointer_viewport.distance(center_viewport);
+                                        if dist <= GIZMO_SCALE_OUTER_RADIUS_PX {
+                                            let plane_normal = self.mesh_camera_forward();
+                                            if let Some(hit) = App::intersect_ray_plane(
+                                                ray_origin,
+                                                ray_dir,
+                                                center_world,
+                                                plane_normal,
+                                            ) {
+                                                let start_vec = hit - center_world;
+                                                let start_distance = start_vec.length();
+                                                if start_distance > f32::EPSILON {
+                                                    let start_scale = selected_info
+                                                        .as_ref()
+                                                        .and_then(|info| {
+                                                            info.mesh_transform.as_ref().map(|tx| tx.scale)
+                                                        })
+                                                        .unwrap_or(Vec3::splat(1.0));
+                                                    self.gizmo_interaction =
+                                                        Some(GizmoInteraction::Scale3D {
+                                                            entity,
+                                                            start_scale,
+                                                            start_distance,
+                                                            plane_normal,
+                                                        });
+                                                    gizmo_click_consumed = true;
+                                                    self.inspector_status = None;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                GizmoMode::Rotate => {
+                                    if let (
+                                        Some(center_viewport),
+                                        Some(pointer_viewport),
+                                        Some((ray_origin, ray_dir)),
+                                    ) = (gizmo_center_viewport, cursor_viewport, cursor_ray)
+                                    {
+                                        let dist = pointer_viewport.distance(center_viewport);
+                                        if dist >= GIZMO_ROTATE_INNER_RADIUS_PX
+                                            && dist <= GIZMO_ROTATE_OUTER_RADIUS_PX
+                                        {
+                                            let plane_normal = self.mesh_camera_forward();
+                                            if let Some(hit) = App::intersect_ray_plane(
+                                                ray_origin,
+                                                ray_dir,
+                                                center_world,
+                                                plane_normal,
+                                            ) {
+                                                let start_vec = hit - center_world;
+                                                if start_vec.length_squared() > f32::EPSILON {
+                                                    let start_rotation = selected_info
+                                                        .as_ref()
+                                                        .and_then(|info| {
+                                                            info.mesh_transform.as_ref().map(|tx| tx.rotation)
+                                                        })
+                                                        .unwrap_or(Quat::IDENTITY);
+                                                    self.gizmo_interaction =
+                                                        Some(GizmoInteraction::Rotate3D {
+                                                            entity,
+                                                            axis: plane_normal.normalize_or_zero(),
+                                                            start_rotation,
+                                                            start_vector: start_vec,
+                                                        });
+                                                    gizmo_click_consumed = true;
+                                                    self.inspector_status = None;
+                                                }
+                                            }
                                         }
                                     }
                                 }
                             }
-                        } else if let (Some(center_viewport), Some(pointer_viewport)) =
-                            (gizmo_center_viewport, cursor_viewport)
-                        {
-                            let dist = pointer_viewport.distance(center_viewport);
-                            if dist <= GIZMO_TRANSLATE_RADIUS_PX {
-                                if let Some(pointer_world) = cursor_world_2d {
-                                    let offset = selected_info
-                                        .as_ref()
-                                        .map(|info| info.translation - pointer_world)
-                                        .unwrap_or(Vec2::ZERO);
-                                    if let Some(info) = selected_info.as_ref() {
-                                        self.gizmo_interaction = Some(GizmoInteraction::Translate {
-                                            entity,
-                                            offset,
-                                            start_translation: info.translation,
-                                            start_pointer: pointer_world,
-                                            axis_lock: None,
-                                        });
+                        }
+                    }
+                    ViewportCameraMode::Ortho2D => match self.gizmo_mode {
+                        GizmoMode::Translate => {
+                            if let (Some(center_viewport), Some(pointer_viewport)) =
+                                (gizmo_center_viewport, cursor_viewport)
+                            {
+                                let dist = pointer_viewport.distance(center_viewport);
+                                if dist <= GIZMO_TRANSLATE_RADIUS_PX {
+                                    if let Some(pointer_world) = cursor_world_2d {
+                                        let offset = selected_info
+                                            .as_ref()
+                                            .map(|info| info.translation - pointer_world)
+                                            .unwrap_or(Vec2::ZERO);
+                                        if let Some(info) = selected_info.as_ref() {
+                                            self.gizmo_interaction = Some(GizmoInteraction::Translate {
+                                                entity,
+                                                offset,
+                                                start_translation: info.translation,
+                                                start_pointer: pointer_world,
+                                                axis_lock: None,
+                                            });
+                                        }
+                                        gizmo_click_consumed = true;
+                                        self.inspector_status = None;
                                     }
+                                }
+                            }
+                        }
+                        GizmoMode::Scale => {
+                            if let (
+                                Some(pointer_world),
+                                Some(pointer_viewport),
+                                Some(info),
+                                Some(center_viewport),
+                            ) = (
+                                cursor_world_2d,
+                                cursor_viewport,
+                                selected_info.as_ref(),
+                                gizmo_center_viewport,
+                            ) {
+                                if let Some((_kind, handle)) = self.detect_scale_handle(
+                                    pointer_world,
+                                    pointer_viewport,
+                                    info.translation,
+                                    center_viewport,
+                                    shift_held,
+                                ) {
+                                    self.gizmo_interaction = Some(GizmoInteraction::Scale {
+                                        entity,
+                                        start_scale: info.scale,
+                                        handle,
+                                    });
                                     gizmo_click_consumed = true;
                                     self.inspector_status = None;
                                 }
                             }
                         }
-                    }
-                    GizmoMode::Scale => {
-                        if let (
-                            ViewportCameraMode::Ortho2D,
-                            Some(pointer_world),
-                            Some(pointer_viewport),
-                            Some(info),
-                            Some(center_viewport),
-                        ) = (
-                            self.viewport_camera_mode,
-                            cursor_world_2d,
-                            cursor_viewport,
-                            selected_info.as_ref(),
-                            gizmo_center_viewport,
-                        ) {
-                            if let Some((_kind, handle)) = self.detect_scale_handle(
-                                pointer_world,
-                                pointer_viewport,
-                                info.translation,
-                                center_viewport,
-                                shift_held,
-                            ) {
-                                self.gizmo_interaction =
-                                    Some(GizmoInteraction::Scale { entity, start_scale: info.scale, handle });
-                                gizmo_click_consumed = true;
-                                self.inspector_status = None;
-                            }
-                        }
-                    }
-                    GizmoMode::Rotate => {
-                        if self.viewport_camera_mode == ViewportCameraMode::Ortho2D {
+                        GizmoMode::Rotate => {
                             if let (Some(center_viewport), Some(pointer_viewport)) =
                                 (gizmo_center_viewport, cursor_viewport)
                             {
@@ -1569,38 +1674,41 @@ impl ApplicationHandler for App {
                                 }
                             }
                         }
-                    }
+                    },
                 }
             }
 
             if !gizmo_click_consumed {
-                if self.viewport_camera_mode == ViewportCameraMode::Perspective3D {
-                    if let Some((ray_origin, ray_dir)) = cursor_ray {
-                        let mut picked = self.ecs.pick_entity_3d(ray_origin, ray_dir, &self.mesh_registry);
-                        if picked.is_none() {
-                            if let Some(hit) =
-                                App::intersect_ray_plane(ray_origin, ray_dir, Vec3::ZERO, Vec3::Z)
-                            {
-                                picked = self.ecs.pick_entity(hit.truncate());
+                match self.viewport_camera_mode {
+                    ViewportCameraMode::Perspective3D => {
+                        if let Some((ray_origin, ray_dir)) = cursor_ray {
+                            let mut picked =
+                                self.ecs.pick_entity_3d(ray_origin, ray_dir, &self.mesh_registry);
+                            if picked.is_none() {
+                                if let Some(hit) =
+                                    App::intersect_ray_plane(ray_origin, ray_dir, Vec3::ZERO, Vec3::Z)
+                                {
+                                    picked = self.ecs.pick_entity(hit.truncate());
+                                }
                             }
-                        }
-                        self.selected_entity = picked;
-                        if self.selected_entity.is_some() {
+                            self.selected_entity = picked;
+                            if self.selected_entity.is_some() {
+                                self.inspector_status = None;
+                            }
+                        } else if cursor_in_viewport {
+                            self.selected_entity = None;
                             self.inspector_status = None;
                         }
-                    } else if cursor_in_viewport {
-                        self.selected_entity = None;
-                        self.inspector_status = None;
                     }
-                    if self.selected_entity.is_none() && cursor_in_viewport {
-                        self.inspector_status = None;
+                    ViewportCameraMode::Ortho2D => {
+                        if let Some(world) = cursor_world_2d {
+                            self.selected_entity = self.ecs.pick_entity(world);
+                            self.inspector_status = None;
+                        } else if cursor_in_viewport {
+                            self.selected_entity = None;
+                            self.inspector_status = None;
+                        }
                     }
-                } else if let Some(world) = cursor_world_2d {
-                    self.selected_entity = self.ecs.pick_entity(world);
-                    self.inspector_status = None;
-                } else if cursor_in_viewport {
-                    self.selected_entity = None;
-                    self.inspector_status = None;
                 }
                 if cursor_in_viewport {
                     self.gizmo_interaction = None;
@@ -1726,6 +1834,48 @@ impl ApplicationHandler for App {
                         keep_active = false;
                     }
                 }
+                GizmoInteraction::Rotate3D { entity, axis, start_rotation, start_vector } => {
+                    if !self.input.left_held() {
+                        keep_active = false;
+                    } else if let Some((ray_origin, ray_dir)) = cursor_ray {
+                        if let Some(info) = self.ecs.entity_info(*entity) {
+                            let center = info
+                                .mesh_transform
+                                .as_ref()
+                                .map(|tx| tx.translation)
+                                .unwrap_or(Vec3::new(info.translation.x, info.translation.y, 0.0));
+                            if let Some(hit) = App::intersect_ray_plane(ray_origin, ray_dir, center, *axis) {
+                                let start_vec = start_vector.normalize_or_zero();
+                                let current_vec = (hit - center).normalize_or_zero();
+                                if start_vec.length_squared() > f32::EPSILON
+                                    && current_vec.length_squared() > f32::EPSILON
+                                {
+                                    let axis_norm = axis.normalize_or_zero();
+                                    if axis_norm.length_squared() > f32::EPSILON {
+                                        let dot = start_vec.dot(current_vec).clamp(-1.0, 1.0);
+                                        let cross = start_vec.cross(current_vec);
+                                        let sin = cross.dot(axis_norm);
+                                        let mut delta = sin.atan2(dot);
+                                        if self.input.ctrl_held() {
+                                            delta = (delta / ROTATE_SNAP_STEP_RADIANS).round()
+                                                * ROTATE_SNAP_STEP_RADIANS;
+                                        }
+                                        if delta.abs() > f32::EPSILON {
+                                            let quat =
+                                                Quat::from_axis_angle(axis_norm, delta) * *start_rotation;
+                                            let (x, y, z) = quat.to_euler(EulerRot::XYZ);
+                                            self.ecs.set_mesh_rotation_euler(*entity, Vec3::new(x, y, z));
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            keep_active = false;
+                        }
+                    } else {
+                        keep_active = false;
+                    }
+                }
                 GizmoInteraction::Scale { entity, start_scale, handle } => {
                     if !self.input.left_held() {
                         keep_active = false;
@@ -1771,6 +1921,45 @@ impl ApplicationHandler for App {
                             }
                             if new_scale != *start_scale {
                                 self.ecs.set_scale(*entity, new_scale);
+                            }
+                        } else {
+                            keep_active = false;
+                        }
+                    } else {
+                        keep_active = false;
+                    }
+                }
+                GizmoInteraction::Scale3D { entity, start_scale, start_distance, plane_normal } => {
+                    if !self.input.left_held() {
+                        keep_active = false;
+                    } else if let Some((ray_origin, ray_dir)) = cursor_ray {
+                        if let Some(info) = self.ecs.entity_info(*entity) {
+                            let center = info
+                                .mesh_transform
+                                .as_ref()
+                                .map(|tx| tx.translation)
+                                .unwrap_or(Vec3::new(info.translation.x, info.translation.y, 0.0));
+                            if let Some(hit) =
+                                App::intersect_ray_plane(ray_origin, ray_dir, center, *plane_normal)
+                            {
+                                let distance = (hit - center).length();
+                                if distance > f32::EPSILON && *start_distance > f32::EPSILON {
+                                    let ratio =
+                                        apply_scale_ratio(distance / *start_distance, self.input.ctrl_held());
+                                    let mut new_scale = Vec3::new(
+                                        (start_scale.x * ratio).max(0.01),
+                                        (start_scale.y * ratio).max(0.01),
+                                        (start_scale.z * ratio).max(0.01),
+                                    );
+                                    if self.input.shift_held() {
+                                        let uniform = new_scale.x.max(new_scale.y).max(new_scale.z);
+                                        new_scale = Vec3::splat(uniform);
+                                    }
+                                    if (new_scale - *start_scale).length_squared() > f32::EPSILON {
+                                        self.ecs.set_mesh_scale(*entity, new_scale);
+                                        self.ecs.set_scale(*entity, Vec2::new(new_scale.x, new_scale.y));
+                                    }
+                                }
                             }
                         } else {
                             keep_active = false;
@@ -1962,6 +2151,8 @@ impl ApplicationHandler for App {
             save_scene: bool,
             load_scene: bool,
             spawn_mesh: Option<String>,
+            retain_atlases: Vec<(String, Option<String>)>,
+            retain_meshes: Vec<(String, Option<String>)>,
         }
         let mut actions = UiActions::default();
         let mut viewport_mode_request: Option<ViewportCameraMode> = None;
@@ -2072,10 +2263,6 @@ impl ApplicationHandler for App {
                         ui.horizontal(|ui| {
                             ui.label("Start color");
                             ui.color_edit_button_rgba_unmultiplied(&mut ui_emitter_start_color);
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("End color");
-                            ui.color_edit_button_rgba_unmultiplied(&mut ui_emitter_end_color);
                         });
                         ui.horizontal(|ui| {
                             ui.label("End color");
@@ -2265,6 +2452,24 @@ impl ApplicationHandler for App {
                                             },
                                         ),
                                     };
+                                }
+                                GizmoInteraction::Rotate3D { .. } => {
+                                    let msg = if self.input.ctrl_held() {
+                                        "3D rotate gizmo active [snap]"
+                                    } else {
+                                        "3D rotate gizmo active"
+                                    };
+                                    ui.colored_label(egui::Color32::LIGHT_GREEN, msg);
+                                }
+                                GizmoInteraction::Scale3D { .. } => {
+                                    let mut msg = String::from("3D scale gizmo active");
+                                    if self.input.shift_held() {
+                                        msg.push_str(" (uniform)");
+                                    }
+                                    if self.input.ctrl_held() {
+                                        msg.push_str(" [snap]");
+                                    }
+                                    ui.colored_label(egui::Color32::LIGHT_GREEN, msg);
                                 }
                             }
                         }
@@ -2640,7 +2845,29 @@ impl ApplicationHandler for App {
                                     egui::Color32::from_rgb(220, 120, 120)
                                 };
                                 let status_label = if loaded { "loaded" } else { "missing" };
-                                ui.colored_label(color, format!("- {} ({}, {})", atlas, scope, status_label));
+                                let path_opt = self.scene_dependencies.as_ref().and_then(|deps| {
+                                    deps.atlas_dependencies()
+                                        .find(|dep| dep.key() == atlas.as_str())
+                                        .and_then(|dep| dep.path().map(|p| p.to_string()))
+                                });
+                                let path_display = path_opt.as_deref().unwrap_or("n/a");
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(
+                                        color,
+                                        format!(
+                                            "- {} ({}, {}, path={})",
+                                            atlas, scope, status_label, path_display
+                                        ),
+                                    );
+                                    if !loaded {
+                                        if ui.button("Retain").clicked() {
+                                            actions.retain_atlases.push((atlas.clone(), path_opt.clone()));
+                                        }
+                                        if path_opt.is_none() {
+                                            ui.small("no recorded path");
+                                        }
+                                    }
+                                });
                             }
                         }
                         if mesh_snapshot.is_empty() {
@@ -2666,14 +2893,33 @@ impl ApplicationHandler for App {
                                     egui::Color32::from_rgb(220, 120, 120)
                                 };
                                 let status_label = if loaded { "loaded" } else { "missing" };
-                                ui.colored_label(
-                                    color,
-                                    format!(
-                                        "- {} ({}, refs={}, {})",
-                                        mesh_key, scope, ref_count, status_label
-                                    ),
-                                );
+                                let path_opt = self.scene_dependencies.as_ref().and_then(|deps| {
+                                    deps.mesh_dependencies()
+                                        .find(|dep| dep.key() == mesh_key.as_str())
+                                        .and_then(|dep| dep.path().map(|p| p.to_string()))
+                                });
+                                let path_display = path_opt.as_deref().unwrap_or("n/a");
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(
+                                        color,
+                                        format!(
+                                            "- {} ({}, refs={}, {}, path={})",
+                                            mesh_key, scope, ref_count, status_label, path_display
+                                        ),
+                                    );
+                                    if !loaded {
+                                        if ui.button("Retain").clicked() {
+                                            actions.retain_meshes.push((mesh_key.clone(), path_opt.clone()));
+                                        }
+                                        if path_opt.is_none() {
+                                            ui.small("no recorded path");
+                                        }
+                                    }
+                                });
                             }
+                        }
+                        if self.scene_dependencies.is_none() {
+                            ui.small("Load or save a scene to populate dependency details.");
                         }
                     });
 
@@ -2813,7 +3059,9 @@ impl ApplicationHandler for App {
             let scale_highlight_kind = active_scale_handle_kind.or(hovered_scale_kind);
             if let Some(center_px) = gizmo_center_px {
                 let center = egui::pos2(center_px.x / ui_pixels_per_point, center_px.y / ui_pixels_per_point);
-                if self.viewport_camera_mode == ViewportCameraMode::Perspective3D {
+                let draw_translate_axes = self.viewport_camera_mode == ViewportCameraMode::Perspective3D
+                    && self.gizmo_mode == GizmoMode::Translate;
+                if draw_translate_axes {
                     if let Some(center_world) = gizmo_center_world3d {
                         let distance = (mesh_camera_for_ui.position - center_world).length().max(0.001);
                         let axis_length = (distance * GIZMO_3D_AXIS_LENGTH_SCALE)
@@ -3020,6 +3268,37 @@ impl ApplicationHandler for App {
                 self.inspector_status = Some("Viewport framed selection.".to_string());
             } else {
                 self.inspector_status = Some("Selection unavailable.".to_string());
+            }
+        }
+
+        for (key, path) in actions.retain_atlases {
+            match self.assets.retain_atlas(&key, path.as_deref()) {
+                Ok(()) => {
+                    self.scene_atlas_refs.insert(key.clone());
+                    self.invalidate_atlas_view(&key);
+                    self.ui_scene_status = Some(format!("Retained atlas {}", key));
+                }
+                Err(err) => {
+                    self.ui_scene_status = Some(format!("Atlas retain failed: {err}"));
+                }
+            }
+        }
+        for (key, path) in actions.retain_meshes {
+            match self.mesh_registry.retain_mesh(&key, path.as_deref()) {
+                Ok(()) => {
+                    self.scene_mesh_refs.insert(key.clone());
+                    match self.mesh_registry.ensure_gpu(&key, &mut self.renderer) {
+                        Ok(_) => {
+                            self.ui_scene_status = Some(format!("Retained mesh {}", key));
+                        }
+                        Err(err) => {
+                            self.mesh_status = Some(format!("Mesh upload failed: {err}"));
+                        }
+                    }
+                }
+                Err(err) => {
+                    self.ui_scene_status = Some(format!("Mesh retain failed: {err}"));
+                }
             }
         }
 

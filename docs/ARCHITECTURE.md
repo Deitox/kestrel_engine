@@ -52,6 +52,7 @@
 - `AudioManager` listens to drained `GameEvent`s so tooling can preview which sounds would fire for spawns, despawns, collisions, or script-driven cues while also playing the corresponding rodio tone when audio is available.
 - `MeshRegistry` owns CPU/GPU mesh resources so both the preview mesh and ECS-driven mesh entities share buffers.
 - The editor routes perspective viewport picking through the mesh registry's bounding data so gizmos and inspector edits stay in sync for 3D meshes.
+- The scene toolbar presents dependency health along with retain buttons so missing atlases or meshes can be rehydrated before applying a scene.
 - `Scene` helpers let the app export/import entity graphs. The scene format captures mesh materials, lighting flags, and emissive colors alongside atlas dependencies, and the debug UI exposes quick-save/quick-load controls that hand JSON files to these helpers.
 
 The data always flows in the same order - Input -> ECS -> Renderer -> UI - keeping subsystems decoupled and deterministic.

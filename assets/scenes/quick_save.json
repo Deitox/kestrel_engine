@@ -1,33 +1,33 @@
 {
   "metadata": {
-    "viewport": "Ortho2D",
+    "viewport": "Perspective3D",
     "camera2d": {
       "position": {
-        "x": 0.0,
-        "y": 0.0
+        "x": 0.044444446,
+        "y": -0.17777778
       },
-      "zoom": 0.6065307
+      "zoom": 1.0
     },
     "preview_camera": {
-      "mode": "Disabled",
+      "mode": "Orbit",
       "orbit": {
         "target": {
           "x": 0.0,
           "y": 0.0,
           "z": 0.0
         },
-        "radius": 5.0,
-        "yaw": 37.950413,
-        "pitch": 1.5607964
+        "radius": 5.3444805,
+        "yaw": 6.146679,
+        "pitch": 0.6167962
       },
       "freefly": {
         "position": {
-          "x": 0.012432992,
-          "y": -4.99975,
-          "z": 0.04842875
+          "x": -0.59327817,
+          "y": -3.0913792,
+          "z": 4.319128
         },
-        "yaw": -2.8902924,
-        "pitch": 1.5607964,
+        "yaw": 3.0050862,
+        "pitch": 0.61679614,
         "roll": 0.0,
         "speed": 4.0
       },
@@ -37,76 +37,12 @@
         "y": 0.0,
         "z": 0.0
       },
-      "frustum_distance": 5.0
+      "frustum_distance": 5.3444805
     }
   },
   "dependencies": {
-    "atlases": [
-      {
-        "key": "main",
-        "path": "assets/images/atlas.json"
-      }
-    ],
+    "atlases": [],
     "meshes": []
   },
-  "entities": [
-    {
-      "name": null,
-      "transform": {
-        "translation": {
-          "x": 0.3677851,
-          "y": -0.84306616
-        },
-        "rotation": 1.5708076,
-        "scale": {
-          "x": 0.31448168,
-          "y": 0.31448168
-        }
-      },
-      "sprite": {
-        "atlas": "main",
-        "region": "redorb"
-      },
-      "velocity": {
-        "x": 0.0,
-        "y": 0.0
-      },
-      "mass": 0.8,
-      "collider": {
-        "half_extents": {
-          "x": 0.15724084,
-          "y": 0.15724084
-        }
-      }
-    },
-    {
-      "name": null,
-      "transform": {
-        "translation": {
-          "x": 0.994091,
-          "y": -0.8295383
-        },
-        "rotation": 0.00005433661,
-        "scale": {
-          "x": 0.34165487,
-          "y": 0.34165487
-        }
-      },
-      "sprite": {
-        "atlas": "main",
-        "region": "checker"
-      },
-      "velocity": {
-        "x": 0.0,
-        "y": 0.0
-      },
-      "mass": 0.8,
-      "collider": {
-        "half_extents": {
-          "x": 0.17082743,
-          "y": 0.17082743
-        }
-      }
-    }
-  ]
+  "entities": []
 }

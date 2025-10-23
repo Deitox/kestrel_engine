@@ -1253,37 +1253,46 @@ impl EcsWorld {
         if dir.length_squared() <= f32::EPSILON {
             return None;
         }
-        let mut query = self.world.query::<(Entity, &Transform3D, &MeshRef)>();
+        let mut query = self.world.query::<(Entity, Option<&Transform3D>, &MeshRef)>();
         let mut closest: Option<(Entity, f32)> = None;
-        for (entity, transform, mesh_ref) in query.iter(&self.world) {
+        for (entity, transform3d, mesh_ref) in query.iter(&self.world) {
             let Some(bounds) = registry.mesh_bounds(&mesh_ref.key) else {
                 continue;
             };
-            let max_scale = transform.scale.x.max(transform.scale.y).max(transform.scale.z).max(0.0001);
-            let radius = bounds.radius * max_scale;
-            if radius <= 0.0 {
-                continue;
+            let mut hit_record: Option<f32> = None;
+            if let Some(transform) = transform3d {
+                if let Some(distance) = ray_hit_obb(origin, dir, transform, bounds) {
+                    hit_record = Some(distance);
+                }
             }
-            let center = transform.translation;
-            let oc = origin - center;
-            let b = oc.dot(dir);
-            let c = oc.length_squared() - radius * radius;
-            let discriminant = b * b - c;
-            if discriminant < 0.0 {
-                continue;
+            if hit_record.is_none() {
+                let (center, radius) = if let Some(transform) = transform3d {
+                    let max_scale = transform
+                        .scale
+                        .x
+                        .abs()
+                        .max(transform.scale.y.abs())
+                        .max(transform.scale.z.abs())
+                        .max(0.0001);
+                    (transform.translation, bounds.radius * max_scale)
+                } else {
+                    let center2 = self
+                        .world
+                        .get::<Transform>(entity)
+                        .map(|t| Vec3::new(t.translation.x, t.translation.y, 0.0))
+                        .unwrap_or(Vec3::ZERO);
+                    (center2, bounds.radius)
+                };
+                if radius > 0.0 {
+                    if let Some(distance) = ray_sphere_intersection(origin, dir, center, radius) {
+                        hit_record = Some(distance);
+                    }
+                }
             }
-            let sqrt_d = discriminant.sqrt();
-            let mut t = -b - sqrt_d;
-            if t < 0.0 {
-                t = -b + sqrt_d;
-            }
-            if t < 0.0 {
-                continue;
-            }
-            match closest {
-                Some((_, best)) if t >= best => continue,
-                _ => {
-                    closest = Some((entity, t));
+            if let Some(distance) = hit_record {
+                match closest {
+                    Some((_, best)) if distance >= best => {}
+                    _ => closest = Some((entity, distance)),
                 }
             }
         }
@@ -2122,6 +2131,102 @@ fn sys_collide_spatial(
     for pair in previous_pairs {
         events.push(GameEvent::collision_ended(pair.0, pair.1));
     }
+}
+
+fn ray_sphere_intersection(origin: Vec3, dir: Vec3, center: Vec3, radius: f32) -> Option<f32> {
+    let oc = origin - center;
+    let b = oc.dot(dir);
+    let c = oc.length_squared() - radius * radius;
+    let discriminant = b * b - c;
+    if discriminant < 0.0 {
+        return None;
+    }
+    let sqrt_d = discriminant.sqrt();
+    let mut t = -b - sqrt_d;
+    if t < 0.0 {
+        t = -b + sqrt_d;
+    }
+    if t < 0.0 {
+        return None;
+    }
+    Some(t)
+}
+
+fn ray_hit_obb(
+    origin: Vec3,
+    dir: Vec3,
+    transform: &Transform3D,
+    bounds: &crate::mesh::MeshBounds,
+) -> Option<f32> {
+    if !transform.scale.is_finite() {
+        return None;
+    }
+    let min_scale = 0.0001;
+    let scale = Vec3::new(
+        transform.scale.x.abs().max(min_scale),
+        transform.scale.y.abs().max(min_scale),
+        transform.scale.z.abs().max(min_scale),
+    );
+    let world = Mat4::from_scale_rotation_translation(scale, transform.rotation, transform.translation);
+    let inv = world.inverse();
+    if !matrix_is_finite(&inv) {
+        return None;
+    }
+    let origin_local = inv.transform_point3(origin);
+    let dir_local = inv.transform_vector3(dir);
+    if dir_local.length_squared() <= f32::EPSILON {
+        return None;
+    }
+    let dir_local = dir_local.normalize();
+    let (t_local, hit_local) = ray_aabb_intersection(origin_local, dir_local, bounds.min, bounds.max)?;
+    if t_local < 0.0 {
+        return None;
+    }
+    let hit_world = world.transform_point3(hit_local);
+    let distance = (hit_world - origin).length();
+    Some(distance)
+}
+
+fn matrix_is_finite(mat: &Mat4) -> bool {
+    mat.to_cols_array().iter().all(|v| v.is_finite())
+}
+
+fn ray_aabb_intersection(origin: Vec3, dir: Vec3, min: Vec3, max: Vec3) -> Option<(f32, Vec3)> {
+    let mut t_min: f32 = 0.0;
+    let mut t_max: f32 = f32::INFINITY;
+    let origin_arr = origin.to_array();
+    let dir_arr = dir.to_array();
+    let min_arr = min.to_array();
+    let max_arr = max.to_array();
+    for i in 0..3 {
+        let o = origin_arr[i];
+        let d = dir_arr[i];
+        let min_axis = min_arr[i];
+        let max_axis = max_arr[i];
+        if d.abs() < 1e-6 {
+            if o < min_axis || o > max_axis {
+                return None;
+            }
+        } else {
+            let inv_d = 1.0 / d;
+            let mut t1 = (min_axis - o) * inv_d;
+            let mut t2 = (max_axis - o) * inv_d;
+            if t1 > t2 {
+                std::mem::swap(&mut t1, &mut t2);
+            }
+            t_min = t_min.max(t1);
+            t_max = t_max.min(t2);
+            if t_min > t_max {
+                return None;
+            }
+        }
+    }
+    if t_max < 0.0 {
+        return None;
+    }
+    let t_hit = if t_min >= 0.0 { t_min } else { t_max };
+    let hit = origin + dir * t_hit;
+    Some((t_hit, hit))
 }
 
 fn mat_from_transform(t: Transform) -> Mat4 {
