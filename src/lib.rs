@@ -28,10 +28,7 @@ use crate::mesh_preview::{
 };
 use crate::mesh_registry::MeshRegistry;
 use crate::renderer::{MeshDraw, RenderViewport, Renderer, SpriteBatch};
-use crate::scene::{
-    SceneCamera2D, SceneDependencies, SceneFreeflyCamera, SceneMetadata, SceneOrbitCamera,
-    ScenePreviewCamera, ScenePreviewCameraMode, SceneViewportMode, Vec2Data, Vec3Data,
-};
+use crate::scene::{SceneCamera2D, SceneDependencies, SceneMetadata, SceneViewportMode, Vec2Data};
 use crate::scripts::{ScriptCommand, ScriptHost};
 use crate::time::Time;
 
@@ -99,26 +96,6 @@ impl ViewportCameraMode {
         match self {
             ViewportCameraMode::Ortho2D => "Orthographic 2D",
             ViewportCameraMode::Perspective3D => "Perspective 3D",
-        }
-    }
-}
-
-impl From<MeshControlMode> for ScenePreviewCameraMode {
-    fn from(mode: MeshControlMode) -> Self {
-        match mode {
-            MeshControlMode::Disabled => ScenePreviewCameraMode::Disabled,
-            MeshControlMode::Orbit => ScenePreviewCameraMode::Orbit,
-            MeshControlMode::Freefly => ScenePreviewCameraMode::Freefly,
-        }
-    }
-}
-
-impl From<ScenePreviewCameraMode> for MeshControlMode {
-    fn from(mode: ScenePreviewCameraMode) -> Self {
-        match mode {
-            ScenePreviewCameraMode::Disabled => MeshControlMode::Disabled,
-            ScenePreviewCameraMode::Orbit => MeshControlMode::Orbit,
-            ScenePreviewCameraMode::Freefly => MeshControlMode::Freefly,
         }
     }
 }
@@ -714,25 +691,7 @@ impl App {
         metadata.viewport = SceneViewportMode::from(self.viewport_camera_mode);
         metadata.camera2d =
             Some(SceneCamera2D { position: Vec2Data::from(self.camera.position), zoom: self.camera.zoom });
-        metadata.preview_camera = Some(ScenePreviewCamera {
-            mode: ScenePreviewCameraMode::from(self.mesh_control_mode),
-            orbit: SceneOrbitCamera {
-                target: Vec3Data::from(self.mesh_orbit.target),
-                radius: self.mesh_orbit.radius,
-                yaw: self.mesh_orbit.yaw_radians,
-                pitch: self.mesh_orbit.pitch_radians,
-            },
-            freefly: SceneFreeflyCamera {
-                position: Vec3Data::from(self.mesh_freefly.position),
-                yaw: self.mesh_freefly.yaw,
-                pitch: self.mesh_freefly.pitch,
-                roll: self.mesh_freefly.roll,
-                speed: self.mesh_freefly_speed,
-            },
-            frustum_lock: self.mesh_frustum_lock,
-            frustum_focus: Vec3Data::from(self.mesh_frustum_focus),
-            frustum_distance: self.mesh_frustum_distance,
-        });
+        metadata.preview_camera = Some(mesh_preview::capture_preview_camera(self));
         metadata
     }
 
@@ -743,37 +702,7 @@ impl App {
             self.camera.set_zoom(cam2d.zoom);
         }
         if let Some(preview) = metadata.preview_camera.as_ref() {
-            self.mesh_orbit.target = Vec3::from(preview.orbit.target.clone());
-            self.mesh_orbit.radius = preview.orbit.radius.max(0.1);
-            self.mesh_orbit.yaw_radians = preview.orbit.yaw;
-            self.mesh_orbit.pitch_radians = preview
-                .orbit
-                .pitch
-                .clamp(-std::f32::consts::FRAC_PI_2 + 0.01, std::f32::consts::FRAC_PI_2 - 0.01);
-            self.mesh_freefly.position = Vec3::from(preview.freefly.position.clone());
-            self.mesh_freefly.yaw = preview.freefly.yaw;
-            self.mesh_freefly.pitch = preview.freefly.pitch;
-            self.mesh_freefly.roll = preview.freefly.roll;
-            self.mesh_freefly_speed = preview.freefly.speed.max(0.01);
-            self.mesh_frustum_lock = preview.frustum_lock;
-            self.mesh_frustum_focus = Vec3::from(preview.frustum_focus.clone());
-            self.mesh_frustum_distance = preview.frustum_distance.max(0.1);
-            self.mesh_freefly_velocity = Vec3::ZERO;
-            self.mesh_freefly_rot_velocity = Vec3::ZERO;
-
-            let mode = MeshControlMode::from(preview.mode);
-            self.mesh_control_mode = mode;
-            match mode {
-                MeshControlMode::Disabled | MeshControlMode::Orbit => {
-                    self.mesh_camera =
-                        self.mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
-                    self.mesh_freefly = FreeflyController::from_camera(&self.mesh_camera);
-                }
-                MeshControlMode::Freefly => {
-                    self.mesh_camera = self.mesh_freefly.to_camera();
-                }
-            }
-            self.mesh_status = Some(mode.status_message().to_string());
+            mesh_preview::apply_preview_camera(self, preview);
         }
     }
 
