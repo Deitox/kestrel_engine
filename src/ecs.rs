@@ -274,7 +274,7 @@ pub struct EmitterSnapshot {
     pub end_size: f32,
 }
 
-#[derive(Resource)]
+#[derive(Resource, Clone, Copy)]
 pub struct PhysicsParams {
     pub gravity: Vec2,
     pub linear_damping: f32,
@@ -358,10 +358,10 @@ pub struct RapierState {
 }
 
 impl RapierState {
-    pub fn new(gravity: Vec2, boundary_entity: Entity) -> Self {
+    pub fn new(params: &PhysicsParams, boundary_entity: Entity) -> Self {
         let mut state = Self {
             pipeline: PhysicsPipeline::new(),
-            gravity: vec_to_rapier(gravity),
+            gravity: vec_to_rapier(params.gravity),
             integration_parameters: IntegrationParameters::default(),
             island_manager: IslandManager::new(),
             broad_phase: DefaultBroadPhase::new(),
@@ -610,9 +610,10 @@ impl EcsWorld {
         world.insert_resource(TimeDelta(0.0));
         world.insert_resource(SpatialHash::new(0.25));
         world.insert_resource(ParticleContacts::default());
-        world.insert_resource(PhysicsParams { gravity: Vec2::new(0.0, -0.6), linear_damping: 0.3 });
+        let physics_params = PhysicsParams { gravity: Vec2::new(0.0, -0.6), linear_damping: 0.3 };
+        world.insert_resource(physics_params);
         let boundary_entity = world.spawn_empty().id();
-        world.insert_resource(RapierState::new(Vec2::new(0.0, -0.6), boundary_entity));
+        world.insert_resource(RapierState::new(&physics_params, boundary_entity));
         world.insert_resource(EventBus::default());
         world.insert_resource(TransformPropagationScratch::default());
 
