@@ -280,6 +280,13 @@ pub struct PhysicsParams {
     pub linear_damping: f32,
 }
 
+#[derive(Resource, Clone, Copy)]
+pub struct WorldBounds {
+    pub min: Vec2,
+    pub max: Vec2,
+    pub thickness: f32,
+}
+
 pub enum CollisionEventKind {
     Started,
     Stopped,
@@ -355,10 +362,11 @@ pub struct RapierState {
     collider_entities: HashMap<ColliderHandle, Entity>,
     event_collector: CollisionEventCollector,
     boundary_entity: Entity,
+    bounds: WorldBounds,
 }
 
 impl RapierState {
-    pub fn new(params: &PhysicsParams, boundary_entity: Entity) -> Self {
+    pub fn new(params: &PhysicsParams, bounds: &WorldBounds, boundary_entity: Entity) -> Self {
         let mut state = Self {
             pipeline: PhysicsPipeline::new(),
             gravity: vec_to_rapier(params.gravity),
@@ -375,15 +383,16 @@ impl RapierState {
             collider_entities: HashMap::new(),
             event_collector: CollisionEventCollector::new(),
             boundary_entity,
+            bounds: *bounds,
         };
         state.init_bounds();
         state
     }
 
     fn init_bounds(&mut self) {
-        let thickness = 0.05;
-        let min = vector![-1.4, -1.0];
-        let max = vector![1.4, 1.0];
+        let thickness = self.bounds.thickness;
+        let min = vector![self.bounds.min.x, self.bounds.min.y];
+        let max = vector![self.bounds.max.x, self.bounds.max.y];
         let horizontal_half = vector![(max.x - min.x) * 0.5 + thickness, thickness];
         let vertical_half = vector![thickness, (max.y - min.y) * 0.5 + thickness];
 
@@ -610,10 +619,12 @@ impl EcsWorld {
         world.insert_resource(TimeDelta(0.0));
         world.insert_resource(SpatialHash::new(0.25));
         world.insert_resource(ParticleContacts::default());
+        let world_bounds = WorldBounds { min: Vec2::new(-1.4, -1.0), max: Vec2::new(1.4, 1.0), thickness: 0.05 };
+        world.insert_resource(world_bounds);
         let physics_params = PhysicsParams { gravity: Vec2::new(0.0, -0.6), linear_damping: 0.3 };
         world.insert_resource(physics_params);
         let boundary_entity = world.spawn_empty().id();
-        world.insert_resource(RapierState::new(&physics_params, boundary_entity));
+        world.insert_resource(RapierState::new(&physics_params, &world_bounds, boundary_entity));
         world.insert_resource(EventBus::default());
         world.insert_resource(TransformPropagationScratch::default());
 
@@ -2081,10 +2092,11 @@ fn sys_update_particles(
 }
 
 fn sys_world_bounds_bounce(
+    bounds: Res<WorldBounds>,
     mut q: Query<(&mut Transform, &mut Velocity, Option<&Aabb>, Option<&RapierBody>)>,
 ) {
-    let min = Vec2::new(-1.4, -1.0);
-    let max = Vec2::new(1.4, 1.0);
+    let min = bounds.min;
+    let max = bounds.max;
     for (mut t, mut v, aabb, rapier_body) in &mut q {
         if rapier_body.is_some() {
             continue;
