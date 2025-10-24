@@ -3,10 +3,10 @@
     "viewport": "Perspective3D",
     "camera2d": {
       "position": {
-        "x": 0.044444446,
-        "y": -0.17777778
+        "x": 0.0,
+        "y": 0.0
       },
-      "zoom": 1.0
+      "zoom": 0.5488117
     },
     "preview_camera": {
       "mode": "Orbit",
@@ -16,18 +16,18 @@
           "y": 0.0,
           "z": 0.0
         },
-        "radius": 5.3444805,
-        "yaw": 6.146679,
-        "pitch": 0.6167962
+        "radius": 5.0,
+        "yaw": 2.699485,
+        "pitch": 1.2957517
       },
       "freefly": {
         "position": {
-          "x": -0.59327817,
-          "y": -3.0913792,
-          "z": 4.319128
+          "x": 0.5809923,
+          "y": -4.8120656,
+          "z": -1.227385
         },
-        "yaw": 3.0050862,
-        "pitch": 0.61679614,
+        "yaw": -0.44210762,
+        "pitch": 1.2957518,
         "roll": 0.0,
         "speed": 4.0
       },
@@ -37,12 +37,31 @@
         "y": 0.0,
         "z": 0.0
       },
-      "frustum_distance": 5.3444805
+      "frustum_distance": 5.0
+    },
+    "lighting": {
+      "direction": {
+        "x": 0.41646338,
+        "y": 0.83292675,
+        "z": 0.36440545
+      },
+      "color": {
+        "x": 1.05,
+        "y": 0.98,
+        "z": 0.92
+      },
+      "ambient": {
+        "x": 0.03,
+        "y": 0.03,
+        "z": 0.03
+      },
+      "exposure": 1.0
     }
   },
   "dependencies": {
     "atlases": [],
-    "meshes": []
+    "meshes": [],
+    "materials": []
   },
   "entities": []
 }

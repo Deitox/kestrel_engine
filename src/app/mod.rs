@@ -14,7 +14,9 @@ use crate::mesh_preview::{
 };
 use crate::mesh_registry::MeshRegistry;
 use crate::renderer::{MeshDraw, RenderViewport, Renderer, SpriteBatch};
-use crate::scene::{SceneCamera2D, SceneDependencies, SceneMetadata, SceneViewportMode, Vec2Data};
+use crate::scene::{
+    SceneCamera2D, SceneDependencies, SceneLightingData, SceneMetadata, SceneViewportMode, Vec2Data,
+};
 use crate::scripts::{ScriptCommand, ScriptHost};
 use crate::time::Time;
 mod editor_ui;
@@ -138,6 +140,10 @@ pub struct App {
     ui_emitter_end_size: f32,
     ui_emitter_start_color: [f32; 4],
     ui_emitter_end_color: [f32; 4],
+    ui_light_direction: Vec3,
+    ui_light_color: Vec3,
+    ui_light_ambient: Vec3,
+    ui_light_exposure: f32,
     ui_scale: f32,
     ui_scene_path: String,
     ui_scene_status: Option<String>,
@@ -200,6 +206,7 @@ pub struct App {
 impl App {
     pub async fn new(config: AppConfig) -> Self {
         let renderer = Renderer::new(&config.window).await;
+        let lighting_state = renderer.lighting().clone();
         let mut ecs = EcsWorld::new();
         let emitter = ecs.spawn_demo_scene();
         let mut audio = AudioManager::new(16);
@@ -316,6 +323,10 @@ impl App {
             ui_emitter_end_size,
             ui_emitter_start_color,
             ui_emitter_end_color,
+            ui_light_direction: lighting_state.direction,
+            ui_light_color: lighting_state.color,
+            ui_light_ambient: lighting_state.ambient,
+            ui_light_exposure: lighting_state.exposure,
             ui_scale: 1.0,
             ui_scene_path: scene_path,
             ui_scene_status: None,
@@ -543,6 +554,13 @@ impl App {
         metadata.camera2d =
             Some(SceneCamera2D { position: Vec2Data::from(self.camera.position), zoom: self.camera.zoom });
         metadata.preview_camera = Some(mesh_preview::capture_preview_camera(self));
+        let lighting = self.renderer.lighting();
+        metadata.lighting = Some(SceneLightingData {
+            direction: lighting.direction.into(),
+            color: lighting.color.into(),
+            ambient: lighting.ambient.into(),
+            exposure: lighting.exposure,
+        });
         metadata
     }
 
@@ -554,6 +572,25 @@ impl App {
         }
         if let Some(preview) = metadata.preview_camera.as_ref() {
             mesh_preview::apply_preview_camera(self, preview);
+        }
+        if let Some(lighting) = metadata.lighting.as_ref() {
+            let (mut direction, color, ambient, exposure) = lighting.components();
+            if !direction.is_finite() || direction.length_squared() < 1e-4 {
+                direction = glam::Vec3::new(0.4, 0.8, 0.35).normalize();
+            }
+            direction = direction.normalize_or_zero();
+            {
+                let lighting_mut = self.renderer.lighting_mut();
+                lighting_mut.direction = direction;
+                lighting_mut.color = color;
+                lighting_mut.ambient = ambient;
+                lighting_mut.exposure = exposure;
+            }
+            let renderer_lighting = self.renderer.lighting();
+            self.ui_light_direction = renderer_lighting.direction;
+            self.ui_light_color = renderer_lighting.color;
+            self.ui_light_ambient = renderer_lighting.ambient;
+            self.ui_light_exposure = renderer_lighting.exposure;
         }
     }
 

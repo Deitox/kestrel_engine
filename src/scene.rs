@@ -33,6 +33,8 @@ pub struct SceneMetadata {
     pub camera2d: Option<SceneCamera2D>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview_camera: Option<ScenePreviewCamera>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lighting: Option<SceneLightingData>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +57,52 @@ pub struct ScenePreviewCamera {
     pub frustum_focus: Vec3Data,
     #[serde(default)]
     pub frustum_distance: f32,
+}
+
+fn default_light_direction() -> Vec3Data {
+    let dir = glam::Vec3::new(0.4, 0.8, 0.35).normalize();
+    Vec3Data::from(dir)
+}
+
+fn default_light_color() -> Vec3Data {
+    Vec3Data { x: 1.05, y: 0.98, z: 0.92 }
+}
+
+fn default_light_ambient() -> Vec3Data {
+    Vec3Data { x: 0.03, y: 0.03, z: 0.03 }
+}
+
+const fn default_light_exposure() -> f32 {
+    1.0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SceneLightingData {
+    #[serde(default = "default_light_direction")]
+    pub direction: Vec3Data,
+    #[serde(default = "default_light_color")]
+    pub color: Vec3Data,
+    #[serde(default = "default_light_ambient")]
+    pub ambient: Vec3Data,
+    #[serde(default = "default_light_exposure")]
+    pub exposure: f32,
+}
+
+impl Default for SceneLightingData {
+    fn default() -> Self {
+        Self {
+            direction: default_light_direction(),
+            color: default_light_color(),
+            ambient: default_light_ambient(),
+            exposure: default_light_exposure(),
+        }
+    }
+}
+
+impl SceneLightingData {
+    pub fn components(&self) -> (glam::Vec3, glam::Vec3, glam::Vec3, f32) {
+        (self.direction.clone().into(), self.color.clone().into(), self.ambient.clone().into(), self.exposure)
+    }
 }
 
 impl Default for ScenePreviewCamera {

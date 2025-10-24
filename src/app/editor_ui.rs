@@ -222,6 +222,77 @@ impl App {
                             ui.label("Cursor world: n/a");
                         }
                     });
+                    egui::CollapsingHeader::new("Lighting").default_open(true).show(ui, |ui| {
+                        let mut lighting_dirty = false;
+                        let default_dir = glam::Vec3::new(0.4, 0.8, 0.35).normalize();
+                        let mut light_dir = self.ui_light_direction;
+                        ui.horizontal(|ui| {
+                            ui.label("Direction (XYZ)");
+                            let mut changed = false;
+                            changed |= ui
+                                .add(egui::DragValue::new(&mut light_dir.x).speed(0.01).range(-1.0..=1.0))
+                                .changed();
+                            changed |= ui
+                                .add(egui::DragValue::new(&mut light_dir.y).speed(0.01).range(-1.0..=1.0))
+                                .changed();
+                            changed |= ui
+                                .add(egui::DragValue::new(&mut light_dir.z).speed(0.01).range(-1.0..=1.0))
+                                .changed();
+                            if changed {
+                                if !light_dir.is_finite() || light_dir.length_squared() < 1e-4 {
+                                    light_dir = default_dir;
+                                } else {
+                                    light_dir = light_dir.normalize_or_zero();
+                                    if light_dir.length_squared() < 1e-4 {
+                                        light_dir = default_dir;
+                                    }
+                                }
+                                self.ui_light_direction = light_dir;
+                                lighting_dirty = true;
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Color");
+                            let mut color_arr = self.ui_light_color.to_array();
+                            if ui.color_edit_button_rgb(&mut color_arr).changed() {
+                                self.ui_light_color = Vec3::from_array(color_arr);
+                                lighting_dirty = true;
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Ambient");
+                            let mut ambient_arr = self.ui_light_ambient.to_array();
+                            if ui.color_edit_button_rgb(&mut ambient_arr).changed() {
+                                self.ui_light_ambient = Vec3::from_array(ambient_arr);
+                                lighting_dirty = true;
+                            }
+                        });
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut self.ui_light_exposure, 0.1..=5.0)
+                                    .text("Exposure")
+                                    .logarithmic(true),
+                            )
+                            .changed()
+                        {
+                            self.ui_light_exposure = self.ui_light_exposure.clamp(0.1, 20.0);
+                            lighting_dirty = true;
+                        }
+                        if ui.button("Reset lighting").clicked() {
+                            self.ui_light_direction = default_dir;
+                            self.ui_light_color = Vec3::new(1.05, 0.98, 0.92);
+                            self.ui_light_ambient = Vec3::splat(0.03);
+                            self.ui_light_exposure = 1.0;
+                            lighting_dirty = true;
+                        }
+                        if lighting_dirty {
+                            let lighting = self.renderer.lighting_mut();
+                            lighting.direction = self.ui_light_direction;
+                            lighting.color = self.ui_light_color;
+                            lighting.ambient = self.ui_light_ambient;
+                            lighting.exposure = self.ui_light_exposure;
+                        }
+                    });
 
                     egui::CollapsingHeader::new("Spawn & Emitters").default_open(true).show(ui, |ui| {
                         ui.add(egui::Slider::new(&mut ui_cell_size, 0.05..=0.8).text("Spatial cell size"));
@@ -540,10 +611,100 @@ impl App {
                             if let Some(mesh) = info.mesh.clone() {
                                 ui.separator();
                                 ui.label(format!("Mesh: {}", mesh.key));
-                                if let Some(material) = mesh.material.as_ref() {
-                                    ui.label(format!("Material: {}", material));
-                                } else {
-                                    ui.label("Material: default");
+                                let mut material_options: Vec<(String, String)> = self
+                                    .material_registry
+                                    .keys()
+                                    .map(|key| {
+                                        let label = self
+                                            .material_registry
+                                            .definition(key)
+                                            .map(|def| def.label.clone())
+                                            .unwrap_or_else(|| key.to_string());
+                                        (key.to_string(), label)
+                                    })
+                                    .collect();
+                                material_options.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+                                let mut desired_material = mesh.material.clone();
+                                let selected_text = match mesh.material.as_ref() {
+                                    Some(key) => {
+                                        let label = material_options
+                                            .iter()
+                                            .find(|(candidate, _)| candidate == key)
+                                            .map(|(_, label)| label.clone())
+                                            .or_else(|| {
+                                                self.material_registry
+                                                    .definition(key)
+                                                    .map(|def| def.label.clone())
+                                            })
+                                            .unwrap_or_else(|| key.clone());
+                                        format!("{label} ({key})")
+                                    }
+                                    None => "Use mesh material (asset default)".to_string(),
+                                };
+                                egui::ComboBox::from_label("Material Override")
+                                    .selected_text(selected_text)
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut desired_material,
+                                            None,
+                                            "Use mesh material (asset default)",
+                                        );
+                                        for (key, label) in &material_options {
+                                            let entry_label = format!("{label} ({key})");
+                                            ui.selectable_value(
+                                                &mut desired_material,
+                                                Some(key.clone()),
+                                                entry_label,
+                                            );
+                                        }
+                                    });
+                                if desired_material != mesh.material {
+                                    let previous_material = mesh.material.clone();
+                                    let mut retained_new = false;
+                                    let mut apply_change = true;
+                                    if let Some(ref key) = desired_material {
+                                        if !self.material_registry.has(key.as_str()) {
+                                            self.inspector_status =
+                                                Some(format!("Material '{}' not registered", key));
+                                            apply_change = false;
+                                        } else if let Err(err) = self.material_registry.retain(key) {
+                                            self.inspector_status =
+                                                Some(format!("Failed to retain material '{}': {err}", key));
+                                            apply_change = false;
+                                        } else {
+                                            retained_new = true;
+                                        }
+                                    }
+                                    if apply_change {
+                                        if self.ecs.set_mesh_material(entity, desired_material.clone()) {
+                                            inspector_refresh = true;
+                                            self.inspector_status = None;
+                                            if let Some(prev) = previous_material {
+                                                if desired_material.as_ref() != Some(&prev) {
+                                                    self.material_registry.release(&prev);
+                                                }
+                                            }
+                                            let mut refs = self.persistent_materials.clone();
+                                            for instance in self.ecs.collect_mesh_instances() {
+                                                if let Some(material) = instance.material {
+                                                    refs.insert(material);
+                                                }
+                                            }
+                                            self.scene_material_refs = refs;
+                                        } else {
+                                            self.inspector_status =
+                                                Some("Failed to update mesh material".to_string());
+                                            if retained_new {
+                                                if let Some(ref key) = desired_material {
+                                                    self.material_registry.release(key);
+                                                }
+                                            }
+                                        }
+                                    } else if retained_new {
+                                        if let Some(ref key) = desired_material {
+                                            self.material_registry.release(key);
+                                        }
+                                    }
                                 }
                                 ui.label(format!(
                                     "Shadows: cast={} receive={}",

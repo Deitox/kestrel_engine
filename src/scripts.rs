@@ -68,7 +68,7 @@ impl ScriptWorld {
         }
         let mut state = self.state.borrow_mut();
         let handle = state.next_handle;
-        state.next_handle -= 1;
+        state.next_handle = state.next_handle.saturating_add(1);
         state.commands.push(ScriptCommand::Spawn {
             handle,
             atlas: atlas.to_string(),
@@ -216,7 +216,7 @@ impl ScriptHost {
         engine.set_fast_operators(true);
         register_api(&mut engine);
         let mut shared = SharedState::default();
-        shared.next_handle = -1;
+        shared.next_handle = 1;
         Self {
             engine,
             ast: None,
@@ -319,11 +319,10 @@ impl ScriptHost {
     }
 
     pub fn resolve_handle(&self, handle: ScriptHandle) -> Option<Entity> {
-        if handle >= 0 {
-            Some(Entity::from_bits(handle as u64))
-        } else {
-            self.handle_map.get(&handle).copied()
-        }
+        self.handle_map
+            .get(&handle)
+            .copied()
+            .or_else(|| (handle >= 0).then(|| Entity::from_bits(handle as u64)))
     }
 
     pub fn forget_handle(&mut self, handle: ScriptHandle) {
