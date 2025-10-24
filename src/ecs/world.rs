@@ -1,4 +1,18 @@
 use super::*;
+use crate::assets::AssetManager;
+use crate::events::{EventBus, GameEvent};
+use crate::mesh_registry::MeshRegistry;
+use crate::scene::{
+    ColliderData, ColorData, MeshData, MeshLightingData, OrbitControllerData, ParticleEmitterData, Scene,
+    SceneDependencies, SceneEntity, SpriteData, Transform3DData, TransformData,
+};
+use anyhow::{anyhow, Context, Result};
+use bevy_ecs::prelude::{Entity, Schedule, With, World};
+use glam::{EulerRot, Mat4, Quat, Vec2, Vec3, Vec4};
+use rapier2d::prelude::{Rotation, Vector};
+use std::borrow::Cow;
+use std::path::Path;
+use rand::Rng;
 
 pub struct EmitterSnapshot {
     pub rate: f32,
