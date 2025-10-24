@@ -1,9 +1,14 @@
-use glam::Vec3;
+use bevy_ecs::prelude::Entity;
+use glam::{EulerRot, Quat, Vec2, Vec3, Vec4};
 use kestrel_engine::assets::AssetManager;
-use kestrel_engine::ecs::{EcsWorld, MeshLighting, MeshRef, MeshSurface};
+use kestrel_engine::ecs::{
+    Children, EcsWorld, MeshLighting, MeshRef, MeshSurface, Parent, ParticleEmitter, Transform, Transform3D,
+    WorldTransform, WorldTransform3D,
+};
 use kestrel_engine::material_registry::MaterialRegistry;
 use kestrel_engine::mesh_registry::MeshRegistry;
 use kestrel_engine::scene::Scene;
+use tempfile::NamedTempFile;
 
 #[test]
 fn scene_roundtrip_preserves_entity_count() {
@@ -208,4 +213,125 @@ fn scene_roundtrip_preserves_entity_count() {
         save_without_mesh.to_string().contains("save_scene_to_path_with_mesh_source"),
         "error should mention mesh-aware save helper"
     );
+}
+
+#[test]
+fn scene_roundtrip_preserves_transforms_and_emitters() {
+    let mut world = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    assets
+        .retain_atlas("main", Some("assets/images/atlas.json"))
+        .expect("main atlas should load before exporting scene");
+
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+    mesh_registry
+        .load_from_path("test_triangle", "assets/models/demo_triangle.gltf", &mut material_registry)
+        .expect("demo gltf should load for mesh dependency test");
+    mesh_registry
+        .retain_mesh("test_triangle", Some("assets/models/demo_triangle.gltf"), &mut material_registry)
+        .expect("retaining mesh should succeed");
+
+    let emitter_color_start = Vec4::new(0.9, 0.7, 0.3, 1.0);
+    let emitter_color_end = Vec4::new(0.1, 0.2, 0.4, 0.2);
+    let parent = world
+        .world
+        .spawn((
+            Transform { translation: Vec2::ZERO, rotation: 0.0, scale: Vec2::splat(1.0) },
+            WorldTransform::default(),
+            ParticleEmitter {
+                rate: 18.0,
+                spread: 0.75,
+                speed: 1.6,
+                lifetime: 2.25,
+                accumulator: 0.0,
+                start_color: emitter_color_start,
+                end_color: emitter_color_end,
+                start_size: 0.22,
+                end_size: 0.06,
+            },
+        ))
+        .id();
+
+    let rotation = Quat::from_euler(EulerRot::XYZ, 0.35, -0.25, 1.1);
+    let scale3 = Vec3::new(1.4, 0.8, 1.6);
+    let translation3 = Vec3::new(2.5, -1.2, 3.75);
+    let child = world
+        .world
+        .spawn((
+            Transform { translation: Vec2::new(0.45, -0.35), rotation: 0.2, scale: Vec2::new(0.9, 1.05) },
+            WorldTransform::default(),
+            Transform3D { translation: translation3, rotation, scale: scale3 },
+            WorldTransform3D::default(),
+            MeshRef { key: "test_triangle".to_string() },
+            MeshSurface::default(),
+            Parent(parent),
+        ))
+        .id();
+    world.world.entity_mut(parent).insert(Children(vec![child]));
+
+    world.update(0.016);
+    world.fixed_step(0.016);
+
+    let temp_file = NamedTempFile::new().expect("temp scene file");
+    world
+        .save_scene_to_path_with_sources(
+            temp_file.path(),
+            &assets,
+            |key| mesh_registry.mesh_source(key).map(|p| p.to_string_lossy().into_owned()),
+            |key| material_registry.material_source(key).map(|s| s.to_string()),
+        )
+        .expect("scene save should succeed");
+
+    let loaded_scene = Scene::load_from_path(temp_file.path()).expect("scene load should succeed");
+    assert!(loaded_scene.entities.iter().any(|entity| {
+        entity.mesh.as_ref().map(|mesh| mesh.key.as_str() == "test_triangle").unwrap_or(false)
+    }));
+
+    let mut new_world = EcsWorld::new();
+    let mut new_registry = MeshRegistry::new(&mut material_registry);
+    new_world
+        .load_scene_with_mesh(&loaded_scene, &assets, |key, path| {
+            new_registry.ensure_mesh(key, path, &mut material_registry)
+        })
+        .expect("scene load into world");
+    new_world.update(0.016);
+    new_world.fixed_step(0.016);
+
+    let mut mesh_query =
+        new_world.world.query::<(Entity, &MeshRef, &Transform, &Transform3D, &WorldTransform3D, &Parent)>();
+    let (mesh_entity, _, transform2d, transform3d, world3d, parent_rel) = mesh_query
+        .iter(&new_world.world)
+        .find(|(_, mesh_ref, _, _, _, _)| mesh_ref.key == "test_triangle")
+        .expect("loaded world should contain mesh entity");
+
+    assert!((transform2d.translation - Vec2::new(0.45, -0.35)).length() < 1e-5);
+    assert!((transform2d.scale - Vec2::new(0.9, 1.05)).length() < 1e-5);
+    assert!((transform2d.rotation - 0.2).abs() < 1e-5);
+
+    assert!((transform3d.translation - translation3).length() < 1e-5);
+    assert!((transform3d.scale - scale3).length() < 1e-5);
+    let rotation_dot = transform3d.rotation.dot(rotation).abs();
+    assert!((rotation_dot - 1.0).abs() < 1e-5);
+
+    assert!(
+        world3d.0.to_cols_array().iter().all(|value| value.is_finite()),
+        "world transform should remain finite"
+    );
+
+    let parent_entity = parent_rel.0;
+    let emitter =
+        new_world.world.get::<ParticleEmitter>(parent_entity).expect("parent emitter should persist");
+    assert!((emitter.rate - 18.0).abs() < f32::EPSILON);
+    assert!((emitter.spread - 0.75).abs() < f32::EPSILON);
+    assert!((emitter.speed - 1.6).abs() < f32::EPSILON);
+    assert!((emitter.lifetime - 2.25).abs() < f32::EPSILON);
+    assert!((emitter.start_size - 0.22).abs() < f32::EPSILON);
+    assert!((emitter.end_size - 0.06).abs() < f32::EPSILON);
+    assert!((emitter.start_color - emitter_color_start).length() < 1e-5);
+    assert!((emitter.end_color - emitter_color_end).length() < 1e-5);
+
+    let children =
+        new_world.world.get::<Children>(parent_entity).expect("parent should retain children listing");
+    assert!(children.0.contains(&mesh_entity));
 }

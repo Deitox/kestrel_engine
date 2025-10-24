@@ -9,10 +9,10 @@ use crate::scene::{
 use anyhow::{anyhow, Context, Result};
 use bevy_ecs::prelude::{Entity, Schedule, With, World};
 use glam::{EulerRot, Mat4, Quat, Vec2, Vec3, Vec4};
+use rand::Rng;
 use rapier2d::prelude::{Rotation, Vector};
 use std::borrow::Cow;
 use std::path::Path;
-use rand::Rng;
 
 pub struct EmitterSnapshot {
     pub rate: f32,
@@ -38,7 +38,8 @@ impl EcsWorld {
         world.insert_resource(TimeDelta(0.0));
         world.insert_resource(SpatialHash::new(0.25));
         world.insert_resource(ParticleContacts::default());
-        let world_bounds = WorldBounds { min: Vec2::new(-1.4, -1.0), max: Vec2::new(1.4, 1.0), thickness: 0.05 };
+        let world_bounds =
+            WorldBounds { min: Vec2::new(-1.4, -1.0), max: Vec2::new(1.4, 1.0), thickness: 0.05 };
         world.insert_resource(world_bounds);
         let physics_params = PhysicsParams { gravity: Vec2::new(0.0, -0.6), linear_damping: 0.3 };
         world.insert_resource(physics_params);

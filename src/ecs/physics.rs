@@ -283,7 +283,8 @@ impl RapierState {
             }
         }
         for (a, b, magnitude) in force_events {
-            if let (Some(entity_a), Some(entity_b)) = (self.collider_entities.get(&a), self.collider_entities.get(&b))
+            if let (Some(entity_a), Some(entity_b)) =
+                (self.collider_entities.get(&a), self.collider_entities.get(&b))
             {
                 out.push((CollisionEventKind::Force(magnitude), *entity_a, *entity_b));
             }
