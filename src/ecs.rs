@@ -13,13 +13,14 @@ use glam::{EulerRot, Mat4, Quat, Vec2, Vec3, Vec4};
 use rand::Rng;
 use rapier2d::prelude::{Rotation, Vector};
 use smallvec::SmallVec;
-use std::collections::HashSet;
 use std::borrow::Cow;
 use std::path::Path;
 
 mod physics;
+mod transform;
 mod types;
 pub use physics::*;
+pub use transform::*;
 pub use types::*;
 pub struct EmitterSnapshot {
     pub rate: f32,
@@ -30,12 +31,6 @@ pub struct EmitterSnapshot {
     pub end_color: Vec4,
     pub start_size: f32,
     pub end_size: f32,
-}
-
-#[derive(Resource, Default)]
-pub struct TransformPropagationScratch {
-    pub stack: SmallVec<[(Entity, Mat4); 128]>,
-    pub visited: HashSet<Entity>,
 }
 
 // ---------- World container ----------
@@ -1281,81 +1276,6 @@ fn sys_apply_spin(mut q: Query<(&mut Transform, &Spin)>, dt: Res<TimeDelta>) {
     }
 }
 
-fn sys_propagate_scene_transforms(
-    mut nodes: Query<(
-        Entity,
-        Option<&Transform>,
-        Option<&Transform3D>,
-        Option<&Children>,
-        &mut WorldTransform,
-    )>,
-    roots: Query<Entity, (With<WorldTransform>, Without<Parent>)>,
-    mut scratch: ResMut<TransformPropagationScratch>,
-) {
-    fn compose_local(transform2d: Option<&Transform>, transform3d: Option<&Transform3D>) -> Mat4 {
-        if let Some(t3d) = transform3d {
-            Mat4::from_scale_rotation_translation(t3d.scale, t3d.rotation, t3d.translation)
-        } else if let Some(t2d) = transform2d {
-            mat_from_transform(*t2d)
-        } else {
-            Mat4::IDENTITY
-        }
-    }
-
-    let mut stack = std::mem::take(&mut scratch.stack);
-    let mut visited = std::mem::take(&mut scratch.visited);
-
-    stack.clear();
-    visited.clear();
-
-    for root in roots.iter() {
-        if let Ok((entity, transform2d, transform3d, children, mut world)) = nodes.get_mut(root) {
-            let local = compose_local(transform2d, transform3d);
-            world.0 = local;
-            visited.insert(entity);
-            let world_mat = world.0;
-            if let Some(children) = children {
-                for &child in children.0.iter().rev() {
-                    stack.push((child, world_mat));
-                }
-            }
-        }
-    }
-
-    while let Some((entity, parent_world)) = stack.pop() {
-        if let Ok((current, transform2d, transform3d, children, mut world)) = nodes.get_mut(entity) {
-            if visited.contains(&current) {
-                continue;
-            }
-            let local = compose_local(transform2d, transform3d);
-            let world_mat = parent_world * local;
-            world.0 = world_mat;
-            visited.insert(current);
-            if let Some(children) = children {
-                for &child in children.0.iter().rev() {
-                    stack.push((child, world_mat));
-                }
-            }
-        }
-    }
-
-    let visited_ref = &visited;
-    for (entity, transform2d, transform3d, _, mut world) in nodes.iter_mut() {
-        if !visited_ref.contains(&entity) {
-            world.0 = compose_local(transform2d, transform3d);
-        }
-    }
-
-    scratch.stack = stack;
-    scratch.visited = visited;
-}
-
-fn sys_sync_world3d(mut query: Query<(&WorldTransform, &mut WorldTransform3D)>) {
-    for (world, mut world3d) in &mut query {
-        world3d.0 = world.0;
-    }
-}
-
 fn sys_solve_forces(
     mut q: Query<(&mut Velocity, &mut Force, &Mass, Option<&RapierBody>)>,
     params: Res<PhysicsParams>,
@@ -1691,29 +1611,6 @@ fn ray_aabb_intersection(origin: Vec3, dir: Vec3, min: Vec3, max: Vec3) -> Optio
     let t_hit = if t_min >= 0.0 { t_min } else { t_max };
     let hit = origin + dir * t_hit;
     Some((t_hit, hit))
-}
-
-fn mat_from_transform(t: Transform) -> Mat4 {
-    let (sx, sy) = (t.scale.x, t.scale.y);
-    let (s, c) = t.rotation.sin_cos();
-    Mat4::from_cols_array(&[
-        c * sx,
-        s * sx,
-        0.0,
-        0.0,
-        -s * sy,
-        c * sy,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        1.0,
-        0.0,
-        t.translation.x,
-        t.translation.y,
-        0.0,
-        1.0,
-    ])
 }
 
 fn overlap(a_pos: Vec2, a_half: Vec2, b_pos: Vec2, b_half: Vec2) -> bool {
