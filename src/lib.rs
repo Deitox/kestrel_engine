@@ -4,6 +4,7 @@ pub mod audio;
 pub mod camera;
 pub mod camera3d;
 pub mod config;
+pub mod environment;
 pub mod ecs;
 pub mod events;
 pub(crate) mod gizmo;

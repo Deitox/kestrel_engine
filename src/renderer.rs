@@ -1,6 +1,7 @@
 use crate::camera3d::Camera3D;
 use crate::config::WindowConfig;
 use crate::ecs::{InstanceData, MeshLightingInfo};
+use crate::environment::EnvironmentGpu;
 use crate::material_registry::MaterialGpu;
 use crate::mesh::{Mesh, MeshVertex};
 use anyhow::{anyhow, Context, Result};
@@ -115,6 +116,7 @@ struct MeshPipelineResources {
     frame_bgl: Arc<wgpu::BindGroupLayout>,
     draw_bgl: Arc<wgpu::BindGroupLayout>,
     material_bgl: Arc<wgpu::BindGroupLayout>,
+    environment_bgl: Arc<wgpu::BindGroupLayout>,
 }
 
 #[derive(Default)]
@@ -122,6 +124,12 @@ struct MeshPass {
     resources: Option<MeshPipelineResources>,
     frame_buffer: Option<wgpu::Buffer>,
     draw_buffer: Option<wgpu::Buffer>,
+}
+
+struct RendererEnvironmentState {
+    bind_group: Arc<wgpu::BindGroup>,
+    mip_count: u32,
+    intensity: f32,
 }
 
 struct ShadowPipelineResources {
@@ -168,6 +176,7 @@ pub struct SceneLightingState {
     pub color: Vec3,
     pub ambient: Vec3,
     pub exposure: f32,
+    pub environment_intensity: f32,
     pub shadow_distance: f32,
     pub shadow_bias: f32,
     pub shadow_strength: f32,
@@ -180,6 +189,7 @@ impl Default for SceneLightingState {
             color: Vec3::new(1.05, 0.98, 0.92),
             ambient: Vec3::splat(0.03),
             exposure: 1.0,
+            environment_intensity: 1.0,
             shadow_distance: 35.0,
             shadow_bias: 0.002,
             shadow_strength: 1.0,
@@ -216,6 +226,7 @@ pub struct Renderer {
     mesh_pass: MeshPass,
     shadow_pass: ShadowPass,
     lighting: SceneLightingState,
+    environment_state: Option<RendererEnvironmentState>,
 
     sprite_bind_cache: HashMap<String, SpriteBindCacheEntry>,
 }
@@ -247,6 +258,7 @@ impl Renderer {
             mesh_pass: MeshPass::default(),
             shadow_pass: ShadowPass::default(),
             lighting: SceneLightingState::default(),
+            environment_state: None,
             sprite_bind_cache: HashMap::new(),
         }
     }
@@ -276,6 +288,54 @@ impl Renderer {
 
     pub fn mark_shadow_settings_dirty(&mut self) {
         self.shadow_pass.dirty = true;
+    }
+
+    pub fn set_environment(&mut self, environment: &EnvironmentGpu, intensity: f32) -> Result<()> {
+        if self.mesh_pass.resources.is_none() {
+            self.init_mesh_pipeline()?;
+        }
+        let layout = self.environment_bind_group_layout()?;
+        let device = self.device()?.clone();
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Environment Bind Group"),
+            layout: layout.as_ref(),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(environment.diffuse_view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(environment.specular_view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(environment.brdf_view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(environment.sampler()),
+                },
+            ],
+        });
+        self.environment_state = Some(RendererEnvironmentState {
+            bind_group: Arc::new(bind_group),
+            mip_count: environment.specular_mip_count().max(1),
+            intensity: intensity.max(0.0),
+        });
+        self.lighting.environment_intensity = intensity.max(0.0);
+        Ok(())
+    }
+
+    pub fn set_environment_intensity(&mut self, intensity: f32) {
+        if let Some(state) = self.environment_state.as_mut() {
+            state.intensity = intensity.max(0.0);
+        }
+        self.lighting.environment_intensity = intensity.max(0.0);
+    }
+
+    pub fn environment_parameters(&self) -> Option<(u32, f32)> {
+        self.environment_state.as_ref().map(|state| (state.mip_count, state.intensity))
     }
 
     pub fn lighting(&self) -> &SceneLightingState {
@@ -313,7 +373,9 @@ impl Renderer {
             })
             .await
             .context("Failed to request WGPU adapter")?;
-        let required_limits = wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits());
+        let mut required_limits =
+            wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits());
+        required_limits.max_bind_groups = required_limits.max_bind_groups.max(5);
         let device_desc = wgpu::DeviceDescriptor {
             label: Some("Device"),
             required_features: wgpu::Features::empty(),
@@ -652,6 +714,48 @@ impl Renderer {
             ],
         }));
 
+        let environment_bgl = Arc::new(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Environment BGL"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::Cube,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::Cube,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        }));
+
         let shadow_bgl = Arc::new(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Shadow Sample BGL"),
             entries: &[
@@ -691,6 +795,7 @@ impl Renderer {
                 draw_bgl.as_ref(),
                 material_bgl.as_ref(),
                 shadow_bgl.as_ref(),
+                environment_bgl.as_ref(),
             ],
             push_constant_ranges: &[],
         });
@@ -740,6 +845,7 @@ impl Renderer {
             frame_bgl: frame_bgl.clone(),
             draw_bgl: draw_bgl.clone(),
             material_bgl: material_bgl.clone(),
+            environment_bgl: environment_bgl.clone(),
         });
         self.mesh_pass.frame_buffer = Some(frame_buf);
         self.mesh_pass.draw_buffer = Some(draw_buf);
@@ -781,6 +887,10 @@ impl Renderer {
         if self.depth_texture.is_none() {
             self.recreate_depth_texture()?;
         }
+        let environment_state = self
+            .environment_state
+            .as_ref()
+            .context("Environment state not configured")?;
         let mesh_resources = self.mesh_pass.resources.as_ref().context("Mesh pipeline not initialized")?;
         let depth_view = self.depth_view.as_ref().context("Depth texture missing")?;
         let device = self.device()?.clone();
@@ -796,7 +906,12 @@ impl Renderer {
             light_dir: [lighting_dir.x, lighting_dir.y, lighting_dir.z, 0.0],
             light_color: [self.lighting.color.x, self.lighting.color.y, self.lighting.color.z, 1.0],
             ambient_color: [self.lighting.ambient.x, self.lighting.ambient.y, self.lighting.ambient.z, 1.0],
-            exposure_params: [self.lighting.exposure, 0.0, 0.0, 0.0],
+            exposure_params: [
+                self.lighting.exposure,
+                environment_state.mip_count.max(1) as f32,
+                environment_state.intensity,
+                0.0,
+            ],
             padding: [0.0; 4],
         };
 
@@ -881,6 +996,7 @@ impl Renderer {
 
         pass.set_bind_group(0, &frame_bind_group, &[]);
         pass.set_bind_group(3, shadow_bind_group, &[]);
+        pass.set_bind_group(4, environment_state.bind_group.as_ref(), &[]);
 
         for draw in draws {
             let base_color = draw.lighting.base_color;
@@ -926,6 +1042,13 @@ impl Renderer {
         }
         let resources = self.mesh_pass.resources.as_ref().context("Mesh pipeline not initialized")?;
         Ok(resources.material_bgl.clone())
+    }
+    pub fn environment_bind_group_layout(&mut self) -> Result<Arc<wgpu::BindGroupLayout>> {
+        if self.mesh_pass.resources.is_none() {
+            self.init_mesh_pipeline()?;
+        }
+        let resources = self.mesh_pass.resources.as_ref().context("Mesh pipeline not initialized")?;
+        Ok(resources.environment_bgl.clone())
     }
     pub fn surface_format(&self) -> Result<wgpu::TextureFormat> {
         Ok(self.config.as_ref().context("Surface configuration missing")?.format)
@@ -1519,6 +1642,54 @@ impl Renderer {
     }
 }
 
+impl Renderer {
+    pub async fn init_headless_for_test(&mut self) -> Result<()> {
+        if self.device.is_some() {
+            return Ok(());
+        }
+        let instance = wgpu::Instance::default();
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })
+            .await
+            .context("Failed to request headless adapter")?;
+        let mut required_limits =
+            wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits());
+        required_limits.max_bind_groups = required_limits.max_bind_groups.max(5);
+        let device_desc = wgpu::DeviceDescriptor {
+            label: Some("Headless Device"),
+            required_features: wgpu::Features::empty(),
+            required_limits,
+            experimental_features: wgpu::ExperimentalFeatures::default(),
+            memory_hints: wgpu::MemoryHints::default(),
+            trace: wgpu::Trace::default(),
+        };
+        let (device, queue) =
+            adapter.request_device(&device_desc).await.context("Failed to request headless device")?;
+        self.device = Some(device);
+        self.queue = Some(queue);
+        if self.config.is_none() {
+            self.config = Some(wgpu::SurfaceConfiguration {
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                width: self.size.width.max(1),
+                height: self.size.height.max(1),
+                present_mode: wgpu::PresentMode::Fifo,
+                alpha_mode: wgpu::CompositeAlphaMode::Opaque,
+                view_formats: vec![],
+                desired_maximum_frame_latency: 2,
+            });
+        }
+        if self.depth_texture.is_none() {
+            self.recreate_depth_texture()?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1555,3 +1726,4 @@ mod tests {
         });
     }
 }
+

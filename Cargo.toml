@@ -10,7 +10,7 @@ pollster = "0.3"
 glam = "0.27"
 bevy_ecs = "0.15"
 bytemuck = { version = "1.15", features = ["derive"] }
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "hdr"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
@@ -24,6 +24,7 @@ rapier2d = "0.26"
 rodio = "0.17"
 smallvec = "1.13"
 gltf = "1.4"
+half = "2.4"
 
 [dev-dependencies]
 tempfile = "3.10"

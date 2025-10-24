@@ -60,6 +60,18 @@ var shadow_map : texture_depth_2d;
 @group(3) @binding(2)
 var shadow_sampler : sampler_comparison;
 
+@group(4) @binding(0)
+var diffuse_env : texture_cube<f32>;
+
+@group(4) @binding(1)
+var specular_env : texture_cube<f32>;
+
+@group(4) @binding(2)
+var brdf_lut : texture_2d<f32>;
+
+@group(4) @binding(3)
+var env_sampler : sampler;
+
 struct VertexIn {
     @location(0) position : vec3<f32>,
     @location(1) normal : vec3<f32>,
@@ -150,6 +162,7 @@ fn fs_main(input : VertexOut) -> @location(0) vec4<f32> {
     let V = normalize(frame.camera_pos.xyz - input.world_pos);
     let L = normalize(-frame.light_dir.xyz);
     let H = normalize(V + L);
+    let n_dot_v = max(dot(N, V), 0.0);
 
     let base_sample = textureSample(base_color_tex, material_sampler, input.uv);
     let material_color = material.base_color_factor;
@@ -174,7 +187,7 @@ fn fs_main(input : VertexOut) -> @location(0) vec4<f32> {
     }
 
     let n_dot_l = max(dot(N, L), 0.0);
-    let n_dot_v = max(dot(N, V), 0.0);
+    let f0 = mix(vec3<f32>(0.04), base_color, vec3<f32>(metallic));
 
     var emissive = draw.emissive.xyz;
     var material_emissive = material.emissive_factor.xyz;
@@ -195,7 +208,6 @@ fn fs_main(input : VertexOut) -> @location(0) vec4<f32> {
     }
 
     if (n_dot_l > 0.0 && n_dot_v > 0.0) {
-        let f0 = mix(vec3<f32>(0.04), base_color, vec3<f32>(metallic));
         let F = fresnel_schlick(max(dot(H, V), 0.0), f0);
         let D = distribution_ggx(N, H, roughness);
         let G = geometry_smith(N, V, L, roughness);
@@ -205,6 +217,22 @@ fn fs_main(input : VertexOut) -> @location(0) vec4<f32> {
         let diffuse = kd * base_color / 3.14159265;
         let radiance = frame.light_color.xyz * n_dot_l * exposure * shadow_factor;
         color = color + (diffuse + spec) * radiance;
+    }
+
+    let env_intensity = frame.exposure_params.z;
+    if (env_intensity > 0.0001) {
+        let mip_count = max(frame.exposure_params.y, 1.0);
+        let max_mip = max(mip_count - 1.0, 0.0);
+        let irradiance = textureSample(diffuse_env, env_sampler, N).xyz;
+        let ks = fresnel_schlick(n_dot_v, f0);
+        let kd = (vec3<f32>(1.0) - ks) * (1.0 - metallic);
+        let diffuse_ibl = irradiance * base_color * kd;
+        let R = reflect(-V, N);
+        let lod = roughness * max_mip;
+        let prefiltered = textureSampleLevel(specular_env, env_sampler, R, lod).xyz;
+        let brdf_sample = textureSample(brdf_lut, env_sampler, vec2<f32>(n_dot_v, roughness)).xy;
+        let specular_ibl = prefiltered * (ks * brdf_sample.x + brdf_sample.y);
+        color = color + (diffuse_ibl + specular_ibl) * env_intensity;
     }
 
     return vec4<f32>(color, base_alpha);

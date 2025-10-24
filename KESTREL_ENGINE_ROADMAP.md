@@ -196,6 +196,7 @@
 - Perspective projection pipeline.
 - Mesh loading (glTF or similar).
 - Basic PBR shader.
+- HDR environment lighting with diffuse irradiance, specular prefiltering, and a BRDF LUT.
 
 **Stretch Ideas**
 - Shadow mapping and light culling.

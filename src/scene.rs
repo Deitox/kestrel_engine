@@ -35,6 +35,8 @@ pub struct SceneMetadata {
     pub preview_camera: Option<ScenePreviewCamera>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lighting: Option<SceneLightingData>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<SceneEnvironment>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,6 +113,23 @@ impl SceneLightingData {
             self.exposure,
             self.shadow.clone(),
         )
+    }
+}
+
+const fn default_environment_intensity() -> f32 {
+    1.0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SceneEnvironment {
+    pub key: String,
+    #[serde(default = "default_environment_intensity")]
+    pub intensity: f32,
+}
+
+impl SceneEnvironment {
+    pub fn new(key: String, intensity: f32) -> Self {
+        Self { key, intensity }
     }
 }
 
@@ -420,6 +439,75 @@ impl From<MaterialDependencyRepr> for MaterialDependency {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct EnvironmentDependency {
+    key: String,
+    path: Option<String>,
+}
+
+impl EnvironmentDependency {
+    pub fn new(key: String, path: Option<String>) -> Self {
+        Self { key, path }
+    }
+
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    pub fn path(&self) -> Option<&str> {
+        self.path.as_deref()
+    }
+}
+
+pub struct EnvironmentDependencyView<'a> {
+    key: &'a str,
+    path: Option<&'a str>,
+}
+
+impl<'a> EnvironmentDependencyView<'a> {
+    fn new(key: &'a str, path: Option<&'a str>) -> Self {
+        Self { key, path }
+    }
+
+    pub fn key(&self) -> &str {
+        self.key
+    }
+
+    pub fn path(&self) -> Option<&str> {
+        self.path
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum EnvironmentDependencyRepr {
+    Key(String),
+    Detailed {
+        key: String,
+        #[serde(default)]
+        path: Option<String>,
+    },
+}
+
+impl From<EnvironmentDependency> for EnvironmentDependencyRepr {
+    fn from(dep: EnvironmentDependency) -> Self {
+        if let Some(path) = dep.path {
+            EnvironmentDependencyRepr::Detailed { key: dep.key, path: Some(path) }
+        } else {
+            EnvironmentDependencyRepr::Key(dep.key)
+        }
+    }
+}
+
+impl From<EnvironmentDependencyRepr> for EnvironmentDependency {
+    fn from(repr: EnvironmentDependencyRepr) -> Self {
+        match repr {
+            EnvironmentDependencyRepr::Key(key) => EnvironmentDependency::new(key, None),
+            EnvironmentDependencyRepr::Detailed { key, path } => EnvironmentDependency::new(key, path),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SceneDependencies {
     #[serde(default)]
@@ -428,6 +516,8 @@ pub struct SceneDependencies {
     meshes: Vec<MeshDependencyRepr>,
     #[serde(default)]
     materials: Vec<MaterialDependencyRepr>,
+    #[serde(default)]
+    environments: Vec<EnvironmentDependencyRepr>,
 }
 
 impl SceneDependencies {
@@ -457,6 +547,7 @@ impl SceneDependencies {
                 .collect(),
             meshes: Vec::new(),
             materials: Vec::new(),
+            environments: Vec::new(),
         };
         let mut mesh_set = BTreeSet::new();
         for entity in entities {
@@ -523,6 +614,30 @@ impl SceneDependencies {
 
     pub fn contains_material(&self, key: &str) -> bool {
         self.material_dependencies().any(|dep| dep.key() == key)
+    }
+
+    pub fn environment_dependencies(&self) -> impl Iterator<Item = EnvironmentDependencyView<'_>> {
+        self.environments.iter().map(|repr| match repr {
+            EnvironmentDependencyRepr::Key(key) => EnvironmentDependencyView::new(key, None),
+            EnvironmentDependencyRepr::Detailed { key, path } => {
+                EnvironmentDependencyView::new(key, path.as_deref())
+            }
+        })
+    }
+
+    pub fn environment_dependency(&self) -> Option<EnvironmentDependencyView<'_>> {
+        self.environment_dependencies().next()
+    }
+
+    pub fn contains_environment(&self, key: &str) -> bool {
+        self.environment_dependencies().any(|dep| dep.key() == key)
+    }
+
+    pub fn set_environment_dependency(&mut self, dependency: Option<EnvironmentDependency>) {
+        self.environments.clear();
+        if let Some(dep) = dependency {
+            self.environments.push(EnvironmentDependencyRepr::from(dep));
+        }
     }
 
     pub fn fill_mesh_sources<F>(&mut self, mut f: F)
@@ -626,6 +741,26 @@ impl SceneDependencies {
             }
         }
         self.materials = material_map.into_iter().map(|(_, dep)| MaterialDependencyRepr::from(dep)).collect();
+
+        let mut environment_map: BTreeMap<String, EnvironmentDependency> = BTreeMap::new();
+        for repr in std::mem::take(&mut self.environments) {
+            let dep = EnvironmentDependency::from(repr);
+            let key = dep.key().to_string();
+            let path_opt = dep.path().map(|s| s.to_string());
+            match environment_map.entry(key) {
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    if entry.get().path.is_none() {
+                        entry.get_mut().path = path_opt;
+                    }
+                }
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    let key_clone = entry.key().clone();
+                    entry.insert(EnvironmentDependency::new(key_clone, path_opt));
+                }
+            }
+        }
+        self.environments =
+            environment_map.into_iter().map(|(_, dep)| EnvironmentDependencyRepr::from(dep)).collect();
     }
 }
 
@@ -872,3 +1007,5 @@ impl From<ColorData> for glam::Vec4 {
         glam::Vec4::new(value.r, value.g, value.b, value.a)
     }
 }
+
+

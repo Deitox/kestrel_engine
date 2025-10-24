@@ -42,6 +42,7 @@ pub(super) struct EditorUiParams {
     pub ui_cell_size: f32,
     pub ui_spawn_per_press: i32,
     pub ui_auto_spawn_rate: f32,
+    pub ui_environment_intensity: f32,
     pub ui_root_spin: f32,
     pub ui_emitter_rate: f32,
     pub ui_emitter_spread: f32,
@@ -68,6 +69,8 @@ pub(super) struct EditorUiParams {
     pub camera_position: Vec2,
     pub camera_zoom: f32,
     pub mesh_keys: Vec<String>,
+    pub environment_options: Vec<(String, String)>,
+    pub active_environment: String,
     pub scene_history_list: Vec<String>,
     pub atlas_snapshot: Vec<String>,
     pub mesh_snapshot: Vec<String>,
@@ -84,6 +87,7 @@ pub(super) struct EditorUiOutput {
     pub ui_cell_size: f32,
     pub ui_spawn_per_press: i32,
     pub ui_auto_spawn_rate: f32,
+    pub ui_environment_intensity: f32,
     pub ui_root_spin: f32,
     pub ui_emitter_rate: f32,
     pub ui_emitter_spread: f32,
@@ -103,6 +107,7 @@ pub(super) struct EditorUiOutput {
     pub mesh_frustum_snap: bool,
     pub mesh_reset_request: bool,
     pub mesh_selection_request: Option<String>,
+    pub environment_selection_request: Option<String>,
     pub frame_selection_request: bool,
 }
 
@@ -118,6 +123,7 @@ impl App {
             mut ui_cell_size,
             mut ui_spawn_per_press,
             mut ui_auto_spawn_rate,
+            mut ui_environment_intensity,
             mut ui_root_spin,
             mut ui_emitter_rate,
             mut ui_emitter_spread,
@@ -144,6 +150,8 @@ impl App {
             camera_position,
             camera_zoom,
             mut mesh_keys,
+            mut environment_options,
+            active_environment,
             scene_history_list,
             atlas_snapshot,
             mesh_snapshot,
@@ -153,6 +161,7 @@ impl App {
         } = params;
 
         mesh_keys.sort();
+        environment_options.sort_by(|a, b| a.1.cmp(&b.1));
         let mut actions = UiActions::default();
         let mut viewport_mode_request: Option<ViewportCameraMode> = None;
         let mut mesh_control_request: Option<MeshControlMode> = None;
@@ -160,6 +169,7 @@ impl App {
         let mut mesh_frustum_snap = false;
         let mut mesh_reset_request = false;
         let mut mesh_selection_request: Option<String> = None;
+        let mut environment_selection_request: Option<String> = None;
         let mut frame_selection_request = false;
         let mut pending_viewport: Option<(Vec2, Vec2)> = None;
         let mut left_panel_width_px = 0.0;
@@ -312,6 +322,39 @@ impl App {
                             self.ui_shadow_strength = self.ui_shadow_strength.clamp(0.0, 1.0);
                             lighting_dirty = true;
                         }
+                        ui.separator();
+                        ui.label("Environment");
+                        if environment_options.is_empty() {
+                            ui.label("No environments available.");
+                        } else {
+                            let mut selected_environment = active_environment.clone();
+                            let current_label = environment_options
+                                .iter()
+                                .find(|(key, _)| key == &selected_environment)
+                                .map(|(_, label)| label.as_str())
+                                .unwrap_or(selected_environment.as_str());
+                            egui::ComboBox::from_id_salt("environment_select")
+                                .selected_text(current_label)
+                                .show_ui(ui, |ui| {
+                                    for (key, label) in &environment_options {
+                                        ui.selectable_value(&mut selected_environment, key.clone(), label);
+                                    }
+                                });
+                            if selected_environment != active_environment {
+                                environment_selection_request = Some(selected_environment);
+                            }
+                        }
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut ui_environment_intensity, 0.0..=5.0)
+                                    .text("Environment intensity")
+                                    .logarithmic(true),
+                            )
+                            .changed()
+                        {
+                            ui_environment_intensity = ui_environment_intensity.clamp(0.0, 20.0);
+                        }
+
                         if ui.button("Reset lighting").clicked() {
                             self.ui_light_direction = default_dir;
                             self.ui_light_color = Vec3::new(1.05, 0.98, 0.92);
@@ -320,6 +363,9 @@ impl App {
                             self.ui_shadow_distance = 35.0;
                             self.ui_shadow_bias = 0.002;
                             self.ui_shadow_strength = 1.0;
+                            self.ui_environment_intensity = 1.0;
+                            ui_environment_intensity = 1.0;
+
                             lighting_dirty = true;
                         }
                         if lighting_dirty {
@@ -1445,6 +1491,7 @@ impl App {
             ui_cell_size,
             ui_spawn_per_press,
             ui_auto_spawn_rate,
+            ui_environment_intensity,
             ui_root_spin,
             ui_emitter_rate,
             ui_emitter_spread,
@@ -1464,7 +1511,9 @@ impl App {
             mesh_frustum_snap,
             mesh_reset_request,
             mesh_selection_request,
+            environment_selection_request,
             frame_selection_request,
         }
     }
 }
+

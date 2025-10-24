@@ -7,6 +7,7 @@ use crate::ecs::{EcsWorld, InstanceData, MeshLightingInfo, ParticleCaps};
 use crate::events::GameEvent;
 use crate::gizmo::{GizmoInteraction, GizmoMode};
 use crate::input::{Input, InputEvent};
+use crate::environment::EnvironmentRegistry;
 use crate::material_registry::{MaterialGpu, MaterialRegistry};
 use crate::mesh_preview;
 use crate::mesh_preview::{
@@ -15,8 +16,8 @@ use crate::mesh_preview::{
 use crate::mesh_registry::MeshRegistry;
 use crate::renderer::{MeshDraw, RenderViewport, Renderer, SpriteBatch};
 use crate::scene::{
-    SceneCamera2D, SceneDependencies, SceneLightingData, SceneMetadata, SceneShadowData, SceneViewportMode,
-    Vec2Data,
+    EnvironmentDependency, SceneCamera2D, SceneDependencies, SceneEnvironment, SceneLightingData, SceneMetadata,
+    SceneShadowData, SceneViewportMode, Vec2Data,
 };
 use crate::scripts::{ScriptCommand, ScriptHost};
 use crate::time::Time;
@@ -26,7 +27,7 @@ mod gizmo_interaction;
 use bevy_ecs::prelude::Entity;
 use glam::{Mat4, Vec2, Vec3, Vec4};
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
@@ -115,8 +116,13 @@ pub struct App {
     pub(crate) renderer: Renderer,
     pub(crate) ecs: EcsWorld,
     time: Time,
-    pub(crate) input: Input,
-    assets: AssetManager,
+   pub(crate) input: Input,
+   assets: AssetManager,
+    environment_registry: EnvironmentRegistry,
+    persistent_environments: HashSet<String>,
+    scene_environment_ref: Option<String>,
+    active_environment_key: String,
+    environment_intensity: f32,
     should_close: bool,
     accumulator: f32,
     fixed_dt: f32,
@@ -148,6 +154,7 @@ pub struct App {
     ui_light_color: Vec3,
     ui_light_ambient: Vec3,
     ui_light_exposure: f32,
+    ui_environment_intensity: f32,
     ui_shadow_distance: f32,
     ui_shadow_bias: f32,
     ui_shadow_strength: f32,
@@ -271,6 +278,12 @@ impl App {
         let time = Time::new();
         let input = Input::new();
         let assets = AssetManager::new();
+        let environment_registry = EnvironmentRegistry::new();
+        let default_environment_key = environment_registry.default_key().to_string();
+        let default_environment_intensity = 1.0;
+        let mut persistent_environments = HashSet::new();
+        persistent_environments.insert(default_environment_key.clone());
+        let environment_intensity = default_environment_intensity;
         let mut persistent_materials = HashSet::new();
 
         let mut material_registry = MaterialRegistry::new();
@@ -316,6 +329,11 @@ impl App {
             time,
             input,
             assets,
+            environment_registry,
+            persistent_environments,
+            scene_environment_ref: None,
+            active_environment_key: default_environment_key.clone(),
+            environment_intensity,
             should_close: false,
             accumulator: 0.0,
             fixed_dt: 1.0 / 60.0,
@@ -343,6 +361,7 @@ impl App {
             ui_light_color: lighting_state.color,
             ui_light_ambient: lighting_state.ambient,
             ui_light_exposure: lighting_state.exposure,
+            ui_environment_intensity: environment_intensity,
             ui_shadow_distance: lighting_state.shadow_distance,
             ui_shadow_bias: lighting_state.shadow_bias,
             ui_shadow_strength: lighting_state.shadow_strength,
@@ -448,6 +467,48 @@ impl App {
 
     fn focus_selection(&mut self) -> bool {
         mesh_preview::focus_selection(self)
+    }
+
+    fn should_keep_environment(&self, key: &str) -> bool {
+        if key.is_empty() {
+            return true;
+        }
+        self.persistent_environments.contains(key) || self.scene_environment_ref.as_deref() == Some(key)
+    }
+
+    fn set_active_environment(&mut self, key: &str, intensity: f32) -> Result<()> {
+        let intensity = intensity.max(0.0);
+        if self.environment_registry.definition(key).is_none() {
+            return Err(anyhow!("Environment '{}' is not available", key));
+        }
+        if self.active_environment_key == key {
+            self.environment_intensity = intensity;
+            self.ui_environment_intensity = intensity;
+            if self.renderer.environment_parameters().is_some() {
+                self.renderer.set_environment_intensity(intensity);
+            }
+            return Ok(());
+        }
+        let previous = std::mem::replace(&mut self.active_environment_key, key.to_string());
+        self.environment_intensity = intensity;
+        self.ui_environment_intensity = intensity;
+        if let Err(err) = self.apply_environment_to_renderer() {
+            return Err(err);
+        }
+        if previous != self.active_environment_key && !self.should_keep_environment(&previous) {
+            self.environment_registry.release(&previous);
+        }
+        Ok(())
+    }
+
+    fn apply_environment_to_renderer(&mut self) -> Result<()> {
+        if self.renderer.device().is_err() {
+            return Ok(());
+        }
+        let key = self.active_environment_key.clone();
+        let env_gpu = self.environment_registry.ensure_gpu(&key, &mut self.renderer)?;
+        self.renderer.set_environment(&env_gpu, self.environment_intensity)?;
+        Ok(())
     }
 
     fn update_mesh_camera(&mut self, dt: f32) {
@@ -577,6 +638,26 @@ impl App {
             }
         }
         self.scene_material_refs = next_materials;
+        let previous_environment = self.scene_environment_ref.clone();
+        let mut next_environment = None;
+        if let Some(dep) = deps.environment_dependency() {
+            let key = dep.key().to_string();
+            self.environment_registry
+                .retain(dep.key(), dep.path())
+                .with_context(|| format!("Failed to retain environment '{}'", dep.key()))?;
+            if self.renderer.device().is_ok() {
+                self.environment_registry
+                    .ensure_gpu(dep.key(), &mut self.renderer)
+                    .with_context(|| format!("Failed to prepare environment '{}'", dep.key()))?;
+            }
+            next_environment = Some(key);
+        }
+        if let Some(prev) = previous_environment {
+            if Some(prev.clone()) != next_environment && !self.persistent_environments.contains(&prev) {
+                self.environment_registry.release(&prev);
+            }
+        }
+        self.scene_environment_ref = next_environment;
         self.scene_dependencies = Some(deps.clone());
         Ok(())
     }
@@ -599,6 +680,8 @@ impl App {
                 strength: lighting.shadow_strength,
             },
         });
+        metadata.environment =
+            Some(SceneEnvironment::new(self.active_environment_key.clone(), self.environment_intensity));
         metadata
     }
 
@@ -636,6 +719,17 @@ impl App {
             self.ui_shadow_bias = renderer_lighting.shadow_bias;
             self.ui_shadow_strength = renderer_lighting.shadow_strength;
             self.renderer.mark_shadow_settings_dirty();
+        }
+        if let Some(environment) = metadata.environment.as_ref() {
+            let intensity = environment.intensity.max(0.0);
+            if let Err(err) = self.set_active_environment(&environment.key, intensity) {
+                self.ui_scene_status = Some(format!("Environment '{}' unavailable: {err}", environment.key));
+            }
+        } else {
+            let default_key = self.environment_registry.default_key().to_string();
+            if let Err(err) = self.set_active_environment(&default_key, 1.0) {
+                eprintln!("[environment] failed to restore default environment: {err:?}");
+            }
         }
     }
 
@@ -743,6 +837,12 @@ impl ApplicationHandler for App {
         };
         self.assets.set_device(device, queue);
         self.clear_atlas_view_cache();
+        if let Err(err) = self.apply_environment_to_renderer() {
+            eprintln!(
+                "[environment] failed to bind active environment '{}': {err:?}",
+                self.active_environment_key
+            );
+        }
         if !self.scene_atlas_refs.contains("main") {
             match self.assets.retain_atlas("main", Some("assets/images/atlas.json")) {
                 Ok(()) => {
@@ -1165,6 +1265,19 @@ impl ApplicationHandler for App {
         let scene_history_list: Vec<String> = self.scene_history.iter().cloned().collect();
         let atlas_snapshot: Vec<String> = self.scene_atlas_refs.iter().cloned().collect();
         let mesh_snapshot: Vec<String> = self.scene_mesh_refs.iter().cloned().collect();
+        let environment_options: Vec<(String, String)> = self
+            .environment_registry
+            .keys()
+            .map(|key| {
+                let label = self
+                    .environment_registry
+                    .definition(key)
+                    .map(|def| def.label().to_string())
+                    .unwrap_or_else(|| key.clone());
+                (key.clone(), label)
+            })
+            .collect();
+        let active_environment = self.active_environment_key.clone();
 
         let editor_params = editor_ui::EditorUiParams {
             raw_input,
@@ -1176,6 +1289,7 @@ impl ApplicationHandler for App {
             ui_cell_size: self.ui_cell_size,
             ui_spawn_per_press: self.ui_spawn_per_press,
             ui_auto_spawn_rate: self.ui_auto_spawn_rate,
+            ui_environment_intensity: self.ui_environment_intensity,
             ui_root_spin: self.ui_root_spin,
             ui_emitter_rate: self.ui_emitter_rate,
             ui_emitter_spread: self.ui_emitter_spread,
@@ -1202,6 +1316,9 @@ impl ApplicationHandler for App {
             camera_position,
             camera_zoom,
             mesh_keys,
+            environment_options,
+            active_environment,
+
             scene_history_list,
             atlas_snapshot,
             mesh_snapshot,
@@ -1219,6 +1336,7 @@ impl ApplicationHandler for App {
             ui_cell_size,
             ui_spawn_per_press,
             ui_auto_spawn_rate,
+            ui_environment_intensity,
             ui_root_spin,
             ui_emitter_rate,
             ui_emitter_spread,
@@ -1238,6 +1356,7 @@ impl ApplicationHandler for App {
             mesh_frustum_snap,
             mesh_reset_request,
             mesh_selection_request,
+            environment_selection_request,
             frame_selection_request,
         } = editor_output;
 
@@ -1245,6 +1364,9 @@ impl ApplicationHandler for App {
         self.ui_cell_size = ui_cell_size;
         self.ui_spawn_per_press = ui_spawn_per_press;
         self.ui_auto_spawn_rate = ui_auto_spawn_rate;
+        self.ui_environment_intensity = ui_environment_intensity;
+        self.environment_intensity = ui_environment_intensity;
+        self.renderer.set_environment_intensity(self.environment_intensity);
         self.ui_root_spin = ui_root_spin;
         self.ui_emitter_rate = ui_emitter_rate;
         self.ui_emitter_spread = ui_emitter_spread;
@@ -1277,6 +1399,17 @@ impl ApplicationHandler for App {
         }
         if let Some(key) = mesh_selection_request {
             self.set_preview_mesh(key);
+        }
+        if let Some(environment_key) = environment_selection_request {
+            match self.set_active_environment(&environment_key, self.environment_intensity) {
+                Ok(()) => {
+                    self.ui_scene_status = Some(format!("Environment set to {}", environment_key));
+                }
+                Err(err) => {
+                    self.ui_scene_status =
+                        Some(format!("Environment '{}' unavailable: {err}", environment_key));
+                }
+            }
         }
 
         let egui::FullOutput { platform_output, textures_delta, shapes, .. } = full_output;
@@ -1352,6 +1485,16 @@ impl ApplicationHandler for App {
                 |key| mesh_source_map.get(key).cloned(),
                 |key| material_source_map.get(key).cloned(),
             );
+            let environment_dependency = self
+                .environment_registry
+                .definition(&self.active_environment_key)
+                .map(|def| {
+                    EnvironmentDependency::new(
+                        def.key().to_string(),
+                        def.source().map(|path| path.to_string()),
+                    )
+                });
+            scene.dependencies.set_environment_dependency(environment_dependency);
             scene.metadata = self.capture_scene_metadata();
             match scene.save_to_path(&self.ui_scene_path) {
                 Ok(_) => {
@@ -1631,3 +1774,4 @@ impl App {
         }
     }
 }
+
