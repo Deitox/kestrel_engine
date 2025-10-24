@@ -38,6 +38,7 @@ impl EcsWorld {
         world.insert_resource(TimeDelta(0.0));
         world.insert_resource(SpatialHash::new(0.25));
         world.insert_resource(ParticleContacts::default());
+        world.insert_resource(ParticleCaps::default());
         let world_bounds =
             WorldBounds { min: Vec2::new(-1.4, -1.0), max: Vec2::new(1.4, 1.0), thickness: 0.05 };
         world.insert_resource(world_bounds);
@@ -339,6 +340,10 @@ impl EcsWorld {
             let _ = self.world.despawn(entity);
         }
         self.world.resource_mut::<ParticleContacts>().pairs.clear();
+    }
+
+    pub fn set_particle_caps(&mut self, caps: ParticleCaps) {
+        *self.world.resource_mut::<ParticleCaps>() = caps;
     }
 
     pub fn set_emitter_spread(&mut self, entity: Entity, spread: f32) {

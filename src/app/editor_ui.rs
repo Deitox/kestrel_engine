@@ -51,6 +51,9 @@ pub(super) struct EditorUiParams {
     pub ui_emitter_end_size: f32,
     pub ui_emitter_start_color: [f32; 4],
     pub ui_emitter_end_color: [f32; 4],
+    pub ui_particle_max_spawn_per_frame: u32,
+    pub ui_particle_max_total: u32,
+    pub ui_particle_max_emitter_backlog: f32,
     pub selected_entity: Option<Entity>,
     pub selection_details: Option<EntityInfo>,
     pub prev_selected_entity: Option<Entity>,
@@ -90,6 +93,9 @@ pub(super) struct EditorUiOutput {
     pub ui_emitter_end_size: f32,
     pub ui_emitter_start_color: [f32; 4],
     pub ui_emitter_end_color: [f32; 4],
+    pub ui_particle_max_spawn_per_frame: u32,
+    pub ui_particle_max_total: u32,
+    pub ui_particle_max_emitter_backlog: f32,
     pub selection: SelectionResult,
     pub viewport_mode_request: Option<ViewportCameraMode>,
     pub mesh_control_request: Option<MeshControlMode>,
@@ -121,6 +127,9 @@ impl App {
             mut ui_emitter_end_size,
             mut ui_emitter_start_color,
             mut ui_emitter_end_color,
+            mut ui_particle_max_spawn_per_frame,
+            mut ui_particle_max_total,
+            mut ui_particle_max_emitter_backlog,
             mut selected_entity,
             mut selection_details,
             prev_selected_entity,
@@ -341,6 +350,23 @@ impl App {
                                 actions.reset_world = true;
                             }
                         });
+                        ui.separator();
+                        ui.label("Particle caps");
+                        ui.add(
+                            egui::Slider::new(&mut ui_particle_max_total, 0..=10_000)
+                                .text("Max total particles"),
+                        );
+                        ui.add(
+                            egui::Slider::new(&mut ui_particle_max_spawn_per_frame, 0..=2_000)
+                                .text("Max spawn per frame"),
+                        );
+                        ui.add(
+                            egui::Slider::new(&mut ui_particle_max_emitter_backlog, 0.0..=256.0)
+                                .text("Emitter backlog cap"),
+                        );
+                        if ui_particle_max_spawn_per_frame > ui_particle_max_total {
+                            ui_particle_max_spawn_per_frame = ui_particle_max_total;
+                        }
                     });
 
                     egui::CollapsingHeader::new("Scripts").default_open(false).show(ui, |ui| {
@@ -1379,6 +1405,9 @@ impl App {
             ui_emitter_end_size,
             ui_emitter_start_color,
             ui_emitter_end_color,
+            ui_particle_max_spawn_per_frame,
+            ui_particle_max_total,
+            ui_particle_max_emitter_backlog,
             selection: SelectionResult { entity: selected_entity, details: selection_details },
             viewport_mode_request,
             mesh_control_request,

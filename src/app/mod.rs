@@ -3,7 +3,7 @@ use crate::audio::AudioManager;
 use crate::camera::Camera2D;
 use crate::camera3d::{Camera3D, OrbitCamera};
 use crate::config::AppConfig;
-use crate::ecs::{EcsWorld, InstanceData, MeshLightingInfo};
+use crate::ecs::{EcsWorld, InstanceData, MeshLightingInfo, ParticleCaps};
 use crate::events::GameEvent;
 use crate::gizmo::{GizmoInteraction, GizmoMode};
 use crate::input::{Input, InputEvent};
@@ -140,6 +140,9 @@ pub struct App {
     ui_emitter_end_size: f32,
     ui_emitter_start_color: [f32; 4],
     ui_emitter_end_color: [f32; 4],
+    ui_particle_max_spawn_per_frame: u32,
+    ui_particle_max_total: u32,
+    ui_particle_max_emitter_backlog: f32,
     ui_light_direction: Vec3,
     ui_light_color: Vec3,
     ui_light_ambient: Vec3,
@@ -207,7 +210,13 @@ impl App {
     pub async fn new(config: AppConfig) -> Self {
         let renderer = Renderer::new(&config.window).await;
         let lighting_state = renderer.lighting().clone();
+        let particle_config = config.particles.clone();
         let mut ecs = EcsWorld::new();
+        ecs.set_particle_caps(ParticleCaps::new(
+            particle_config.max_spawn_per_frame,
+            particle_config.max_total,
+            particle_config.max_emitter_backlog,
+        ));
         let emitter = ecs.spawn_demo_scene();
         let mut audio = AudioManager::new(16);
         let event_log_limit = 32;
@@ -297,7 +306,7 @@ impl App {
         let egui_winit = None;
         let scripts = ScriptHost::new("assets/scripts/main.rhai");
 
-        Self {
+        let mut app = Self {
             renderer,
             ecs,
             time,
@@ -323,6 +332,9 @@ impl App {
             ui_emitter_end_size,
             ui_emitter_start_color,
             ui_emitter_end_color,
+            ui_particle_max_spawn_per_frame: particle_config.max_spawn_per_frame,
+            ui_particle_max_total: particle_config.max_total,
+            ui_particle_max_emitter_backlog: particle_config.max_emitter_backlog,
             ui_light_direction: lighting_state.direction,
             ui_light_color: lighting_state.color,
             ui_light_ambient: lighting_state.ambient,
@@ -371,7 +383,9 @@ impl App {
             emitter_entity: Some(emitter),
             scripts,
             sprite_atlas_views: HashMap::new(),
-        }
+        };
+        app.apply_particle_caps();
+        app
     }
 
     fn record_events(&mut self) {
@@ -459,6 +473,18 @@ impl App {
 
     fn spawn_mesh_entity(&mut self, mesh_key: &str) {
         mesh_preview::spawn_mesh_entity(self, mesh_key);
+    }
+
+    fn apply_particle_caps(&mut self) {
+        if self.ui_particle_max_spawn_per_frame > self.ui_particle_max_total {
+            self.ui_particle_max_spawn_per_frame = self.ui_particle_max_total;
+        }
+        let caps = ParticleCaps::new(
+            self.ui_particle_max_spawn_per_frame,
+            self.ui_particle_max_total,
+            self.ui_particle_max_emitter_backlog,
+        );
+        self.ecs.set_particle_caps(caps);
     }
 
     fn sync_emitter_ui(&mut self) {
@@ -1133,6 +1159,9 @@ impl ApplicationHandler for App {
             ui_emitter_end_size: self.ui_emitter_end_size,
             ui_emitter_start_color: self.ui_emitter_start_color,
             ui_emitter_end_color: self.ui_emitter_end_color,
+            ui_particle_max_spawn_per_frame: self.ui_particle_max_spawn_per_frame,
+            ui_particle_max_total: self.ui_particle_max_total,
+            ui_particle_max_emitter_backlog: self.ui_particle_max_emitter_backlog,
             selected_entity: self.selected_entity,
             selection_details: selected_info.clone(),
             prev_selected_entity,
@@ -1173,6 +1202,9 @@ impl ApplicationHandler for App {
             ui_emitter_end_size,
             ui_emitter_start_color,
             ui_emitter_end_color,
+            ui_particle_max_spawn_per_frame,
+            ui_particle_max_total,
+            ui_particle_max_emitter_backlog,
             selection,
             viewport_mode_request,
             mesh_control_request,
@@ -1196,7 +1228,11 @@ impl ApplicationHandler for App {
         self.ui_emitter_end_size = ui_emitter_end_size;
         self.ui_emitter_start_color = ui_emitter_start_color;
         self.ui_emitter_end_color = ui_emitter_end_color;
+        self.ui_particle_max_spawn_per_frame = ui_particle_max_spawn_per_frame;
+        self.ui_particle_max_total = ui_particle_max_total;
+        self.ui_particle_max_emitter_backlog = ui_particle_max_emitter_backlog;
         self.selected_entity = selection.entity;
+        self.apply_particle_caps();
 
         if let Some(mode) = viewport_mode_request {
             self.set_viewport_camera_mode(mode);

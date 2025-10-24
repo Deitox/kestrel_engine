@@ -5,5 +5,10 @@
     "height": 1080,
     "vsync": true,
     "fullscreen": false
+  },
+  "particles": {
+    "max_spawn_per_frame": 256,
+    "max_total": 2000,
+    "max_emitter_backlog": 64.0
   }
 }

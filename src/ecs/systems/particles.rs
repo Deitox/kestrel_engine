@@ -7,31 +7,31 @@ use glam::Vec2;
 use rand::Rng;
 use std::borrow::Cow;
 
-const MAX_PARTICLE_SPAWN_PER_FRAME: i32 = 256;
-const MAX_PARTICLE_TOTAL: usize = 2_000;
-const MAX_EMITTER_BACKLOG: f32 = 64.0;
-
 pub fn sys_update_emitters(
     mut commands: Commands,
     mut emitters: Query<(&mut ParticleEmitter, &Transform)>,
     particles: Query<Entity, With<Particle>>,
+    caps: Res<ParticleCaps>,
     dt: Res<TimeDelta>,
 ) {
     let mut rng = rand::thread_rng();
     let existing_particles = particles.iter().count();
-    let mut spawn_budget = (MAX_PARTICLE_TOTAL.saturating_sub(existing_particles))
-        .min(MAX_PARTICLE_SPAWN_PER_FRAME as usize) as i32;
+    let max_total = caps.max_total as usize;
+    let max_spawn_per_frame = caps.max_spawn_per_frame as usize;
+    let mut spawn_budget =
+        (max_total.saturating_sub(existing_particles)).min(max_spawn_per_frame) as i32;
 
     if spawn_budget <= 0 {
         for (mut emitter, _) in emitters.iter_mut() {
-            emitter.accumulator = emitter.accumulator.min(MAX_EMITTER_BACKLOG);
+            emitter.accumulator = emitter.accumulator.min(caps.max_emitter_backlog);
         }
         return;
     }
 
     for (mut emitter, transform) in emitters.iter_mut() {
         let spawn_rate = emitter.rate.max(0.0);
-        emitter.accumulator = (emitter.accumulator + spawn_rate * dt.0).min(MAX_EMITTER_BACKLOG);
+        emitter.accumulator =
+            (emitter.accumulator + spawn_rate * dt.0).min(caps.max_emitter_backlog);
         let desired = emitter.accumulator.floor() as i32;
         if desired <= 0 {
             continue;

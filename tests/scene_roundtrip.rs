@@ -2,8 +2,8 @@ use bevy_ecs::prelude::Entity;
 use glam::{EulerRot, Quat, Vec2, Vec3, Vec4};
 use kestrel_engine::assets::AssetManager;
 use kestrel_engine::ecs::{
-    Children, EcsWorld, MeshLighting, MeshRef, MeshSurface, Parent, ParticleEmitter, Transform, Transform3D,
-    WorldTransform, WorldTransform3D,
+    Aabb, Children, EcsWorld, Mass, MeshLighting, MeshRef, MeshSurface, Parent, ParticleEmitter, Sprite, Transform,
+    Transform3D, Velocity, WorldTransform, WorldTransform3D,
 };
 use kestrel_engine::material_registry::MaterialRegistry;
 use kestrel_engine::mesh_registry::MeshRegistry;
@@ -334,4 +334,66 @@ fn scene_roundtrip_preserves_transforms_and_emitters() {
     let children =
         new_world.world.get::<Children>(parent_entity).expect("parent should retain children listing");
     assert!(children.0.contains(&mesh_entity));
+}
+
+#[test]
+fn scene_roundtrip_preserves_scripted_spawns() {
+    let mut world = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    assets
+        .retain_atlas("main", Some("assets/images/atlas.json"))
+        .expect("main atlas should load before scripted spawn");
+
+    let position = Vec2::new(-0.35, 0.42);
+    let velocity = Vec2::new(0.55, -0.15);
+    let scale = 0.6;
+
+    let scripted_entity = world
+        .spawn_scripted_sprite(&assets, "main", "green", position, scale, velocity)
+        .expect("script-driven spawn should succeed");
+    assert!(world.entity_exists(scripted_entity), "scripted entity should exist in world");
+
+    let scene = world.export_scene(&assets);
+    assert_eq!(scene.entities.len(), 1, "scene export should capture scripted entity only");
+    assert!(
+        scene.dependencies.contains_atlas("main"),
+        "scene dependencies should include main atlas for scripted sprite"
+    );
+    let saved_entity = scene
+        .entities
+        .iter()
+        .find(|entity| entity.sprite.as_ref().map(|sprite| sprite.region.as_str()) == Some("green"))
+        .expect("scripted sprite should serialize with sprite data");
+    let saved_velocity = saved_entity
+        .velocity
+        .as_ref()
+        .map(|vel| Vec2::from(vel.clone()))
+        .expect("scripted sprite should serialize velocity");
+    assert!((saved_velocity - velocity).length() < 1e-5);
+    let collider = saved_entity
+        .collider
+        .as_ref()
+        .map(|collider| Vec2::from(collider.half_extents.clone()))
+        .expect("scripted sprite should serialize collider");
+    assert!((collider - Vec2::splat(scale * 0.5)).length() < 1e-5);
+    let mass = saved_entity.mass.expect("scripted sprite should serialize mass");
+    assert!((mass - 1.0).abs() < 1e-5);
+
+    let mut new_world = EcsWorld::new();
+    new_world
+        .load_scene(&scene, &assets)
+        .expect("scene load should recreate scripted sprite");
+    let mut query = new_world.world.query::<(&Transform, &Sprite, &Velocity, &Aabb, &Mass)>();
+    let (transform, sprite, vel, collider_loaded, mass_loaded) = query
+        .iter(&new_world.world)
+        .find(|(_, sprite, _, _, _)| sprite.region == "green")
+        .expect("loaded world should contain scripted sprite");
+
+    assert_eq!(sprite.region.as_ref(), "green");
+    assert_eq!(sprite.atlas_key.as_ref(), "main");
+    assert!((transform.translation - position).length() < 1e-5);
+    assert!((transform.scale - Vec2::splat(scale)).length() < 1e-5);
+    assert!((vel.0 - velocity).length() < 1e-5);
+    assert!((collider_loaded.half - Vec2::splat(scale * 0.5)).length() < 1e-5);
+    assert!((mass_loaded.0 - 1.0).abs() < 1e-5);
 }

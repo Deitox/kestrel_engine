@@ -115,6 +115,27 @@ pub struct ParticleVisual {
     pub end_size: f32,
 }
 
+#[derive(Clone, Copy, Resource)]
+pub struct ParticleCaps {
+    pub max_spawn_per_frame: u32,
+    pub max_total: u32,
+    pub max_emitter_backlog: f32,
+}
+
+impl Default for ParticleCaps {
+    fn default() -> Self {
+        Self { max_spawn_per_frame: 256, max_total: 2_000, max_emitter_backlog: 64.0 }
+    }
+}
+
+impl ParticleCaps {
+    pub fn new(max_spawn_per_frame: u32, max_total: u32, max_emitter_backlog: f32) -> Self {
+        let backlog = max_emitter_backlog.max(0.0);
+        let spawn = max_spawn_per_frame.min(max_total);
+        Self { max_spawn_per_frame: spawn, max_total, max_emitter_backlog: backlog }
+    }
+}
+
 #[derive(Component, Clone, Copy)]
 pub struct RapierBody {
     pub handle: RigidBodyHandle,
