@@ -287,11 +287,39 @@ impl App {
                             self.ui_light_exposure = self.ui_light_exposure.clamp(0.1, 20.0);
                             lighting_dirty = true;
                         }
+                        if ui
+                            .add(egui::Slider::new(&mut self.ui_shadow_distance, 5.0..=200.0).text("Shadow distance"))
+                            .changed()
+                        {
+                            self.ui_shadow_distance = self.ui_shadow_distance.clamp(5.0, 200.0);
+                            lighting_dirty = true;
+                        }
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut self.ui_shadow_bias, 0.0001..=0.02)
+                                    .text("Shadow bias")
+                                    .logarithmic(true),
+                            )
+                            .changed()
+                        {
+                            self.ui_shadow_bias = self.ui_shadow_bias.clamp(0.0001, 0.02);
+                            lighting_dirty = true;
+                        }
+                        if ui
+                            .add(egui::Slider::new(&mut self.ui_shadow_strength, 0.0..=1.0).text("Shadow strength"))
+                            .changed()
+                        {
+                            self.ui_shadow_strength = self.ui_shadow_strength.clamp(0.0, 1.0);
+                            lighting_dirty = true;
+                        }
                         if ui.button("Reset lighting").clicked() {
                             self.ui_light_direction = default_dir;
                             self.ui_light_color = Vec3::new(1.05, 0.98, 0.92);
                             self.ui_light_ambient = Vec3::splat(0.03);
                             self.ui_light_exposure = 1.0;
+                            self.ui_shadow_distance = 35.0;
+                            self.ui_shadow_bias = 0.002;
+                            self.ui_shadow_strength = 1.0;
                             lighting_dirty = true;
                         }
                         if lighting_dirty {
@@ -300,6 +328,10 @@ impl App {
                             lighting.color = self.ui_light_color;
                             lighting.ambient = self.ui_light_ambient;
                             lighting.exposure = self.ui_light_exposure;
+                            lighting.shadow_distance = self.ui_shadow_distance.clamp(1.0, 500.0);
+                            lighting.shadow_bias = self.ui_shadow_bias.clamp(0.00005, 0.05);
+                            lighting.shadow_strength = self.ui_shadow_strength.clamp(0.0, 1.0);
+                            self.renderer.mark_shadow_settings_dirty();
                         }
                     });
 
@@ -732,10 +764,27 @@ impl App {
                                         }
                                     }
                                 }
-                                ui.label(format!(
-                                    "Shadows: cast={} receive={}",
-                                    mesh.lighting.cast_shadows, mesh.lighting.receive_shadows
-                                ));
+                                let mut cast_shadows = mesh.lighting.cast_shadows;
+                                let mut receive_shadows = mesh.lighting.receive_shadows;
+                                let mut shadow_flags_changed = false;
+                                ui.horizontal(|ui| {
+                                    ui.label("Shadows");
+                                    if ui.checkbox(&mut cast_shadows, "Cast").changed() {
+                                        shadow_flags_changed = true;
+                                    }
+                                    if ui.checkbox(&mut receive_shadows, "Receive").changed() {
+                                        shadow_flags_changed = true;
+                                    }
+                                });
+                                if shadow_flags_changed {
+                                    if self.ecs.set_mesh_shadow_flags(entity, cast_shadows, receive_shadows) {
+                                        inspector_refresh = true;
+                                        self.inspector_status = None;
+                                    } else {
+                                        self.inspector_status =
+                                            Some("Failed to update mesh shadow flags".to_string());
+                                    }
+                                }
                                 if let Some(subsets) = self.mesh_registry.mesh_subsets(&mesh.key) {
                                     ui.collapsing("Submeshes", |ui| {
                                         for (index, subset) in subsets.iter().enumerate() {

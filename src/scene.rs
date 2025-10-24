@@ -86,6 +86,8 @@ pub struct SceneLightingData {
     pub ambient: Vec3Data,
     #[serde(default = "default_light_exposure")]
     pub exposure: f32,
+    #[serde(default)]
+    pub shadow: SceneShadowData,
 }
 
 impl Default for SceneLightingData {
@@ -95,13 +97,52 @@ impl Default for SceneLightingData {
             color: default_light_color(),
             ambient: default_light_ambient(),
             exposure: default_light_exposure(),
+            shadow: SceneShadowData::default(),
         }
     }
 }
 
 impl SceneLightingData {
-    pub fn components(&self) -> (glam::Vec3, glam::Vec3, glam::Vec3, f32) {
-        (self.direction.clone().into(), self.color.clone().into(), self.ambient.clone().into(), self.exposure)
+    pub fn components(&self) -> (glam::Vec3, glam::Vec3, glam::Vec3, f32, SceneShadowData) {
+        (
+            self.direction.clone().into(),
+            self.color.clone().into(),
+            self.ambient.clone().into(),
+            self.exposure,
+            self.shadow.clone(),
+        )
+    }
+}
+
+fn default_shadow_distance() -> f32 {
+    35.0
+}
+
+fn default_shadow_bias() -> f32 {
+    0.002
+}
+
+fn default_shadow_strength() -> f32 {
+    1.0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SceneShadowData {
+    #[serde(default = "default_shadow_distance")]
+    pub distance: f32,
+    #[serde(default = "default_shadow_bias")]
+    pub bias: f32,
+    #[serde(default = "default_shadow_strength")]
+    pub strength: f32,
+}
+
+impl Default for SceneShadowData {
+    fn default() -> Self {
+        Self {
+            distance: default_shadow_distance(),
+            bias: default_shadow_bias(),
+            strength: default_shadow_strength(),
+        }
     }
 }
 
@@ -687,11 +728,15 @@ fn default_base_color() -> Vec3Data {
     Vec3Data { x: 1.0, y: 1.0, z: 1.0 }
 }
 
+const fn default_receive_shadows() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeshLightingData {
     #[serde(default)]
     pub cast_shadows: bool,
-    #[serde(default)]
+    #[serde(default = "default_receive_shadows")]
     pub receive_shadows: bool,
     #[serde(default = "default_base_color")]
     pub base_color: Vec3Data,
@@ -707,7 +752,7 @@ impl Default for MeshLightingData {
     fn default() -> Self {
         Self {
             cast_shadows: false,
-            receive_shadows: false,
+            receive_shadows: default_receive_shadows(),
             base_color: default_base_color(),
             metallic: default_metallic(),
             roughness: default_roughness(),

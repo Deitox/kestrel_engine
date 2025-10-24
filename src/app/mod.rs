@@ -15,7 +15,8 @@ use crate::mesh_preview::{
 use crate::mesh_registry::MeshRegistry;
 use crate::renderer::{MeshDraw, RenderViewport, Renderer, SpriteBatch};
 use crate::scene::{
-    SceneCamera2D, SceneDependencies, SceneLightingData, SceneMetadata, SceneViewportMode, Vec2Data,
+    SceneCamera2D, SceneDependencies, SceneLightingData, SceneMetadata, SceneShadowData, SceneViewportMode,
+    Vec2Data,
 };
 use crate::scripts::{ScriptCommand, ScriptHost};
 use crate::time::Time;
@@ -147,6 +148,9 @@ pub struct App {
     ui_light_color: Vec3,
     ui_light_ambient: Vec3,
     ui_light_exposure: f32,
+    ui_shadow_distance: f32,
+    ui_shadow_bias: f32,
+    ui_shadow_strength: f32,
     ui_scale: f32,
     ui_scene_path: String,
     ui_scene_status: Option<String>,
@@ -339,6 +343,9 @@ impl App {
             ui_light_color: lighting_state.color,
             ui_light_ambient: lighting_state.ambient,
             ui_light_exposure: lighting_state.exposure,
+            ui_shadow_distance: lighting_state.shadow_distance,
+            ui_shadow_bias: lighting_state.shadow_bias,
+            ui_shadow_strength: lighting_state.shadow_strength,
             ui_scale: 1.0,
             ui_scene_path: scene_path,
             ui_scene_status: None,
@@ -586,6 +593,11 @@ impl App {
             color: lighting.color.into(),
             ambient: lighting.ambient.into(),
             exposure: lighting.exposure,
+            shadow: SceneShadowData {
+                distance: lighting.shadow_distance,
+                bias: lighting.shadow_bias,
+                strength: lighting.shadow_strength,
+            },
         });
         metadata
     }
@@ -600,7 +612,7 @@ impl App {
             mesh_preview::apply_preview_camera(self, preview);
         }
         if let Some(lighting) = metadata.lighting.as_ref() {
-            let (mut direction, color, ambient, exposure) = lighting.components();
+            let (mut direction, color, ambient, exposure, shadow) = lighting.components();
             if !direction.is_finite() || direction.length_squared() < 1e-4 {
                 direction = glam::Vec3::new(0.4, 0.8, 0.35).normalize();
             }
@@ -611,12 +623,19 @@ impl App {
                 lighting_mut.color = color;
                 lighting_mut.ambient = ambient;
                 lighting_mut.exposure = exposure;
+                lighting_mut.shadow_distance = shadow.distance.clamp(1.0, 500.0);
+                lighting_mut.shadow_bias = shadow.bias.clamp(0.00005, 0.05);
+                lighting_mut.shadow_strength = shadow.strength.clamp(0.0, 1.0);
             }
             let renderer_lighting = self.renderer.lighting();
             self.ui_light_direction = renderer_lighting.direction;
             self.ui_light_color = renderer_lighting.color;
             self.ui_light_ambient = renderer_lighting.ambient;
             self.ui_light_exposure = renderer_lighting.exposure;
+            self.ui_shadow_distance = renderer_lighting.shadow_distance;
+            self.ui_shadow_bias = renderer_lighting.shadow_bias;
+            self.ui_shadow_strength = renderer_lighting.shadow_strength;
+            self.renderer.mark_shadow_settings_dirty();
         }
     }
 
@@ -1080,7 +1099,14 @@ impl ApplicationHandler for App {
                     }
                 }
             };
-            mesh_draws.push(MeshDraw { mesh, model, lighting, material: material_gpu });
+            let casts_shadows = lighting.cast_shadows;
+            mesh_draws.push(MeshDraw {
+                mesh,
+                model,
+                lighting,
+                material: material_gpu,
+                casts_shadows,
+            });
         }
         let mesh_camera_opt = if mesh_draws.is_empty() { None } else { Some(&self.mesh_camera) };
         let frame = match self.renderer.render_frame(

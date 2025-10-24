@@ -59,7 +59,7 @@ impl Default for MeshLighting {
     fn default() -> Self {
         Self {
             cast_shadows: false,
-            receive_shadows: false,
+            receive_shadows: true,
             base_color: Vec3::splat(1.0),
             emissive: None,
             metallic: 0.0,
@@ -204,7 +204,7 @@ impl Default for MeshLightingInfo {
     fn default() -> Self {
         Self {
             cast_shadows: false,
-            receive_shadows: false,
+            receive_shadows: true,
             base_color: Vec3::splat(1.0),
             emissive: None,
             metallic: 0.0,

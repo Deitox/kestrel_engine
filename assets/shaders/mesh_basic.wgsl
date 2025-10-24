@@ -17,9 +17,14 @@ struct DrawUniform {
 
 struct MaterialUniform {
     base_color_factor : vec4<f32>,
-    emissive_factor : vec4<f32>,
+   emissive_factor : vec4<f32>,
     params : vec4<f32>,
     texture_flags : vec4<f32>,
+}
+
+struct ShadowUniform {
+    light_view_proj : mat4x4<f32>,
+    params : vec4<f32>,
 }
 
 @group(0) @binding(0)
@@ -45,6 +50,15 @@ var emissive_tex : texture_2d<f32>;
 
 @group(2) @binding(5)
 var material_sampler : sampler;
+
+@group(3) @binding(0)
+var<uniform> shadow : ShadowUniform;
+
+@group(3) @binding(1)
+var shadow_map : texture_depth_2d;
+
+@group(3) @binding(2)
+var shadow_sampler : sampler_comparison;
 
 struct VertexIn {
     @location(0) position : vec3<f32>,
@@ -114,6 +128,22 @@ fn apply_normal_map(
     return normalize(tbn * tangent_normal);
 }
 
+fn sample_shadow(world_pos : vec3<f32>) -> f32 {
+    let clip = shadow.light_view_proj * vec4<f32>(world_pos, 1.0);
+    if abs(clip.w) < 1e-5 {
+        return 1.0;
+    }
+    let inv_w = 1.0 / clip.w;
+    let ndc = clip.xyz * inv_w;
+    let uv = ndc.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
+    if uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 {
+        return 1.0;
+    }
+    let depth = clamp(ndc.z * 0.5 + 0.5, 0.0, 1.0);
+    let bias = shadow.params.x;
+    return textureSampleCompare(shadow_map, shadow_sampler, uv, depth - bias);
+}
+
 @fragment
 fn fs_main(input : VertexOut) -> @location(0) vec4<f32> {
     var N = normalize(input.normal);
@@ -156,6 +186,13 @@ fn fs_main(input : VertexOut) -> @location(0) vec4<f32> {
 
     let exposure = frame.exposure_params.x;
     var color = frame.ambient_color.xyz * base_color + emissive;
+    let receives_shadow = draw.material_params.z > 0.5;
+    let shadow_strength = clamp(shadow.params.y, 0.0, 1.0);
+    var shadow_factor = 1.0;
+    if (receives_shadow && shadow_strength > 0.001) {
+        let shadow_sample = sample_shadow(input.world_pos);
+        shadow_factor = mix(1.0, shadow_sample, shadow_strength);
+    }
 
     if (n_dot_l > 0.0 && n_dot_v > 0.0) {
         let f0 = mix(vec3<f32>(0.04), base_color, vec3<f32>(metallic));
@@ -166,7 +203,7 @@ fn fs_main(input : VertexOut) -> @location(0) vec4<f32> {
 
         let kd = (vec3<f32>(1.0) - F) * (1.0 - metallic);
         let diffuse = kd * base_color / 3.14159265;
-        let radiance = frame.light_color.xyz * n_dot_l * exposure;
+        let radiance = frame.light_color.xyz * n_dot_l * exposure * shadow_factor;
         color = color + (diffuse + spec) * radiance;
     }
 

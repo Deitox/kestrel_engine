@@ -7,7 +7,7 @@ use kestrel_engine::ecs::{
 };
 use kestrel_engine::material_registry::MaterialRegistry;
 use kestrel_engine::mesh_registry::MeshRegistry;
-use kestrel_engine::scene::Scene;
+use kestrel_engine::scene::{Scene, SceneLightingData, SceneShadowData, Vec3Data};
 use tempfile::NamedTempFile;
 
 #[test]
@@ -396,4 +396,22 @@ fn scene_roundtrip_preserves_scripted_spawns() {
     assert!((vel.0 - velocity).length() < 1e-5);
     assert!((collider_loaded.half - Vec2::splat(scale * 0.5)).length() < 1e-5);
     assert!((mass_loaded.0 - 1.0).abs() < 1e-5);
+}
+
+#[test]
+fn lighting_shadow_settings_roundtrip() {
+    let lighting = SceneLightingData {
+        direction: Vec3Data::from(Vec3::new(0.3, 0.7, 0.2).normalize()),
+        color: Vec3Data { x: 1.2, y: 1.1, z: 0.9 },
+        ambient: Vec3Data { x: 0.05, y: 0.06, z: 0.07 },
+        exposure: 2.5,
+        shadow: SceneShadowData { distance: 64.0, bias: 0.0035, strength: 0.65 },
+    };
+    let serialized = serde_json::to_string(&lighting).expect("serialize lighting");
+    let roundtrip: SceneLightingData =
+        serde_json::from_str(&serialized).expect("deserialize lighting");
+    assert!((roundtrip.exposure - 2.5).abs() < f32::EPSILON);
+    assert!((roundtrip.shadow.distance - 64.0).abs() < f32::EPSILON);
+    assert!((roundtrip.shadow.bias - 0.0035).abs() < f32::EPSILON);
+    assert!((roundtrip.shadow.strength - 0.65).abs() < f32::EPSILON);
 }
