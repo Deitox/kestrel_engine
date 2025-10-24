@@ -1,6 +1,7 @@
 use glam::Vec3;
 use kestrel_engine::assets::AssetManager;
 use kestrel_engine::ecs::{EcsWorld, MeshLighting, MeshRef, MeshSurface};
+use kestrel_engine::material_registry::MaterialRegistry;
 use kestrel_engine::mesh_registry::MeshRegistry;
 use kestrel_engine::scene::Scene;
 
@@ -13,12 +14,13 @@ fn scene_roundtrip_preserves_entity_count() {
         .retain_atlas("main", Some("assets/images/atlas.json"))
         .expect("main atlas should load before exporting scene");
     assert!(assets.has_atlas("main"), "atlas retain should keep atlas loaded");
-    let mut mesh_registry = MeshRegistry::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
     mesh_registry
-        .load_from_path("test_triangle", "assets/models/demo_triangle.gltf")
+        .load_from_path("test_triangle", "assets/models/demo_triangle.gltf", &mut material_registry)
         .expect("demo gltf should load for mesh dependency test");
     mesh_registry
-        .retain_mesh("test_triangle", Some("assets/models/demo_triangle.gltf"))
+        .retain_mesh("test_triangle", Some("assets/models/demo_triangle.gltf"), &mut material_registry)
         .expect("retaining mesh should succeed");
     let mesh_entity = world.spawn_mesh_entity("test_triangle", Vec3::ZERO, Vec3::ONE);
     assert!(world.entity_exists(mesh_entity));
@@ -64,6 +66,12 @@ fn scene_roundtrip_preserves_entity_count() {
         .expect("mesh entity should be serialized");
     let saved_mesh = saved_mesh_entity.mesh.as_ref().expect("mesh data present");
     assert_eq!(saved_mesh.material.as_deref(), Some("materials/bronze.mat"));
+    let material_dep = scene
+        .dependencies
+        .material_dependencies()
+        .find(|dep| dep.key() == "materials/bronze.mat")
+        .expect("scene should track material dependency");
+    assert!(material_dep.path().is_none());
     assert!(saved_mesh.lighting.cast_shadows);
     assert!(saved_mesh.lighting.receive_shadows);
     let saved_base_color = Vec3::from(saved_mesh.lighting.base_color.clone());
@@ -84,9 +92,12 @@ fn scene_roundtrip_preserves_entity_count() {
 
     let path = std::path::Path::new("target/test_scene_roundtrip.json");
     world
-        .save_scene_to_path_with_mesh_source(&path, &assets, |key| {
-            mesh_registry.mesh_source(key).map(|p| p.to_string_lossy().into_owned())
-        })
+        .save_scene_to_path_with_sources(
+            &path,
+            &assets,
+            |key| mesh_registry.mesh_source(key).map(|p| p.to_string_lossy().into_owned()),
+            |key| material_registry.material_source(key).map(|s| s.to_string()),
+        )
         .expect("scene save should succeed");
 
     let loaded = Scene::load_from_path(path).expect("scene load should succeed");
@@ -104,6 +115,12 @@ fn scene_roundtrip_preserves_entity_count() {
         .expect("loaded scene should include mesh entity data");
     let loaded_mesh = loaded_mesh_entity.mesh.as_ref().expect("loaded mesh data");
     assert_eq!(loaded_mesh.material.as_deref(), Some("materials/bronze.mat"));
+    let loaded_material_dep = loaded
+        .dependencies
+        .material_dependencies()
+        .find(|dep| dep.key() == "materials/bronze.mat")
+        .expect("loaded scene should preserve material dependency");
+    assert!(loaded_material_dep.path().is_none());
     assert!(loaded_mesh.lighting.cast_shadows);
     assert!(loaded_mesh.lighting.receive_shadows);
     let loaded_base_color = Vec3::from(loaded_mesh.lighting.base_color.clone());
@@ -123,9 +140,11 @@ fn scene_roundtrip_preserves_entity_count() {
     assert!((loaded_emissive.z - 0.3).abs() < f32::EPSILON);
 
     let mut new_world = EcsWorld::new();
-    let mut new_registry = MeshRegistry::new();
+    let mut new_registry = MeshRegistry::new(&mut material_registry);
     new_world
-        .load_scene_with_mesh(&loaded, &assets, |key, path| new_registry.ensure_mesh(key, path))
+        .load_scene_with_mesh(&loaded, &assets, |key, path| {
+            new_registry.ensure_mesh(key, path, &mut material_registry)
+        })
         .expect("scene load into world");
     assert!(
         new_registry.has("test_triangle"),
@@ -163,10 +182,10 @@ fn scene_roundtrip_preserves_entity_count() {
 
     let mut autoload_world = EcsWorld::new();
     let mut autoload_assets = AssetManager::new();
-    let mut autoload_registry = MeshRegistry::new();
+    let mut autoload_registry = MeshRegistry::new(&mut material_registry);
     let _autoload_scene = autoload_world
         .load_scene_from_path_with_mesh(path, &mut autoload_assets, |key, path| {
-            autoload_registry.ensure_mesh(key, path)
+            autoload_registry.ensure_mesh(key, path, &mut material_registry)
         })
         .expect("scene load with auto dependency resolution");
     assert!(autoload_assets.has_atlas("main"), "auto-load should populate required atlases");

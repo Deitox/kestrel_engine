@@ -262,18 +262,95 @@ impl From<MeshDependencyRepr> for MeshDependency {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct MaterialDependency {
+    key: String,
+    path: Option<String>,
+}
+
+impl MaterialDependency {
+    pub fn new(key: String, path: Option<String>) -> Self {
+        Self { key, path }
+    }
+
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    pub fn path(&self) -> Option<&str> {
+        self.path.as_deref()
+    }
+}
+
+pub struct MaterialDependencyView<'a> {
+    key: &'a str,
+    path: Option<&'a str>,
+}
+
+impl<'a> MaterialDependencyView<'a> {
+    fn new(key: &'a str, path: Option<&'a str>) -> Self {
+        Self { key, path }
+    }
+
+    pub fn key(&self) -> &str {
+        self.key
+    }
+
+    pub fn path(&self) -> Option<&str> {
+        self.path
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum MaterialDependencyRepr {
+    Key(String),
+    Detailed {
+        key: String,
+        #[serde(default)]
+        path: Option<String>,
+    },
+}
+
+impl From<MaterialDependency> for MaterialDependencyRepr {
+    fn from(dep: MaterialDependency) -> Self {
+        if let Some(path) = dep.path {
+            MaterialDependencyRepr::Detailed { key: dep.key, path: Some(path) }
+        } else {
+            MaterialDependencyRepr::Key(dep.key)
+        }
+    }
+}
+
+impl From<MaterialDependencyRepr> for MaterialDependency {
+    fn from(repr: MaterialDependencyRepr) -> Self {
+        match repr {
+            MaterialDependencyRepr::Key(key) => MaterialDependency::new(key, None),
+            MaterialDependencyRepr::Detailed { key, path } => MaterialDependency::new(key, path),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SceneDependencies {
     #[serde(default)]
     atlases: Vec<AtlasDependencyRepr>,
     #[serde(default)]
     meshes: Vec<MeshDependencyRepr>,
+    #[serde(default)]
+    materials: Vec<MaterialDependencyRepr>,
 }
 
 impl SceneDependencies {
-    pub fn from_entities<F>(entities: &[SceneEntity], assets: &AssetManager, mesh_source: F) -> Self
+    pub fn from_entities<F, G>(
+        entities: &[SceneEntity],
+        assets: &AssetManager,
+        mesh_source: F,
+        material_source: G,
+    ) -> Self
     where
         F: Fn(&str) -> Option<String>,
+        G: Fn(&str) -> Option<String>,
     {
         let mut set = BTreeSet::new();
         for entity in entities {
@@ -290,6 +367,7 @@ impl SceneDependencies {
                 })
                 .collect(),
             meshes: Vec::new(),
+            materials: Vec::new(),
         };
         let mut mesh_set = BTreeSet::new();
         for entity in entities {
@@ -302,6 +380,21 @@ impl SceneDependencies {
             .map(|key| {
                 let path = mesh_source(&key);
                 MeshDependencyRepr::from(MeshDependency::new(key, path))
+            })
+            .collect();
+        let mut material_set = BTreeSet::new();
+        for entity in entities {
+            if let Some(mesh) = &entity.mesh {
+                if let Some(material) = &mesh.material {
+                    material_set.insert(material.clone());
+                }
+            }
+        }
+        deps.materials = material_set
+            .into_iter()
+            .map(|key| {
+                let path = material_source(&key);
+                MaterialDependencyRepr::from(MaterialDependency::new(key, path))
             })
             .collect();
         deps.normalize();
@@ -330,6 +423,19 @@ impl SceneDependencies {
         })
     }
 
+    pub fn material_dependencies(&self) -> impl Iterator<Item = MaterialDependencyView<'_>> {
+        self.materials.iter().map(|repr| match repr {
+            MaterialDependencyRepr::Key(key) => MaterialDependencyView::new(key, None),
+            MaterialDependencyRepr::Detailed { key, path } => {
+                MaterialDependencyView::new(key, path.as_deref())
+            }
+        })
+    }
+
+    pub fn contains_material(&self, key: &str) -> bool {
+        self.material_dependencies().any(|dep| dep.key() == key)
+    }
+
     pub fn fill_mesh_sources<F>(&mut self, mut f: F)
     where
         F: FnMut(&str) -> Option<String>,
@@ -342,6 +448,28 @@ impl SceneDependencies {
                     }
                 }
                 MeshDependencyRepr::Detailed { key, path } => {
+                    if path.is_none() {
+                        if let Some(new_path) = f(key) {
+                            *path = Some(new_path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn fill_material_sources<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&str) -> Option<String>,
+    {
+        for repr in &mut self.materials {
+            match repr {
+                MaterialDependencyRepr::Key(key) => {
+                    if let Some(path) = f(key) {
+                        *repr = MaterialDependencyRepr::Detailed { key: key.clone(), path: Some(path) };
+                    }
+                }
+                MaterialDependencyRepr::Detailed { key, path } => {
                     if path.is_none() {
                         if let Some(new_path) = f(key) {
                             *path = Some(new_path);
@@ -390,6 +518,25 @@ impl SceneDependencies {
             }
         }
         self.meshes = mesh_map.into_iter().map(|(_, dep)| MeshDependencyRepr::from(dep)).collect();
+
+        let mut material_map: BTreeMap<String, MaterialDependency> = BTreeMap::new();
+        for repr in std::mem::take(&mut self.materials) {
+            let dep = MaterialDependency::from(repr);
+            let key = dep.key().to_string();
+            let path_opt = dep.path().map(|s| s.to_string());
+            match material_map.entry(key) {
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    if entry.get().path.is_none() {
+                        entry.get_mut().path = path_opt;
+                    }
+                }
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    let key_clone = entry.key().clone();
+                    entry.insert(MaterialDependency::new(key_clone, path_opt));
+                }
+            }
+        }
+        self.materials = material_map.into_iter().map(|(_, dep)| MaterialDependencyRepr::from(dep)).collect();
     }
 }
 

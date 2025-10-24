@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Result};
 
+use crate::material_registry::MaterialRegistry;
 use crate::mesh::{Mesh, MeshBounds, MeshSubset};
 use crate::renderer::{GpuMesh, Renderer};
 
@@ -21,11 +22,13 @@ struct MeshEntry {
 }
 
 impl MeshRegistry {
-    pub fn new() -> Self {
+    pub fn new(materials: &mut MaterialRegistry) -> Self {
         let mut registry = MeshRegistry { entries: HashMap::new(), default: String::new() };
         registry.insert_entry("cube", Mesh::cube(1.0), None, true).expect("cube mesh should insert");
-        match Mesh::load_gltf("assets/models/demo_triangle.gltf") {
-            Ok(mesh) => {
+        match crate::mesh::Mesh::load_gltf_with_materials("assets/models/demo_triangle.gltf") {
+            Ok(import) => {
+                materials.register_gltf_import(&import.materials, &import.textures);
+                let mesh = import.mesh;
                 let _ = registry.insert_entry(
                     "demo_triangle",
                     mesh,
@@ -69,7 +72,12 @@ impl MeshRegistry {
         self.entries.contains_key(key)
     }
 
-    pub fn ensure_mesh(&mut self, key: &str, path: Option<&str>) -> Result<()> {
+    pub fn ensure_mesh(
+        &mut self,
+        key: &str,
+        path: Option<&str>,
+        materials: &mut MaterialRegistry,
+    ) -> Result<()> {
         if let Some(entry) = self.entries.get_mut(key) {
             if entry.source.is_none() {
                 if let Some(p) = path {
@@ -79,17 +87,29 @@ impl MeshRegistry {
             return Ok(());
         }
         let path = path.ok_or_else(|| anyhow!("Mesh '{key}' not registered and no path provided"))?;
-        self.load_from_path(key, path)
+        self.load_from_path(key, path, materials)
     }
 
-    pub fn load_from_path(&mut self, key: &str, path: impl AsRef<Path>) -> Result<()> {
+    pub fn load_from_path(
+        &mut self,
+        key: &str,
+        path: impl AsRef<Path>,
+        materials: &mut MaterialRegistry,
+    ) -> Result<()> {
         let path_ref = path.as_ref();
-        let mesh = Mesh::load_gltf(path_ref)?;
+        let import = Mesh::load_gltf_with_materials(path_ref)?;
+        materials.register_gltf_import(&import.materials, &import.textures);
+        let mesh = import.mesh;
         self.insert_entry(key.to_string(), mesh, Some(path_ref.to_path_buf()), false)
     }
 
-    pub fn retain_mesh(&mut self, key: &str, path: Option<&str>) -> Result<()> {
-        self.ensure_mesh(key, path)?;
+    pub fn retain_mesh(
+        &mut self,
+        key: &str,
+        path: Option<&str>,
+        materials: &mut MaterialRegistry,
+    ) -> Result<()> {
+        self.ensure_mesh(key, path, materials)?;
         if let Some(entry) = self.entries.get_mut(key) {
             entry.ref_count = entry.ref_count.saturating_add(1);
         }
@@ -150,19 +170,23 @@ impl MeshRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::material_registry::MaterialRegistry;
 
     #[test]
     fn retain_release_tracks_counts() {
-        let mut registry = MeshRegistry::new();
+        let mut materials = MaterialRegistry::new();
+        let mut registry = MeshRegistry::new(&mut materials);
         assert_eq!(registry.mesh_ref_count("cube"), Some(0));
-        registry.retain_mesh("cube", None).expect("retain cube");
+        registry.retain_mesh("cube", None, &mut materials).expect("retain cube");
         assert_eq!(registry.mesh_ref_count("cube"), Some(1));
         registry.release_mesh("cube");
         assert_eq!(registry.mesh_ref_count("cube"), Some(0));
 
-        registry.load_from_path("temp_triangle", "assets/models/demo_triangle.gltf").expect("load temp mesh");
         registry
-            .retain_mesh("temp_triangle", Some("assets/models/demo_triangle.gltf"))
+            .load_from_path("temp_triangle", "assets/models/demo_triangle.gltf", &mut materials)
+            .expect("load temp mesh");
+        registry
+            .retain_mesh("temp_triangle", Some("assets/models/demo_triangle.gltf"), &mut materials)
             .expect("retain temp mesh");
         assert_eq!(registry.mesh_ref_count("temp_triangle"), Some(1));
         registry.release_mesh("temp_triangle");

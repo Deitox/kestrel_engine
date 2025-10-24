@@ -397,7 +397,8 @@ pub(crate) fn set_viewport_camera_mode(app: &mut App, mode: crate::app::Viewport
         return;
     }
     app.viewport_camera_mode = mode;
-    if mode == crate::app::ViewportCameraMode::Perspective3D && app.mesh_control_mode == MeshControlMode::Disabled
+    if mode == crate::app::ViewportCameraMode::Perspective3D
+        && app.mesh_control_mode == MeshControlMode::Disabled
     {
         app.mesh_control_mode = MeshControlMode::Orbit;
         app.mesh_camera =
@@ -498,13 +499,40 @@ pub(crate) fn set_preview_mesh(app: &mut App, new_key: String) {
         return;
     }
     let source_path = app.mesh_registry.mesh_source(&new_key).map(|path| path.to_string_lossy().into_owned());
-    match app.mesh_registry.retain_mesh(&new_key, source_path.as_deref()) {
+    match app.mesh_registry.retain_mesh(&new_key, source_path.as_deref(), &mut app.material_registry) {
         Ok(()) => {
             let previous = std::mem::replace(&mut app.preview_mesh_key, new_key.clone());
+            let previous_materials: Vec<String> = app
+                .mesh_registry
+                .mesh_subsets(&previous)
+                .map(|subs| subs.iter().filter_map(|subset| subset.material.clone()).collect())
+                .unwrap_or_default();
+            let new_materials: Vec<String> = app
+                .mesh_registry
+                .mesh_subsets(&new_key)
+                .map(|subs| subs.iter().filter_map(|subset| subset.material.clone()).collect())
+                .unwrap_or_default();
+
             app.persistent_meshes.insert(new_key.clone());
             if app.persistent_meshes.remove(&previous) {
                 app.mesh_registry.release_mesh(&previous);
             }
+
+            for material in &new_materials {
+                if let Err(err) = app.material_registry.retain(material) {
+                    app.mesh_status = Some(format!("Material retain failed: {err}"));
+                } else {
+                    app.persistent_materials.insert(material.clone());
+                }
+            }
+
+            for material in previous_materials {
+                if app.persistent_materials.remove(&material) && !app.scene_material_refs.contains(&material)
+                {
+                    app.material_registry.release(&material);
+                }
+            }
+
             app.mesh_status = Some(format!("Preview mesh: {}", new_key));
             if let Err(err) = app.mesh_registry.ensure_gpu(&app.preview_mesh_key, &mut app.renderer) {
                 app.mesh_status = Some(format!("Mesh upload failed: {err}"));
@@ -517,7 +545,7 @@ pub(crate) fn set_preview_mesh(app: &mut App, new_key: String) {
 }
 
 pub(crate) fn spawn_mesh_entity(app: &mut App, mesh_key: &str) {
-    if let Err(err) = app.mesh_registry.ensure_mesh(mesh_key, None) {
+    if let Err(err) = app.mesh_registry.ensure_mesh(mesh_key, None, &mut app.material_registry) {
         app.mesh_status = Some(format!("Mesh '{}' unavailable: {err}", mesh_key));
         return;
     }

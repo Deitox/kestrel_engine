@@ -1408,7 +1408,21 @@ impl EcsWorld {
     where
         F: Fn(&str) -> Option<String>,
     {
-        let scene = self.export_scene_with_mesh_source(assets, mesh_source);
+        self.save_scene_to_path_with_sources(path, assets, mesh_source, |_| None)
+    }
+
+    pub fn save_scene_to_path_with_sources<F, G>(
+        &mut self,
+        path: impl AsRef<Path>,
+        assets: &AssetManager,
+        mesh_source: F,
+        material_source: G,
+    ) -> Result<()>
+    where
+        F: Fn(&str) -> Option<String>,
+        G: Fn(&str) -> Option<String>,
+    {
+        let scene = self.export_scene_with_sources(assets, mesh_source, material_source);
         scene.save_to_path(path)
     }
 
@@ -1546,12 +1560,25 @@ impl EcsWorld {
     }
 
     pub fn export_scene(&mut self, assets: &AssetManager) -> Scene {
-        self.export_scene_with_mesh_source(assets, |_| None)
+        self.export_scene_with_sources(assets, |_| None, |_| None)
     }
 
     pub fn export_scene_with_mesh_source<F>(&mut self, assets: &AssetManager, mesh_source: F) -> Scene
     where
         F: Fn(&str) -> Option<String>,
+    {
+        self.export_scene_with_sources(assets, mesh_source, |_| None)
+    }
+
+    pub fn export_scene_with_sources<F, G>(
+        &mut self,
+        assets: &AssetManager,
+        mesh_source: F,
+        material_source: G,
+    ) -> Scene
+    where
+        F: Fn(&str) -> Option<String>,
+        G: Fn(&str) -> Option<String>,
     {
         let mut scene = Scene::default();
         let mut query = self.world.query::<(Entity, Option<&Parent>, Option<&Transform>)>();
@@ -1564,7 +1591,8 @@ impl EcsWorld {
         for root in roots {
             self.collect_scene_entity(root, None, &mut scene.entities);
         }
-        scene.dependencies = SceneDependencies::from_entities(&scene.entities, assets, mesh_source);
+        scene.dependencies =
+            SceneDependencies::from_entities(&scene.entities, assets, mesh_source, material_source);
         scene
     }
 

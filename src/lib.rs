@@ -1,3 +1,4 @@
+pub mod app;
 pub mod assets;
 pub mod audio;
 pub mod camera;
@@ -7,6 +8,7 @@ pub mod ecs;
 pub mod events;
 pub(crate) mod gizmo;
 pub mod input;
+pub mod material_registry;
 pub mod mesh;
 pub(crate) mod mesh_preview;
 pub mod mesh_registry;
@@ -14,7 +16,6 @@ pub mod renderer;
 pub mod scene;
 pub mod scripts;
 pub mod time;
-pub mod app;
 
 pub use app::{run, App};
 

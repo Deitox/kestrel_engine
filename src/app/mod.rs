@@ -7,6 +7,7 @@ use crate::ecs::{EcsWorld, InstanceData, MeshLightingInfo};
 use crate::events::GameEvent;
 use crate::gizmo::{GizmoInteraction, GizmoMode};
 use crate::input::{Input, InputEvent};
+use crate::material_registry::{MaterialGpu, MaterialRegistry};
 use crate::mesh_preview;
 use crate::mesh_preview::{
     FreeflyController, MeshControlMode, MESH_CAMERA_FAR, MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR,
@@ -16,8 +17,8 @@ use crate::renderer::{MeshDraw, RenderViewport, Renderer, SpriteBatch};
 use crate::scene::{SceneCamera2D, SceneDependencies, SceneMetadata, SceneViewportMode, Vec2Data};
 use crate::scripts::{ScriptCommand, ScriptHost};
 use crate::time::Time;
-mod gizmo_interaction;
 mod editor_ui;
+mod gizmo_interaction;
 
 use bevy_ecs::prelude::Entity;
 use glam::{Mat4, Vec2, Vec3, Vec4};
@@ -165,7 +166,10 @@ pub struct App {
     persistent_atlases: HashSet<String>,
     pub(crate) persistent_meshes: HashSet<String>,
     scene_mesh_refs: HashSet<String>,
+    pub(crate) persistent_materials: HashSet<String>,
+    pub(crate) scene_material_refs: HashSet<String>,
 
+    pub(crate) material_registry: MaterialRegistry,
     pub(crate) mesh_registry: MeshRegistry,
     pub(crate) preview_mesh_key: String,
     pub(crate) mesh_orbit: OrbitCamera,
@@ -247,11 +251,27 @@ impl App {
         let time = Time::new();
         let input = Input::new();
         let assets = AssetManager::new();
+        let mut persistent_materials = HashSet::new();
 
-        let mut mesh_registry = MeshRegistry::new();
+        let mut material_registry = MaterialRegistry::new();
+        let mut mesh_registry = MeshRegistry::new(&mut material_registry);
         let preview_mesh_key = mesh_registry.default_key().to_string();
-        if let Err(err) = mesh_registry.retain_mesh(&preview_mesh_key, None) {
+        if let Err(err) = mesh_registry.retain_mesh(&preview_mesh_key, None, &mut material_registry) {
             eprintln!("[mesh] failed to retain preview mesh '{preview_mesh_key}': {err:?}");
+        }
+        if let Some(subsets) = mesh_registry.mesh_subsets(&preview_mesh_key) {
+            for subset in subsets {
+                if let Some(material_key) = subset.material.as_ref() {
+                    match material_registry.retain(material_key) {
+                        Ok(()) => {
+                            persistent_materials.insert(material_key.clone());
+                        }
+                        Err(err) => {
+                            eprintln!("[material] failed to retain '{material_key}': {err:?}");
+                        }
+                    }
+                }
+            }
         }
         let mesh_status_initial =
             Some(format!("Preview mesh: {} - press M to cycle camera control", preview_mesh_key));
@@ -263,6 +283,7 @@ impl App {
         let mesh_frustum_distance = mesh_orbit.radius;
         let mesh_freefly = FreeflyController::from_camera(&mesh_camera);
         let mesh_model = Mat4::IDENTITY;
+        let scene_material_refs = HashSet::new();
 
         // egui context and state
         let egui_ctx = EguiCtx::default();
@@ -313,6 +334,9 @@ impl App {
             persistent_atlases: HashSet::new(),
             persistent_meshes,
             scene_mesh_refs: HashSet::new(),
+            persistent_materials,
+            scene_material_refs,
+            material_registry,
             mesh_registry,
             preview_mesh_key,
             mesh_orbit,
@@ -473,7 +497,7 @@ impl App {
             let key = dep.key().to_string();
             if next_mesh.insert(key.clone()) {
                 self.mesh_registry
-                    .ensure_mesh(dep.key(), dep.path())
+                    .ensure_mesh(dep.key(), dep.path(), &mut self.material_registry)
                     .with_context(|| format!("Failed to prepare mesh '{}'", dep.key()))?;
                 if !previous_mesh.contains(&key) {
                     newly_required.push(key);
@@ -487,10 +511,28 @@ impl App {
         }
         for key in &newly_required {
             self.mesh_registry
-                .retain_mesh(key, None)
+                .retain_mesh(key, None, &mut self.material_registry)
                 .with_context(|| format!("Failed to retain mesh '{key}'"))?;
         }
         self.scene_mesh_refs = next_mesh;
+        let previous_materials = self.scene_material_refs.clone();
+        let mut next_materials = self.persistent_materials.clone();
+        for dep in deps.material_dependencies() {
+            let key = dep.key().to_string();
+            if next_materials.insert(key.clone()) {
+                if !previous_materials.contains(&key) {
+                    self.material_registry
+                        .retain(&key)
+                        .with_context(|| format!("Failed to retain material '{key}'"))?;
+                }
+            }
+        }
+        for key in previous_materials {
+            if !next_materials.contains(&key) && !self.persistent_materials.contains(&key) {
+                self.material_registry.release(&key);
+            }
+        }
+        self.scene_material_refs = next_materials;
         self.scene_dependencies = Some(deps.clone());
         Ok(())
     }
@@ -527,9 +569,27 @@ impl App {
             self.invalidate_atlas_view(&key);
         }
         self.scene_atlas_refs = self.persistent_atlases.clone();
-        for key in std::mem::take(&mut self.scene_mesh_refs) {
-            self.mesh_registry.release_mesh(&key);
+        let mesh_to_release: Vec<String> = self
+            .scene_mesh_refs
+            .iter()
+            .filter(|key| !self.persistent_meshes.contains(*key))
+            .cloned()
+            .collect();
+        for key in &mesh_to_release {
+            self.mesh_registry.release_mesh(key);
         }
+        self.scene_mesh_refs = self.persistent_meshes.clone();
+
+        let material_to_release: Vec<String> = self
+            .scene_material_refs
+            .iter()
+            .filter(|key| !self.persistent_materials.contains(*key))
+            .cloned()
+            .collect();
+        for key in &material_to_release {
+            self.material_registry.release(key);
+        }
+        self.scene_material_refs = self.persistent_materials.clone();
     }
 
     fn viewport_physical_size(&self) -> PhysicalSize<u32> {
@@ -547,6 +607,24 @@ impl App {
     fn update_viewport(&mut self, origin: Vec2, size: Vec2) {
         let clamped = Vec2::new(size.x.max(1.0), size.y.max(1.0));
         self.viewport = Viewport::new(origin, clamped);
+    }
+
+    fn resolve_material_for_mesh(&self, mesh_key: &str, override_key: Option<&String>) -> String {
+        if let Some(material) = override_key {
+            if self.material_registry.has(material.as_str()) {
+                return material.clone();
+            }
+        }
+        if let Some(subsets) = self.mesh_registry.mesh_subsets(mesh_key) {
+            for subset in subsets {
+                if let Some(material_key) = subset.material.as_ref() {
+                    if self.material_registry.has(material_key.as_str()) {
+                        return material_key.clone();
+                    }
+                }
+            }
+        }
+        self.material_registry.default_key().to_string()
     }
 
     fn mesh_camera_forward(&self) -> Vec3 {
@@ -863,13 +941,18 @@ impl ApplicationHandler for App {
             origin: (self.viewport.origin.x, self.viewport.origin.y),
             size: (self.viewport.size.x, self.viewport.size.y),
         };
-        let mut mesh_draw_infos: Vec<(String, Mat4, MeshLightingInfo)> = Vec::new();
+        let default_material_key = self.material_registry.default_key().to_string();
+        let mut mesh_draw_infos: Vec<(String, Mat4, MeshLightingInfo, String)> = Vec::new();
         match self.mesh_registry.ensure_gpu(&self.preview_mesh_key, &mut self.renderer) {
-            Ok(_) => mesh_draw_infos.push((
-                self.preview_mesh_key.clone(),
-                self.mesh_model,
-                MeshLightingInfo::default(),
-            )),
+            Ok(_) => {
+                let material_key = self.resolve_material_for_mesh(&self.preview_mesh_key, None);
+                mesh_draw_infos.push((
+                    self.preview_mesh_key.clone(),
+                    self.mesh_model,
+                    MeshLightingInfo::default(),
+                    material_key,
+                ));
+            }
             Err(err) => {
                 self.mesh_status = Some(format!("Mesh upload failed: {err}"));
             }
@@ -878,7 +961,14 @@ impl ApplicationHandler for App {
         for instance in scene_meshes {
             match self.mesh_registry.ensure_gpu(&instance.key, &mut self.renderer) {
                 Ok(_) => {
-                    mesh_draw_infos.push((instance.key.clone(), instance.model, instance.lighting.clone()))
+                    let material_key =
+                        self.resolve_material_for_mesh(&instance.key, instance.material.as_ref());
+                    mesh_draw_infos.push((
+                        instance.key.clone(),
+                        instance.model,
+                        instance.lighting,
+                        material_key,
+                    ));
                 }
                 Err(err) => {
                     eprintln!("[mesh] Unable to prepare '{}': {err:?}", instance.key);
@@ -886,10 +976,48 @@ impl ApplicationHandler for App {
             }
         }
         let mut mesh_draws: Vec<MeshDraw> = Vec::new();
-        for (key, model, lighting) in mesh_draw_infos {
-            if let Some(mesh) = self.mesh_registry.gpu_mesh(&key) {
-                mesh_draws.push(MeshDraw { mesh, model, lighting });
-            }
+        let mut material_cache: HashMap<String, Arc<MaterialGpu>> = HashMap::new();
+        for (key, model, lighting, material_key) in mesh_draw_infos {
+            let mesh = match self.mesh_registry.gpu_mesh(&key) {
+                Some(mesh) => mesh,
+                None => continue,
+            };
+            let material_gpu = if let Some(existing) = material_cache.get(&material_key) {
+                existing.clone()
+            } else {
+                match self.material_registry.prepare_material_gpu(&material_key, &mut self.renderer) {
+                    Ok(gpu) => {
+                        material_cache.insert(material_key.clone(), gpu.clone());
+                        gpu
+                    }
+                    Err(err) => {
+                        eprintln!("[material] Failed to prepare '{material_key}': {err:?}");
+                        let fallback_gpu =
+                            if let Some(existing_default) = material_cache.get(&default_material_key) {
+                                existing_default.clone()
+                            } else {
+                                match self
+                                    .material_registry
+                                    .prepare_material_gpu(&default_material_key, &mut self.renderer)
+                                {
+                                    Ok(gpu) => {
+                                        material_cache.insert(default_material_key.clone(), gpu.clone());
+                                        gpu
+                                    }
+                                    Err(default_err) => {
+                                        eprintln!(
+                                            "[material] Failed to prepare default material: {default_err:?}"
+                                        );
+                                        continue;
+                                    }
+                                }
+                            };
+                        material_cache.insert(material_key.clone(), fallback_gpu.clone());
+                        fallback_gpu
+                    }
+                }
+            };
+            mesh_draws.push(MeshDraw { mesh, model, lighting, material: material_gpu });
         }
         let mesh_camera_opt = if mesh_draws.is_empty() { None } else { Some(&self.mesh_camera) };
         let frame = match self.renderer.render_frame(
@@ -931,8 +1059,6 @@ impl ApplicationHandler for App {
         if self.ui_hist.len() > 240 {
             self.ui_hist.remove(0);
         }
-
-
 
         let hist_points: Vec<[f64; 2]> =
             self.ui_hist.iter().enumerate().map(|(i, v)| [i as f64, *v as f64]).collect();
@@ -1056,10 +1182,7 @@ impl ApplicationHandler for App {
 
         let egui::FullOutput { platform_output, textures_delta, shapes, .. } = full_output;
         if let Some(window) = self.renderer.window() {
-            self.egui_winit
-                .as_mut()
-                .unwrap()
-                .handle_platform_output(window, platform_output);
+            self.egui_winit.as_mut().unwrap().handle_platform_output(window, platform_output);
         } else {
             return;
         }
@@ -1088,7 +1211,7 @@ impl ApplicationHandler for App {
             }
         }
         for (key, path) in actions.retain_meshes {
-            match self.mesh_registry.retain_mesh(&key, path.as_deref()) {
+            match self.mesh_registry.retain_mesh(&key, path.as_deref(), &mut self.material_registry) {
                 Ok(()) => {
                     self.scene_mesh_refs.insert(key.clone());
                     match self.mesh_registry.ensure_gpu(&key, &mut self.renderer) {
@@ -1116,8 +1239,20 @@ impl ApplicationHandler for App {
                         .map(|path| (key.to_string(), path.to_string_lossy().into_owned()))
                 })
                 .collect();
-            let mut scene =
-                self.ecs.export_scene_with_mesh_source(&self.assets, |key| mesh_source_map.get(key).cloned());
+            let material_source_map: HashMap<String, String> = self
+                .material_registry
+                .keys()
+                .filter_map(|key| {
+                    self.material_registry
+                        .material_source(key)
+                        .map(|path| (key.to_string(), path.to_string()))
+                })
+                .collect();
+            let mut scene = self.ecs.export_scene_with_sources(
+                &self.assets,
+                |key| mesh_source_map.get(key).cloned(),
+                |key| material_source_map.get(key).cloned(),
+            );
             scene.metadata = self.capture_scene_metadata();
             match scene.save_to_path(&self.ui_scene_path) {
                 Ok(_) => {
@@ -1132,7 +1267,7 @@ impl ApplicationHandler for App {
             match self.ecs.load_scene_from_path_with_mesh(
                 &self.ui_scene_path,
                 &mut self.assets,
-                |key, path| self.mesh_registry.ensure_mesh(key, path),
+                |key, path| self.mesh_registry.ensure_mesh(key, path, &mut self.material_registry),
             ) {
                 Ok(scene) => match self.update_scene_dependencies(&scene.dependencies) {
                     Ok(()) => {

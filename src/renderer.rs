@@ -1,6 +1,7 @@
 use crate::camera3d::Camera3D;
 use crate::config::WindowConfig;
 use crate::ecs::{InstanceData, MeshLightingInfo};
+use crate::material_registry::MaterialGpu;
 use crate::mesh::{Mesh, MeshVertex};
 use anyhow::{anyhow, Context, Result};
 use glam::{Mat4, Vec3};
@@ -31,9 +32,8 @@ struct MeshFrameData {
     light_dir: [f32; 4],
     light_color: [f32; 4],
     ambient_color: [f32; 4],
-    exposure: f32,
-    _pad: [f32; 3],
-    _pad2: [f32; 4],
+    exposure_params: [f32; 4],
+    padding: [f32; 4],
 }
 
 #[repr(C)]
@@ -75,6 +75,7 @@ pub struct MeshDraw<'a> {
     pub mesh: &'a GpuMesh,
     pub model: Mat4,
     pub lighting: MeshLightingInfo,
+    pub material: Arc<MaterialGpu>,
 }
 
 pub struct SurfaceFrame {
@@ -97,8 +98,9 @@ impl SurfaceFrame {
 
 struct MeshPipelineResources {
     pipeline: wgpu::RenderPipeline,
-    frame_bgl: wgpu::BindGroupLayout,
-    draw_bgl: wgpu::BindGroupLayout,
+    frame_bgl: Arc<wgpu::BindGroupLayout>,
+    draw_bgl: Arc<wgpu::BindGroupLayout>,
+    material_bgl: Arc<wgpu::BindGroupLayout>,
 }
 
 #[derive(Default)]
@@ -484,7 +486,7 @@ impl Renderer {
             source: wgpu::ShaderSource::Wgsl(include_str!("../assets/shaders/mesh_basic.wgsl").into()),
         });
 
-        let frame_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let frame_bgl = Arc::new(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Mesh Frame BGL"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
@@ -496,8 +498,8 @@ impl Renderer {
                 },
                 count: None,
             }],
-        });
-        let draw_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        }));
+        let draw_bgl = Arc::new(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Mesh Draw BGL"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
@@ -509,7 +511,7 @@ impl Renderer {
                 },
                 count: None,
             }],
-        });
+        }));
         let frame_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Mesh Frame Buffer"),
             size: std::mem::size_of::<MeshFrameData>() as u64,
@@ -523,9 +525,71 @@ impl Renderer {
             mapped_at_creation: false,
         });
 
+        let material_bgl = Arc::new(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Material BGL"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        }));
+
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Mesh Pipeline Layout"),
-            bind_group_layouts: &[&frame_bgl, &draw_bgl],
+            bind_group_layouts: &[frame_bgl.as_ref(), draw_bgl.as_ref(), material_bgl.as_ref()],
             push_constant_ranges: &[],
         });
 
@@ -569,7 +633,8 @@ impl Renderer {
             cache: None,
         });
 
-        self.mesh_pass.resources = Some(MeshPipelineResources { pipeline, frame_bgl, draw_bgl });
+        self.mesh_pass.resources =
+            Some(MeshPipelineResources { pipeline, frame_bgl, draw_bgl, material_bgl });
         self.mesh_pass.frame_buffer = Some(frame_buf);
         self.mesh_pass.draw_buffer = Some(draw_buf);
         Ok(())
@@ -623,9 +688,8 @@ impl Renderer {
             light_dir: [lighting_dir.x, lighting_dir.y, lighting_dir.z, 0.0],
             light_color: [self.lighting.color.x, self.lighting.color.y, self.lighting.color.z, 1.0],
             ambient_color: [self.lighting.ambient.x, self.lighting.ambient.y, self.lighting.ambient.z, 1.0],
-            exposure: self.lighting.exposure,
-            _pad: [0.0; 3],
-            _pad2: [0.0; 4],
+            exposure_params: [self.lighting.exposure, 0.0, 0.0, 0.0],
+            padding: [0.0; 4],
         };
 
         let frame_buffer = self.mesh_pass.frame_buffer.as_ref().context("Mesh frame buffer missing")?.clone();
@@ -646,12 +710,12 @@ impl Renderer {
 
         let frame_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Mesh Frame BG"),
-            layout: &mesh_resources.frame_bgl,
+            layout: mesh_resources.frame_bgl.as_ref(),
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: frame_buffer.as_entire_binding() }],
         });
         let draw_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Mesh Draw BG"),
-            layout: &mesh_resources.draw_bgl,
+            layout: mesh_resources.draw_bgl.as_ref(),
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: draw_buffer.as_entire_binding() }],
         });
 
@@ -717,6 +781,7 @@ impl Renderer {
             };
             queue.write_buffer(&draw_buffer, 0, bytemuck::bytes_of(&draw_data));
             pass.set_bind_group(1, &draw_bind_group, &[]);
+            pass.set_bind_group(2, draw.material.bind_group(), &[]);
             pass.set_vertex_buffer(0, draw.mesh.vertex_buffer.slice(..));
             pass.set_index_buffer(draw.mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..draw.mesh.index_count, 0, 0..1);
@@ -735,6 +800,13 @@ impl Renderer {
     }
     pub fn queue(&self) -> Result<&wgpu::Queue> {
         self.queue.as_ref().context("GPU queue not initialized")
+    }
+    pub fn material_bind_group_layout(&mut self) -> Result<Arc<wgpu::BindGroupLayout>> {
+        if self.mesh_pass.resources.is_none() {
+            self.init_mesh_pipeline()?;
+        }
+        let resources = self.mesh_pass.resources.as_ref().context("Mesh pipeline not initialized")?;
+        Ok(resources.material_bgl.clone())
     }
     pub fn surface_format(&self) -> Result<wgpu::TextureFormat> {
         Ok(self.config.as_ref().context("Surface configuration missing")?.format)

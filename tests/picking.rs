@@ -1,13 +1,15 @@
 use glam::{EulerRot, Mat4, Quat, Vec3};
 use kestrel_engine::ecs::{EcsWorld, WorldTransform3D};
+use kestrel_engine::material_registry::MaterialRegistry;
 use kestrel_engine::mesh_registry::MeshRegistry;
 
 #[test]
 fn pick_entity_3d_hits_mesh() {
     let mut world = EcsWorld::new();
-    let mut registry = MeshRegistry::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut registry = MeshRegistry::new(&mut material_registry);
     let mesh_key = registry.default_key().to_string();
-    registry.retain_mesh(&mesh_key, None).expect("default mesh retained");
+    registry.retain_mesh(&mesh_key, None, &mut material_registry).expect("default mesh retained");
     let entity = world.spawn_mesh_entity(&mesh_key, Vec3::ZERO, Vec3::splat(1.0));
 
     let origin = Vec3::new(0.0, 0.0, 5.0);
@@ -27,7 +29,8 @@ fn pick_entity_3d_hits_mesh() {
     assert!(world.set_mesh_scale(entity, scale));
 
     let world_tx = world.world.get::<WorldTransform3D>(entity).expect("world transform updated");
-    let expected_rotation = Quat::from_euler(EulerRot::XYZ, rotation_euler.x, rotation_euler.y, rotation_euler.z);
+    let expected_rotation =
+        Quat::from_euler(EulerRot::XYZ, rotation_euler.x, rotation_euler.y, rotation_euler.z);
     let expected = Mat4::from_scale_rotation_translation(scale, expected_rotation, translation);
     let actual = world_tx.0.to_cols_array();
     let expected_cols = expected.to_cols_array();

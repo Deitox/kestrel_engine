@@ -1199,7 +1199,6 @@ impl App {
                     egui::Stroke::new(2.0, egui::Color32::YELLOW),
                 );
             }
-        
         });
 
         EditorUiOutput {

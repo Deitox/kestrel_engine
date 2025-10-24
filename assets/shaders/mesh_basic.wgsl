@@ -4,8 +4,8 @@ struct FrameUniform {
     light_dir : vec4<f32>,
     light_color : vec4<f32>,
     ambient_color : vec4<f32>,
-    exposure : f32,
-    _pad : vec3<f32>,
+    exposure_params : vec4<f32>,
+    padding : vec4<f32>,
 }
 
 struct DrawUniform {
@@ -15,21 +15,50 @@ struct DrawUniform {
     material_params : vec4<f32>,
 }
 
+struct MaterialUniform {
+    base_color_factor : vec4<f32>,
+    emissive_factor : vec4<f32>,
+    params : vec4<f32>,
+    texture_flags : vec4<f32>,
+}
+
 @group(0) @binding(0)
 var<uniform> frame : FrameUniform;
 
 @group(1) @binding(0)
 var<uniform> draw : DrawUniform;
 
+@group(2) @binding(0)
+var<uniform> material : MaterialUniform;
+
+@group(2) @binding(1)
+var base_color_tex : texture_2d<f32>;
+
+@group(2) @binding(2)
+var metallic_roughness_tex : texture_2d<f32>;
+
+@group(2) @binding(3)
+var normal_tex : texture_2d<f32>;
+
+@group(2) @binding(4)
+var emissive_tex : texture_2d<f32>;
+
+@group(2) @binding(5)
+var material_sampler : sampler;
+
 struct VertexIn {
     @location(0) position : vec3<f32>,
     @location(1) normal : vec3<f32>,
+    @location(2) tangent : vec4<f32>,
+    @location(3) uv : vec2<f32>,
 }
 
 struct VertexOut {
     @builtin(position) position : vec4<f32>,
     @location(0) normal : vec3<f32>,
     @location(1) world_pos : vec3<f32>,
+    @location(2) tangent : vec4<f32>,
+    @location(3) uv : vec2<f32>,
 }
 
 @vertex
@@ -40,6 +69,9 @@ fn vs_main(input : VertexIn) -> VertexOut {
     let world_normal = (draw.model * vec4<f32>(input.normal, 0.0)).xyz;
     out.normal = normalize(world_normal);
     out.world_pos = world_pos.xyz;
+    let world_tangent = (draw.model * vec4<f32>(input.tangent.xyz, 0.0)).xyz;
+    out.tangent = vec4<f32>(normalize(world_tangent), input.tangent.w);
+    out.uv = input.uv;
     return out;
 }
 
@@ -67,26 +99,66 @@ fn geometry_smith(n : vec3<f32>, v : vec3<f32>, l : vec3<f32>, roughness : f32) 
     return geometry_schlick_ggx(n_dot_v, roughness) * geometry_schlick_ggx(n_dot_l, roughness);
 }
 
+fn apply_normal_map(
+    n : vec3<f32>,
+    tangent : vec4<f32>,
+    uv : vec2<f32>,
+    normal_scale : f32,
+) -> vec3<f32> {
+    let t = normalize(tangent.xyz);
+    let b = normalize(cross(n, t)) * tangent.w;
+    let tex_sample = textureSample(normal_tex, material_sampler, uv).xyz * 2.0 - vec3<f32>(1.0);
+    var tangent_normal = vec3<f32>(tex_sample.xy * normal_scale, tex_sample.z);
+    tangent_normal = normalize(tangent_normal);
+    let tbn = mat3x3<f32>(t, b, n);
+    return normalize(tbn * tangent_normal);
+}
+
 @fragment
 fn fs_main(input : VertexOut) -> @location(0) vec4<f32> {
-    let N = normalize(input.normal);
-    let camera_pos = frame.camera_pos.xyz;
-    let V = normalize(camera_pos - input.world_pos);
+    var N = normalize(input.normal);
+    let V = normalize(frame.camera_pos.xyz - input.world_pos);
     let L = normalize(-frame.light_dir.xyz);
     let H = normalize(V + L);
 
-    let metallic = clamp(draw.material_params.x, 0.0, 1.0);
-    let roughness = clamp(draw.material_params.y, 0.04, 1.0);
-    let base_color = draw.base_color.xyz;
-    let emissive = draw.emissive.xyz;
+    let base_sample = textureSample(base_color_tex, material_sampler, input.uv);
+    let material_color = material.base_color_factor;
+    var base_color = draw.base_color.xyz * material_color.xyz * base_sample.xyz;
+    let base_alpha = clamp(base_sample.w * material_color.w, 0.0, 1.0);
+
+    var metallic = material.params.x;
+    var roughness = material.params.y;
+    let normal_scale = material.params.z;
+
+    if (material.texture_flags.y > 0.5) {
+        let mr_sample = textureSample(metallic_roughness_tex, material_sampler, input.uv);
+        metallic = metallic * mr_sample.b;
+        roughness = roughness * mr_sample.g;
+    }
+
+    metallic = clamp(metallic + draw.material_params.x, 0.0, 1.0);
+    roughness = clamp(roughness + (draw.material_params.y - 0.5), 0.04, 1.0);
+
+    if (material.texture_flags.z > 0.5) {
+        N = apply_normal_map(N, input.tangent, input.uv, normal_scale);
+    }
 
     let n_dot_l = max(dot(N, L), 0.0);
     let n_dot_v = max(dot(N, V), 0.0);
-    let ambient = frame.ambient_color.xyz * base_color;
-    var color = ambient + emissive;
+
+    var emissive = draw.emissive.xyz;
+    var material_emissive = material.emissive_factor.xyz;
+    if (material.texture_flags.w > 0.5) {
+        let emissive_sample = textureSample(emissive_tex, material_sampler, input.uv).xyz;
+        material_emissive = material_emissive * emissive_sample;
+    }
+    emissive = emissive + material_emissive;
+
+    let exposure = frame.exposure_params.x;
+    var color = frame.ambient_color.xyz * base_color + emissive;
 
     if (n_dot_l > 0.0 && n_dot_v > 0.0) {
-        let f0 = mix(vec3<f32>(0.04, 0.04, 0.04), base_color, vec3<f32>(metallic, metallic, metallic));
+        let f0 = mix(vec3<f32>(0.04), base_color, vec3<f32>(metallic));
         let F = fresnel_schlick(max(dot(H, V), 0.0), f0);
         let D = distribution_ggx(N, H, roughness);
         let G = geometry_smith(N, V, L, roughness);
@@ -94,9 +166,9 @@ fn fs_main(input : VertexOut) -> @location(0) vec4<f32> {
 
         let kd = (vec3<f32>(1.0) - F) * (1.0 - metallic);
         let diffuse = kd * base_color / 3.14159265;
-        let radiance = frame.light_color.xyz * n_dot_l * frame.exposure;
-        color += (diffuse + spec) * radiance;
+        let radiance = frame.light_color.xyz * n_dot_l * exposure;
+        color = color + (diffuse + spec) * radiance;
     }
 
-    return vec4<f32>(color, 1.0);
+    return vec4<f32>(color, base_alpha);
 }

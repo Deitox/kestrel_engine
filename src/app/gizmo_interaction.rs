@@ -3,8 +3,8 @@ use crate::ecs::EntityInfo;
 use crate::gizmo;
 use crate::gizmo::{
     Axis2, GizmoInteraction, GizmoMode, ScaleHandle, ScaleHandleKind, GIZMO_ROTATE_INNER_RADIUS_PX,
-    GIZMO_ROTATE_OUTER_RADIUS_PX, GIZMO_SCALE_OUTER_RADIUS_PX, GIZMO_TRANSLATE_RADIUS_PX, ROTATE_SNAP_STEP_RADIANS,
-    TRANSLATE_SNAP_STEP,
+    GIZMO_ROTATE_OUTER_RADIUS_PX, GIZMO_SCALE_OUTER_RADIUS_PX, GIZMO_TRANSLATE_RADIUS_PX,
+    ROTATE_SNAP_STEP_RADIANS, TRANSLATE_SNAP_STEP,
 };
 use crate::mesh_preview::MeshControlMode;
 use crate::wrap_angle;
