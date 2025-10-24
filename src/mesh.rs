@@ -158,11 +158,11 @@ impl Mesh {
             }
         };
 
-        write_face([0, 1, 2, 3], normals[0]); // back
+        write_face([0, 3, 2, 1], normals[0]); // back
         write_face([4, 5, 6, 7], normals[1]); // front
-        write_face([0, 3, 7, 4], normals[2]); // left
-        write_face([1, 5, 6, 2], normals[3]); // right
-        write_face([3, 2, 6, 7], normals[4]); // top
+        write_face([0, 4, 7, 3], normals[2]); // left
+        write_face([1, 2, 6, 5], normals[3]); // right
+        write_face([3, 7, 6, 2], normals[4]); // top
         write_face([0, 1, 5, 4], normals[5]); // bottom
 
         let mut indices = Vec::with_capacity(36);
@@ -535,3 +535,4 @@ mod tests {
         }
     }
 }
+
