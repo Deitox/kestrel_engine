@@ -251,6 +251,14 @@ impl App {
         let default_environment_intensity = 1.0;
         let mut persistent_environments = HashSet::new();
         persistent_environments.insert(default_environment_key.clone());
+        match environment_registry.load_directory("assets/environments") {
+            Ok(keys) => {
+                for key in keys {
+                    persistent_environments.insert(key);
+                }
+            }
+            Err(err) => eprintln!("[environment] failed to scan assets/environments: {err:?}"),
+        }
         let environment_intensity = default_environment_intensity;
         let mut material_registry = MaterialRegistry::new();
         let mut mesh_registry = MeshRegistry::new(&mut material_registry);
@@ -1584,6 +1592,37 @@ impl ApplicationHandler for App {
                 }
                 Err(err) => {
                     self.ui_scene_status = Some(format!("Mesh retain failed: {err}"));
+                }
+            }
+        }
+        for (key, path) in actions.retain_environments {
+            match self.environment_registry.retain(&key, path.as_deref()) {
+                Ok(()) => {
+                    if self.scene_environment_ref.is_none() {
+                        self.scene_environment_ref = Some(key.clone());
+                    }
+                    match self.environment_registry.ensure_gpu(&key, &mut self.renderer) {
+                        Ok(env_gpu) => {
+                            if key == self.active_environment_key {
+                                if let Err(err) =
+                                    self.renderer.set_environment(&env_gpu, self.environment_intensity)
+                                {
+                                    self.ui_scene_status =
+                                        Some(format!("Environment bind failed: {err}"));
+                                } else {
+                                    self.ui_scene_status = Some(format!("Retained environment {}", key));
+                                }
+                            } else {
+                                self.ui_scene_status = Some(format!("Retained environment {}", key));
+                            }
+                        }
+                        Err(err) => {
+                            self.ui_scene_status = Some(format!("Environment upload failed: {err}"));
+                        }
+                    }
+                }
+                Err(err) => {
+                    self.ui_scene_status = Some(format!("Environment retain failed: {err}"));
                 }
             }
         }

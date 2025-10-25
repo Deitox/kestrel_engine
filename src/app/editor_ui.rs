@@ -28,6 +28,7 @@ pub(super) struct UiActions {
     pub spawn_mesh: Option<String>,
     pub retain_atlases: Vec<(String, Option<String>)>,
     pub retain_meshes: Vec<(String, Option<String>)>,
+    pub retain_environments: Vec<(String, Option<String>)>,
 }
 
 pub(super) struct SelectionResult {
@@ -1289,6 +1290,48 @@ impl App {
                                     }
                                 });
                             }
+                        }
+                        if let Some(deps) = self.scene_dependencies.as_ref() {
+                            if let Some(environment_dep) = deps.environment_dependency() {
+                                let key = environment_dep.key();
+                                let loaded = self.environment_registry.definition(key).is_some();
+                                let scope = if self.persistent_environments.contains(key) {
+                                    "persistent"
+                                } else {
+                                    "scene"
+                                };
+                                let color = if loaded {
+                                    egui::Color32::LIGHT_GREEN
+                                } else {
+                                    egui::Color32::from_rgb(220, 120, 120)
+                                };
+                                let status_label = if loaded { "loaded" } else { "missing" };
+                                let path_opt = environment_dep.path().map(|p| p.to_string());
+                                let path_display = path_opt.as_deref().unwrap_or("n/a");
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(
+                                        color,
+                                        format!(
+                                            "- Environment {} ({}, {}, path={})",
+                                            key, scope, status_label, path_display
+                                        ),
+                                    );
+                                    if !loaded {
+                                        if ui.button("Retain").clicked() {
+                                            actions
+                                                .retain_environments
+                                                .push((key.to_string(), path_opt.clone()));
+                                        }
+                                        if path_opt.is_none() {
+                                            ui.small("no recorded path");
+                                        }
+                                    }
+                                });
+                            } else {
+                                ui.small("Environment: none recorded");
+                            }
+                        } else {
+                            ui.small("Load or save a scene to populate environment dependencies.");
                         }
                         if self.scene_dependencies.is_none() {
                             ui.small("Load or save a scene to populate dependency details.");

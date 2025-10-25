@@ -5,6 +5,7 @@ use half::f16;
 use image::{DynamicImage, ImageReader};
 use std::collections::HashMap;
 use std::f32::consts::{PI, TAU};
+use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -100,6 +101,43 @@ impl EnvironmentRegistry {
             EnvironmentEntry { definition: default_definition, gpu: None, ref_count: 1, permanent: true },
         );
         registry
+    }
+
+    pub fn load_directory<P: AsRef<Path>>(&mut self, dir: P) -> Result<Vec<String>> {
+        let dir_path = dir.as_ref();
+        if !dir_path.exists() {
+            return Ok(Vec::new());
+        }
+        let mut loaded = Vec::new();
+        let entries = fs::read_dir(dir_path)
+            .with_context(|| format!("reading environment directory '{}'", dir_path.display()))?;
+        for entry in entries {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let source_path = entry.path();
+            if !is_supported_environment_file(&source_path) {
+                continue;
+            }
+            let Some(key) = environment_key_from_path(&source_path) else {
+                continue;
+            };
+            if self.environments.contains_key(&key) {
+                continue;
+            }
+            let definition = EnvironmentDefinition::from_path(
+                key.clone(),
+                source_path.to_string_lossy().into_owned(),
+            )
+            .with_context(|| format!("processing environment '{}'", source_path.display()))?;
+            self.environments.insert(
+                key.clone(),
+                EnvironmentEntry { definition, gpu: None, ref_count: 0, permanent: false },
+            );
+            loaded.push(key);
+        }
+        Ok(loaded)
     }
 
     pub fn default_key(&self) -> &str {
@@ -404,6 +442,26 @@ impl EnvironmentGpu {
     }
 }
 
+fn is_supported_environment_file(path: &Path) -> bool {
+    match path.extension().and_then(|ext| ext.to_str()).map(|s| s.to_ascii_lowercase()) {
+        Some(ext) => matches!(ext.as_str(), "hdr" | "exr" | "png"),
+        None => false,
+    }
+}
+
+fn environment_key_from_path(path: &Path) -> Option<String> {
+    let stem = path.file_stem()?.to_string_lossy();
+    let sanitized: String = stem
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '_' })
+        .collect();
+    if sanitized.is_empty() {
+        None
+    } else {
+        Some(format!("environment::{sanitized}"))
+    }
+}
+
 fn load_hdr_image(path: &str) -> Result<HdrImage> {
     let reader = ImageReader::open(path)?.with_guessed_format()?;
     let dyn_img = reader.decode()?;
@@ -441,6 +499,37 @@ fn generate_default_hdr() -> HdrImage {
         }
     }
     HdrImage { width, height, pixels }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{Rgb, RgbImage};
+    use tempfile::tempdir;
+    use std::path::PathBuf;
+
+    #[test]
+    fn environment_key_sanitizes_names() {
+        let path = PathBuf::from("Bright Sky 01.hdr");
+        let key = environment_key_from_path(&path).expect("key");
+        assert_eq!(key, "environment::bright_sky_01");
+    }
+
+    #[test]
+    fn load_directory_registers_png_files() {
+        let dir = tempdir().expect("temp dir");
+        let path = dir.path().join("Studio.png");
+        let mut img = RgbImage::new(4, 2);
+        for (x, y, pixel) in img.enumerate_pixels_mut() {
+            *pixel = Rgb([(x as u8).saturating_mul(40), (y as u8).saturating_mul(80), 200]);
+        }
+        img.save(&path).expect("save png");
+
+        let mut registry = EnvironmentRegistry::new();
+        let added = registry.load_directory(dir.path()).expect("load directory");
+        assert_eq!(added, vec!["environment::studio".to_string()]);
+        assert!(registry.definition("environment::studio").is_some());
+    }
 }
 
 fn compute_diffuse_cubemap(image: &HdrImage, size: u32) -> Cubemap {
