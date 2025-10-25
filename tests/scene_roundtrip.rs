@@ -8,7 +8,8 @@ use kestrel_engine::ecs::{
 use kestrel_engine::material_registry::MaterialRegistry;
 use kestrel_engine::mesh_registry::MeshRegistry;
 use kestrel_engine::scene::{
-    EnvironmentDependency, Scene, SceneEnvironment, SceneLightingData, SceneShadowData, Vec3Data,
+    EnvironmentDependency, Scene, SceneEntity, SceneEntityId, SceneEnvironment, SceneLightingData, SceneShadowData,
+    TransformData, Vec3Data,
 };
 use tempfile::NamedTempFile;
 
@@ -491,4 +492,47 @@ fn scene_entity_ids_enable_parent_reconstruction() {
     let mut children_query = reload_world.world.query::<&Children>();
     let total_children: usize = children_query.iter(&reload_world.world).map(|children| children.0.len()).sum();
     assert!(total_children > 0, "parents should retain children listings when only parent IDs are stored");
+}
+
+#[test]
+fn scene_clone_subtree_includes_descendants() {
+    fn make_entity(id: SceneEntityId, parent_id: Option<SceneEntityId>) -> SceneEntity {
+        SceneEntity {
+            id,
+            name: None,
+            transform: TransformData::from_components(Vec2::ZERO, 0.0, Vec2::splat(1.0)),
+            sprite: None,
+            transform3d: None,
+            mesh: None,
+            tint: None,
+            velocity: None,
+            mass: None,
+            collider: None,
+            particle_emitter: None,
+            orbit: None,
+            spin: None,
+            parent_id,
+            parent: None,
+        }
+    }
+
+    let root_id = SceneEntityId::new();
+    let child_id = SceneEntityId::new();
+    let grandchild_id = SceneEntityId::new();
+    let mut scene = Scene::default();
+    scene.entities.push(make_entity(root_id.clone(), None));
+    scene.entities.push(make_entity(child_id.clone(), Some(root_id.clone())));
+    scene.entities.push(make_entity(grandchild_id.clone(), Some(child_id.clone())));
+
+    assert_eq!(scene.entity_index_by_id(child_id.as_str()), Some(1));
+    let subtree = scene
+        .clone_subtree(child_id.as_str())
+        .expect("subtree clone should find child branch");
+    assert_eq!(subtree.len(), 2, "child and grandchild should be captured");
+    assert!(subtree.iter().any(|entity| entity.id == child_id));
+    assert!(subtree.iter().any(|entity| entity.id == grandchild_id));
+    assert!(
+        !subtree.iter().any(|entity| entity.id == root_id),
+        "root entity should be excluded when cloning a child subtree"
+    );
 }

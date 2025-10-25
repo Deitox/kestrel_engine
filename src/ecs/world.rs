@@ -97,6 +97,7 @@ impl EcsWorld {
                 Tint(Vec4::new(1.0, 1.0, 1.0, 0.2)),
             ))
             .id();
+        self.ensure_scene_entity_tag(root);
         self.emit(GameEvent::SpriteSpawned {
             entity: root,
             atlas: "main".to_string(),
@@ -130,6 +131,7 @@ impl EcsWorld {
                 OrbitController { center: orbit_center, angular_speed: orbit_speed_a },
             ))
             .id();
+        self.ensure_scene_entity_tag(a);
         {
             let mut rapier = self.world.resource_mut::<RapierState>();
             rapier.register_collider_entity(collider_a, a);
@@ -162,6 +164,7 @@ impl EcsWorld {
                 OrbitController { center: orbit_center, angular_speed: orbit_speed_b },
             ))
             .id();
+        self.ensure_scene_entity_tag(b);
         {
             let mut rapier = self.world.resource_mut::<RapierState>();
             rapier.register_collider_entity(collider_b, b);
@@ -194,6 +197,7 @@ impl EcsWorld {
                 OrbitController { center: orbit_center, angular_speed: orbit_speed_c },
             ))
             .id();
+        self.ensure_scene_entity_tag(c);
         {
             let mut rapier = self.world.resource_mut::<RapierState>();
             rapier.register_collider_entity(collider_c, c);
@@ -245,6 +249,7 @@ impl EcsWorld {
                     RapierCollider { handle: collider_handle },
                 ))
                 .id();
+            self.ensure_scene_entity_tag(entity);
             {
                 let mut rapier = self.world.resource_mut::<RapierState>();
                 rapier.register_collider_entity(collider_handle, entity);
@@ -269,7 +274,8 @@ impl EcsWorld {
         start_size: f32,
         end_size: f32,
     ) -> Entity {
-        self.world
+        let entity = self
+            .world
             .spawn((
                 Transform { translation: position, rotation: 0.0, scale: Vec2::splat(start_size) },
                 WorldTransform::default(),
@@ -285,7 +291,9 @@ impl EcsWorld {
                     end_size,
                 },
             ))
-            .id()
+            .id();
+        self.ensure_scene_entity_tag(entity);
+        entity
     }
 
     pub fn set_emitter_rate(&mut self, entity: Entity, rate: f32) {
@@ -414,6 +422,7 @@ impl EcsWorld {
                 RapierCollider { handle: collider_handle },
             ))
             .id();
+        self.ensure_scene_entity_tag(entity);
         {
             let mut rapier = self.world.resource_mut::<RapierState>();
             rapier.register_collider_entity(collider_handle, entity);
@@ -426,7 +435,8 @@ impl EcsWorld {
         let transform3d = Transform3D { translation, rotation: Quat::IDENTITY, scale };
         let world3d =
             WorldTransform3D(Mat4::from_scale_rotation_translation(scale, Quat::IDENTITY, translation));
-        self.world
+        let entity = self
+            .world
             .spawn((
                 Transform::default(),
                 WorldTransform::default(),
@@ -435,7 +445,9 @@ impl EcsWorld {
                 MeshRef { key: mesh_key.to_string() },
                 MeshSurface::default(),
             ))
-            .id()
+            .id();
+        self.ensure_scene_entity_tag(entity);
+        entity
     }
     pub fn set_velocity(&mut self, entity: Entity, velocity: Vec2) -> bool {
         let mut updated = false;
@@ -769,6 +781,7 @@ impl EcsWorld {
         let transform = self.world.get::<Transform>(entity)?;
         let world_transform = self.world.get::<WorldTransform>(entity)?;
         let translation = Vec2::new(world_transform.0.w_axis.x, world_transform.0.w_axis.y);
+        let scene_id = self.world.get::<SceneEntityTag>(entity)?.id.clone();
         let velocity = self.world.get::<Velocity>(entity).map(|v| v.0);
         let sprite = self.world.get::<Sprite>(entity).map(|sprite| SpriteInfo {
             atlas: sprite.atlas_key.to_string(),
@@ -788,6 +801,7 @@ impl EcsWorld {
         });
         let tint = self.world.get::<Tint>(entity).map(|t| t.0);
         Some(EntityInfo {
+            scene_id,
             translation,
             rotation: transform.rotation,
             scale: transform.scale,

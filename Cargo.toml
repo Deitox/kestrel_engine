@@ -2,6 +2,7 @@
 name = "kestrel_engine"
 version = "0.7.0"
 edition = "2021"
+default-run = "kestrel_engine"
 
 [dependencies]
 winit = { version = "0.30.12", features = ["rwh_06"] }

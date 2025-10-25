@@ -1,7 +1,7 @@
 use crate::assets::AssetManager;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use uuid::Uuid;
@@ -709,6 +709,114 @@ impl SceneDependencies {
         }
     }
 
+    pub fn subset_for_entities(
+        &self,
+        entities: &[SceneEntity],
+        environment: Option<&SceneEnvironment>,
+    ) -> Self {
+        let mut atlas_keys = BTreeSet::new();
+        let mut mesh_keys = BTreeSet::new();
+        let mut material_keys = BTreeSet::new();
+        for entity in entities {
+            if let Some(sprite) = &entity.sprite {
+                atlas_keys.insert(sprite.atlas.clone());
+            }
+            if let Some(mesh) = &entity.mesh {
+                mesh_keys.insert(mesh.key.clone());
+                if let Some(material) = &mesh.material {
+                    material_keys.insert(material.clone());
+                }
+            }
+        }
+
+        let atlas_lookup: HashMap<_, _> = self
+            .atlases
+            .iter()
+            .cloned()
+            .map(|repr| {
+                let dep: AtlasDependency = repr.into();
+                (dep.key().to_string(), dep)
+            })
+            .collect();
+        let mesh_lookup: HashMap<_, _> = self
+            .meshes
+            .iter()
+            .cloned()
+            .map(|repr| {
+                let dep: MeshDependency = repr.into();
+                (dep.key().to_string(), dep)
+            })
+            .collect();
+        let material_lookup: HashMap<_, _> = self
+            .materials
+            .iter()
+            .cloned()
+            .map(|repr| {
+                let dep: MaterialDependency = repr.into();
+                (dep.key().to_string(), dep)
+            })
+            .collect();
+        let environment_lookup: HashMap<_, _> = self
+            .environments
+            .iter()
+            .cloned()
+            .map(|repr| {
+                let dep: EnvironmentDependency = repr.into();
+                (dep.key().to_string(), dep)
+            })
+            .collect();
+
+        let atlases = atlas_keys
+            .into_iter()
+            .map(|key| {
+                let dep = atlas_lookup
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_else(|| AtlasDependency::new(key.clone(), None));
+                AtlasDependencyRepr::from(dep)
+            })
+            .collect();
+        let meshes = mesh_keys
+            .into_iter()
+            .map(|key| {
+                let dep =
+                    mesh_lookup.get(&key).cloned().unwrap_or_else(|| MeshDependency::new(key.clone(), None));
+                MeshDependencyRepr::from(dep)
+            })
+            .collect();
+        let materials = material_keys
+            .into_iter()
+            .map(|key| {
+                let dep = material_lookup
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_else(|| MaterialDependency::new(key.clone(), None));
+                MaterialDependencyRepr::from(dep)
+            })
+            .collect();
+
+        let mut environments = Vec::new();
+        if let Some(env) = environment {
+            if let Some(dep) = environment_lookup.get(&env.key) {
+                environments.push(EnvironmentDependencyRepr::from(dep.clone()));
+            } else {
+                environments.push(EnvironmentDependencyRepr::from(EnvironmentDependency::new(
+                    env.key.clone(),
+                    None,
+                )));
+            }
+        }
+
+        let mut subset = SceneDependencies {
+            atlases,
+            meshes,
+            materials,
+            environments,
+        };
+        subset.normalize();
+        subset
+    }
+
     pub fn normalize(&mut self) {
         let mut map: BTreeMap<String, AtlasDependency> = BTreeMap::new();
         for repr in std::mem::take(&mut self.atlases) {
@@ -985,16 +1093,80 @@ impl Scene {
             }
         }
 
-        for index in 0..self.entities.len() {
-            if self.entities[index].parent_id.is_some() {
-                continue;
-            }
-            if let Some(parent_index) = self.entities[index].parent {
-                if let Some(parent) = self.entities.get(parent_index) {
-                    self.entities[index].parent_id = Some(parent.id.clone());
+        let inferred_parent_ids: Vec<Option<SceneEntityId>> = (0..self.entities.len())
+            .map(|index| {
+                self.entities[index].parent.and_then(|parent_index| {
+                    self.entities.get(parent_index).map(|parent| parent.id.clone())
+                })
+            })
+            .collect();
+        for (index, entity) in self.entities.iter_mut().enumerate() {
+            if entity.parent_id.is_none() {
+                if let Some(parent_id) = inferred_parent_ids[index].as_ref() {
+                    entity.parent_id = Some(parent_id.clone());
                 }
             }
         }
+
+        let index_lookup: HashMap<String, usize> = self
+            .entities
+            .iter()
+            .enumerate()
+            .map(|(index, entity)| (entity.id.as_str().to_string(), index))
+            .collect();
+        let total_entities = self.entities.len();
+        for entity in &mut self.entities {
+            if let Some(parent_id) = entity.parent_id.as_ref() {
+                if let Some(parent_index) = index_lookup.get(parent_id.as_str()) {
+                    entity.parent = Some(*parent_index);
+                } else {
+                    entity.parent = None;
+                }
+            } else if let Some(parent_index) = entity.parent {
+                if parent_index >= total_entities {
+                    entity.parent = None;
+                }
+            }
+        }
+    }
+
+    pub fn entity_index_by_id(&self, id: &str) -> Option<usize> {
+        self.entities.iter().position(|entity| entity.id.as_str() == id)
+    }
+
+    pub fn clone_subtree(&self, root_id: &str) -> Option<Vec<SceneEntity>> {
+        let root_index = self.entity_index_by_id(root_id)?;
+        let mut children_map: HashMap<String, Vec<usize>> = HashMap::new();
+        for (index, entity) in self.entities.iter().enumerate() {
+            if let Some(parent_id) = entity.parent_id.as_ref() {
+                children_map
+                    .entry(parent_id.as_str().to_string())
+                    .or_default()
+                    .push(index);
+            }
+        }
+
+        let mut stack = vec![root_index];
+        let mut selected = HashSet::new();
+        while let Some(index) = stack.pop() {
+            if !selected.insert(index) {
+                continue;
+            }
+            let entity = &self.entities[index];
+            if let Some(children) = children_map.get(entity.id.as_str()) {
+                stack.extend(children.iter().copied());
+            }
+        }
+        if selected.is_empty() {
+            return None;
+        }
+        let mut ordered = Vec::with_capacity(selected.len());
+        for (index, entity) in self.entities.iter().enumerate() {
+            if selected.contains(&index) {
+                ordered.push(entity.clone());
+            }
+        }
+        Some(ordered)
     }
 }
 

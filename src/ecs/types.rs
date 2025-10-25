@@ -179,6 +179,7 @@ pub struct SpriteInstance {
 
 #[derive(Clone)]
 pub struct EntityInfo {
+    pub scene_id: SceneEntityId,
     pub translation: Vec2,
     pub rotation: f32,
     pub scale: Vec2,

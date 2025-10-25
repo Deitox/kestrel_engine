@@ -678,6 +678,14 @@ impl App {
                         let mut inspector_refresh = false;
                         let mut inspector_info = selection_details.clone();
                         if let Some(mut info) = inspector_info {
+                            ui.horizontal(|ui| {
+                                ui.label("Entity ID");
+                                ui.monospace(info.scene_id.as_str());
+                                if ui.button("Copy").clicked() {
+                                    let id_string = info.scene_id.as_str().to_string();
+                                    ui.ctx().copy_text(id_string);
+                                }
+                            });
                             let mut translation = info.translation;
                             ui.horizontal(|ui| {
                                 ui.label("Position");
