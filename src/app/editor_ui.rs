@@ -739,9 +739,9 @@ impl App {
                                     let id_string = info.scene_id.as_str().to_string();
                                     ui.ctx().copy_text(id_string);
                                 }
-                                if ui.button("Find…").clicked() {
-                                    self.id_lookup_input = info.scene_id.as_str().to_string();
-                                    self.id_lookup_active = true;
+                                if ui.button("Find by ID").clicked() {
+                                    id_lookup_input = info.scene_id.as_str().to_string();
+                                    id_lookup_active = true;
                                 }
                             });
                             let mut translation = info.translation;
