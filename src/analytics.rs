@@ -45,6 +45,10 @@ impl EnginePlugin for AnalyticsPlugin {
         "analytics"
     }
 
+    fn version(&self) -> &'static str {
+        "1.0.0"
+    }
+
     fn update(&mut self, _ctx: &mut PluginContext<'_>, dt: f32) -> Result<()> {
         let dt_ms = dt * 1000.0;
         if self.frame_hist.len() == self.frame_capacity {

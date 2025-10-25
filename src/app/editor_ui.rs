@@ -9,6 +9,7 @@ use crate::gizmo::{
     GIZMO_SCALE_HANDLE_SIZE_PX, GIZMO_SCALE_INNER_RADIUS_PX, GIZMO_SCALE_OUTER_RADIUS_PX,
 };
 use crate::mesh_preview::{GIZMO_3D_AXIS_LENGTH_SCALE, GIZMO_3D_AXIS_MAX, GIZMO_3D_AXIS_MIN};
+use crate::plugins::PluginState;
 
 use bevy_ecs::prelude::Entity;
 use egui::Key;
@@ -1345,6 +1346,39 @@ impl App {
                     } else {
                         for event in recent_events.iter().rev().take(10) {
                             ui.label(event.to_string());
+                        }
+                    }
+
+                    ui.separator();
+                    ui.heading("Plugins");
+                    let statuses = self.plugins.statuses();
+                    if statuses.is_empty() {
+                        ui.label("No plugins reported");
+                    } else {
+                        for status in statuses {
+                            let label = format!(
+                                "{} v{} ({})",
+                                status.name,
+                                status.version.as_deref().unwrap_or("n/a"),
+                                if status.dynamic { "dynamic" } else { "built-in" }
+                            );
+                            match &status.state {
+                                PluginState::Loaded => {
+                                    ui.colored_label(egui::Color32::LIGHT_GREEN, label);
+                                }
+                                PluginState::Disabled(reason) => {
+                                    ui.colored_label(
+                                        egui::Color32::from_rgb(220, 180, 80),
+                                        format!("{label} - disabled: {reason}"),
+                                    );
+                                }
+                                PluginState::Failed(reason) => {
+                                    ui.colored_label(
+                                        egui::Color32::from_rgb(220, 120, 120),
+                                        format!("{label} - failed: {reason}"),
+                                    );
+                                }
+                            }
                         }
                     }
 

@@ -1,7 +1,9 @@
 {
+  "disable_builtins": [],
   "plugins": [
     {
       "name": "example_dynamic",
+      "version": "0.1.0",
       "path": "../plugins/example_dynamic/target/release/example_dynamic.dll",
       "enabled": true,
       "min_engine_api": 1,

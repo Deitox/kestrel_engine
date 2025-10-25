@@ -41,7 +41,9 @@ cargo run
 ## Configuration
 - Edit config/app.json to tweak window title, resolution, vsync, or fullscreen defaults.
 - Toggle dynamic plugins via config/plugins.json (paths are resolved relative to that file; set `enabled` per entry).
+- Disable built-in plugins by listing their names in `config/plugins.json` → `disable_builtins`.
 - The engine falls back to built-in defaults and logs a warning if the file is missing or malformed.
+- If a dynamic plugin’s path is missing or invalid, the loader logs it and automatically marks it disabled (the app will proceed without crashing).
 
 ## Documentation
 - docs/ARCHITECTURE.md - subsystem responsibilities, frame flow, and notes on the hybrid transform pipeline.

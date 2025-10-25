@@ -1,23 +1,25 @@
 # Plugin System
 
-Kestrel Engine exposes a lightweight plugin API so tooling or gameplay extensions can hook into the main loop without touching the core crate. There are three moving pieces:
+Kestrel Engine exposes a lightweight plugin API so tooling or gameplay extensions can hook into the main loop without touching the core crate. There are three main pieces:
 
-1. **`EnginePlugin` trait** – Plugins implement lifecycle hooks (`build`, `update`, `fixed_update`, `on_events`, `shutdown`) plus `name` and downcasting helpers. Each hook receives a `PluginContext` granting access to renderer, ECS, input, assets, material/mesh registries, the environment registry, and the shared `FeatureRegistry`.
-2. **Dynamic loader** – At startup the engine scans `config/plugins.json`, resolves each enabled entry, checks feature requirements, and uses `libloading` to pull an exported factory from the compiled dynamic library (`.dll` / `.so` / `.dylib`). Libraries stay resident for the lifetime of the plugin.
-3. **Feature registry** – Strings describe capabilities (`scripts.rhai`, `audio.rodio`, `render.3d`, etc.). Plugins can read the registry (`ctx.features()`) to branch on available systems or publish new features via `ctx.features_mut().register("my.feature")`. The manifest can enforce prerequisites via `requires_features`, and the manager automatically records `provides_features` after registration.
+1. **`EnginePlugin` trait** – Plugins implement lifecycle hooks (`build`, `update`, `fixed_update`, `on_events`, `shutdown`) plus identity helpers (`name`, `version`, `depends_on`). Each plugin is `'static` and receives a `PluginContext` that exposes vetted entry points into the renderer, ECS, assets, materials/meshes, input, the environment registry, the shared `FeatureRegistry`, and helpers such as `emit_script_message`.
+2. **Dynamic loader** – At startup the engine scans `config/plugins.json`, resolves each enabled entry, checks feature requirements, and uses `libloading` to pull an exported factory from compiled `.dll` / `.so` / `.dylib` artifacts. Built-in plugins can also be disabled via the same manifest.
+3. **Feature registry** – Strings describe capabilities (`scripts.rhai`, `audio.rodio`, `render.3d`, etc.). Plugins can query the registry (`ctx.features()`) or publish new entries (`ctx.features_mut().register("my.feature")`). The manifest can also gate loading via `requires_features`, while `provides_features` are registered automatically after build.
 
-> ⚠️ Dynamic plugins are compiled in a separate Cargo invocation, so Rust type IDs (like Bevy resources) do not line up with the host build. Avoid calling directly into `ctx.ecs` or other low-level types. Instead, rely on the helper methods exposed on `PluginContext` (`emit_event`, `emit_script_message`, forthcoming bridges) and plain data (strings, numbers) so the engine performs the actual mutations on your behalf.
+> Dynamic plugins are compiled in separate Cargo invocations, so Rust `TypeId`s (like Bevy resources) do not line up with the host build. Avoid poking raw ECS resources; rely on the safe helpers exposed on `PluginContext` (`emit_event`, `emit_script_message`, asset/material facades, etc.) so the engine performs the actual mutations on your behalf.
 
 ## Manifest format
 
-`config/plugins.json` keeps the dynamic plugin list. Relative `path` values resolve against that file's directory.
+`config/plugins.json` keeps the dynamic plugin list. Relative `path` values resolve against that file’s directory, and the same manifest can disable built-in plugins so every project has a single source of truth.
 
 ```json
 {
+  "disable_builtins": ["audio"],
   "plugins": [
     {
       "name": "example_dynamic",
-      "path": "plugins/example_dynamic/target/debug/example_dynamic.dll",
+      "version": "0.1.0",
+      "path": "../plugins/example_dynamic/target/release/example_dynamic.dll",
       "enabled": true,
       "min_engine_api": 1,
       "requires_features": ["scripts.rhai"],
@@ -29,14 +31,16 @@ Kestrel Engine exposes a lightweight plugin API so tooling or gameplay extension
 
 Fields:
 
-- `name`: purely informational, used in log output.
+- `disable_builtins`: global array of built-in plugin names to skip (e.g., `"audio"`, `"analytics"`, `"mesh_preview"`). Disabled entries still appear in the Plugin Status panel with the recorded reason.
+- `name`: informational label and the key other plugins reference via `depends_on()`.
+- `version`: optional string surfaced in the status panel when the manifest disables or fails to load the plugin before the engine can query its real version.
 - `path`: full or relative path to the compiled dynamic library. Use the correct extension for your platform (`.dll`, `.so`, `.dylib`).
 - `enabled`: optional flag (defaults to `true`) that lets you keep entries in the manifest without loading them.
 - `min_engine_api`: optional minimum `ENGINE_PLUGIN_API_VERSION`. Loading fails if the engine exports an older API.
-- `requires_features`: optional features that must already exist in the registry. If any are missing, the entry is skipped.
+- `requires_features`: optional features that must already be present in the registry.
 - `provides_features`: optional list automatically added to the registry after successful registration so other plugins can depend on them.
 
-If the manifest is missing, the loader simply skips dynamic registration, so you can remove the file entirely on builds that don't ship plugins.
+If the manifest is missing, the loader simply skips dynamic registration.
 
 ## Building a plugin
 
@@ -46,7 +50,7 @@ The repo includes `plugins/example_dynamic`, a `cdylib` crate that exercises the
 cargo build --manifest-path plugins/example_dynamic/Cargo.toml --release
 ```
 
-On Windows this produces `plugins/example_dynamic/target/release/example_dynamic.dll`. Update `config/plugins.json` with the correct path (and extension) for your platform, then toggle `enabled` to `true`.
+On Windows this produces `plugins/example_dynamic/target/release/example_dynamic.dll`. Update `config/plugins.json` with the correct (platform-specific) path, then toggle `enabled` to `true`.
 
 The skeleton looks like this:
 
@@ -61,6 +65,7 @@ struct ExamplePlugin;
 
 impl EnginePlugin for ExamplePlugin {
     fn name(&self) -> &'static str { "example" }
+    fn version(&self) -> &'static str { "0.1.0" }
 
     fn build(&mut self, ctx: &mut PluginContext<'_>) -> Result<()> {
         // Publish a feature so other plugins can depend on us.
@@ -72,7 +77,7 @@ impl EnginePlugin for ExamplePlugin {
         // Emit a periodic log event without touching ECS internals.
         if dt > 0.0 {
             ctx.emit_script_message(format!(
-                \"example plugin tick (features visible: {})\",
+                "example plugin tick (features visible: {})",
                 ctx.features().all().count()
             ));
         }
@@ -96,4 +101,4 @@ pub extern "C" fn kestrel_plugin_entry() -> PluginExport {
 
 The engine expects every dynamic library to export `kestrel_plugin_entry`, which returns a `PluginExport` describing the targeted API version and a factory function that yields a boxed `EnginePlugin`. As soon as the plugin builds successfully, the loader registers any `provides_features` listed in the manifest along with whatever the plugin publishes during `build()`.
 
-If the loader encounters missing libraries, incompatible API versions, or unmet feature requirements it logs the failure and moves on so one plugin cannot block the entire startup sequence.
+If the loader encounters missing libraries, incompatible API versions, unmet feature requirements, or disabled entries, it logs the failure and records the outcome in the “Plugins” section of the right-hand egui panel so you can see which modules are Loaded / Disabled / Failed without digging through stdout.

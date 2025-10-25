@@ -267,6 +267,17 @@ impl App {
         // egui context and state
         let egui_ctx = EguiCtx::default();
         let egui_winit = None;
+        let plugin_manifest = match PluginManager::load_manifest("config/plugins.json") {
+            Ok(data) => data,
+            Err(err) => {
+                eprintln!("[plugin] failed to parse manifest: {err:?}");
+                None
+            }
+        };
+        let disabled_builtins: HashSet<String> = plugin_manifest
+            .as_ref()
+            .map(|manifest| manifest.disabled_builtins().map(|name| name.to_string()).collect())
+            .unwrap_or_default();
         let mut plugins = PluginManager::default();
         {
             let mut ctx = PluginContext::new(
@@ -282,27 +293,37 @@ impl App {
                 plugins.feature_handle(),
                 None,
             );
-            if let Err(err) = plugins.register(Box::new(MeshPreviewPlugin::new()), &mut ctx) {
+            if disabled_builtins.contains("mesh_preview") {
+                plugins.record_builtin_disabled("mesh_preview", "disabled via config/plugins.json");
+            } else if let Err(err) = plugins.register(Box::new(MeshPreviewPlugin::new()), &mut ctx) {
                 eprintln!("[plugin] failed to register mesh preview plugin: {err:?}");
             }
-            if let Err(err) = plugins.register(Box::new(AnalyticsPlugin::default()), &mut ctx) {
+            if disabled_builtins.contains("analytics") {
+                plugins.record_builtin_disabled("analytics", "disabled via config/plugins.json");
+            } else if let Err(err) = plugins.register(Box::new(AnalyticsPlugin::default()), &mut ctx) {
                 eprintln!("[plugin] failed to register analytics plugin: {err:?}");
             }
-            if let Err(err) =
+            if disabled_builtins.contains("scripts") {
+                plugins.record_builtin_disabled("scripts", "disabled via config/plugins.json");
+            } else if let Err(err) =
                 plugins.register(Box::new(ScriptPlugin::new("assets/scripts/main.rhai")), &mut ctx)
             {
                 eprintln!("[plugin] failed to register script plugin: {err:?}");
             }
-            if let Err(err) = plugins.register(Box::new(AudioPlugin::new(16)), &mut ctx) {
+            if disabled_builtins.contains("audio") {
+                plugins.record_builtin_disabled("audio", "disabled via config/plugins.json");
+            } else if let Err(err) = plugins.register(Box::new(AudioPlugin::new(16)), &mut ctx) {
                 eprintln!("[plugin] failed to register audio plugin: {err:?}");
             }
-            match plugins.load_from_manifest("config/plugins.json", &mut ctx) {
-                Ok(loaded) => {
-                    if !loaded.is_empty() {
-                        println!("[plugin] loaded dynamic plugins: {}", loaded.join(", "));
+            if let Some(manifest) = plugin_manifest.as_ref() {
+                match plugins.load_dynamic_from_manifest(manifest, &mut ctx) {
+                    Ok(loaded) => {
+                        if !loaded.is_empty() {
+                            println!("[plugin] loaded dynamic plugins: {}", loaded.join(", "));
+                        }
                     }
+                    Err(err) => eprintln!("[plugin] failed to load dynamic plugins: {err:?}"),
                 }
-                Err(err) => eprintln!("[plugin] failed to load manifest: {err:?}"),
             }
         }
         if !initial_events.is_empty() {
@@ -1801,6 +1822,30 @@ impl ApplicationHandler for App {
             w.request_redraw();
         }
         self.input.clear_frame();
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        let mut plugins = std::mem::take(&mut self.plugins);
+        {
+            let handle = plugins.feature_handle();
+            let mut ctx = PluginContext::new(
+                &mut self.renderer,
+                &mut self.ecs,
+                &mut self.assets,
+                &mut self.input,
+                &mut self.material_registry,
+                &mut self.mesh_registry,
+                &mut self.environment_registry,
+                &self.time,
+                Self::emit_event_for_plugin,
+                handle,
+                self.selected_entity,
+            );
+            plugins.shutdown(&mut ctx);
+        }
+        // plugins dropped here
     }
 }
 

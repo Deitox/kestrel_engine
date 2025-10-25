@@ -438,6 +438,10 @@ impl EnginePlugin for ScriptPlugin {
         "scripts"
     }
 
+    fn version(&self) -> &'static str {
+        "1.0.0"
+    }
+
     fn update(&mut self, _ctx: &mut PluginContext<'_>, dt: f32) -> Result<()> {
         self.host.update(dt);
         self.commands.extend(self.host.drain_commands());

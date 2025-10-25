@@ -13,7 +13,7 @@ use libloading::Library;
 use serde::Deserialize;
 use std::any::Any;
 use std::cell::{Ref, RefCell, RefMut};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::io;
 use std::mem;
@@ -204,8 +204,16 @@ impl<'a> PluginContext<'a> {
     }
 }
 
-pub trait EnginePlugin: Any {
+pub trait EnginePlugin: Any + 'static {
     fn name(&self) -> &'static str;
+
+    fn version(&self) -> &'static str {
+        "0.1.0"
+    }
+
+    fn depends_on(&self) -> &'static [&'static str] {
+        &[]
+    }
 
     fn build(&mut self, _ctx: &mut PluginContext<'_>) -> Result<()> {
         Ok(())
@@ -231,41 +239,42 @@ pub trait EnginePlugin: Any {
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
+#[derive(Clone, Debug)]
+pub enum PluginState {
+    Loaded,
+    Disabled(String),
+    Failed(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct PluginStatus {
+    pub name: String,
+    pub version: Option<String>,
+    pub dynamic: bool,
+    pub state: PluginState,
+}
+
 pub struct PluginManager {
     plugins: Vec<PluginSlot>,
     features: Rc<RefCell<FeatureRegistry>>,
-}
-
-pub struct PluginSummary<'a> {
-    pub name: &'a str,
-    pub provides_features: &'a [String],
-    pub dynamic: bool,
+    statuses: Vec<PluginStatus>,
+    loaded_names: HashSet<String>,
 }
 
 struct PluginSlot {
     name: String,
     plugin: Box<dyn EnginePlugin>,
-    provides_features: Vec<String>,
-    origin: PluginOrigin,
-}
-
-enum PluginOrigin {
-    BuiltIn,
-    Dynamic(Library),
-}
-
-impl PluginOrigin {
-    fn library(&self) -> Option<&Library> {
-        match self {
-            Self::Dynamic(lib) => Some(lib),
-            Self::BuiltIn => None,
-        }
-    }
+    _library: Option<Library>,
 }
 
 impl Default for PluginManager {
     fn default() -> Self {
-        Self { plugins: Vec::new(), features: Rc::new(RefCell::new(FeatureRegistry::with_engine_defaults())) }
+        Self {
+            plugins: Vec::new(),
+            features: Rc::new(RefCell::new(FeatureRegistry::with_engine_defaults())),
+            statuses: Vec::new(),
+            loaded_names: HashSet::new(),
+        }
     }
 }
 
@@ -275,7 +284,7 @@ impl PluginManager {
     }
 
     pub fn register(&mut self, plugin: Box<dyn EnginePlugin>, ctx: &mut PluginContext<'_>) -> Result<()> {
-        self.insert_plugin(plugin, PluginOrigin::BuiltIn, Vec::new(), ctx)
+        self.insert_plugin(plugin, None, false, Vec::new(), ctx)
     }
 
     pub fn register_with_features(
@@ -284,47 +293,91 @@ impl PluginManager {
         provides: Vec<String>,
         ctx: &mut PluginContext<'_>,
     ) -> Result<()> {
-        self.insert_plugin(plugin, PluginOrigin::BuiltIn, provides, ctx)
+        self.insert_plugin(plugin, None, false, provides, ctx)
     }
 
-    pub fn load_from_manifest<P: AsRef<Path>>(
+    pub fn load_manifest(path: impl AsRef<Path>) -> Result<Option<PluginManifest>> {
+        PluginManifest::from_path(path.as_ref())
+    }
+
+    pub fn load_dynamic_from_manifest(
         &mut self,
-        path: P,
+        manifest: &PluginManifest,
         ctx: &mut PluginContext<'_>,
     ) -> Result<Vec<String>> {
-        let manifest_path = path.as_ref();
-        let Some(manifest) = PluginManifest::from_path(manifest_path)? else {
-            return Ok(Vec::new());
-        };
-        let manifest_dir =
-            manifest_path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
-        let mut loaded_names = Vec::new();
-        for entry in manifest.plugins {
+        let manifest_dir = manifest.path_parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+        let mut loaded = Vec::new();
+        for entry in manifest.entries() {
             if !entry.enabled {
+                self.statuses.push(PluginStatus {
+                    name: entry.name.clone(),
+                    version: entry.version.clone(),
+                    dynamic: true,
+                    state: PluginState::Disabled("disabled in manifest".to_string()),
+                });
                 continue;
             }
-            match self.load_entry(&entry, &manifest_dir, ctx) {
-                Ok(name) => loaded_names.push(name),
-                Err(err) => eprintln!("[plugin:{}] failed to load: {err:?}", entry.name),
+            if entry.path.trim().is_empty() {
+                self.statuses.push(PluginStatus {
+                    name: entry.name.clone(),
+                    version: entry.version.clone(),
+                    dynamic: true,
+                    state: PluginState::Failed("missing plugin path".to_string()),
+                });
+                continue;
+            }
+            let plugin_path = if Path::new(&entry.path).is_absolute() {
+                PathBuf::from(&entry.path)
+            } else {
+                manifest_dir.join(&entry.path)
+            };
+            if !plugin_path.exists() {
+                let msg = format!("artifact missing: {}", plugin_path.display());
+                self.statuses.push(PluginStatus {
+                    name: entry.name.clone(),
+                    version: entry.version.clone(),
+                    dynamic: true,
+                    state: PluginState::Disabled(msg.clone()),
+                });
+                eprintln!("[plugin:{}] {msg}", entry.name);
+                continue;
+            }
+            match self.load_entry(entry, plugin_path, ctx) {
+                Ok(name) => loaded.push(name),
+                Err(err) => {
+                    self.statuses.push(PluginStatus {
+                        name: entry.name.clone(),
+                        version: entry.version.clone(),
+                        dynamic: true,
+                        state: PluginState::Failed(err.to_string()),
+                    });
+                }
             }
         }
-        Ok(loaded_names)
+        Ok(loaded)
+    }
+
+    pub fn record_builtin_disabled(&mut self, name: &str, reason: &str) {
+        self.statuses.push(PluginStatus {
+            name: name.to_string(),
+            version: None,
+            dynamic: false,
+            state: PluginState::Disabled(reason.to_string()),
+        });
     }
 
     pub fn update(&mut self, ctx: &mut PluginContext<'_>, dt: f32) {
         for slot in &mut self.plugins {
-            let name = slot.name.as_str();
             if let Err(err) = slot.plugin.update(ctx, dt) {
-                eprintln!("[plugin:{name}] update failed: {err:?}");
+                eprintln!("[plugin:{}] update failed: {err:?}", slot.name);
             }
         }
     }
 
     pub fn fixed_update(&mut self, ctx: &mut PluginContext<'_>, dt: f32) {
         for slot in &mut self.plugins {
-            let name = slot.name.as_str();
             if let Err(err) = slot.plugin.fixed_update(ctx, dt) {
-                eprintln!("[plugin:{name}] fixed_update failed: {err:?}");
+                eprintln!("[plugin:{}] fixed_update failed: {err:?}", slot.name);
             }
         }
     }
@@ -334,18 +387,16 @@ impl PluginManager {
             return;
         }
         for slot in &mut self.plugins {
-            let name = slot.name.as_str();
             if let Err(err) = slot.plugin.on_events(ctx, events) {
-                eprintln!("[plugin:{name}] event hook failed: {err:?}");
+                eprintln!("[plugin:{}] event hook failed: {err:?}", slot.name);
             }
         }
     }
 
     pub fn shutdown(&mut self, ctx: &mut PluginContext<'_>) {
         for slot in &mut self.plugins {
-            let name = slot.name.as_str();
             if let Err(err) = slot.plugin.shutdown(ctx) {
-                eprintln!("[plugin:{name}] shutdown failed: {err:?}");
+                eprintln!("[plugin:{}] shutdown failed: {err:?}", slot.name);
             }
         }
     }
@@ -358,38 +409,53 @@ impl PluginManager {
         self.plugins.iter_mut().find_map(|slot| slot.plugin.as_any_mut().downcast_mut::<T>())
     }
 
-    pub fn plugin_summaries(&self) -> Vec<PluginSummary<'_>> {
-        self.plugins
-            .iter()
-            .map(|slot| PluginSummary {
-                name: slot.name.as_str(),
-                provides_features: slot.provides_features.as_slice(),
-                dynamic: slot.origin.library().is_some(),
-            })
-            .collect()
+    pub fn statuses(&self) -> &[PluginStatus] {
+        &self.statuses
     }
 
     fn insert_plugin(
         &mut self,
         mut plugin: Box<dyn EnginePlugin>,
-        origin: PluginOrigin,
+        library: Option<Library>,
+        is_dynamic: bool,
         provides: Vec<String>,
         ctx: &mut PluginContext<'_>,
     ) -> Result<()> {
-        plugin.build(ctx)?;
         let name = plugin.name().to_string();
+        if self.loaded_names.contains(&name) {
+            bail!("plugin '{name}' already registered");
+        }
+        self.ensure_dependencies(plugin.depends_on(), &name)?;
+        plugin.build(ctx)?;
+        let version = plugin.version().to_string();
         {
             let mut registry = self.features.borrow_mut();
             registry.register_all(&provides);
         }
-        self.plugins.push(PluginSlot { name, plugin, provides_features: provides, origin });
+        self.loaded_names.insert(name.clone());
+        self.statuses.push(PluginStatus {
+            name: name.clone(),
+            version: Some(version.clone()),
+            dynamic: is_dynamic,
+            state: PluginState::Loaded,
+        });
+        self.plugins.push(PluginSlot { name, plugin, _library: library });
         Ok(())
+    }
+
+    fn ensure_dependencies(&self, deps: &[&str], plugin_name: &str) -> Result<()> {
+        let missing: Vec<_> = deps.iter().copied().filter(|dep| !self.loaded_names.contains(*dep)).collect();
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            bail!("plugin '{}' requires {:?}, but they are not loaded yet", plugin_name, missing)
+        }
     }
 
     fn load_entry(
         &mut self,
         entry: &PluginManifestEntry,
-        manifest_dir: &Path,
+        plugin_path: PathBuf,
         ctx: &mut PluginContext<'_>,
     ) -> Result<String> {
         if let Some(min_engine_api) = entry.min_engine_api {
@@ -403,13 +469,6 @@ impl PluginManager {
         if let Some(missing) = self.try_consume_requirements(&entry.requires_features) {
             bail!("missing required features: {}", missing.join(", "));
         }
-
-        let plugin_path = if Path::new(&entry.path).is_absolute() {
-            PathBuf::from(&entry.path)
-        } else {
-            manifest_dir.join(&entry.path)
-        };
-
         let library = unsafe {
             Library::new(&plugin_path)
                 .with_context(|| format!("loading plugin library '{}'", plugin_path.display()))?
@@ -442,7 +501,7 @@ impl PluginManager {
         }
         let plugin = unsafe { handle.into_box() };
 
-        self.insert_plugin(plugin, PluginOrigin::Dynamic(library), entry.provides_features.clone(), ctx)?;
+        self.insert_plugin(plugin, Some(library), true, entry.provides_features.clone(), ctx)?;
         Ok(entry.name.clone())
     }
 
@@ -463,38 +522,57 @@ impl Drop for PluginManager {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct PluginManifest {
+#[derive(Debug, Deserialize, Clone)]
+pub struct PluginManifest {
+    #[serde(default)]
+    disable_builtins: Vec<String>,
     #[serde(default)]
     plugins: Vec<PluginManifestEntry>,
-}
-
-#[derive(Debug, Deserialize)]
-struct PluginManifestEntry {
-    name: String,
-    path: String,
-    #[serde(default = "default_enabled")]
-    enabled: bool,
-    #[serde(default)]
-    min_engine_api: Option<u32>,
-    #[serde(default)]
-    requires_features: Vec<String>,
-    #[serde(default)]
-    provides_features: Vec<String>,
+    #[serde(skip)]
+    source_path: Option<PathBuf>,
 }
 
 impl PluginManifest {
     fn from_path(path: &Path) -> Result<Option<Self>> {
         match fs::read_to_string(path) {
             Ok(contents) => {
-                let manifest = serde_json::from_str(&contents)
+                let mut manifest: PluginManifest = serde_json::from_str(&contents)
                     .with_context(|| format!("parsing plugin manifest '{}'", path.display()))?;
+                manifest.source_path = Some(path.to_path_buf());
                 Ok(Some(manifest))
             }
             Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(err) => Err(anyhow!(err).context(format!("reading plugin manifest '{}'", path.display()))),
         }
     }
+
+    pub fn disabled_builtins(&self) -> impl Iterator<Item = &str> {
+        self.disable_builtins.iter().map(String::as_str)
+    }
+
+    pub fn entries(&self) -> &[PluginManifestEntry] {
+        &self.plugins
+    }
+
+    fn path_parent(&self) -> Option<&Path> {
+        self.source_path.as_deref().and_then(|p| p.parent())
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct PluginManifestEntry {
+    pub name: String,
+    pub path: String,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub min_engine_api: Option<u32>,
+    #[serde(default)]
+    pub requires_features: Vec<String>,
+    #[serde(default)]
+    pub provides_features: Vec<String>,
 }
 
 fn default_enabled() -> bool {

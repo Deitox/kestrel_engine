@@ -15,6 +15,10 @@ impl EnginePlugin for ExampleDynamicPlugin {
         "example_dynamic"
     }
 
+    fn version(&self) -> &'static str {
+        "0.1.0"
+    }
+
     fn update(&mut self, ctx: &mut PluginContext<'_>, dt: f32) -> Result<()> {
         self.elapsed += dt;
         if self.elapsed > 1.0 {

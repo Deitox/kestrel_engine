@@ -687,6 +687,10 @@ impl EnginePlugin for MeshPreviewPlugin {
         "mesh_preview"
     }
 
+    fn version(&self) -> &'static str {
+        "1.0.0"
+    }
+
     fn build(&mut self, ctx: &mut PluginContext<'_>) -> Result<()> {
         if self.preview_mesh_key.is_empty() {
             self.preview_mesh_key = ctx.mesh_registry.default_key().to_string();

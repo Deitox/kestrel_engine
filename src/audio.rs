@@ -158,6 +158,10 @@ impl EnginePlugin for AudioPlugin {
         "audio"
     }
 
+    fn version(&self) -> &'static str {
+        "1.0.0"
+    }
+
     fn build(&mut self, _ctx: &mut PluginContext<'_>) -> Result<()> {
         Ok(())
     }
