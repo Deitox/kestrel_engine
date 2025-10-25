@@ -1598,27 +1598,26 @@ impl ApplicationHandler for App {
         for (key, path) in actions.retain_environments {
             match self.environment_registry.retain(&key, path.as_deref()) {
                 Ok(()) => {
-                    if self.scene_environment_ref.is_none() {
-                        self.scene_environment_ref = Some(key.clone());
+                    let scene_requested = self.scene_environment_ref.as_deref() == Some(key.as_str());
+                    let should_activate = scene_requested || self.active_environment_key == key;
+                    if let Err(err) =
+                        self.environment_registry.ensure_gpu(&key, &mut self.renderer)
+                    {
+                        self.ui_scene_status = Some(format!("Environment upload failed: {err}"));
+                        continue;
                     }
-                    match self.environment_registry.ensure_gpu(&key, &mut self.renderer) {
-                        Ok(env_gpu) => {
-                            if key == self.active_environment_key {
-                                if let Err(err) =
-                                    self.renderer.set_environment(&env_gpu, self.environment_intensity)
-                                {
-                                    self.ui_scene_status =
-                                        Some(format!("Environment bind failed: {err}"));
-                                } else {
-                                    self.ui_scene_status = Some(format!("Retained environment {}", key));
-                                }
-                            } else {
-                                self.ui_scene_status = Some(format!("Retained environment {}", key));
+                    if should_activate {
+                        match self.set_active_environment(&key, self.environment_intensity) {
+                            Ok(()) => {
+                                self.ui_scene_status = Some(format!("Environment set to {}", key));
+                            }
+                            Err(err) => {
+                                self.ui_scene_status =
+                                    Some(format!("Environment bind failed: {err}"));
                             }
                         }
-                        Err(err) => {
-                            self.ui_scene_status = Some(format!("Environment upload failed: {err}"));
-                        }
+                    } else {
+                        self.ui_scene_status = Some(format!("Retained environment {}", key));
                     }
                 }
                 Err(err) => {
