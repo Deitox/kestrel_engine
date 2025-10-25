@@ -782,6 +782,28 @@ impl EcsWorld {
         Some((center - half, center + half))
     }
 
+    pub fn collider_rects(&mut self) -> Vec<(Vec2, Vec2)> {
+        let mut rects = Vec::new();
+        let mut query = self.world.query::<(&WorldTransform, &Aabb)>();
+        for (wt, aabb) in query.iter(&self.world) {
+            let center = Vec2::new(wt.0.w_axis.x, wt.0.w_axis.y);
+            rects.push((center - aabb.half, center + aabb.half));
+        }
+        rects
+    }
+
+    pub fn spatial_hash_rects(&self) -> Vec<(Vec2, Vec2)> {
+        let grid = self.world.resource::<SpatialHash>();
+        let cell = grid.cell;
+        let mut rects = Vec::with_capacity(grid.grid.len());
+        for ((ix, iy), _) in grid.grid.iter() {
+            let min = Vec2::new(*ix as f32 * cell, *iy as f32 * cell);
+            let max = min + Vec2::splat(cell);
+            rects.push((min, max));
+        }
+        rects
+    }
+
     pub fn find_entity_by_scene_id(&mut self, scene_id: &str) -> Option<Entity> {
         let mut query = self.world.query::<(Entity, &SceneEntityTag)>();
         for (entity, tag) in query.iter(&self.world) {

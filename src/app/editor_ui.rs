@@ -77,6 +77,10 @@ pub(super) struct EditorUiParams {
     pub mesh_keys: Vec<String>,
     pub environment_options: Vec<(String, String)>,
     pub active_environment: String,
+    pub debug_show_spatial_hash: bool,
+    pub debug_show_colliders: bool,
+    pub spatial_hash_rects: Vec<(Vec2, Vec2)>,
+    pub collider_rects: Vec<(Vec2, Vec2)>,
     pub scene_history_list: Vec<String>,
     pub atlas_snapshot: Vec<String>,
     pub mesh_snapshot: Vec<String>,
@@ -120,6 +124,8 @@ pub(super) struct EditorUiOutput {
     pub id_lookup_request: Option<String>,
     pub id_lookup_input: String,
     pub id_lookup_active: bool,
+    pub debug_show_spatial_hash: bool,
+    pub debug_show_colliders: bool,
 }
 
 impl App {
@@ -163,6 +169,10 @@ impl App {
             mut mesh_keys,
             mut environment_options,
             active_environment,
+            mut debug_show_spatial_hash,
+            mut debug_show_colliders,
+            spatial_hash_rects,
+            collider_rects,
             scene_history_list,
             atlas_snapshot,
             mesh_snapshot,
@@ -250,6 +260,14 @@ impl App {
                         if ui.button("Find entity by ID...").clicked() {
                             id_lookup_active = true;
                         }
+                    });
+
+                    egui::CollapsingHeader::new("Debug Overlays").default_open(false).show(ui, |ui| {
+                        if self.viewport_camera_mode != ViewportCameraMode::Ortho2D {
+                            ui.label("Overlays render in the 2D viewport.");
+                        }
+                        ui.checkbox(&mut debug_show_spatial_hash, "Spatial hash cells");
+                        ui.checkbox(&mut debug_show_colliders, "Collider bounds");
                     });
 
                     egui::CollapsingHeader::new("UI & Camera").default_open(true).show(ui, |ui| {
@@ -1525,6 +1543,66 @@ impl App {
                     egui::StrokeKind::Inside,
                 );
             }
+            if self.viewport_camera_mode == ViewportCameraMode::Ortho2D {
+                if debug_show_spatial_hash {
+                    for (min, max) in &spatial_hash_rects {
+                        if let Some((min_px_view, max_px_view)) =
+                            self.camera.world_rect_to_screen_bounds(*min, *max, viewport_size_physical)
+                        {
+                            let min_screen = min_px_view + viewport_origin_vec2;
+                            let max_screen = max_px_view + viewport_origin_vec2;
+                            let cell_rect = egui::Rect::from_two_pos(
+                                egui::pos2(
+                                    min_screen.x / ui_pixels_per_point,
+                                    min_screen.y / ui_pixels_per_point,
+                                ),
+                                egui::pos2(
+                                    max_screen.x / ui_pixels_per_point,
+                                    max_screen.y / ui_pixels_per_point,
+                                ),
+                            );
+                            painter.rect_stroke(
+                                cell_rect,
+                                0.0,
+                                egui::Stroke::new(
+                                    1.0,
+                                    egui::Color32::from_rgba_premultiplied(80, 200, 255, 80),
+                                ),
+                                egui::StrokeKind::Inside,
+                            );
+                        }
+                    }
+                }
+                if debug_show_colliders {
+                    for (min, max) in &collider_rects {
+                        if let Some((min_px_view, max_px_view)) =
+                            self.camera.world_rect_to_screen_bounds(*min, *max, viewport_size_physical)
+                        {
+                            let min_screen = min_px_view + viewport_origin_vec2;
+                            let max_screen = max_px_view + viewport_origin_vec2;
+                            let collider_rect = egui::Rect::from_two_pos(
+                                egui::pos2(
+                                    min_screen.x / ui_pixels_per_point,
+                                    min_screen.y / ui_pixels_per_point,
+                                ),
+                                egui::pos2(
+                                    max_screen.x / ui_pixels_per_point,
+                                    max_screen.y / ui_pixels_per_point,
+                                ),
+                            );
+                            painter.rect_stroke(
+                                collider_rect,
+                                0.0,
+                                egui::Stroke::new(
+                                    1.5,
+                                    egui::Color32::from_rgba_premultiplied(255, 140, 60, 120),
+                                ),
+                                egui::StrokeKind::Inside,
+                            );
+                        }
+                    }
+                }
+            }
             let active_scale_handle_kind =
                 self.gizmo_interaction.as_ref().and_then(|interaction| match interaction {
                     GizmoInteraction::Scale { handle, .. } => Some(handle.kind()),
@@ -1743,6 +1821,8 @@ impl App {
             id_lookup_request,
             id_lookup_input,
             id_lookup_active,
+            debug_show_spatial_hash,
+            debug_show_colliders,
         }
     }
 }

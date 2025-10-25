@@ -163,6 +163,8 @@ pub struct App {
     scene_dependencies: Option<SceneDependencies>,
     scene_history: VecDeque<String>,
     inspector_status: Option<String>,
+    debug_show_spatial_hash: bool,
+    debug_show_colliders: bool,
 
     // Plugins
     plugins: PluginManager,
@@ -420,6 +422,8 @@ impl App {
             scene_dependencies: None,
             scene_history,
             inspector_status: None,
+            debug_show_spatial_hash: false,
+            debug_show_colliders: false,
             plugins,
             camera: Camera2D::new(CAMERA_BASE_HALF_HEIGHT),
             viewport_camera_mode: ViewportCameraMode::default(),
@@ -614,15 +618,15 @@ impl App {
             self.ui_environment_intensity = intensity;
             if self.renderer.environment_parameters().is_some() {
                 self.renderer.set_environment_intensity(intensity);
+            } else {
+                self.bind_environment(key, intensity)?;
             }
             return Ok(());
         }
+        self.bind_environment(key, intensity)?;
         let previous = std::mem::replace(&mut self.active_environment_key, key.to_string());
         self.environment_intensity = intensity;
         self.ui_environment_intensity = intensity;
-        if let Err(err) = self.apply_environment_to_renderer() {
-            return Err(err);
-        }
         if previous != self.active_environment_key && !self.should_keep_environment(&previous) {
             self.environment_registry.release(&previous);
         }
@@ -630,12 +634,15 @@ impl App {
     }
 
     fn apply_environment_to_renderer(&mut self) -> Result<()> {
+        self.bind_environment(&self.active_environment_key.clone(), self.environment_intensity)
+    }
+
+    fn bind_environment(&mut self, key: &str, intensity: f32) -> Result<()> {
         if self.renderer.device().is_err() {
             return Ok(());
         }
-        let key = self.active_environment_key.clone();
-        let env_gpu = self.environment_registry.ensure_gpu(&key, &mut self.renderer)?;
-        self.renderer.set_environment(&env_gpu, self.environment_intensity)?;
+        let env_gpu = self.environment_registry.ensure_gpu(key, &mut self.renderer)?;
+        self.renderer.set_environment(&env_gpu, intensity)?;
         Ok(())
     }
 
@@ -1460,6 +1467,20 @@ impl ApplicationHandler for App {
             })
             .collect();
         let active_environment = self.active_environment_key.clone();
+        let collider_rects = if self.debug_show_colliders
+            && self.viewport_camera_mode == ViewportCameraMode::Ortho2D
+        {
+            self.ecs.collider_rects()
+        } else {
+            Vec::new()
+        };
+        let spatial_hash_rects = if self.debug_show_spatial_hash
+            && self.viewport_camera_mode == ViewportCameraMode::Ortho2D
+        {
+            self.ecs.spatial_hash_rects()
+        } else {
+            Vec::new()
+        };
 
         let editor_params = editor_ui::EditorUiParams {
             raw_input,
@@ -1500,6 +1521,10 @@ impl ApplicationHandler for App {
             mesh_keys,
             environment_options,
             active_environment,
+            debug_show_spatial_hash: self.debug_show_spatial_hash,
+            debug_show_colliders: self.debug_show_colliders,
+            spatial_hash_rects,
+            collider_rects,
 
             scene_history_list,
             atlas_snapshot,
@@ -1545,6 +1570,8 @@ impl ApplicationHandler for App {
             id_lookup_request,
             id_lookup_input,
             id_lookup_active,
+            debug_show_spatial_hash,
+            debug_show_colliders,
         } = editor_output;
 
         self.ui_scale = ui_scale;
@@ -1568,6 +1595,8 @@ impl ApplicationHandler for App {
         self.ui_particle_max_emitter_backlog = ui_particle_max_emitter_backlog;
         self.id_lookup_input = id_lookup_input;
         self.id_lookup_active = id_lookup_active;
+        self.debug_show_spatial_hash = debug_show_spatial_hash;
+        self.debug_show_colliders = debug_show_colliders;
 
         if let Some(request) = id_lookup_request {
             let trimmed = request.trim();

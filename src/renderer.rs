@@ -124,6 +124,8 @@ struct MeshPass {
     resources: Option<MeshPipelineResources>,
     frame_buffer: Option<wgpu::Buffer>,
     draw_buffer: Option<wgpu::Buffer>,
+    frame_bind_group: Option<wgpu::BindGroup>,
+    draw_bind_group: Option<wgpu::BindGroup>,
 }
 
 struct RendererEnvironmentState {
@@ -849,6 +851,8 @@ impl Renderer {
         });
         self.mesh_pass.frame_buffer = Some(frame_buf);
         self.mesh_pass.draw_buffer = Some(draw_buf);
+        self.mesh_pass.frame_bind_group = None;
+        self.mesh_pass.draw_bind_group = None;
         self.shadow_pass.sample_layout = Some(shadow_bgl);
         self.shadow_pass.sample_bind_group = None;
         Ok(())
@@ -913,6 +917,16 @@ impl Renderer {
             padding: [0.0; 4],
         };
 
+        if self.mesh_pass.frame_buffer.is_none() {
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Mesh Frame Buffer"),
+                size: std::mem::size_of::<MeshFrameData>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.mesh_pass.frame_buffer = Some(buffer);
+            self.mesh_pass.frame_bind_group = None;
+        }
         let frame_buffer = self.mesh_pass.frame_buffer.as_ref().context("Mesh frame buffer missing")?.clone();
 
         if self.mesh_pass.draw_buffer.is_none() {
@@ -923,22 +937,40 @@ impl Renderer {
                 mapped_at_creation: false,
             });
             self.mesh_pass.draw_buffer = Some(draw_buf);
+            self.mesh_pass.draw_bind_group = None;
         }
         let draw_buffer = self.mesh_pass.draw_buffer.as_ref().context("Mesh draw buffer missing")?.clone();
+
+        if self.mesh_pass.frame_bind_group.is_none() {
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Mesh Frame BG"),
+                layout: mesh_resources.frame_bgl.as_ref(),
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: frame_buffer.as_entire_binding() }],
+            });
+            self.mesh_pass.frame_bind_group = Some(bind_group);
+        }
+        if self.mesh_pass.draw_bind_group.is_none() {
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Mesh Draw BG"),
+                layout: mesh_resources.draw_bgl.as_ref(),
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: draw_buffer.as_entire_binding() }],
+            });
+            self.mesh_pass.draw_bind_group = Some(bind_group);
+        }
 
         let queue = self.queue()?.clone();
         queue.write_buffer(&frame_buffer, 0, bytemuck::bytes_of(&frame_data));
 
-        let frame_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Mesh Frame BG"),
-            layout: mesh_resources.frame_bgl.as_ref(),
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: frame_buffer.as_entire_binding() }],
-        });
-        let draw_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Mesh Draw BG"),
-            layout: mesh_resources.draw_bgl.as_ref(),
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: draw_buffer.as_entire_binding() }],
-        });
+        let frame_bind_group = self
+            .mesh_pass
+            .frame_bind_group
+            .as_ref()
+            .context("Mesh frame bind group missing")?;
+        let draw_bind_group = self
+            .mesh_pass
+            .draw_bind_group
+            .as_ref()
+            .context("Mesh draw bind group missing")?;
         let shadow_bind_group =
             self.shadow_pass.sample_bind_group.as_ref().context("Shadow sample bind group missing")?;
 
@@ -989,7 +1021,7 @@ impl Renderer {
         );
         pass.set_scissor_rect(sc_x, sc_y, sc_w, sc_h);
 
-        pass.set_bind_group(0, &frame_bind_group, &[]);
+        pass.set_bind_group(0, frame_bind_group, &[]);
         pass.set_bind_group(3, shadow_bind_group, &[]);
         pass.set_bind_group(4, environment_state.bind_group.as_ref(), &[]);
 
@@ -1010,7 +1042,7 @@ impl Renderer {
                 ],
             };
             queue.write_buffer(&draw_buffer, 0, bytemuck::bytes_of(&draw_data));
-            pass.set_bind_group(1, &draw_bind_group, &[]);
+            pass.set_bind_group(1, draw_bind_group, &[]);
             pass.set_bind_group(2, draw.material.bind_group(), &[]);
             pass.set_vertex_buffer(0, draw.mesh.vertex_buffer.slice(..));
             pass.set_index_buffer(draw.mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);

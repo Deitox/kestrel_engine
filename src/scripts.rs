@@ -321,10 +321,7 @@ impl ScriptHost {
     }
 
     pub fn resolve_handle(&self, handle: ScriptHandle) -> Option<Entity> {
-        self.handle_map
-            .get(&handle)
-            .copied()
-            .or_else(|| (handle >= 0).then(|| Entity::from_bits(handle as u64)))
+        self.handle_map.get(&handle).copied()
     }
 
     pub fn forget_handle(&mut self, handle: ScriptHandle) {
