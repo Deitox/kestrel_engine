@@ -13,6 +13,10 @@ use kestrel_engine::time::Time;
 use pollster::block_on;
 use std::any::Any;
 
+fn push_event_bridge(ecs: &mut EcsWorld, event: GameEvent) {
+    ecs.push_event(event);
+}
+
 #[derive(Default)]
 struct CountingPlugin {
     build_calls: usize,
@@ -65,6 +69,28 @@ impl EnginePlugin for CountingPlugin {
     }
 }
 
+#[derive(Default)]
+struct FeaturePublishingPlugin;
+
+impl EnginePlugin for FeaturePublishingPlugin {
+    fn name(&self) -> &'static str {
+        "feature_publisher"
+    }
+
+    fn build(&mut self, ctx: &mut PluginContext<'_>) -> Result<()> {
+        ctx.features_mut().register("test.feature");
+        Ok(())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
 #[test]
 fn plugins_receive_lifecycle_hooks() {
     let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
@@ -87,6 +113,8 @@ fn plugins_receive_lifecycle_hooks() {
             &mut mesh_registry,
             &mut environment_registry,
             &time,
+            push_event_bridge,
+            manager.feature_handle(),
             None,
         );
         manager
@@ -104,6 +132,8 @@ fn plugins_receive_lifecycle_hooks() {
             &mut mesh_registry,
             &mut environment_registry,
             &time,
+            push_event_bridge,
+            manager.feature_handle(),
             None,
         );
         manager.update(&mut ctx, 0.5);
@@ -119,6 +149,8 @@ fn plugins_receive_lifecycle_hooks() {
             &mut mesh_registry,
             &mut environment_registry,
             &time,
+            push_event_bridge,
+            manager.feature_handle(),
             None,
         );
         manager.fixed_update(&mut ctx, 1.0 / 60.0);
@@ -138,6 +170,8 @@ fn plugins_receive_lifecycle_hooks() {
             &mut mesh_registry,
             &mut environment_registry,
             &time,
+            push_event_bridge,
+            manager.feature_handle(),
             None,
         );
         manager.handle_events(&mut ctx, &events);
@@ -153,6 +187,8 @@ fn plugins_receive_lifecycle_hooks() {
             &mut mesh_registry,
             &mut environment_registry,
             &time,
+            push_event_bridge,
+            manager.feature_handle(),
             None,
         );
         manager.shutdown(&mut ctx);
@@ -165,4 +201,42 @@ fn plugins_receive_lifecycle_hooks() {
     assert_eq!(plugin.shutdown_calls, 1);
     assert_eq!(plugin.update_dts, vec![0.5]);
     assert_eq!(plugin.event_batches, vec![2]);
+}
+
+#[test]
+fn plugins_can_publish_features() {
+    let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
+    let mut ecs = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    let mut input = Input::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+    let mut environment_registry = EnvironmentRegistry::new();
+    let time = Time::new();
+    let mut manager = PluginManager::default();
+
+    {
+        let mut ctx = PluginContext::new(
+            &mut renderer,
+            &mut ecs,
+            &mut assets,
+            &mut input,
+            &mut material_registry,
+            &mut mesh_registry,
+            &mut environment_registry,
+            &time,
+            push_event_bridge,
+            manager.feature_handle(),
+            None,
+        );
+        manager
+            .register(Box::new(FeaturePublishingPlugin::default()), &mut ctx)
+            .expect("feature plugin registers");
+    }
+
+    let features: Vec<String> = manager.feature_handle().borrow().all().cloned().collect();
+    assert!(
+        features.iter().any(|feature| feature == "test.feature"),
+        "feature registry tracks plugin-provided capabilities"
+    );
 }

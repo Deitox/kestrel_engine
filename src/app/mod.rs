@@ -12,7 +12,7 @@ use crate::input::{Input, InputEvent};
 use crate::material_registry::{MaterialGpu, MaterialRegistry};
 use crate::mesh_preview::{MeshControlMode, MeshPreviewPlugin};
 use crate::mesh_registry::MeshRegistry;
-use crate::plugins::{PluginContext, PluginManager};
+use crate::plugins::{FeatureRegistryHandle, PluginContext, PluginManager};
 use crate::renderer::{MeshDraw, RenderViewport, Renderer, SpriteBatch};
 use crate::scene::{
     EnvironmentDependency, SceneCamera2D, SceneDependencies, SceneEnvironment, SceneLightingData,
@@ -278,6 +278,8 @@ impl App {
                 &mut mesh_registry,
                 &mut environment_registry,
                 &time,
+                Self::emit_event_for_plugin,
+                plugins.feature_handle(),
                 None,
             );
             if let Err(err) = plugins.register(Box::new(MeshPreviewPlugin::new()), &mut ctx) {
@@ -294,6 +296,14 @@ impl App {
             if let Err(err) = plugins.register(Box::new(AudioPlugin::new(16)), &mut ctx) {
                 eprintln!("[plugin] failed to register audio plugin: {err:?}");
             }
+            match plugins.load_from_manifest("config/plugins.json", &mut ctx) {
+                Ok(loaded) => {
+                    if !loaded.is_empty() {
+                        println!("[plugin] loaded dynamic plugins: {}", loaded.join(", "));
+                    }
+                }
+                Err(err) => eprintln!("[plugin] failed to load manifest: {err:?}"),
+            }
         }
         if !initial_events.is_empty() {
             let mut ctx = PluginContext::new(
@@ -305,6 +315,8 @@ impl App {
                 &mut mesh_registry,
                 &mut environment_registry,
                 &time,
+                Self::emit_event_for_plugin,
+                plugins.feature_handle(),
                 None,
             );
             plugins.handle_events(&mut ctx, &initial_events);
@@ -414,7 +426,7 @@ impl App {
         }
     }
 
-    fn plugin_context(&mut self) -> PluginContext<'_> {
+    fn plugin_context(&mut self, feature_handle: FeatureRegistryHandle) -> PluginContext<'_> {
         PluginContext::new(
             &mut self.renderer,
             &mut self.ecs,
@@ -424,8 +436,14 @@ impl App {
             &mut self.mesh_registry,
             &mut self.environment_registry,
             &self.time,
+            Self::emit_event_for_plugin,
+            feature_handle,
             self.selected_entity,
         )
+    }
+
+    fn emit_event_for_plugin(ecs: &mut EcsWorld, event: GameEvent) {
+        ecs.push_event(event);
     }
 
     fn with_plugins<F>(&mut self, mut f: F)
@@ -434,7 +452,8 @@ impl App {
     {
         let mut plugins = std::mem::take(&mut self.plugins);
         {
-            let mut ctx = self.plugin_context();
+            let handle = plugins.feature_handle();
+            let mut ctx = self.plugin_context(handle);
             f(&mut plugins, &mut ctx);
         }
         self.plugins = plugins;
@@ -1600,9 +1619,7 @@ impl ApplicationHandler for App {
                 Ok(()) => {
                     let scene_requested = self.scene_environment_ref.as_deref() == Some(key.as_str());
                     let should_activate = scene_requested || self.active_environment_key == key;
-                    if let Err(err) =
-                        self.environment_registry.ensure_gpu(&key, &mut self.renderer)
-                    {
+                    if let Err(err) = self.environment_registry.ensure_gpu(&key, &mut self.renderer) {
                         self.ui_scene_status = Some(format!("Environment upload failed: {err}"));
                         continue;
                     }
@@ -1612,8 +1629,7 @@ impl ApplicationHandler for App {
                                 self.ui_scene_status = Some(format!("Environment set to {}", key));
                             }
                             Err(err) => {
-                                self.ui_scene_status =
-                                    Some(format!("Environment bind failed: {err}"));
+                                self.ui_scene_status = Some(format!("Environment bind failed: {err}"));
                             }
                         }
                     } else {

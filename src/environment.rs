@@ -126,11 +126,9 @@ impl EnvironmentRegistry {
             if self.environments.contains_key(&key) {
                 continue;
             }
-            let definition = EnvironmentDefinition::from_path(
-                key.clone(),
-                source_path.to_string_lossy().into_owned(),
-            )
-            .with_context(|| format!("processing environment '{}'", source_path.display()))?;
+            let definition =
+                EnvironmentDefinition::from_path(key.clone(), source_path.to_string_lossy().into_owned())
+                    .with_context(|| format!("processing environment '{}'", source_path.display()))?;
             self.environments.insert(
                 key.clone(),
                 EnvironmentEntry { definition, gpu: None, ref_count: 0, permanent: false },
@@ -505,8 +503,8 @@ fn generate_default_hdr() -> HdrImage {
 mod tests {
     use super::*;
     use image::{Rgb, RgbImage};
-    use tempfile::tempdir;
     use std::path::PathBuf;
+    use tempfile::tempdir;
 
     #[test]
     fn environment_key_sanitizes_names() {

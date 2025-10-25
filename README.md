@@ -46,4 +46,5 @@ cargo run
 - docs/ARCHITECTURE.md - subsystem responsibilities, frame flow, and notes on the hybrid transform pipeline.
 - docs/DECISIONS.md - crate and technology choices (e.g., winit, wgpu, gltf, Rapier).
 - docs/CODE_STYLE.md - formatting, linting, and error-handling guidelines.
+- docs/PLUGINS.md - dynamic plugin manifest format, feature registry rules, and an example cdylib plugin.
 

@@ -9,6 +9,9 @@
 # Local overrides
 /config/*.local.json
 
+# Plugin build artifacts
+/plugins/**/target/
+
 # OS-specific junk
 .DS_Store
 Thumbs.db
