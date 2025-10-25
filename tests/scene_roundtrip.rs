@@ -2,12 +2,14 @@
 use glam::{EulerRot, Quat, Vec2, Vec3, Vec4};
 use kestrel_engine::assets::AssetManager;
 use kestrel_engine::ecs::{
-    Aabb, Children, EcsWorld, Mass, MeshLighting, MeshRef, MeshSurface, Parent, ParticleEmitter, Sprite, Transform,
-    Transform3D, Velocity, WorldTransform, WorldTransform3D,
+    Aabb, Children, EcsWorld, Mass, MeshLighting, MeshRef, MeshSurface, Parent, ParticleEmitter, Sprite,
+    Transform, Transform3D, Velocity, WorldTransform, WorldTransform3D,
 };
 use kestrel_engine::material_registry::MaterialRegistry;
 use kestrel_engine::mesh_registry::MeshRegistry;
-use kestrel_engine::scene::{EnvironmentDependency, Scene, SceneEnvironment, SceneLightingData, SceneShadowData, Vec3Data};
+use kestrel_engine::scene::{
+    EnvironmentDependency, Scene, SceneEnvironment, SceneLightingData, SceneShadowData, Vec3Data,
+};
 use tempfile::NamedTempFile;
 
 #[test]
@@ -83,17 +85,11 @@ fn scene_roundtrip_preserves_entity_count() {
         .find(|dep| dep.key() == "materials/bronze.mat")
         .expect("scene should track material dependency");
     assert!(material_dep.path().is_none());
-    let env_dep = scene
-        .dependencies
-        .environment_dependency()
-        .expect("scene should track environment dependency");
+    let env_dep =
+        scene.dependencies.environment_dependency().expect("scene should track environment dependency");
     assert_eq!(env_dep.key(), ENVIRONMENT_KEY);
     assert_eq!(env_dep.path(), Some("assets/environments/test_environment.hdr"));
-    let env_meta = scene
-        .metadata
-        .environment
-        .as_ref()
-        .expect("scene should capture environment metadata");
+    let env_meta = scene.metadata.environment.as_ref().expect("scene should capture environment metadata");
     assert_eq!(env_meta.key.as_str(), ENVIRONMENT_KEY);
     assert!((env_meta.intensity - 1.75).abs() < f32::EPSILON);
     assert!(saved_mesh.lighting.cast_shadows);
@@ -115,14 +111,7 @@ fn scene_roundtrip_preserves_entity_count() {
     assert!((emissive_vec.z - 0.3).abs() < f32::EPSILON);
 
     let path = std::path::Path::new("target/test_scene_roundtrip.json");
-    world
-        .save_scene_to_path_with_sources(
-            &path,
-            &assets,
-            |key| mesh_registry.mesh_source(key).map(|p| p.to_string_lossy().into_owned()),
-            |key| material_registry.material_source(key).map(|s| s.to_string()),
-        )
-        .expect("scene save should succeed");
+    scene.save_to_path(&path).expect("scene save should succeed");
 
     let loaded = Scene::load_from_path(path).expect("scene load should succeed");
     assert_eq!(loaded.entities.len(), scene.entities.len());
@@ -132,11 +121,8 @@ fn scene_roundtrip_preserves_entity_count() {
         .expect("loaded scene should preserve environment dependency");
     assert_eq!(loaded_env_dep.key(), ENVIRONMENT_KEY);
     assert_eq!(loaded_env_dep.path(), Some("assets/environments/test_environment.hdr"));
-    let loaded_env_meta = loaded
-        .metadata
-        .environment
-        .as_ref()
-        .expect("loaded scene should restore environment metadata");
+    let loaded_env_meta =
+        loaded.metadata.environment.as_ref().expect("loaded scene should restore environment metadata");
     assert_eq!(loaded_env_meta.key.as_str(), ENVIRONMENT_KEY);
     assert!((loaded_env_meta.intensity - 1.75).abs() < f32::EPSILON);
     let loaded_mesh_dep = loaded
@@ -412,9 +398,7 @@ fn scene_roundtrip_preserves_scripted_spawns() {
     assert!((mass - 1.0).abs() < 1e-5);
 
     let mut new_world = EcsWorld::new();
-    new_world
-        .load_scene(&scene, &assets)
-        .expect("scene load should recreate scripted sprite");
+    new_world.load_scene(&scene, &assets).expect("scene load should recreate scripted sprite");
     let mut query = new_world.world.query::<(&Transform, &Sprite, &Velocity, &Aabb, &Mass)>();
     let (transform, sprite, vel, collider_loaded, mass_loaded) = query
         .iter(&new_world.world)
@@ -440,11 +424,9 @@ fn lighting_shadow_settings_roundtrip() {
         shadow: SceneShadowData { distance: 64.0, bias: 0.0035, strength: 0.65 },
     };
     let serialized = serde_json::to_string(&lighting).expect("serialize lighting");
-    let roundtrip: SceneLightingData =
-        serde_json::from_str(&serialized).expect("deserialize lighting");
+    let roundtrip: SceneLightingData = serde_json::from_str(&serialized).expect("deserialize lighting");
     assert!((roundtrip.exposure - 2.5).abs() < f32::EPSILON);
     assert!((roundtrip.shadow.distance - 64.0).abs() < f32::EPSILON);
     assert!((roundtrip.shadow.bias - 0.0035).abs() < f32::EPSILON);
     assert!((roundtrip.shadow.strength - 0.65).abs() < f32::EPSILON);
 }
-

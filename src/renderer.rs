@@ -887,10 +887,8 @@ impl Renderer {
         if self.depth_texture.is_none() {
             self.recreate_depth_texture()?;
         }
-        let environment_state = self
-            .environment_state
-            .as_ref()
-            .context("Environment state not configured")?;
+        let environment_state =
+            self.environment_state.as_ref().context("Environment state not configured")?;
         let mesh_resources = self.mesh_pass.resources.as_ref().context("Mesh pipeline not initialized")?;
         let depth_view = self.depth_view.as_ref().context("Depth texture missing")?;
         let device = self.device()?.clone();
@@ -941,11 +939,8 @@ impl Renderer {
             layout: mesh_resources.draw_bgl.as_ref(),
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: draw_buffer.as_entire_binding() }],
         });
-        let shadow_bind_group = self
-            .shadow_pass
-            .sample_bind_group
-            .as_ref()
-            .context("Shadow sample bind group missing")?;
+        let shadow_bind_group =
+            self.shadow_pass.sample_bind_group.as_ref().context("Shadow sample bind group missing")?;
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Mesh Pass"),
@@ -1074,8 +1069,7 @@ impl Renderer {
     fn recreate_shadow_map(&mut self) -> Result<()> {
         let device = self.device()?.clone();
         let resolution = self.shadow_pass.resolution.max(1);
-        let extent =
-            wgpu::Extent3d { width: resolution, height: resolution, depth_or_array_layers: 1 };
+        let extent = wgpu::Extent3d { width: resolution, height: resolution, depth_or_array_layers: 1 };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Shadow Map"),
             size: extent,
@@ -1190,7 +1184,10 @@ impl Renderer {
             let frame_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Shadow Frame BG"),
                 layout: frame_bgl.as_ref(),
-                entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer_ref.as_entire_binding() }],
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer_ref.as_entire_binding(),
+                }],
             });
             self.shadow_pass.frame_bind_group = Some(frame_bind_group);
 
@@ -1199,7 +1196,10 @@ impl Renderer {
             let draw_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Shadow Draw BG"),
                 layout: draw_bgl.as_ref(),
-                entries: &[wgpu::BindGroupEntry { binding: 0, resource: draw_buffer_ref.as_entire_binding() }],
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: draw_buffer_ref.as_entire_binding(),
+                }],
             });
             self.shadow_pass.draw_bind_group = Some(draw_bind_group);
 
@@ -1240,8 +1240,14 @@ impl Renderer {
                     layout: layout.as_ref(),
                     entries: &[
                         wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(view) },
-                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::Sampler(sampler),
+                        },
                     ],
                 });
                 self.shadow_pass.sample_bind_group = Some(bind_group);
@@ -1299,15 +1305,12 @@ impl Renderer {
         let light_matrix = proj * view;
         self.write_shadow_uniform(light_matrix, shadow_strength)?;
 
-        let resources =
-            self.shadow_pass.resources.as_ref().context("Shadow pipeline resources missing")?;
+        let resources = self.shadow_pass.resources.as_ref().context("Shadow pipeline resources missing")?;
         let view = self.shadow_pass.map_view.as_ref().context("Shadow map view missing")?;
         let frame_bg =
             self.shadow_pass.frame_bind_group.as_ref().context("Shadow frame bind group missing")?;
-        let draw_bg =
-            self.shadow_pass.draw_bind_group.as_ref().context("Shadow draw bind group missing")?;
-        let draw_buffer =
-            self.shadow_pass.draw_buffer.as_ref().context("Shadow draw buffer missing")?;
+        let draw_bg = self.shadow_pass.draw_bind_group.as_ref().context("Shadow draw bind group missing")?;
+        let draw_buffer = self.shadow_pass.draw_buffer.as_ref().context("Shadow draw buffer missing")?;
         let queue = self.queue()?.clone();
 
         let resolution = self.shadow_pass.resolution.max(1);
@@ -1317,7 +1320,10 @@ impl Renderer {
                 color_attachments: &[],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
                     stencil_ops: None,
                 }),
                 occlusion_query_set: None,
@@ -1726,4 +1732,3 @@ mod tests {
         });
     }
 }
-

@@ -1,4 +1,5 @@
 use super::{App, MeshControlMode, ViewportCameraMode};
+use crate::audio::AudioPlugin;
 use crate::camera3d::Camera3D;
 use crate::ecs::{EntityInfo, SpriteInfo};
 use crate::events::GameEvent;
@@ -298,7 +299,10 @@ impl App {
                             lighting_dirty = true;
                         }
                         if ui
-                            .add(egui::Slider::new(&mut self.ui_shadow_distance, 5.0..=200.0).text("Shadow distance"))
+                            .add(
+                                egui::Slider::new(&mut self.ui_shadow_distance, 5.0..=200.0)
+                                    .text("Shadow distance"),
+                            )
                             .changed()
                         {
                             self.ui_shadow_distance = self.ui_shadow_distance.clamp(5.0, 200.0);
@@ -316,7 +320,10 @@ impl App {
                             lighting_dirty = true;
                         }
                         if ui
-                            .add(egui::Slider::new(&mut self.ui_shadow_strength, 0.0..=1.0).text("Shadow strength"))
+                            .add(
+                                egui::Slider::new(&mut self.ui_shadow_strength, 0.0..=1.0)
+                                    .text("Shadow strength"),
+                            )
                             .changed()
                         {
                             self.ui_shadow_strength = self.ui_shadow_strength.clamp(0.0, 1.0);
@@ -1196,16 +1203,30 @@ impl App {
                     ui.separator();
                     ui.heading("Audio Debug");
                     if ui.checkbox(&mut audio_enabled, "Enable audio triggers").changed() {
-                        self.audio.set_enabled(audio_enabled);
+                        if let Some(audio) = self.plugins.get_mut::<AudioPlugin>() {
+                            audio.set_enabled(audio_enabled);
+                        }
                     }
-                    if !self.audio.available() {
-                        ui.colored_label(
-                            egui::Color32::from_rgb(200, 80, 80),
-                            "Audio device unavailable; triggers will be silent.",
-                        );
+                    match self.plugins.get::<AudioPlugin>() {
+                        Some(audio) => {
+                            if !audio.available() {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(200, 80, 80),
+                                    "Audio device unavailable; triggers will be silent.",
+                                );
+                            }
+                        }
+                        None => {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(200, 80, 80),
+                                "Audio plugin unavailable; triggers will be silent.",
+                            );
+                        }
                     }
                     if ui.button("Clear audio log").clicked() {
-                        self.audio.clear();
+                        if let Some(audio) = self.plugins.get_mut::<AudioPlugin>() {
+                            audio.clear();
+                        }
                     }
                     if audio_triggers.is_empty() {
                         ui.label("No audio triggers");
@@ -1516,4 +1537,3 @@ impl App {
         }
     }
 }
-

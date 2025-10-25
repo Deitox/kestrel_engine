@@ -211,6 +211,8 @@
 - Optional dynamic library loading (`.dll` / `.so`).
 - Versioned feature registry.
 
+**Status:** The `EnginePlugin` trait, plugin manager, and audio subsystem plugin are implemented so extensions can register lifecycle hooks without touching the core loop.
+
 **Stretch Ideas**
 - Sandbox for untrusted plugins.
 

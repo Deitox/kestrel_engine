@@ -30,7 +30,7 @@
 - `src/scripts.rs` embeds Rhai, hot-reloads scripts, queues gameplay commands for the app to apply, and captures script log messages.
 - `src/events.rs` defines `GameEvent` plus the `EventBus` resource that records gameplay signals for tooling and audio.
 - `src/scene.rs` describes the JSON scene format, tracks atlas/mesh dependencies, and handles serialization/deserialization of entity hierarchies for save/load operations.
-- `src/audio.rs` contains `AudioManager`, which uses `rodio` to emit lightweight synthesized cues in response to `GameEvent`s.
+- `src/audio.rs` exposes `AudioManager` plus an `AudioPlugin` wrapper so rodio-backed cues react to `GameEvent`s through the shared plugin system.
 
 ### Frame Flow
 1. **Input ingest** - `ApplicationHandler::window_event` converts Winit events into `InputEvent` values, storing them on `Input`.
@@ -49,7 +49,8 @@
 - `ScriptHost` issues commands back into `App`, which resolves script handles to ECS entities.
 - `RapierState` lives inside `EcsWorld` and synchronizes rigid-body data each fixed tick.
 - `EventBus` is stored as an ECS resource so systems can push `GameEvent` values that the app drains after each frame.
-- `AudioManager` listens to drained `GameEvent`s so tooling can preview which sounds would fire for spawns, despawns, collisions, or script-driven cues while also playing the corresponding rodio tone when audio is available.
+- `PluginManager` (`src/plugins.rs`) stores `EnginePlugin` implementations, hands them a `PluginContext`, and invokes build/update/fixed/event hooks each frame so extensions stay decoupled from the core loop.
+- `AudioPlugin` wraps `AudioManager`, receives drained `GameEvent`s through the plugin manager, and exposes trigger history + enable state to the editor UI while playing rodio tones when audio is available.
 - `MeshRegistry` owns CPU/GPU mesh resources so both the preview mesh and ECS-driven mesh entities share buffers.
 - The editor routes perspective viewport picking through the mesh registry's bounding data so gizmos and inspector edits stay in sync for 3D meshes.
 - The scene toolbar presents dependency health along with retain buttons so missing atlases or meshes can be rehydrated before applying a scene.

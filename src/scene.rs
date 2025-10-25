@@ -1007,5 +1007,3 @@ impl From<ColorData> for glam::Vec4 {
         glam::Vec4::new(value.r, value.g, value.b, value.a)
     }
 }
-
-

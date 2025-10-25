@@ -1,6 +1,9 @@
 use crate::events::GameEvent;
+use crate::plugins::{EnginePlugin, PluginContext};
+use anyhow::Result;
 use rodio::source::{SineWave, Source};
 use rodio::{OutputStream, OutputStreamHandle, Sink};
+use std::any::Any;
 use std::collections::VecDeque;
 use std::time::Duration;
 
@@ -117,5 +120,65 @@ impl AudioManager {
             sink.append(source);
             sink.detach();
         }
+    }
+}
+
+pub struct AudioPlugin {
+    manager: AudioManager,
+}
+
+impl AudioPlugin {
+    pub fn new(capacity: usize) -> Self {
+        Self { manager: AudioManager::new(capacity) }
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.manager.enabled()
+    }
+
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.manager.set_enabled(enabled);
+    }
+
+    pub fn available(&self) -> bool {
+        self.manager.available()
+    }
+
+    pub fn clear(&mut self) {
+        self.manager.clear();
+    }
+
+    pub fn recent_triggers(&self) -> impl ExactSizeIterator<Item = &String> {
+        self.manager.recent_triggers()
+    }
+}
+
+impl EnginePlugin for AudioPlugin {
+    fn name(&self) -> &'static str {
+        "audio"
+    }
+
+    fn build(&mut self, _ctx: &mut PluginContext<'_>) -> Result<()> {
+        Ok(())
+    }
+
+    fn on_events(&mut self, _ctx: &mut PluginContext<'_>, events: &[GameEvent]) -> Result<()> {
+        for event in events {
+            self.manager.handle_event(event);
+        }
+        Ok(())
+    }
+
+    fn shutdown(&mut self, _ctx: &mut PluginContext<'_>) -> Result<()> {
+        self.manager.clear();
+        Ok(())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
 }

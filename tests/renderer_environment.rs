@@ -1,4 +1,4 @@
-﻿use kestrel_engine::config::WindowConfig;
+use kestrel_engine::config::WindowConfig;
 use kestrel_engine::environment::EnvironmentRegistry;
 use kestrel_engine::renderer::Renderer;
 
@@ -16,9 +16,8 @@ fn renderer_binds_environment_textures() {
 
     let mut environment_registry = EnvironmentRegistry::new();
     let default_key = environment_registry.default_key().to_string();
-    let env_gpu = environment_registry
-        .ensure_gpu(&default_key, &mut renderer)
-        .expect("upload default environment");
+    let env_gpu =
+        environment_registry.ensure_gpu(&default_key, &mut renderer).expect("upload default environment");
 
     renderer.set_environment(&env_gpu, 1.25).expect("bind environment");
     renderer.set_environment_intensity(0.5);

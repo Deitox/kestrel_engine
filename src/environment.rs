@@ -89,16 +89,15 @@ pub struct EnvironmentGpu {
 
 impl EnvironmentRegistry {
     pub fn new() -> Self {
-        let mut registry = Self { environments: HashMap::new(), default_key: "environment::default".to_string(), sampler: None };
+        let mut registry = Self {
+            environments: HashMap::new(),
+            default_key: "environment::default".to_string(),
+            sampler: None,
+        };
         let default_definition = EnvironmentDefinition::generated_default();
         registry.environments.insert(
             default_definition.key.clone(),
-            EnvironmentEntry {
-                definition: default_definition,
-                gpu: None,
-                ref_count: 1,
-                permanent: true,
-            },
+            EnvironmentEntry { definition: default_definition, gpu: None, ref_count: 1, permanent: true },
         );
         registry
     }
@@ -130,12 +129,7 @@ impl EnvironmentRegistry {
             .with_context(|| format!("Failed to load environment '{key}' from {path}"))?;
         self.environments.insert(
             key.to_string(),
-            EnvironmentEntry {
-                definition,
-                gpu: None,
-                ref_count: 1,
-                permanent: false,
-            },
+            EnvironmentEntry { definition, gpu: None, ref_count: 1, permanent: false },
         );
         Ok(())
     }
@@ -158,10 +152,8 @@ impl EnvironmentRegistry {
 
     pub fn ensure_gpu(&mut self, key: &str, renderer: &mut Renderer) -> Result<Arc<EnvironmentGpu>> {
         let maps = {
-            let entry = self
-                .environments
-                .get_mut(key)
-                .ok_or_else(|| anyhow!("Environment '{key}' not retained"))?;
+            let entry =
+                self.environments.get_mut(key).ok_or_else(|| anyhow!("Environment '{key}' not retained"))?;
             if let Some(gpu) = entry.gpu.as_ref() {
                 return Ok(gpu.clone());
             }
@@ -294,13 +286,11 @@ impl EnvironmentGpu {
                 },
             );
         }
-        let diffuse_view = Arc::new(
-            diffuse_texture.create_view(&wgpu::TextureViewDescriptor {
-                label: Some("Environment Diffuse View"),
-                dimension: Some(wgpu::TextureViewDimension::Cube),
-                ..Default::default()
-            }),
-        );
+        let diffuse_view = Arc::new(diffuse_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("Environment Diffuse View"),
+            dimension: Some(wgpu::TextureViewDimension::Cube),
+            ..Default::default()
+        }));
 
         let mip_count = maps.specular.levels.len().max(1) as u32;
         let specular_texture = Arc::new(device.create_texture(&wgpu::TextureDescriptor {
@@ -333,23 +323,17 @@ impl EnvironmentGpu {
                         bytes_per_row: Some((level.size * 8) as u32),
                         rows_per_image: Some(level.size),
                     },
-                    wgpu::Extent3d {
-                        width: level.size,
-                        height: level.size,
-                        depth_or_array_layers: 1,
-                    },
+                    wgpu::Extent3d { width: level.size, height: level.size, depth_or_array_layers: 1 },
                 );
             }
         }
-        let specular_view = Arc::new(
-            specular_texture.create_view(&wgpu::TextureViewDescriptor {
-                label: Some("Environment Specular View"),
-                dimension: Some(wgpu::TextureViewDimension::Cube),
-                base_mip_level: 0,
-                mip_level_count: Some(mip_count),
-                ..Default::default()
-            }),
-        );
+        let specular_view = Arc::new(specular_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("Environment Specular View"),
+            dimension: Some(wgpu::TextureViewDimension::Cube),
+            base_mip_level: 0,
+            mip_level_count: Some(mip_count),
+            ..Default::default()
+        }));
 
         let brdf_texture = Arc::new(device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Environment BRDF LUT"),
@@ -379,19 +363,13 @@ impl EnvironmentGpu {
                 bytes_per_row: Some((maps.brdf.width * 8) as u32),
                 rows_per_image: Some(maps.brdf.height),
             },
-            wgpu::Extent3d {
-                width: maps.brdf.width,
-                height: maps.brdf.height,
-                depth_or_array_layers: 1,
-            },
+            wgpu::Extent3d { width: maps.brdf.width, height: maps.brdf.height, depth_or_array_layers: 1 },
         );
-        let brdf_view = Arc::new(
-            brdf_texture.create_view(&wgpu::TextureViewDescriptor {
-                label: Some("Environment BRDF View"),
-                dimension: Some(wgpu::TextureViewDimension::D2),
-                ..Default::default()
-            }),
-        );
+        let brdf_view = Arc::new(brdf_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("Environment BRDF View"),
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            ..Default::default()
+        }));
 
         Ok(Self {
             _diffuse_texture: diffuse_texture,
@@ -698,8 +676,3 @@ impl HdrImage {
         self.pixels[idx]
     }
 }
-
-
-
-
-

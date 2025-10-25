@@ -1,23 +1,24 @@
 use crate::assets::AssetManager;
-use crate::audio::AudioManager;
+use crate::audio::AudioPlugin;
 use crate::camera::Camera2D;
 use crate::camera3d::{Camera3D, OrbitCamera};
 use crate::config::AppConfig;
 use crate::ecs::{EcsWorld, InstanceData, MeshLightingInfo, ParticleCaps};
+use crate::environment::EnvironmentRegistry;
 use crate::events::GameEvent;
 use crate::gizmo::{GizmoInteraction, GizmoMode};
 use crate::input::{Input, InputEvent};
-use crate::environment::EnvironmentRegistry;
 use crate::material_registry::{MaterialGpu, MaterialRegistry};
 use crate::mesh_preview;
 use crate::mesh_preview::{
     FreeflyController, MeshControlMode, MESH_CAMERA_FAR, MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR,
 };
 use crate::mesh_registry::MeshRegistry;
+use crate::plugins::{PluginContext, PluginManager};
 use crate::renderer::{MeshDraw, RenderViewport, Renderer, SpriteBatch};
 use crate::scene::{
-    EnvironmentDependency, SceneCamera2D, SceneDependencies, SceneEnvironment, SceneLightingData, SceneMetadata,
-    SceneShadowData, SceneViewportMode, Vec2Data,
+    EnvironmentDependency, SceneCamera2D, SceneDependencies, SceneEnvironment, SceneLightingData,
+    SceneMetadata, SceneShadowData, SceneViewportMode, Vec2Data,
 };
 use crate::scripts::{ScriptCommand, ScriptHost};
 use crate::time::Time;
@@ -116,8 +117,8 @@ pub struct App {
     pub(crate) renderer: Renderer,
     pub(crate) ecs: EcsWorld,
     time: Time,
-   pub(crate) input: Input,
-   assets: AssetManager,
+    pub(crate) input: Input,
+    assets: AssetManager,
     environment_registry: EnvironmentRegistry,
     persistent_environments: HashSet<String>,
     scene_environment_ref: Option<String>,
@@ -165,8 +166,8 @@ pub struct App {
     scene_history: VecDeque<String>,
     inspector_status: Option<String>,
 
-    // Audio
-    audio: AudioManager,
+    // Plugins
+    plugins: PluginManager,
 
     // Events
     recent_events: VecDeque<GameEvent>,
@@ -219,7 +220,7 @@ pub struct App {
 
 impl App {
     pub async fn new(config: AppConfig) -> Self {
-        let renderer = Renderer::new(&config.window).await;
+        let mut renderer = Renderer::new(&config.window).await;
         let lighting_state = renderer.lighting().clone();
         let particle_config = config.particles.clone();
         let mut ecs = EcsWorld::new();
@@ -229,15 +230,14 @@ impl App {
             particle_config.max_emitter_backlog,
         ));
         let emitter = ecs.spawn_demo_scene();
-        let mut audio = AudioManager::new(16);
+        let initial_events = ecs.drain_events();
         let event_log_limit = 32;
         let mut recent_events = VecDeque::with_capacity(event_log_limit);
-        for event in ecs.drain_events() {
+        for event in &initial_events {
             if recent_events.len() == event_log_limit {
                 recent_events.pop_front();
             }
-            audio.handle_event(&event);
-            recent_events.push_back(event);
+            recent_events.push_back(event.clone());
         }
         let emitter_snapshot = ecs.emitter_snapshot(emitter);
         let (
@@ -276,9 +276,9 @@ impl App {
         let mut scene_history = VecDeque::with_capacity(8);
         scene_history.push_back(scene_path.clone());
         let time = Time::new();
-        let input = Input::new();
-        let assets = AssetManager::new();
-        let environment_registry = EnvironmentRegistry::new();
+        let mut input = Input::new();
+        let mut assets = AssetManager::new();
+        let mut environment_registry = EnvironmentRegistry::new();
         let default_environment_key = environment_registry.default_key().to_string();
         let default_environment_intensity = 1.0;
         let mut persistent_environments = HashSet::new();
@@ -321,7 +321,38 @@ impl App {
         // egui context and state
         let egui_ctx = EguiCtx::default();
         let egui_winit = None;
-        let scripts = ScriptHost::new("assets/scripts/main.rhai");
+        let mut scripts = ScriptHost::new("assets/scripts/main.rhai");
+        let mut plugins = PluginManager::default();
+        {
+            let mut ctx = PluginContext::new(
+                &mut renderer,
+                &mut ecs,
+                &mut assets,
+                &mut input,
+                &mut scripts,
+                &mut material_registry,
+                &mut mesh_registry,
+                &mut environment_registry,
+                &time,
+            );
+            if let Err(err) = plugins.register(Box::new(AudioPlugin::new(16)), &mut ctx) {
+                eprintln!("[plugin] failed to register audio plugin: {err:?}");
+            }
+        }
+        if !initial_events.is_empty() {
+            let mut ctx = PluginContext::new(
+                &mut renderer,
+                &mut ecs,
+                &mut assets,
+                &mut input,
+                &mut scripts,
+                &mut material_registry,
+                &mut mesh_registry,
+                &mut environment_registry,
+                &time,
+            );
+            plugins.handle_events(&mut ctx, &initial_events);
+        }
 
         let mut app = Self {
             renderer,
@@ -371,7 +402,7 @@ impl App {
             scene_dependencies: None,
             scene_history,
             inspector_status: None,
-            audio,
+            plugins,
             recent_events,
             event_log_limit,
             camera: Camera2D::new(CAMERA_BASE_HALF_HEIGHT),
@@ -419,8 +450,8 @@ impl App {
         if events.is_empty() {
             return;
         }
+        self.with_plugins(|plugins, ctx| plugins.handle_events(ctx, &events));
         for event in events {
-            self.audio.handle_event(&event);
             if self.recent_events.len() == self.event_log_limit {
                 self.recent_events.pop_front();
             }
@@ -449,6 +480,36 @@ impl App {
             self.sprite_atlas_views.clear();
             self.renderer.clear_sprite_bind_cache();
         }
+    }
+
+    fn plugin_context(&mut self) -> PluginContext<'_> {
+        PluginContext::new(
+            &mut self.renderer,
+            &mut self.ecs,
+            &mut self.assets,
+            &mut self.input,
+            &mut self.scripts,
+            &mut self.material_registry,
+            &mut self.mesh_registry,
+            &mut self.environment_registry,
+            &self.time,
+        )
+    }
+
+    fn with_plugins<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&mut PluginManager, &mut PluginContext<'_>),
+    {
+        let mut plugins = std::mem::take(&mut self.plugins);
+        {
+            let mut ctx = self.plugin_context();
+            f(&mut plugins, &mut ctx);
+        }
+        self.plugins = plugins;
+    }
+
+    fn audio_plugin(&self) -> Option<&AudioPlugin> {
+        self.plugins.get::<AudioPlugin>()
     }
 
     fn remember_scene_path(&mut self, path: &str) {
@@ -990,6 +1051,8 @@ impl ApplicationHandler for App {
             self.ecs.spawn_burst(&self.assets, (self.ui_spawn_per_press * 5).max(1000) as usize);
         }
 
+        self.with_plugins(|plugins, ctx| plugins.update(ctx, dt));
+
         let window_size = self.renderer.size();
         let viewport_size = self.viewport_physical_size();
         let cursor_screen = self.input.cursor_position().map(|(sx, sy)| Vec2::new(sx, sy));
@@ -1075,8 +1138,10 @@ impl ApplicationHandler for App {
         }
 
         while self.accumulator >= self.fixed_dt {
-            self.ecs.fixed_step(self.fixed_dt);
-            self.accumulator -= self.fixed_dt;
+            let fixed_dt = self.fixed_dt;
+            self.ecs.fixed_step(fixed_dt);
+            self.with_plugins(|plugins, ctx| plugins.fixed_update(ctx, fixed_dt));
+            self.accumulator -= fixed_dt;
         }
         self.ecs.update(dt);
         self.record_events();
@@ -1200,13 +1265,7 @@ impl ApplicationHandler for App {
                 }
             };
             let casts_shadows = lighting.cast_shadows;
-            mesh_draws.push(MeshDraw {
-                mesh,
-                model,
-                lighting,
-                material: material_gpu,
-                casts_shadows,
-            });
+            mesh_draws.push(MeshDraw { mesh, model, lighting, material: material_gpu, casts_shadows });
         }
         let mesh_camera_opt = if mesh_draws.is_empty() { None } else { Some(&self.mesh_camera) };
         let frame = match self.renderer.render_frame(
@@ -1258,8 +1317,11 @@ impl ApplicationHandler for App {
         let camera_position = self.camera.position;
         let camera_zoom = self.camera.zoom;
         let recent_events: Vec<GameEvent> = self.recent_events.iter().cloned().collect();
-        let audio_triggers: Vec<String> = self.audio.recent_triggers().cloned().collect();
-        let audio_enabled = self.audio.enabled();
+        let (audio_triggers, audio_enabled) = if let Some(audio) = self.audio_plugin() {
+            (audio.recent_triggers().cloned().collect(), audio.enabled())
+        } else {
+            (Vec::new(), false)
+        };
         let mut mesh_keys: Vec<String> = self.mesh_registry.keys().map(|k| k.to_string()).collect();
         mesh_keys.sort();
         let scene_history_list: Vec<String> = self.scene_history.iter().cloned().collect();
@@ -1485,10 +1547,8 @@ impl ApplicationHandler for App {
                 |key| mesh_source_map.get(key).cloned(),
                 |key| material_source_map.get(key).cloned(),
             );
-            let environment_dependency = self
-                .environment_registry
-                .definition(&self.active_environment_key)
-                .map(|def| {
+            let environment_dependency =
+                self.environment_registry.definition(&self.active_environment_key).map(|def| {
                     EnvironmentDependency::new(
                         def.key().to_string(),
                         def.source().map(|path| path.to_string()),
@@ -1774,4 +1834,3 @@ impl App {
         }
     }
 }
-

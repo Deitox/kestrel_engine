@@ -18,8 +18,7 @@ pub fn sys_update_emitters(
     let existing_particles = particles.iter().count();
     let max_total = caps.max_total as usize;
     let max_spawn_per_frame = caps.max_spawn_per_frame as usize;
-    let mut spawn_budget =
-        (max_total.saturating_sub(existing_particles)).min(max_spawn_per_frame) as i32;
+    let mut spawn_budget = (max_total.saturating_sub(existing_particles)).min(max_spawn_per_frame) as i32;
 
     if spawn_budget <= 0 {
         for (mut emitter, _) in emitters.iter_mut() {
@@ -30,8 +29,7 @@ pub fn sys_update_emitters(
 
     for (mut emitter, transform) in emitters.iter_mut() {
         let spawn_rate = emitter.rate.max(0.0);
-        emitter.accumulator =
-            (emitter.accumulator + spawn_rate * dt.0).min(caps.max_emitter_backlog);
+        emitter.accumulator = (emitter.accumulator + spawn_rate * dt.0).min(caps.max_emitter_backlog);
         let desired = emitter.accumulator.floor() as i32;
         if desired <= 0 {
             continue;
