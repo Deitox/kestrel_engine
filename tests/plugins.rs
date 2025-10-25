@@ -87,6 +87,7 @@ fn plugins_receive_lifecycle_hooks() {
             &mut mesh_registry,
             &mut environment_registry,
             &time,
+            None,
         );
         manager
             .register(Box::new(CountingPlugin::default()), &mut ctx)
@@ -103,6 +104,7 @@ fn plugins_receive_lifecycle_hooks() {
             &mut mesh_registry,
             &mut environment_registry,
             &time,
+            None,
         );
         manager.update(&mut ctx, 0.5);
     }
@@ -117,6 +119,7 @@ fn plugins_receive_lifecycle_hooks() {
             &mut mesh_registry,
             &mut environment_registry,
             &time,
+            None,
         );
         manager.fixed_update(&mut ctx, 1.0 / 60.0);
     }
@@ -135,6 +138,7 @@ fn plugins_receive_lifecycle_hooks() {
             &mut mesh_registry,
             &mut environment_registry,
             &time,
+            None,
         );
         manager.handle_events(&mut ctx, &events);
     }
@@ -149,6 +153,7 @@ fn plugins_receive_lifecycle_hooks() {
             &mut mesh_registry,
             &mut environment_registry,
             &time,
+            None,
         );
         manager.shutdown(&mut ctx);
     }

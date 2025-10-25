@@ -13,6 +13,7 @@ use crate::mesh_preview::{GIZMO_3D_AXIS_LENGTH_SCALE, GIZMO_3D_AXIS_MAX, GIZMO_3
 use bevy_ecs::prelude::Entity;
 use egui_plot as eplot;
 use glam::{EulerRot, Quat, Vec2, Vec3, Vec4};
+use std::collections::HashSet;
 use winit::dpi::PhysicalSize;
 
 #[derive(Default)]
@@ -163,9 +164,36 @@ impl App {
 
         mesh_keys.sort();
         environment_options.sort_by(|a, b| a.1.cmp(&b.1));
+        let (
+            preview_mesh_key,
+            mesh_control_mode_state,
+            mesh_frustum_lock_state,
+            mesh_orbit_radius,
+            mesh_freefly_speed_state,
+            mesh_status_message,
+        ) = if let Some(plugin) = self.mesh_preview_plugin() {
+            (
+                plugin.preview_mesh_key().to_string(),
+                plugin.mesh_control_mode(),
+                plugin.mesh_frustum_lock(),
+                plugin.mesh_orbit().radius,
+                plugin.mesh_freefly_speed(),
+                plugin.mesh_status().map(|s| s.to_string()),
+            )
+        } else {
+            (String::new(), MeshControlMode::Disabled, false, 0.0, 0.0, None)
+        };
         let mut actions = UiActions::default();
         let mut viewport_mode_request: Option<ViewportCameraMode> = None;
         let mut mesh_control_request: Option<MeshControlMode> = None;
+        let persistent_materials: HashSet<String> = self
+            .mesh_preview_plugin()
+            .map(|plugin| plugin.persistent_materials().iter().cloned().collect())
+            .unwrap_or_default();
+        let persistent_meshes: HashSet<String> = self
+            .mesh_preview_plugin()
+            .map(|plugin| plugin.persistent_meshes().iter().cloned().collect())
+            .unwrap_or_default();
         let mut mesh_frustum_request: Option<bool> = None;
         let mut mesh_frustum_snap = false;
         let mut mesh_reset_request = false;
@@ -492,18 +520,18 @@ impl App {
             let right_panel =
                 egui::SidePanel::right("kestrel_right_panel").default_width(360.0).show(ctx, |ui| {
                     ui.heading("3D Preview");
-                    egui::ComboBox::from_label("Mesh asset").selected_text(&self.preview_mesh_key).show_ui(
+                    egui::ComboBox::from_label("Mesh asset").selected_text(&preview_mesh_key).show_ui(
                         ui,
                         |ui| {
                             for key in &mesh_keys {
-                                let selected = self.preview_mesh_key == *key;
+                                let selected = preview_mesh_key == *key;
                                 if ui.selectable_label(selected, key).clicked() && !selected {
                                     mesh_selection_request = Some(key.clone());
                                 }
                             }
                         },
                     );
-                    let mut mesh_control_mode = self.mesh_control_mode;
+                    let mut mesh_control_mode = mesh_control_mode_state;
                     egui::ComboBox::from_id_salt("mesh_control_mode")
                         .selected_text(mesh_control_mode.label())
                         .show_ui(ui, |ui| {
@@ -515,10 +543,10 @@ impl App {
                                 }
                             }
                         });
-                    if mesh_control_mode != self.mesh_control_mode {
+                    if mesh_control_mode != mesh_control_mode_state {
                         mesh_control_request = Some(mesh_control_mode);
                     }
-                    let mut frustum_lock = self.mesh_frustum_lock;
+                    let mut frustum_lock = mesh_frustum_lock_state;
                     if ui.checkbox(&mut frustum_lock, "Frustum lock (L)").changed() {
                         mesh_frustum_request = Some(frustum_lock);
                     }
@@ -529,23 +557,23 @@ impl App {
                         mesh_reset_request = true;
                     }
                     if ui.button("Spawn mesh entity").clicked() {
-                        actions.spawn_mesh = Some(self.preview_mesh_key.clone());
+                        actions.spawn_mesh = Some(preview_mesh_key.clone());
                     }
-                    match self.mesh_control_mode {
+                    match mesh_control_mode_state {
                         MeshControlMode::Orbit => {
-                            ui.label(format!("Orbit radius: {:.2}", self.mesh_orbit.radius));
+                            ui.label(format!("Orbit radius: {:.2}", mesh_orbit_radius));
                         }
                         MeshControlMode::Freefly => {
-                            ui.label(format!("Free-fly speed: {:.2}", self.mesh_freefly_speed));
+                            ui.label(format!("Free-fly speed: {:.2}", mesh_freefly_speed_state));
                         }
                         MeshControlMode::Disabled => {
-                            ui.label(format!("Orbit radius: {:.2}", self.mesh_orbit.radius));
+                            ui.label(format!("Orbit radius: {:.2}", mesh_orbit_radius));
                         }
                     }
-                    if let Some(status) = &self.mesh_status {
+                    if let Some(status) = &mesh_status_message {
                         ui.label(status);
                     } else {
-                        match self.mesh_control_mode {
+                        match mesh_control_mode_state {
                             MeshControlMode::Disabled => {
                                 ui.label("Scripted orbit animates the camera.");
                             }
@@ -809,7 +837,7 @@ impl App {
                                                     self.material_registry.release(&prev);
                                                 }
                                             }
-                                            let mut refs = self.persistent_materials.clone();
+                                            let mut refs = persistent_materials.clone();
                                             for instance in self.ecs.collect_mesh_instances() {
                                                 if let Some(material) = instance.material {
                                                     refs.insert(material);
@@ -1158,14 +1186,11 @@ impl App {
                             ui.label(format!(
                                 "Meshes retained: {} (persistent: {})",
                                 mesh_snapshot.len(),
-                                self.persistent_meshes.len()
+                                persistent_meshes.len()
                             ));
                             for mesh_key in &mesh_snapshot {
-                                let scope = if self.persistent_meshes.contains(mesh_key) {
-                                    "persistent"
-                                } else {
-                                    "scene"
-                                };
+                                let scope =
+                                    if persistent_meshes.contains(mesh_key) { "persistent" } else { "scene" };
                                 let ref_count = self.mesh_registry.mesh_ref_count(mesh_key).unwrap_or(0);
                                 let loaded = self.mesh_registry.has(mesh_key);
                                 let color = if loaded {

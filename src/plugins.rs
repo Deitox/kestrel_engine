@@ -8,6 +8,7 @@ use crate::mesh_registry::MeshRegistry;
 use crate::renderer::Renderer;
 use crate::time::Time;
 use anyhow::Result;
+use bevy_ecs::prelude::Entity;
 use std::any::Any;
 
 pub struct PluginContext<'a> {
@@ -19,6 +20,7 @@ pub struct PluginContext<'a> {
     pub mesh_registry: &'a mut MeshRegistry,
     pub environment_registry: &'a mut EnvironmentRegistry,
     pub time: &'a Time,
+    pub selected_entity: Option<Entity>,
 }
 
 impl<'a> PluginContext<'a> {
@@ -32,8 +34,19 @@ impl<'a> PluginContext<'a> {
         mesh_registry: &'a mut MeshRegistry,
         environment_registry: &'a mut EnvironmentRegistry,
         time: &'a Time,
+        selected_entity: Option<Entity>,
     ) -> Self {
-        Self { renderer, ecs, assets, input, material_registry, mesh_registry, environment_registry, time }
+        Self {
+            renderer,
+            ecs,
+            assets,
+            input,
+            material_registry,
+            mesh_registry,
+            environment_registry,
+            time,
+            selected_entity,
+        }
     }
 }
 

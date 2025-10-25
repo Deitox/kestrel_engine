@@ -28,8 +28,12 @@ impl App {
         gizmo_center_viewport: Option<Vec2>,
         selected_info: &Option<EntityInfo>,
     ) -> GizmoUpdate {
+        let mesh_control_mode = self
+            .mesh_preview_plugin()
+            .map(|plugin| plugin.mesh_control_mode())
+            .unwrap_or(MeshControlMode::Disabled);
         if self.viewport_camera_mode == ViewportCameraMode::Ortho2D
-            && self.mesh_control_mode == MeshControlMode::Disabled
+            && mesh_control_mode == MeshControlMode::Disabled
         {
             if let Some(delta) = self.input.consume_wheel_delta() {
                 self.camera.apply_scroll_zoom(delta);

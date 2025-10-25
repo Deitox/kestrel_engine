@@ -2,7 +2,7 @@ use crate::analytics::AnalyticsPlugin;
 use crate::assets::AssetManager;
 use crate::audio::AudioPlugin;
 use crate::camera::Camera2D;
-use crate::camera3d::{Camera3D, OrbitCamera};
+use crate::camera3d::Camera3D;
 use crate::config::AppConfig;
 use crate::ecs::{EcsWorld, InstanceData, MeshLightingInfo, ParticleCaps};
 use crate::environment::EnvironmentRegistry;
@@ -10,10 +10,7 @@ use crate::events::GameEvent;
 use crate::gizmo::{GizmoInteraction, GizmoMode};
 use crate::input::{Input, InputEvent};
 use crate::material_registry::{MaterialGpu, MaterialRegistry};
-use crate::mesh_preview;
-use crate::mesh_preview::{
-    FreeflyController, MeshControlMode, MESH_CAMERA_FAR, MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR,
-};
+use crate::mesh_preview::{MeshControlMode, MeshPreviewPlugin};
 use crate::mesh_registry::MeshRegistry;
 use crate::plugins::{PluginContext, PluginManager};
 use crate::renderer::{MeshDraw, RenderViewport, Renderer, SpriteBatch};
@@ -181,27 +178,11 @@ pub struct App {
 
     scene_atlas_refs: HashSet<String>,
     persistent_atlases: HashSet<String>,
-    pub(crate) persistent_meshes: HashSet<String>,
     scene_mesh_refs: HashSet<String>,
-    pub(crate) persistent_materials: HashSet<String>,
     pub(crate) scene_material_refs: HashSet<String>,
 
     pub(crate) material_registry: MaterialRegistry,
     pub(crate) mesh_registry: MeshRegistry,
-    pub(crate) preview_mesh_key: String,
-    pub(crate) mesh_orbit: OrbitCamera,
-    pub(crate) mesh_camera: Camera3D,
-    mesh_model: Mat4,
-    mesh_angle: f32,
-    pub(crate) mesh_control_mode: MeshControlMode,
-    pub(crate) mesh_freefly: FreeflyController,
-    pub(crate) mesh_freefly_speed: f32,
-    pub(crate) mesh_freefly_velocity: Vec3,
-    pub(crate) mesh_freefly_rot_velocity: Vec3,
-    pub(crate) mesh_frustum_lock: bool,
-    pub(crate) mesh_frustum_focus: Vec3,
-    pub(crate) mesh_frustum_distance: f32,
-    pub(crate) mesh_status: Option<String>,
 
     viewport: Viewport,
 
@@ -269,38 +250,8 @@ impl App {
         let mut persistent_environments = HashSet::new();
         persistent_environments.insert(default_environment_key.clone());
         let environment_intensity = default_environment_intensity;
-        let mut persistent_materials = HashSet::new();
-
         let mut material_registry = MaterialRegistry::new();
         let mut mesh_registry = MeshRegistry::new(&mut material_registry);
-        let preview_mesh_key = mesh_registry.default_key().to_string();
-        if let Err(err) = mesh_registry.retain_mesh(&preview_mesh_key, None, &mut material_registry) {
-            eprintln!("[mesh] failed to retain preview mesh '{preview_mesh_key}': {err:?}");
-        }
-        if let Some(subsets) = mesh_registry.mesh_subsets(&preview_mesh_key) {
-            for subset in subsets {
-                if let Some(material_key) = subset.material.as_ref() {
-                    match material_registry.retain(material_key) {
-                        Ok(()) => {
-                            persistent_materials.insert(material_key.clone());
-                        }
-                        Err(err) => {
-                            eprintln!("[material] failed to retain '{material_key}': {err:?}");
-                        }
-                    }
-                }
-            }
-        }
-        let mesh_status_initial =
-            Some(format!("Preview mesh: {} - press M to cycle camera control", preview_mesh_key));
-        let mut persistent_meshes = HashSet::new();
-        persistent_meshes.insert(preview_mesh_key.clone());
-        let mesh_orbit = OrbitCamera::new(Vec3::ZERO, 5.0);
-        let mesh_camera = mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
-        let mesh_frustum_focus = mesh_orbit.target;
-        let mesh_frustum_distance = mesh_orbit.radius;
-        let mesh_freefly = FreeflyController::from_camera(&mesh_camera);
-        let mesh_model = Mat4::IDENTITY;
         let scene_material_refs = HashSet::new();
 
         // egui context and state
@@ -317,7 +268,11 @@ impl App {
                 &mut mesh_registry,
                 &mut environment_registry,
                 &time,
+                None,
             );
+            if let Err(err) = plugins.register(Box::new(MeshPreviewPlugin::new()), &mut ctx) {
+                eprintln!("[plugin] failed to register mesh preview plugin: {err:?}");
+            }
             if let Err(err) = plugins.register(Box::new(AnalyticsPlugin::default()), &mut ctx) {
                 eprintln!("[plugin] failed to register analytics plugin: {err:?}");
             }
@@ -340,6 +295,7 @@ impl App {
                 &mut mesh_registry,
                 &mut environment_registry,
                 &time,
+                None,
             );
             plugins.handle_events(&mut ctx, &initial_events);
         }
@@ -399,26 +355,10 @@ impl App {
             gizmo_interaction: None,
             scene_atlas_refs: HashSet::new(),
             persistent_atlases: HashSet::new(),
-            persistent_meshes,
             scene_mesh_refs: HashSet::new(),
-            persistent_materials,
             scene_material_refs,
             material_registry,
             mesh_registry,
-            preview_mesh_key,
-            mesh_orbit,
-            mesh_camera,
-            mesh_freefly,
-            mesh_model,
-            mesh_angle: 0.0,
-            mesh_control_mode: MeshControlMode::Disabled,
-            mesh_freefly_speed: 4.0,
-            mesh_freefly_velocity: Vec3::ZERO,
-            mesh_freefly_rot_velocity: Vec3::ZERO,
-            mesh_frustum_lock: false,
-            mesh_frustum_focus,
-            mesh_frustum_distance,
-            mesh_status: mesh_status_initial,
             viewport: Viewport::new(
                 Vec2::ZERO,
                 Vec2::new(config.window.width as f32, config.window.height as f32),
@@ -472,6 +412,7 @@ impl App {
             &mut self.mesh_registry,
             &mut self.environment_registry,
             &self.time,
+            self.selected_entity,
         )
     }
 
@@ -499,12 +440,26 @@ impl App {
         self.plugins.get_mut::<AnalyticsPlugin>()
     }
 
+    fn mesh_preview_plugin(&self) -> Option<&MeshPreviewPlugin> {
+        self.plugins.get::<MeshPreviewPlugin>()
+    }
+
+    fn mesh_preview_plugin_mut(&mut self) -> Option<&mut MeshPreviewPlugin> {
+        self.plugins.get_mut::<MeshPreviewPlugin>()
+    }
+
     fn script_plugin(&self) -> Option<&ScriptPlugin> {
         self.plugins.get::<ScriptPlugin>()
     }
 
     fn script_plugin_mut(&mut self) -> Option<&mut ScriptPlugin> {
         self.plugins.get_mut::<ScriptPlugin>()
+    }
+
+    fn set_mesh_status<S: Into<String>>(&mut self, message: S) {
+        if let Some(plugin) = self.mesh_preview_plugin_mut() {
+            plugin.set_status(message);
+        }
     }
 
     fn drain_script_commands(&mut self) -> Vec<ScriptCommand> {
@@ -546,7 +501,18 @@ impl App {
     }
 
     fn focus_selection(&mut self) -> bool {
-        mesh_preview::focus_selection(self)
+        let Some(entity) = self.selected_entity else {
+            return false;
+        };
+        let Some(info) = self.ecs.entity_info(entity) else {
+            return false;
+        };
+        self.camera.position = info.translation;
+        if let Some(plugin) = self.mesh_preview_plugin_mut() {
+            plugin.focus_selection_with_info(&info)
+        } else {
+            true
+        }
     }
 
     fn should_keep_environment(&self, key: &str) -> bool {
@@ -591,36 +557,66 @@ impl App {
         Ok(())
     }
 
-    fn update_mesh_camera(&mut self, dt: f32) {
-        mesh_preview::update_mesh_camera(self, dt);
-    }
-
     fn set_mesh_control_mode(&mut self, mode: MeshControlMode) {
-        mesh_preview::set_mesh_control_mode(self, mode);
+        self.with_plugins(|plugins, ctx| {
+            if let Some(plugin) = plugins.get_mut::<MeshPreviewPlugin>() {
+                plugin.set_mesh_control_mode(ctx, mode);
+            }
+        });
     }
 
     fn set_viewport_camera_mode(&mut self, mode: ViewportCameraMode) {
-        mesh_preview::set_viewport_camera_mode(self, mode);
+        if self.viewport_camera_mode == mode {
+            return;
+        }
+        self.viewport_camera_mode = mode;
+        if mode == ViewportCameraMode::Perspective3D {
+            self.with_plugins(|plugins, ctx| {
+                if let Some(plugin) = plugins.get_mut::<MeshPreviewPlugin>() {
+                    if plugin.mesh_control_mode() == MeshControlMode::Disabled {
+                        plugin.set_mesh_control_mode(ctx, MeshControlMode::Orbit);
+                    }
+                }
+            });
+        }
     }
 
     fn set_frustum_lock(&mut self, enabled: bool) {
-        mesh_preview::set_frustum_lock(self, enabled);
-    }
-
-    fn handle_mesh_control_input(&mut self) {
-        mesh_preview::handle_mesh_control_input(self);
+        self.with_plugins(|plugins, ctx| {
+            if let Some(plugin) = plugins.get_mut::<MeshPreviewPlugin>() {
+                plugin.set_frustum_lock(ctx, enabled);
+            }
+        });
     }
 
     fn reset_mesh_camera(&mut self) {
-        mesh_preview::reset_mesh_camera(self);
+        self.with_plugins(|plugins, ctx| {
+            if let Some(plugin) = plugins.get_mut::<MeshPreviewPlugin>() {
+                plugin.reset_mesh_camera(ctx);
+            }
+        });
     }
 
     fn set_preview_mesh(&mut self, new_key: String) {
-        mesh_preview::set_preview_mesh(self, new_key);
+        let scene_refs = self.scene_material_refs.clone();
+        self.with_plugins(|plugins, ctx| {
+            if let Some(plugin) = plugins.get_mut::<MeshPreviewPlugin>() {
+                plugin.set_preview_mesh(ctx, &scene_refs, new_key.clone());
+            }
+        });
     }
 
     fn spawn_mesh_entity(&mut self, mesh_key: &str) {
-        mesh_preview::spawn_mesh_entity(self, mesh_key);
+        let key = mesh_key.to_string();
+        let mut spawned = None;
+        self.with_plugins(|plugins, ctx| {
+            if let Some(plugin) = plugins.get_mut::<MeshPreviewPlugin>() {
+                spawned = plugin.spawn_mesh_entity(ctx, &key);
+            }
+        });
+        if let Some(entity) = spawned {
+            self.selected_entity = Some(entity);
+        }
     }
 
     fn apply_particle_caps(&mut self) {
@@ -700,8 +696,12 @@ impl App {
                 .with_context(|| format!("Failed to retain mesh '{key}'"))?;
         }
         self.scene_mesh_refs = next_mesh;
+        let persistent_materials: HashSet<String> = self
+            .mesh_preview_plugin()
+            .map(|plugin| plugin.persistent_materials().iter().cloned().collect())
+            .unwrap_or_default();
         let previous_materials = self.scene_material_refs.clone();
-        let mut next_materials = self.persistent_materials.clone();
+        let mut next_materials = persistent_materials.clone();
         for dep in deps.material_dependencies() {
             let key = dep.key().to_string();
             if next_materials.insert(key.clone()) {
@@ -713,7 +713,7 @@ impl App {
             }
         }
         for key in previous_materials {
-            if !next_materials.contains(&key) && !self.persistent_materials.contains(&key) {
+            if !next_materials.contains(&key) && !persistent_materials.contains(&key) {
                 self.material_registry.release(&key);
             }
         }
@@ -747,7 +747,9 @@ impl App {
         metadata.viewport = SceneViewportMode::from(self.viewport_camera_mode);
         metadata.camera2d =
             Some(SceneCamera2D { position: Vec2Data::from(self.camera.position), zoom: self.camera.zoom });
-        metadata.preview_camera = Some(mesh_preview::capture_preview_camera(self));
+        if let Some(plugin) = self.mesh_preview_plugin() {
+            metadata.preview_camera = Some(plugin.capture_preview_camera());
+        }
         let lighting = self.renderer.lighting();
         metadata.lighting = Some(SceneLightingData {
             direction: lighting.direction.into(),
@@ -772,7 +774,9 @@ impl App {
             self.camera.set_zoom(cam2d.zoom);
         }
         if let Some(preview) = metadata.preview_camera.as_ref() {
-            mesh_preview::apply_preview_camera(self, preview);
+            if let Some(plugin) = self.mesh_preview_plugin_mut() {
+                plugin.apply_preview_camera(preview);
+            }
         }
         if let Some(lighting) = metadata.lighting.as_ref() {
             let (mut direction, color, ambient, exposure, shadow) = lighting.components();
@@ -825,27 +829,31 @@ impl App {
             self.invalidate_atlas_view(&key);
         }
         self.scene_atlas_refs = self.persistent_atlases.clone();
-        let mesh_to_release: Vec<String> = self
-            .scene_mesh_refs
-            .iter()
-            .filter(|key| !self.persistent_meshes.contains(*key))
-            .cloned()
-            .collect();
+        let persistent_meshes: HashSet<String> = self
+            .mesh_preview_plugin()
+            .map(|plugin| plugin.persistent_meshes().iter().cloned().collect())
+            .unwrap_or_default();
+        let mesh_to_release: Vec<String> =
+            self.scene_mesh_refs.iter().filter(|key| !persistent_meshes.contains(*key)).cloned().collect();
         for key in &mesh_to_release {
             self.mesh_registry.release_mesh(key);
         }
-        self.scene_mesh_refs = self.persistent_meshes.clone();
+        self.scene_mesh_refs = persistent_meshes.clone();
 
+        let persistent_materials: HashSet<String> = self
+            .mesh_preview_plugin()
+            .map(|plugin| plugin.persistent_materials().iter().cloned().collect())
+            .unwrap_or_default();
         let material_to_release: Vec<String> = self
             .scene_material_refs
             .iter()
-            .filter(|key| !self.persistent_materials.contains(*key))
+            .filter(|key| !persistent_materials.contains(*key))
             .cloned()
             .collect();
         for key in &material_to_release {
             self.material_registry.release(key);
         }
-        self.scene_material_refs = self.persistent_materials.clone();
+        self.scene_material_refs = persistent_materials;
     }
 
     fn viewport_physical_size(&self) -> PhysicalSize<u32> {
@@ -884,7 +892,7 @@ impl App {
     }
 
     fn mesh_camera_forward(&self) -> Vec3 {
-        mesh_preview::mesh_camera_forward(self)
+        self.mesh_preview_plugin().map(|plugin| plugin.mesh_camera_forward()).unwrap_or(Vec3::Z)
     }
 
     fn intersect_ray_plane(origin: Vec3, dir: Vec3, plane_origin: Vec3, plane_normal: Vec3) -> Option<Vec3> {
@@ -982,10 +990,11 @@ impl ApplicationHandler for App {
             pixels_per_point: self.renderer.pixels_per_point() * self.ui_scale,
         });
 
-        if let Err(err) = self.mesh_registry.ensure_gpu(&self.preview_mesh_key, &mut self.renderer) {
-            eprintln!("Failed to upload preview mesh '{}': {err:?}", self.preview_mesh_key);
-            self.mesh_status = Some(format!("Mesh upload failed: {err}"));
-        }
+        self.with_plugins(|plugins, ctx| {
+            if let Some(plugin) = plugins.get_mut::<MeshPreviewPlugin>() {
+                plugin.ensure_preview_gpu(ctx);
+            }
+        });
         if let Err(err) = self.renderer.init_mesh_pipeline() {
             eprintln!("Failed to initialize mesh pipeline: {err:?}");
         }
@@ -1045,11 +1054,6 @@ impl ApplicationHandler for App {
         let dt = self.time.delta_seconds();
         self.accumulator += dt;
 
-        self.mesh_angle = (self.mesh_angle + dt * 0.5) % (std::f32::consts::TAU);
-        self.mesh_model = Mat4::from_rotation_y(self.mesh_angle);
-        self.handle_mesh_control_input();
-        self.update_mesh_camera(dt);
-
         if let Some(entity) = self.selected_entity {
             if !self.ecs.entity_exists(entity) {
                 self.selected_entity = None;
@@ -1081,8 +1085,15 @@ impl ApplicationHandler for App {
         } else {
             None
         };
+        let mesh_camera = self.mesh_preview_plugin().map(|plugin| plugin.mesh_camera().clone());
+        let mesh_control_mode =
+            self.mesh_preview_plugin().map(|plugin| plugin.mesh_control_mode()).unwrap_or_default();
         let cursor_ray = if self.viewport_camera_mode == ViewportCameraMode::Perspective3D {
-            cursor_viewport.and_then(|pos| self.mesh_camera.screen_ray(pos, viewport_size))
+            if let (Some(pos), Some(camera)) = (cursor_viewport, mesh_camera.as_ref()) {
+                camera.screen_ray(pos, viewport_size)
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -1099,14 +1110,18 @@ impl ApplicationHandler for App {
                 .as_ref()
                 .and_then(|info| self.camera.world_to_screen_pixels(info.translation, viewport_size)),
             ViewportCameraMode::Perspective3D => {
-                mesh_center_world.and_then(|center| self.mesh_camera.project_point(center, viewport_size))
+                if let Some(camera) = mesh_camera.as_ref() {
+                    mesh_center_world.and_then(|center| camera.project_point(center, viewport_size))
+                } else {
+                    None
+                }
             }
         };
         let prev_selected_entity = self.selected_entity;
         let prev_gizmo_interaction = self.gizmo_interaction;
 
         if self.viewport_camera_mode == ViewportCameraMode::Ortho2D
-            && self.mesh_control_mode == MeshControlMode::Disabled
+            && mesh_control_mode == MeshControlMode::Disabled
         {
             if let Some(delta) = self.input.consume_wheel_delta() {
                 self.camera.apply_scroll_zoom(delta);
@@ -1208,18 +1223,23 @@ impl ApplicationHandler for App {
         };
         let default_material_key = self.material_registry.default_key().to_string();
         let mut mesh_draw_infos: Vec<(String, Mat4, MeshLightingInfo, String)> = Vec::new();
-        match self.mesh_registry.ensure_gpu(&self.preview_mesh_key, &mut self.renderer) {
-            Ok(_) => {
-                let material_key = self.resolve_material_for_mesh(&self.preview_mesh_key, None);
-                mesh_draw_infos.push((
-                    self.preview_mesh_key.clone(),
-                    self.mesh_model,
-                    MeshLightingInfo::default(),
-                    material_key,
-                ));
-            }
-            Err(err) => {
-                self.mesh_status = Some(format!("Mesh upload failed: {err}"));
+        if let Some((preview_key, preview_model)) = self
+            .mesh_preview_plugin()
+            .map(|plugin| (plugin.preview_mesh_key().to_string(), *plugin.mesh_model()))
+        {
+            match self.mesh_registry.ensure_gpu(&preview_key, &mut self.renderer) {
+                Ok(_) => {
+                    let material_key = self.resolve_material_for_mesh(&preview_key, None);
+                    mesh_draw_infos.push((
+                        preview_key,
+                        preview_model,
+                        MeshLightingInfo::default(),
+                        material_key,
+                    ));
+                }
+                Err(err) => {
+                    self.set_mesh_status(format!("Mesh upload failed: {err}"));
+                }
             }
         }
         let scene_meshes = self.ecs.collect_mesh_instances();
@@ -1285,7 +1305,7 @@ impl ApplicationHandler for App {
             let casts_shadows = lighting.cast_shadows;
             mesh_draws.push(MeshDraw { mesh, model, lighting, material: material_gpu, casts_shadows });
         }
-        let mesh_camera_opt = if mesh_draws.is_empty() { None } else { Some(&self.mesh_camera) };
+        let mesh_camera_opt = if mesh_draws.is_empty() { None } else { mesh_camera.as_ref() };
         let frame = match self.renderer.render_frame(
             &instances,
             &sprite_batches,
@@ -1324,8 +1344,11 @@ impl ApplicationHandler for App {
             self.analytics_plugin().map(|plugin| plugin.frame_plot_points()).unwrap_or_else(Vec::new);
         let entity_count = self.ecs.entity_count();
         let instances_drawn = instances.len();
-        let orbit_target = self.mesh_orbit.target;
-        let mesh_camera_for_ui = self.mesh_camera.clone();
+        let orbit_target =
+            self.mesh_preview_plugin().map(|plugin| plugin.mesh_orbit().target).unwrap_or(Vec3::ZERO);
+        let mesh_camera_for_ui = mesh_camera.clone().unwrap_or_else(|| {
+            Camera3D::new(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, 60.0_f32.to_radians(), 0.1, 100.0)
+        });
         let camera_position = self.camera.position;
         let camera_zoom = self.camera.zoom;
         let recent_events: Vec<GameEvent> = self
@@ -1469,7 +1492,9 @@ impl ApplicationHandler for App {
             self.set_frustum_lock(lock);
         }
         if mesh_frustum_snap {
-            mesh_preview::snap_frustum_to_selection(self, selection.details.as_ref(), orbit_target);
+            if let Some(plugin) = self.mesh_preview_plugin_mut() {
+                plugin.snap_frustum_to_selection(selection.details.as_ref(), orbit_target);
+            }
         }
         if mesh_reset_request {
             self.reset_mesh_camera();
@@ -1528,7 +1553,7 @@ impl ApplicationHandler for App {
                             self.ui_scene_status = Some(format!("Retained mesh {}", key));
                         }
                         Err(err) => {
-                            self.mesh_status = Some(format!("Mesh upload failed: {err}"));
+                            self.set_mesh_status(format!("Mesh upload failed: {err}"));
                         }
                     }
                 }
