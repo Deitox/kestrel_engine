@@ -181,6 +181,16 @@ impl App {
             screen.pixels_per_point = ui_pixels_per_point;
         }
 
+        let mut script_enable_request: Option<bool> = None;
+        let mut script_reload_request = false;
+        let mut script_panel_data = self.script_plugin().map(|plugin| {
+            (
+                plugin.script_path().display().to_string(),
+                plugin.enabled(),
+                plugin.last_error().map(|err| err.to_string()),
+            )
+        });
+
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
             let left_panel =
                 egui::SidePanel::left("kestrel_left_panel").default_width(340.0).show(ctx, |ui| {
@@ -455,22 +465,26 @@ impl App {
                     });
 
                     egui::CollapsingHeader::new("Scripts").default_open(false).show(ui, |ui| {
-                        ui.label(format!("Path: {}", self.scripts.script_path().display()));
-                        let mut scripts_enabled = self.scripts.enabled();
-                        if ui.checkbox(&mut scripts_enabled, "Enable scripts").changed() {
-                            self.scripts.set_enabled(scripts_enabled);
-                        }
-                        if ui.button("Reload script").clicked() {
-                            if let Err(err) = self.scripts.force_reload() {
-                                self.scripts.set_error_message(err.to_string());
+                        if let Some((path, enabled, last_error)) = script_panel_data.as_mut() {
+                            ui.label(format!("Path: {}", path));
+                            let mut scripts_enabled = *enabled;
+                            if ui.checkbox(&mut scripts_enabled, "Enable scripts").changed() {
+                                *enabled = scripts_enabled;
+                                script_enable_request = Some(scripts_enabled);
                             }
-                        }
-                        if let Some(err) = self.scripts.last_error() {
-                            ui.colored_label(egui::Color32::RED, format!("Error: {err}"));
-                        } else if self.scripts.enabled() {
-                            ui.label("Script running");
+                            if ui.button("Reload script").clicked() {
+                                script_reload_request = true;
+                                *last_error = None;
+                            }
+                            if let Some(err) = last_error.as_ref() {
+                                ui.colored_label(egui::Color32::RED, format!("Error: {err}"));
+                            } else if *enabled {
+                                ui.label("Script running");
+                            } else {
+                                ui.label("Scripts disabled");
+                            }
                         } else {
-                            ui.label("Scripts disabled");
+                            ui.label("Script plugin unavailable");
                         }
                     });
                 });
@@ -1503,6 +1517,19 @@ impl App {
                 );
             }
         });
+
+        if let Some(enabled) = script_enable_request {
+            if let Some(plugin) = self.script_plugin_mut() {
+                plugin.set_enabled(enabled);
+            }
+        }
+        if script_reload_request {
+            if let Some(plugin) = self.script_plugin_mut() {
+                if let Err(err) = plugin.force_reload() {
+                    plugin.set_error_message(err.to_string());
+                }
+            }
+        }
 
         EditorUiOutput {
             full_output,

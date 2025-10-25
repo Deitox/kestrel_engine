@@ -27,7 +27,7 @@
 - `src/mesh_registry.rs` caches CPU/GPU meshes, resolves dependencies, and exposes registered keys to the editor. Mesh entities combine a `MeshRef` with a `MeshSurface` component storing material and lighting metadata.
 - `src/camera.rs` implements the 2D camera with pan and zoom helpers, while `src/camera3d.rs` provides the perspective preview camera, orbit controller, and free-fly controller.
 - `src/config.rs` loads `config/app.json` and hands window defaults to the renderer.
-- `src/scripts.rs` embeds Rhai, hot-reloads scripts, queues gameplay commands for the app to apply, and captures script log messages.
+- `src/scripts.rs` embeds Rhai, hot-reloads scripts, queues gameplay commands for the app to apply, captures script log messages, and now exposes `ScriptPlugin` so the scripting subsystem hooks into the shared plugin lifecycle.
 - `src/events.rs` defines `GameEvent` plus the `EventBus` resource that records gameplay signals for tooling and audio.
 - `src/scene.rs` describes the JSON scene format, tracks atlas/mesh dependencies, and handles serialization/deserialization of entity hierarchies for save/load operations.
 - `src/audio.rs` exposes `AudioManager` plus an `AudioPlugin` wrapper so rodio-backed cues react to `GameEvent`s through the shared plugin system.
@@ -51,6 +51,7 @@
 - `EventBus` is stored as an ECS resource so systems can push `GameEvent` values that the app drains after each frame.
 - `PluginManager` (`src/plugins.rs`) stores `EnginePlugin` implementations, hands them a `PluginContext`, and invokes build/update/fixed/event hooks each frame so extensions stay decoupled from the core loop.
 - `AudioPlugin` wraps `AudioManager`, receives drained `GameEvent`s through the plugin manager, and exposes trigger history + enable state to the editor UI while playing rodio tones when audio is available.
+- `ScriptPlugin` wraps `ScriptHost`, handles update/drain inside the plugin loop, and exposes handle management plus UI-facing controls (enable/reload/status) without the core app owning the scripting subsystem directly.
 - `MeshRegistry` owns CPU/GPU mesh resources so both the preview mesh and ECS-driven mesh entities share buffers.
 - The editor routes perspective viewport picking through the mesh registry's bounding data so gizmos and inspector edits stay in sync for 3D meshes.
 - The scene toolbar presents dependency health along with retain buttons so missing atlases or meshes can be rehydrated before applying a scene.

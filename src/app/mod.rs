@@ -20,7 +20,7 @@ use crate::scene::{
     EnvironmentDependency, SceneCamera2D, SceneDependencies, SceneEnvironment, SceneLightingData,
     SceneMetadata, SceneShadowData, SceneViewportMode, Vec2Data,
 };
-use crate::scripts::{ScriptCommand, ScriptHost};
+use crate::scripts::{ScriptCommand, ScriptHandle, ScriptPlugin};
 use crate::time::Time;
 mod editor_ui;
 mod gizmo_interaction;
@@ -212,9 +212,6 @@ pub struct App {
     // Particles
     emitter_entity: Option<Entity>,
 
-    // Scripting
-    scripts: ScriptHost,
-
     sprite_atlas_views: HashMap<String, Arc<wgpu::TextureView>>,
 }
 
@@ -321,7 +318,6 @@ impl App {
         // egui context and state
         let egui_ctx = EguiCtx::default();
         let egui_winit = None;
-        let mut scripts = ScriptHost::new("assets/scripts/main.rhai");
         let mut plugins = PluginManager::default();
         {
             let mut ctx = PluginContext::new(
@@ -329,12 +325,16 @@ impl App {
                 &mut ecs,
                 &mut assets,
                 &mut input,
-                &mut scripts,
                 &mut material_registry,
                 &mut mesh_registry,
                 &mut environment_registry,
                 &time,
             );
+            if let Err(err) =
+                plugins.register(Box::new(ScriptPlugin::new("assets/scripts/main.rhai")), &mut ctx)
+            {
+                eprintln!("[plugin] failed to register script plugin: {err:?}");
+            }
             if let Err(err) = plugins.register(Box::new(AudioPlugin::new(16)), &mut ctx) {
                 eprintln!("[plugin] failed to register audio plugin: {err:?}");
             }
@@ -345,7 +345,6 @@ impl App {
                 &mut ecs,
                 &mut assets,
                 &mut input,
-                &mut scripts,
                 &mut material_registry,
                 &mut mesh_registry,
                 &mut environment_registry,
@@ -438,7 +437,6 @@ impl App {
             ),
             config,
             emitter_entity: Some(emitter),
-            scripts,
             sprite_atlas_views: HashMap::new(),
         };
         app.apply_particle_caps();
@@ -488,7 +486,6 @@ impl App {
             &mut self.ecs,
             &mut self.assets,
             &mut self.input,
-            &mut self.scripts,
             &mut self.material_registry,
             &mut self.mesh_registry,
             &mut self.environment_registry,
@@ -510,6 +507,38 @@ impl App {
 
     fn audio_plugin(&self) -> Option<&AudioPlugin> {
         self.plugins.get::<AudioPlugin>()
+    }
+
+    fn script_plugin(&self) -> Option<&ScriptPlugin> {
+        self.plugins.get::<ScriptPlugin>()
+    }
+
+    fn script_plugin_mut(&mut self) -> Option<&mut ScriptPlugin> {
+        self.plugins.get_mut::<ScriptPlugin>()
+    }
+
+    fn drain_script_commands(&mut self) -> Vec<ScriptCommand> {
+        self.script_plugin_mut().map(|plugin| plugin.take_commands()).unwrap_or_default()
+    }
+
+    fn drain_script_logs(&mut self) -> Vec<String> {
+        self.script_plugin_mut().map(|plugin| plugin.take_logs()).unwrap_or_default()
+    }
+
+    fn register_script_spawn(&mut self, handle: ScriptHandle, entity: Entity) {
+        if let Some(plugin) = self.script_plugin_mut() {
+            plugin.register_spawn_result(handle, entity);
+        }
+    }
+
+    fn forget_script_handle(&mut self, handle: ScriptHandle) {
+        if let Some(plugin) = self.script_plugin_mut() {
+            plugin.forget_handle(handle);
+        }
+    }
+
+    fn resolve_script_handle(&self, handle: ScriptHandle) -> Option<Entity> {
+        self.script_plugin().and_then(|plugin| plugin.resolve_handle(handle))
     }
 
     fn remember_scene_path(&mut self, path: &str) {
@@ -1130,10 +1159,9 @@ impl ApplicationHandler for App {
             );
             self.ecs.set_emitter_sizes(emitter, self.ui_emitter_start_size, self.ui_emitter_end_size);
         }
-        self.scripts.update(dt);
-        let commands = self.scripts.drain_commands();
+        let commands = self.drain_script_commands();
         self.apply_script_commands(commands);
-        for message in self.scripts.drain_logs() {
+        for message in self.drain_script_logs() {
             self.ecs.push_event(GameEvent::ScriptMessage { message });
         }
 
@@ -1579,7 +1607,9 @@ impl ApplicationHandler for App {
                         self.apply_scene_metadata(&scene.metadata);
                         self.selected_entity = None;
                         self.gizmo_interaction = None;
-                        self.scripts.clear_handles();
+                        if let Some(plugin) = self.script_plugin_mut() {
+                            plugin.clear_handles();
+                        }
                         self.ui_hist.clear();
                         self.sync_emitter_ui();
                         self.inspector_status = None;
@@ -1590,7 +1620,9 @@ impl ApplicationHandler for App {
                         self.clear_scene_atlases();
                         self.selected_entity = None;
                         self.gizmo_interaction = None;
-                        self.scripts.clear_handles();
+                        if let Some(plugin) = self.script_plugin_mut() {
+                            plugin.clear_handles();
+                        }
                         self.sync_emitter_ui();
                         self.inspector_status = None;
                     }
@@ -1608,7 +1640,9 @@ impl ApplicationHandler for App {
         }
         if let Some(entity) = actions.delete_entity {
             if self.ecs.despawn_entity(entity) {
-                self.scripts.forget_entity(entity);
+                if let Some(plugin) = self.script_plugin_mut() {
+                    plugin.forget_entity(entity);
+                }
             }
             self.selected_entity = None;
             self.gizmo_interaction = None;
@@ -1623,7 +1657,9 @@ impl ApplicationHandler for App {
             self.ui_emitter_end_size = 0.05;
             self.ui_emitter_start_color = [1.0, 1.0, 1.0, 1.0];
             self.ui_emitter_end_color = [1.0, 1.0, 1.0, 0.0];
-            self.scripts.clear_handles();
+            if let Some(plugin) = self.script_plugin_mut() {
+                plugin.clear_handles();
+            }
             self.gizmo_interaction = None;
             if let Some(emitter) = self.emitter_entity {
                 self.ecs.set_emitter_rate(emitter, self.ui_emitter_rate);
@@ -1643,7 +1679,9 @@ impl ApplicationHandler for App {
             self.clear_scene_atlases();
             self.selected_entity = None;
             self.gizmo_interaction = None;
-            self.scripts.clear_handles();
+            if let Some(plugin) = self.script_plugin_mut() {
+                plugin.clear_handles();
+            }
             self.sync_emitter_ui();
             self.inspector_status = None;
         }
@@ -1687,16 +1725,16 @@ impl App {
                         velocity,
                     ) {
                         Ok(entity) => {
-                            self.scripts.register_spawn_result(handle, entity);
+                            self.register_script_spawn(handle, entity);
                         }
                         Err(err) => {
                             eprintln!("[script] spawn error for {atlas}:{region}: {err}");
-                            self.scripts.forget_handle(handle);
+                            self.forget_script_handle(handle);
                         }
                     }
                 }
                 ScriptCommand::SetVelocity { handle, velocity } => {
-                    if let Some(entity) = self.scripts.resolve_handle(handle) {
+                    if let Some(entity) = self.resolve_script_handle(handle) {
                         if !self.ecs.set_velocity(entity, velocity) {
                             eprintln!("[script] set_velocity failed for handle {handle}");
                         }
@@ -1705,7 +1743,7 @@ impl App {
                     }
                 }
                 ScriptCommand::SetPosition { handle, position } => {
-                    if let Some(entity) = self.scripts.resolve_handle(handle) {
+                    if let Some(entity) = self.resolve_script_handle(handle) {
                         if !self.ecs.set_translation(entity, position) {
                             eprintln!("[script] set_position failed for handle {handle}");
                         }
@@ -1714,7 +1752,7 @@ impl App {
                     }
                 }
                 ScriptCommand::SetRotation { handle, rotation } => {
-                    if let Some(entity) = self.scripts.resolve_handle(handle) {
+                    if let Some(entity) = self.resolve_script_handle(handle) {
                         if !self.ecs.set_rotation(entity, rotation) {
                             eprintln!("[script] set_rotation failed for handle {handle}");
                         }
@@ -1723,7 +1761,7 @@ impl App {
                     }
                 }
                 ScriptCommand::SetScale { handle, scale } => {
-                    if let Some(entity) = self.scripts.resolve_handle(handle) {
+                    if let Some(entity) = self.resolve_script_handle(handle) {
                         if !self.ecs.set_scale(entity, scale) {
                             eprintln!("[script] set_scale failed for handle {handle}");
                         }
@@ -1732,7 +1770,7 @@ impl App {
                     }
                 }
                 ScriptCommand::SetTint { handle, tint } => {
-                    if let Some(entity) = self.scripts.resolve_handle(handle) {
+                    if let Some(entity) = self.resolve_script_handle(handle) {
                         if !self.ecs.set_tint(entity, tint) {
                             eprintln!("[script] set_tint failed for handle {handle}");
                         }
@@ -1741,7 +1779,7 @@ impl App {
                     }
                 }
                 ScriptCommand::SetSpriteRegion { handle, region } => {
-                    if let Some(entity) = self.scripts.resolve_handle(handle) {
+                    if let Some(entity) = self.resolve_script_handle(handle) {
                         if !self.ecs.set_sprite_region(entity, &self.assets, &region) {
                             eprintln!("[script] set_sprite_region failed for handle {handle}");
                         }
@@ -1750,9 +1788,9 @@ impl App {
                     }
                 }
                 ScriptCommand::Despawn { handle } => {
-                    if let Some(entity) = self.scripts.resolve_handle(handle) {
+                    if let Some(entity) = self.resolve_script_handle(handle) {
                         if self.ecs.despawn_entity(entity) {
-                            self.scripts.forget_handle(handle);
+                            self.forget_script_handle(handle);
                         } else {
                             eprintln!("[script] despawn failed for handle {handle}");
                         }

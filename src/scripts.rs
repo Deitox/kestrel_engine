@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
@@ -5,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::SystemTime;
 
+use crate::plugins::{EnginePlugin, PluginContext};
 use anyhow::{anyhow, Context, Result};
 use glam::{Vec2, Vec4};
 use rand::Rng;
@@ -364,6 +366,96 @@ impl ScriptHost {
         self.error = None;
         self.ast = Some(ast);
         Ok(self.ast.as_ref().unwrap())
+    }
+}
+
+pub struct ScriptPlugin {
+    host: ScriptHost,
+    commands: Vec<ScriptCommand>,
+    logs: Vec<String>,
+}
+
+impl ScriptPlugin {
+    pub fn new(path: impl AsRef<Path>) -> Self {
+        Self { host: ScriptHost::new(path), commands: Vec::new(), logs: Vec::new() }
+    }
+
+    pub fn take_commands(&mut self) -> Vec<ScriptCommand> {
+        self.commands.drain(..).collect()
+    }
+
+    pub fn take_logs(&mut self) -> Vec<String> {
+        self.logs.drain(..).collect()
+    }
+
+    pub fn register_spawn_result(&mut self, handle: ScriptHandle, entity: Entity) {
+        self.host.register_spawn_result(handle, entity);
+    }
+
+    pub fn resolve_handle(&self, handle: ScriptHandle) -> Option<Entity> {
+        self.host.resolve_handle(handle)
+    }
+
+    pub fn forget_handle(&mut self, handle: ScriptHandle) {
+        self.host.forget_handle(handle);
+    }
+
+    pub fn forget_entity(&mut self, entity: Entity) {
+        self.host.forget_entity(entity);
+    }
+
+    pub fn clear_handles(&mut self) {
+        self.host.clear_handles();
+    }
+
+    pub fn script_path(&self) -> &Path {
+        self.host.script_path()
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.host.enabled()
+    }
+
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.host.set_enabled(enabled);
+    }
+
+    pub fn force_reload(&mut self) -> Result<()> {
+        self.host.force_reload()
+    }
+
+    pub fn set_error_message(&mut self, msg: impl Into<String>) {
+        self.host.set_error_message(msg);
+    }
+
+    pub fn last_error(&self) -> Option<&str> {
+        self.host.last_error()
+    }
+}
+
+impl EnginePlugin for ScriptPlugin {
+    fn name(&self) -> &'static str {
+        "scripts"
+    }
+
+    fn update(&mut self, _ctx: &mut PluginContext<'_>, dt: f32) -> Result<()> {
+        self.host.update(dt);
+        self.commands.extend(self.host.drain_commands());
+        self.logs.extend(self.host.drain_logs());
+        Ok(())
+    }
+
+    fn shutdown(&mut self, _ctx: &mut PluginContext<'_>) -> Result<()> {
+        self.host.clear_handles();
+        Ok(())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
 }
 

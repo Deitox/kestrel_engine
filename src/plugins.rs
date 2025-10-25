@@ -6,7 +6,6 @@ use crate::input::Input;
 use crate::material_registry::MaterialRegistry;
 use crate::mesh_registry::MeshRegistry;
 use crate::renderer::Renderer;
-use crate::scripts::ScriptHost;
 use crate::time::Time;
 use anyhow::Result;
 use std::any::Any;
@@ -16,7 +15,6 @@ pub struct PluginContext<'a> {
     pub ecs: &'a mut EcsWorld,
     pub assets: &'a mut AssetManager,
     pub input: &'a mut Input,
-    pub scripts: &'a mut ScriptHost,
     pub material_registry: &'a mut MaterialRegistry,
     pub mesh_registry: &'a mut MeshRegistry,
     pub environment_registry: &'a mut EnvironmentRegistry,
@@ -30,23 +28,12 @@ impl<'a> PluginContext<'a> {
         ecs: &'a mut EcsWorld,
         assets: &'a mut AssetManager,
         input: &'a mut Input,
-        scripts: &'a mut ScriptHost,
         material_registry: &'a mut MaterialRegistry,
         mesh_registry: &'a mut MeshRegistry,
         environment_registry: &'a mut EnvironmentRegistry,
         time: &'a Time,
     ) -> Self {
-        Self {
-            renderer,
-            ecs,
-            assets,
-            input,
-            scripts,
-            material_registry,
-            mesh_registry,
-            environment_registry,
-            time,
-        }
+        Self { renderer, ecs, assets, input, material_registry, mesh_registry, environment_registry, time }
     }
 }
 

@@ -9,7 +9,6 @@ use kestrel_engine::material_registry::MaterialRegistry;
 use kestrel_engine::mesh_registry::MeshRegistry;
 use kestrel_engine::plugins::{EnginePlugin, PluginContext, PluginManager};
 use kestrel_engine::renderer::Renderer;
-use kestrel_engine::scripts::ScriptHost;
 use kestrel_engine::time::Time;
 use pollster::block_on;
 use std::any::Any;
@@ -75,7 +74,6 @@ fn plugins_receive_lifecycle_hooks() {
     let mut material_registry = MaterialRegistry::new();
     let mut mesh_registry = MeshRegistry::new(&mut material_registry);
     let mut environment_registry = EnvironmentRegistry::new();
-    let mut scripts = ScriptHost::new("assets/scripts/main.rhai");
     let time = Time::new();
     let mut manager = PluginManager::default();
 
@@ -85,7 +83,6 @@ fn plugins_receive_lifecycle_hooks() {
             &mut ecs,
             &mut assets,
             &mut input,
-            &mut scripts,
             &mut material_registry,
             &mut mesh_registry,
             &mut environment_registry,
@@ -102,7 +99,6 @@ fn plugins_receive_lifecycle_hooks() {
             &mut ecs,
             &mut assets,
             &mut input,
-            &mut scripts,
             &mut material_registry,
             &mut mesh_registry,
             &mut environment_registry,
@@ -117,7 +113,6 @@ fn plugins_receive_lifecycle_hooks() {
             &mut ecs,
             &mut assets,
             &mut input,
-            &mut scripts,
             &mut material_registry,
             &mut mesh_registry,
             &mut environment_registry,
@@ -136,7 +131,6 @@ fn plugins_receive_lifecycle_hooks() {
             &mut ecs,
             &mut assets,
             &mut input,
-            &mut scripts,
             &mut material_registry,
             &mut mesh_registry,
             &mut environment_registry,
@@ -151,7 +145,6 @@ fn plugins_receive_lifecycle_hooks() {
             &mut ecs,
             &mut assets,
             &mut input,
-            &mut scripts,
             &mut material_registry,
             &mut mesh_registry,
             &mut environment_registry,
