@@ -50,7 +50,7 @@
 - `ScriptHost` issues commands back into `App`, which resolves script handles to ECS entities.
 - `RapierState` lives inside `EcsWorld` and synchronizes rigid-body data each fixed tick.
 - `EventBus` is stored as an ECS resource so systems can push `GameEvent` values that the app drains after each frame.
-- `PluginManager` (`src/plugins.rs`) stores `EnginePlugin` implementations, hands them a `PluginContext`, and invokes build/update/fixed/event hooks each frame so extensions stay decoupled from the core loop.
+- `PluginManager` (`src/plugins.rs`) stores `EnginePlugin` implementations, hands them a `PluginContext`, and invokes build/update/fixed/event hooks each frame so extensions stay decoupled from the core loop. It also loads optional dynamic libraries listed in `config/plugins.json` via `libloading`, and exposes a `FeatureRegistry` so plugins can declare or require capabilities before registration.
 - `AnalyticsPlugin` collects frame-time history and recent `GameEvent`s for the analytics panels, `AudioPlugin` wraps `AudioManager` to expose trigger history + enable state to the editor UI while playing rodio tones, and `ScriptPlugin` keeps Rhai hot-reload logic outside the core loop.
 - `MeshRegistry` owns CPU/GPU mesh resources so both the preview mesh and ECS-driven mesh entities share buffers.
 - The editor routes perspective viewport picking through the mesh registry's bounding data so gizmos and inspector edits stay in sync for 3D meshes.

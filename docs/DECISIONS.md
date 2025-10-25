@@ -14,6 +14,7 @@
 | Physics | `rapier2d` 0.26 | Proven 2D rigid-body simulation that integrates cleanly with custom ECS loops while keeping SIMD-friendly performance. |
 | Scripting | `rhai` 1.23 | Lightweight, hot-reloadable scripting with an ergonomic Rust API surface and no VM build step. |
 | 3D assets | `gltf` 1.4 | Load industry-standard glTF meshes directly into the engine’s mesh registry without custom parsers. |
+| Extensibility | `libloading` + manifest-driven plugins | Lets optional cdylib modules hook into the `EnginePlugin` lifecycle via `config/plugins.json` without relinking the core executable. |
 
 ### Guiding Principles
 - Prefer deterministic, data-driven flows with explicit resource ownership.
