@@ -98,6 +98,7 @@ impl EcsWorld {
             ))
             .id();
         self.ensure_scene_entity_tag(root);
+        self.ensure_scene_entity_tag(root);
         self.emit(GameEvent::SpriteSpawned {
             entity: root,
             atlas: "main".to_string(),
@@ -132,6 +133,7 @@ impl EcsWorld {
             ))
             .id();
         self.ensure_scene_entity_tag(a);
+        self.ensure_scene_entity_tag(a);
         {
             let mut rapier = self.world.resource_mut::<RapierState>();
             rapier.register_collider_entity(collider_a, a);
@@ -165,6 +167,7 @@ impl EcsWorld {
             ))
             .id();
         self.ensure_scene_entity_tag(b);
+        self.ensure_scene_entity_tag(b);
         {
             let mut rapier = self.world.resource_mut::<RapierState>();
             rapier.register_collider_entity(collider_b, b);
@@ -197,6 +200,7 @@ impl EcsWorld {
                 OrbitController { center: orbit_center, angular_speed: orbit_speed_c },
             ))
             .id();
+        self.ensure_scene_entity_tag(c);
         self.ensure_scene_entity_tag(c);
         {
             let mut rapier = self.world.resource_mut::<RapierState>();
@@ -777,6 +781,17 @@ impl EcsWorld {
         let half = self.world.get::<Aabb>(entity).map(|a| a.half).unwrap_or(Vec2::splat(0.25));
         Some((center - half, center + half))
     }
+
+    pub fn find_entity_by_scene_id(&mut self, scene_id: &str) -> Option<Entity> {
+        let mut query = self.world.query::<(Entity, &SceneEntityTag)>();
+        for (entity, tag) in query.iter(&self.world) {
+            if tag.id.as_str() == scene_id {
+                return Some(entity);
+            }
+        }
+        None
+    }
+
     pub fn entity_info(&self, entity: Entity) -> Option<EntityInfo> {
         let transform = self.world.get::<Transform>(entity)?;
         let world_transform = self.world.get::<WorldTransform>(entity)?;

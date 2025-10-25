@@ -800,19 +800,12 @@ impl SceneDependencies {
             if let Some(dep) = environment_lookup.get(&env.key) {
                 environments.push(EnvironmentDependencyRepr::from(dep.clone()));
             } else {
-                environments.push(EnvironmentDependencyRepr::from(EnvironmentDependency::new(
-                    env.key.clone(),
-                    None,
-                )));
+                environments
+                    .push(EnvironmentDependencyRepr::from(EnvironmentDependency::new(env.key.clone(), None)));
             }
         }
 
-        let mut subset = SceneDependencies {
-            atlases,
-            meshes,
-            materials,
-            environments,
-        };
+        let mut subset = SceneDependencies { atlases, meshes, materials, environments };
         subset.normalize();
         subset
     }
@@ -1095,9 +1088,9 @@ impl Scene {
 
         let inferred_parent_ids: Vec<Option<SceneEntityId>> = (0..self.entities.len())
             .map(|index| {
-                self.entities[index].parent.and_then(|parent_index| {
-                    self.entities.get(parent_index).map(|parent| parent.id.clone())
-                })
+                self.entities[index]
+                    .parent
+                    .and_then(|parent_index| self.entities.get(parent_index).map(|parent| parent.id.clone()))
             })
             .collect();
         for (index, entity) in self.entities.iter_mut().enumerate() {
@@ -1139,10 +1132,7 @@ impl Scene {
         let mut children_map: HashMap<String, Vec<usize>> = HashMap::new();
         for (index, entity) in self.entities.iter().enumerate() {
             if let Some(parent_id) = entity.parent_id.as_ref() {
-                children_map
-                    .entry(parent_id.as_str().to_string())
-                    .or_default()
-                    .push(index);
+                children_map.entry(parent_id.as_str().to_string()).or_default().push(index);
             }
         }
 

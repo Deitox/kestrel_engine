@@ -11,6 +11,7 @@ use crate::gizmo::{
 use crate::mesh_preview::{GIZMO_3D_AXIS_LENGTH_SCALE, GIZMO_3D_AXIS_MAX, GIZMO_3D_AXIS_MIN};
 
 use bevy_ecs::prelude::Entity;
+use egui::Key;
 use egui_plot as eplot;
 use glam::{EulerRot, Quat, Vec2, Vec3, Vec4};
 use std::collections::HashSet;
@@ -79,6 +80,8 @@ pub(super) struct EditorUiParams {
     pub recent_events: Vec<GameEvent>,
     pub audio_triggers: Vec<String>,
     pub audio_enabled: bool,
+    pub id_lookup_input: String,
+    pub id_lookup_active: bool,
 }
 
 pub(super) struct EditorUiOutput {
@@ -111,6 +114,9 @@ pub(super) struct EditorUiOutput {
     pub mesh_selection_request: Option<String>,
     pub environment_selection_request: Option<String>,
     pub frame_selection_request: bool,
+    pub id_lookup_request: Option<String>,
+    pub id_lookup_input: String,
+    pub id_lookup_active: bool,
 }
 
 impl App {
@@ -160,6 +166,8 @@ impl App {
             recent_events,
             audio_triggers,
             mut audio_enabled,
+            mut id_lookup_input,
+            mut id_lookup_active,
         } = params;
 
         mesh_keys.sort();
@@ -200,6 +208,7 @@ impl App {
         let mut mesh_selection_request: Option<String> = None;
         let mut environment_selection_request: Option<String> = None;
         let mut frame_selection_request = false;
+        let mut id_lookup_request: Option<String> = None;
         let mut pending_viewport: Option<(Vec2, Vec2)> = None;
         let mut left_panel_width_px = 0.0;
         let mut right_panel_width_px = 0.0;
@@ -235,6 +244,9 @@ impl App {
                             ));
                         });
                         ui.label("Target: 16.7ms for 60 FPS");
+                        if ui.button("Find entity by ID...").clicked() {
+                            id_lookup_active = true;
+                        }
                     });
 
                     egui::CollapsingHeader::new("UI & Camera").default_open(true).show(ui, |ui| {
@@ -517,6 +529,48 @@ impl App {
                     });
                 });
 
+            let mut lookup_open = id_lookup_active;
+            let mut lookup_submit: Option<String> = None;
+            let mut lookup_close = false;
+            egui::Window::new("Entity Lookup")
+                .open(&mut lookup_open)
+                .resizable(false)
+                .collapsible(false)
+                .default_width(320.0)
+                .anchor(egui::Align2::CENTER_TOP, [0.0, 40.0])
+                .show(ctx, |ui| {
+                    ui.label("Paste an entity ID to jump selection to that entity.");
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut id_lookup_input)
+                            .hint_text("entity::...")
+                            .desired_width(260.0),
+                    );
+                    let submitted = response.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                    let mut triggered = submitted;
+                    ui.horizontal(|ui| {
+                        if ui.button("Select").clicked() {
+                            triggered = true;
+                        }
+                        if ui.button("Close").clicked() {
+                            lookup_close = true;
+                        }
+                    });
+                    if triggered {
+                        let trimmed = id_lookup_input.trim();
+                        if !trimmed.is_empty() {
+                            lookup_submit = Some(trimmed.to_string());
+                        }
+                    }
+                });
+            if let Some(request) = lookup_submit {
+                id_lookup_request = Some(request);
+                lookup_open = false;
+            }
+            if lookup_close {
+                lookup_open = false;
+            }
+            id_lookup_active = lookup_open;
+
             let right_panel =
                 egui::SidePanel::right("kestrel_right_panel").default_width(360.0).show(ctx, |ui| {
                     ui.heading("3D Preview");
@@ -684,6 +738,10 @@ impl App {
                                 if ui.button("Copy").clicked() {
                                     let id_string = info.scene_id.as_str().to_string();
                                     ui.ctx().copy_text(id_string);
+                                }
+                                if ui.button("Find…").clicked() {
+                                    self.id_lookup_input = info.scene_id.as_str().to_string();
+                                    self.id_lookup_active = true;
                                 }
                             });
                             let mut translation = info.translation;
@@ -1594,6 +1652,9 @@ impl App {
             mesh_selection_request,
             environment_selection_request,
             frame_selection_request,
+            id_lookup_request,
+            id_lookup_input,
+            id_lookup_active,
         }
     }
 }

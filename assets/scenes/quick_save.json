@@ -6,7 +6,7 @@
         "x": 0.0,
         "y": 0.0
       },
-      "zoom": 0.5488117
+      "zoom": 0.30119425
     },
     "preview_camera": {
       "mode": "Orbit",
@@ -16,18 +16,18 @@
           "y": 0.0,
           "z": 0.0
         },
-        "radius": 5.0,
-        "yaw": 2.699485,
-        "pitch": 1.2957517
+        "radius": 5.0000005,
+        "yaw": -2.5202916,
+        "pitch": -0.74479634
       },
       "freefly": {
         "position": {
-          "x": 0.5809923,
-          "y": -4.8120656,
-          "z": -1.227385
+          "x": -2.1398518,
+          "y": 3.3891108,
+          "z": -2.9891415
         },
-        "yaw": -0.44210762,
-        "pitch": 1.2957518,
+        "yaw": 0.6213011,
+        "pitch": -0.7447964,
         "roll": 0.0,
         "speed": 4.0
       },
@@ -37,7 +37,7 @@
         "y": 0.0,
         "z": 0.0
       },
-      "frustum_distance": 5.0
+      "frustum_distance": 5.0000005
     },
     "lighting": {
       "direction": {
@@ -46,22 +46,340 @@
         "z": 0.36440545
       },
       "color": {
-        "x": 1.05,
-        "y": 0.98,
-        "z": 0.92
+        "x": 0.34454536,
+        "y": 0.0,
+        "z": 1.0
       },
       "ambient": {
-        "x": 0.03,
-        "y": 0.03,
-        "z": 0.03
+        "x": 0.22870465,
+        "y": 0.04509171,
+        "z": 0.22950087
       },
-      "exposure": 1.0
+      "exposure": 3.0,
+      "shadow": {
+        "distance": 85.0,
+        "bias": 0.007,
+        "strength": 0.78
+      }
+    },
+    "environment": {
+      "key": "environment::default",
+      "intensity": 0.6
     }
   },
   "dependencies": {
-    "atlases": [],
+    "atlases": [
+      {
+        "key": "main",
+        "path": "assets/images/atlas.json"
+      }
+    ],
     "meshes": [],
-    "materials": []
+    "materials": [],
+    "environments": [
+      "environment::default"
+    ]
   },
-  "entities": []
+  "entities": [
+    {
+      "id": "cc3fb764-78d7-4372-864e-afe70f026308",
+      "name": null,
+      "transform": {
+        "translation": {
+          "x": -0.96628296,
+          "y": -0.82870126
+        },
+        "rotation": 1.570662,
+        "scale": {
+          "x": 0.34350342,
+          "y": 0.34350342
+        }
+      },
+      "sprite": {
+        "atlas": "main",
+        "region": "bluebox"
+      },
+      "velocity": {
+        "x": -6.344635e-9,
+        "y": 0.0
+      },
+      "mass": 0.8,
+      "collider": {
+        "half_extents": {
+          "x": 0.17175171,
+          "y": 0.17175171
+        }
+      }
+    },
+    {
+      "id": "bd4e8f0e-c9ec-4d5c-8e2e-a8e1772140a9",
+      "name": null,
+      "transform": {
+        "translation": {
+          "x": 0.0069030267,
+          "y": -0.7636084
+        },
+        "rotation": 0.5724574,
+        "scale": {
+          "x": 0.34244466,
+          "y": 0.34244466
+        }
+      },
+      "sprite": {
+        "atlas": "main",
+        "region": "green"
+      },
+      "velocity": {
+        "x": 0.06079779,
+        "y": -0.0129119465
+      },
+      "mass": 0.8,
+      "collider": {
+        "half_extents": {
+          "x": 0.17122233,
+          "y": 0.17122233
+        }
+      }
+    },
+    {
+      "id": "8491b495-6ca3-4c5e-b87f-0ac21c769026",
+      "name": null,
+      "transform": {
+        "translation": {
+          "x": -0.67202795,
+          "y": -0.7538423
+        },
+        "rotation": 1.7408781,
+        "scale": {
+          "x": 0.1703651,
+          "y": 0.1703651
+        }
+      },
+      "sprite": {
+        "atlas": "main",
+        "region": "green"
+      },
+      "velocity": {
+        "x": -0.047744237,
+        "y": 0.0038168277
+      },
+      "mass": 0.8,
+      "collider": {
+        "half_extents": {
+          "x": 0.08518255,
+          "y": 0.08518255
+        }
+      }
+    },
+    {
+      "id": "e3a6f5d9-7b20-4d41-9294-9630aa392296",
+      "name": null,
+      "transform": {
+        "translation": {
+          "x": 0.45940185,
+          "y": -0.86206365
+        },
+        "rotation": 0.000045740722,
+        "scale": {
+          "x": 0.27690494,
+          "y": 0.27690494
+        }
+      },
+      "sprite": {
+        "atlas": "main",
+        "region": "green"
+      },
+      "velocity": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "mass": 0.8,
+      "collider": {
+        "half_extents": {
+          "x": 0.13845247,
+          "y": 0.13845247
+        }
+      }
+    },
+    {
+      "id": "ee17c88a-d856-4018-ac11-b867e4706106",
+      "name": null,
+      "transform": {
+        "translation": {
+          "x": -0.3006735,
+          "y": -0.90360314
+        },
+        "rotation": 0.0053297663,
+        "scale": {
+          "x": 0.19383693,
+          "y": 0.19383693
+        }
+      },
+      "sprite": {
+        "atlas": "main",
+        "region": "green"
+      },
+      "velocity": {
+        "x": 0.0005473757,
+        "y": 0.000009374852
+      },
+      "mass": 0.8,
+      "collider": {
+        "half_extents": {
+          "x": 0.09691846,
+          "y": 0.09691846
+        }
+      }
+    },
+    {
+      "id": "47ca5abd-6bcc-4f25-aa18-5eb3dd2ef849",
+      "name": null,
+      "transform": {
+        "translation": {
+          "x": -0.6366109,
+          "y": -0.9119633
+        },
+        "rotation": 0.16527885,
+        "scale": {
+          "x": 0.15405558,
+          "y": 0.15405558
+        }
+      },
+      "sprite": {
+        "atlas": "main",
+        "region": "redorb"
+      },
+      "velocity": {
+        "x": -0.016946623,
+        "y": 0.011477575
+      },
+      "mass": 0.8,
+      "collider": {
+        "half_extents": {
+          "x": 0.07702779,
+          "y": 0.07702779
+        }
+      }
+    },
+    {
+      "id": "71234615-cd03-4a10-991e-69e890da965b",
+      "name": null,
+      "transform": {
+        "translation": {
+          "x": 0.7020468,
+          "y": -0.9141609
+        },
+        "rotation": -0.000057156474,
+        "scale": {
+          "x": 0.17270294,
+          "y": 0.17270294
+        }
+      },
+      "sprite": {
+        "atlas": "main",
+        "region": "redorb"
+      },
+      "velocity": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "mass": 0.8,
+      "collider": {
+        "half_extents": {
+          "x": 0.08635147,
+          "y": 0.08635147
+        }
+      }
+    },
+    {
+      "id": "740c3e5b-7d62-4a12-9c60-948c9fbb00df",
+      "name": null,
+      "transform": {
+        "translation": {
+          "x": -1.2302979,
+          "y": -0.9089555
+        },
+        "rotation": 1.5707312,
+        "scale": {
+          "x": 0.18226969,
+          "y": 0.18226969
+        }
+      },
+      "sprite": {
+        "atlas": "main",
+        "region": "checker"
+      },
+      "velocity": {
+        "x": -1.6515667e-10,
+        "y": 1.3391485e-10
+      },
+      "mass": 0.8,
+      "collider": {
+        "half_extents": {
+          "x": 0.091134846,
+          "y": 0.091134846
+        }
+      }
+    },
+    {
+      "id": "f8159eaa-b1cc-479e-aff2-1a883aa3cb28",
+      "name": null,
+      "transform": {
+        "translation": {
+          "x": -0.47512132,
+          "y": -0.7359395
+        },
+        "rotation": -2.76559,
+        "scale": {
+          "x": 0.18915927,
+          "y": 0.18915927
+        }
+      },
+      "sprite": {
+        "atlas": "main",
+        "region": "bluebox"
+      },
+      "velocity": {
+        "x": -0.026050115,
+        "y": -0.029014152
+      },
+      "mass": 0.8,
+      "collider": {
+        "half_extents": {
+          "x": 0.09457964,
+          "y": 0.09457964
+        }
+      }
+    },
+    {
+      "id": "e9ff3449-e104-47c8-bdda-42fc97c9550e",
+      "name": null,
+      "transform": {
+        "translation": {
+          "x": 0.9320727,
+          "y": -0.8575431
+        },
+        "rotation": -0.000020760266,
+        "scale": {
+          "x": 0.28640813,
+          "y": 0.28640813
+        }
+      },
+      "sprite": {
+        "atlas": "main",
+        "region": "checker"
+      },
+      "velocity": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "mass": 0.8,
+      "collider": {
+        "half_extents": {
+          "x": 0.14320406,
+          "y": 0.14320406
+        }
+      }
+    }
+  ]
 }

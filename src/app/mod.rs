@@ -185,6 +185,8 @@ pub struct App {
     pub(crate) mesh_registry: MeshRegistry,
 
     viewport: Viewport,
+    id_lookup_input: String,
+    id_lookup_active: bool,
 
     // Particles
     emitter_entity: Option<Entity>,
@@ -364,6 +366,8 @@ impl App {
                 Vec2::new(config.window.width as f32, config.window.height as f32),
             ),
             config,
+            id_lookup_input: String::new(),
+            id_lookup_active: false,
             emitter_entity: Some(emitter),
             sprite_atlas_views: HashMap::new(),
         };
@@ -1425,6 +1429,8 @@ impl ApplicationHandler for App {
             recent_events,
             audio_triggers,
             audio_enabled,
+            id_lookup_input: self.id_lookup_input.clone(),
+            id_lookup_active: self.id_lookup_active,
         };
 
         let editor_output = self.render_editor_ui(editor_params);
@@ -1449,7 +1455,7 @@ impl ApplicationHandler for App {
             ui_particle_max_spawn_per_frame,
             ui_particle_max_total,
             ui_particle_max_emitter_backlog,
-            selection,
+            mut selection,
             viewport_mode_request,
             mesh_control_request,
             mesh_frustum_request,
@@ -1458,6 +1464,9 @@ impl ApplicationHandler for App {
             mesh_selection_request,
             environment_selection_request,
             frame_selection_request,
+            id_lookup_request,
+            id_lookup_input,
+            id_lookup_active,
         } = editor_output;
 
         self.ui_scale = ui_scale;
@@ -1479,6 +1488,22 @@ impl ApplicationHandler for App {
         self.ui_particle_max_spawn_per_frame = ui_particle_max_spawn_per_frame;
         self.ui_particle_max_total = ui_particle_max_total;
         self.ui_particle_max_emitter_backlog = ui_particle_max_emitter_backlog;
+        self.id_lookup_input = id_lookup_input;
+        self.id_lookup_active = id_lookup_active;
+
+        if let Some(request) = id_lookup_request {
+            let trimmed = request.trim();
+            if trimmed.is_empty() {
+                self.ui_scene_status = Some("Enter an entity ID to select.".to_string());
+            } else if let Some(entity) = self.ecs.find_entity_by_scene_id(trimmed) {
+                selection.entity = Some(entity);
+                selection.details = self.ecs.entity_info(entity);
+                self.ui_scene_status = Some(format!("Selected entity {}", trimmed));
+            } else {
+                self.ui_scene_status = Some(format!("Entity {} not found", trimmed));
+            }
+        }
+
         self.selected_entity = selection.entity;
         self.apply_particle_caps();
 

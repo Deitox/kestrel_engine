@@ -1,4 +1,4 @@
-﻿use bevy_ecs::prelude::Entity;
+use bevy_ecs::prelude::Entity;
 use glam::{EulerRot, Quat, Vec2, Vec3, Vec4};
 use kestrel_engine::assets::AssetManager;
 use kestrel_engine::ecs::{
@@ -8,8 +8,8 @@ use kestrel_engine::ecs::{
 use kestrel_engine::material_registry::MaterialRegistry;
 use kestrel_engine::mesh_registry::MeshRegistry;
 use kestrel_engine::scene::{
-    EnvironmentDependency, Scene, SceneEntity, SceneEntityId, SceneEnvironment, SceneLightingData, SceneShadowData,
-    TransformData, Vec3Data,
+    EnvironmentDependency, Scene, SceneEntity, SceneEntityId, SceneEnvironment, SceneLightingData,
+    SceneShadowData, TransformData, Vec3Data,
 };
 use tempfile::NamedTempFile;
 
@@ -440,14 +440,8 @@ fn scene_entity_ids_enable_parent_reconstruction() {
         .retain_atlas("main", Some("assets/images/atlas.json"))
         .expect("atlas should load for ID roundtrip");
 
-    let parent = world
-        .world
-        .spawn((Transform::default(), WorldTransform::default()))
-        .id();
-    let child = world
-        .world
-        .spawn((Transform::default(), WorldTransform::default(), Parent(parent)))
-        .id();
+    let parent = world.world.spawn((Transform::default(), WorldTransform::default())).id();
+    let child = world.world.spawn((Transform::default(), WorldTransform::default(), Parent(parent))).id();
     world.world.entity_mut(parent).insert(Children(vec![child]));
 
     let scene = world.export_scene(&assets);
@@ -472,10 +466,7 @@ fn scene_entity_ids_enable_parent_reconstruction() {
     assert_eq!(loaded_scene.entities.len(), scene.entities.len());
     for (expected, loaded) in scene.entities.iter().zip(loaded_scene.entities.iter()) {
         assert_eq!(expected.id, loaded.id, "entity IDs should persist across disk roundtrip");
-        assert_eq!(
-            expected.parent_id, loaded.parent_id,
-            "parent IDs should persist across disk roundtrip"
-        );
+        assert_eq!(expected.parent_id, loaded.parent_id, "parent IDs should persist across disk roundtrip");
     }
 
     let mut reload_world = EcsWorld::new();
@@ -484,13 +475,11 @@ fn scene_entity_ids_enable_parent_reconstruction() {
         .expect("scene load should rebuild hierarchy");
 
     let mut parent_query = reload_world.world.query::<&Parent>();
-    assert!(
-        parent_query.iter(&reload_world.world).count() > 0,
-        "entities should retain parent components"
-    );
+    assert!(parent_query.iter(&reload_world.world).count() > 0, "entities should retain parent components");
 
     let mut children_query = reload_world.world.query::<&Children>();
-    let total_children: usize = children_query.iter(&reload_world.world).map(|children| children.0.len()).sum();
+    let total_children: usize =
+        children_query.iter(&reload_world.world).map(|children| children.0.len()).sum();
     assert!(total_children > 0, "parents should retain children listings when only parent IDs are stored");
 }
 
@@ -525,9 +514,7 @@ fn scene_clone_subtree_includes_descendants() {
     scene.entities.push(make_entity(grandchild_id.clone(), Some(child_id.clone())));
 
     assert_eq!(scene.entity_index_by_id(child_id.as_str()), Some(1));
-    let subtree = scene
-        .clone_subtree(child_id.as_str())
-        .expect("subtree clone should find child branch");
+    let subtree = scene.clone_subtree(child_id.as_str()).expect("subtree clone should find child branch");
     assert_eq!(subtree.len(), 2, "child and grandchild should be captured");
     assert!(subtree.iter().any(|entity| entity.id == child_id));
     assert!(subtree.iter().any(|entity| entity.id == grandchild_id));

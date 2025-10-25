@@ -20,8 +20,9 @@ fn run() -> Result<()> {
     };
     match command.as_str() {
         "validate" => {
-            let scene_path =
-                args.next().ok_or_else(|| anyhow!("validate requires a path: scene_tool validate <scene>"))?;
+            let scene_path = args
+                .next()
+                .ok_or_else(|| anyhow!("validate requires a path: scene_tool validate <scene>"))?;
             cmd_validate(&scene_path)
         }
         "list" => {
@@ -30,14 +31,11 @@ fn run() -> Result<()> {
             cmd_list(&scene_path)
         }
         "extract" => {
-            let scene_path =
-                args.next().ok_or_else(|| anyhow!("extract requires arguments: scene_tool extract <scene> <entity_id> <output>"))?;
-            let entity_id = args
-                .next()
-                .ok_or_else(|| anyhow!("extract missing entity id argument"))?;
-            let output_path = args
-                .next()
-                .ok_or_else(|| anyhow!("extract missing output path argument"))?;
+            let scene_path = args.next().ok_or_else(|| {
+                anyhow!("extract requires arguments: scene_tool extract <scene> <entity_id> <output>")
+            })?;
+            let entity_id = args.next().ok_or_else(|| anyhow!("extract missing entity id argument"))?;
+            let output_path = args.next().ok_or_else(|| anyhow!("extract missing output path argument"))?;
             cmd_extract(&scene_path, &entity_id, &output_path)
         }
         "help" | "--help" | "-h" => {
@@ -140,20 +138,13 @@ fn cmd_validate(scene_path: &str) -> Result<()> {
         );
         Ok(())
     } else {
-        Err(anyhow!(format!(
-            "scene '{}' has issues:\n  - {}",
-            scene_path,
-            issues.join("\n  - ")
-        )))
+        Err(anyhow!(format!("scene '{}' has issues:\n  - {}", scene_path, issues.join("\n  - "))))
     }
 }
 
 fn cmd_list(scene_path: &str) -> Result<()> {
     let scene = load_scene(scene_path)?;
-    println!(
-        "{:<5} {:<38} {:<38} {}",
-        "Idx", "Entity ID", "Parent ID", "Name/Sprite"
-    );
+    println!("{:<5} {:<38} {:<38} {}", "Idx", "Entity ID", "Parent ID", "Name/Sprite");
     println!("{}", "-".repeat(128));
     for (index, entity) in scene.entities.iter().enumerate() {
         let parent = entity.parent_id.as_ref().map(SceneEntityId::as_str).unwrap_or("-");
@@ -162,13 +153,7 @@ fn cmd_list(scene_path: &str) -> Result<()> {
             .as_deref()
             .or_else(|| entity.sprite.as_ref().map(|sprite| sprite.region.as_str()))
             .unwrap_or("-");
-        println!(
-            "{:<5} {:<38} {:<38} {}",
-            index,
-            entity.id.as_str(),
-            parent,
-            label
-        );
+        println!("{:<5} {:<38} {:<38} {}", index, entity.id.as_str(), parent, label);
     }
     Ok(())
 }
@@ -176,35 +161,20 @@ fn cmd_list(scene_path: &str) -> Result<()> {
 fn cmd_extract(scene_path: &str, entity_id: &str, output_path: &str) -> Result<()> {
     let scene = load_scene(scene_path)?;
     let Some(mut entities) = scene.clone_subtree(entity_id) else {
-        return Err(anyhow!(format!(
-            "entity '{}' not found in scene '{}'",
-            entity_id, scene_path
-        )));
+        return Err(anyhow!(format!("entity '{}' not found in scene '{}'", entity_id, scene_path)));
     };
     if entities.is_empty() {
         return Err(anyhow!("no entities collected for subtree rooted at '{entity_id}'"));
     }
-    let dependencies = scene
-        .dependencies
-        .subset_for_entities(&entities, scene.metadata.environment.as_ref());
-    let prefab = Scene {
-        metadata: scene.metadata.clone(),
-        dependencies,
-        entities: std::mem::take(&mut entities),
-    };
+    let dependencies = scene.dependencies.subset_for_entities(&entities, scene.metadata.environment.as_ref());
+    let prefab =
+        Scene { metadata: scene.metadata.clone(), dependencies, entities: std::mem::take(&mut entities) };
     prefab.save_to_path(output_path)?;
-    println!(
-        "Extracted {} entities rooted at '{}' into '{}'",
-        prefab.entities.len(),
-        entity_id,
-        output_path
-    );
+    println!("Extracted {} entities rooted at '{}' into '{}'", prefab.entities.len(), entity_id, output_path);
     Ok(())
 }
 
 fn load_scene(path: &str) -> Result<Scene> {
-    let normalized = Path::new(path)
-        .canonicalize()
-        .unwrap_or_else(|_| Path::new(path).to_path_buf());
+    let normalized = Path::new(path).canonicalize().unwrap_or_else(|_| Path::new(path).to_path_buf());
     Scene::load_from_path(&normalized).with_context(|| format!("loading scene '{}'", normalized.display()))
 }
