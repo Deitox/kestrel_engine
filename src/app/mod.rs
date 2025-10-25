@@ -41,6 +41,7 @@ use egui_wgpu::{Renderer as EguiRenderer, RendererOptions, ScreenDescriptor};
 use egui_winit::State as EguiWinit;
 
 const CAMERA_BASE_HALF_HEIGHT: f32 = 1.2;
+const PLUGIN_MANIFEST_PATH: &str = "config/plugins.json";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ViewportCameraMode {
@@ -195,6 +196,35 @@ pub struct App {
 }
 
 impl App {
+    fn reload_dynamic_plugins(&mut self) {
+        let manifest = match PluginManager::load_manifest(PLUGIN_MANIFEST_PATH) {
+            Ok(data) => data,
+            Err(err) => {
+                self.ui_scene_status = Some(format!("Plugin manifest parse failed: {err}"));
+                return;
+            }
+        };
+        let Some(manifest) = manifest else {
+            self.ui_scene_status = Some("Plugin manifest not found".to_string());
+            return;
+        };
+        let mut reload_error = None;
+        let mut newly_loaded = Vec::new();
+        self.with_plugins(|plugins, ctx| {
+            plugins.clear_dynamic_statuses();
+            match plugins.load_dynamic_from_manifest(&manifest, ctx) {
+                Ok(mut names) => newly_loaded.append(&mut names),
+                Err(err) => reload_error = Some(err),
+            }
+        });
+        if let Some(err) = reload_error {
+            self.ui_scene_status = Some(format!("Plugin reload failed: {err}"));
+        } else if newly_loaded.is_empty() {
+            self.ui_scene_status = Some("Plugin manifest reloaded".to_string());
+        } else {
+            self.ui_scene_status = Some(format!("Loaded plugins: {}", newly_loaded.join(", ")));
+        }
+    }
     pub async fn new(config: AppConfig) -> Self {
         let mut renderer = Renderer::new(&config.window).await;
         let lighting_state = renderer.lighting().clone();
@@ -267,7 +297,7 @@ impl App {
         // egui context and state
         let egui_ctx = EguiCtx::default();
         let egui_winit = None;
-        let plugin_manifest = match PluginManager::load_manifest("config/plugins.json") {
+        let plugin_manifest = match PluginManager::load_manifest(PLUGIN_MANIFEST_PATH) {
             Ok(data) => data,
             Err(err) => {
                 eprintln!("[plugin] failed to parse manifest: {err:?}");
@@ -1798,6 +1828,9 @@ impl ApplicationHandler for App {
             }
             self.sync_emitter_ui();
             self.inspector_status = None;
+        }
+        if actions.reload_plugins {
+            self.reload_dynamic_plugins();
         }
         if let (Some(ren), Some(screen)) = (self.egui_renderer.as_mut(), self.egui_screen.as_ref()) {
             if let (Ok(device), Ok(queue)) = (self.renderer.device(), self.renderer.queue()) {

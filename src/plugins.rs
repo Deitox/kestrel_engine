@@ -202,6 +202,38 @@ impl<'a> PluginContext<'a> {
     pub fn emit_script_message(&mut self, message: impl Into<String>) {
         self.emit_event(GameEvent::ScriptMessage { message: message.into() });
     }
+
+    pub fn renderer_api(&mut self) -> RendererApi<'_> {
+        RendererApi { renderer: self.renderer }
+    }
+
+    pub fn assets_api(&mut self) -> AssetApi<'_> {
+        AssetApi { assets: self.assets }
+    }
+}
+
+pub struct RendererApi<'a> {
+    renderer: &'a mut Renderer,
+}
+
+impl<'a> RendererApi<'a> {
+    pub fn mark_shadow_settings_dirty(&mut self) {
+        self.renderer.mark_shadow_settings_dirty();
+    }
+}
+
+pub struct AssetApi<'a> {
+    assets: &'a mut AssetManager,
+}
+
+impl<'a> AssetApi<'a> {
+    pub fn retain_atlas(&mut self, key: &str, path: Option<&str>) -> Result<()> {
+        self.assets.retain_atlas(key, path)
+    }
+
+    pub fn release_atlas(&mut self, key: &str) {
+        self.assets.release_atlas(key);
+    }
 }
 
 pub trait EnginePlugin: Any + 'static {
@@ -251,6 +283,8 @@ pub struct PluginStatus {
     pub name: String,
     pub version: Option<String>,
     pub dynamic: bool,
+    pub provides: Vec<String>,
+    pub depends_on: Vec<String>,
     pub state: PluginState,
 }
 
@@ -264,6 +298,8 @@ pub struct PluginManager {
 struct PluginSlot {
     name: String,
     plugin: Box<dyn EnginePlugin>,
+    provides: Vec<String>,
+    depends_on: Vec<String>,
     _library: Option<Library>,
 }
 
@@ -308,11 +344,26 @@ impl PluginManager {
         let manifest_dir = manifest.path_parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
         let mut loaded = Vec::new();
         for entry in manifest.entries() {
+            if self.loaded_names.contains(&entry.name) {
+                if let Some(slot) = self.plugins.iter().find(|slot| slot.name == entry.name) {
+                    self.statuses.push(PluginStatus {
+                        name: slot.name.clone(),
+                        version: Some(slot.plugin.version().to_string()),
+                        dynamic: true,
+                        provides: slot.provides.clone(),
+                        depends_on: slot.depends_on.clone(),
+                        state: PluginState::Loaded,
+                    });
+                }
+                continue;
+            }
             if !entry.enabled {
                 self.statuses.push(PluginStatus {
                     name: entry.name.clone(),
                     version: entry.version.clone(),
                     dynamic: true,
+                    provides: entry.provides_features.clone(),
+                    depends_on: Vec::new(),
                     state: PluginState::Disabled("disabled in manifest".to_string()),
                 });
                 continue;
@@ -322,6 +373,8 @@ impl PluginManager {
                     name: entry.name.clone(),
                     version: entry.version.clone(),
                     dynamic: true,
+                    provides: entry.provides_features.clone(),
+                    depends_on: Vec::new(),
                     state: PluginState::Failed("missing plugin path".to_string()),
                 });
                 continue;
@@ -337,6 +390,8 @@ impl PluginManager {
                     name: entry.name.clone(),
                     version: entry.version.clone(),
                     dynamic: true,
+                    provides: entry.provides_features.clone(),
+                    depends_on: Vec::new(),
                     state: PluginState::Disabled(msg.clone()),
                 });
                 eprintln!("[plugin:{}] {msg}", entry.name);
@@ -349,6 +404,8 @@ impl PluginManager {
                         name: entry.name.clone(),
                         version: entry.version.clone(),
                         dynamic: true,
+                        provides: entry.provides_features.clone(),
+                        depends_on: Vec::new(),
                         state: PluginState::Failed(err.to_string()),
                     });
                 }
@@ -362,6 +419,8 @@ impl PluginManager {
             name: name.to_string(),
             version: None,
             dynamic: false,
+            provides: Vec::new(),
+            depends_on: Vec::new(),
             state: PluginState::Disabled(reason.to_string()),
         });
     }
@@ -413,6 +472,10 @@ impl PluginManager {
         &self.statuses
     }
 
+    pub fn clear_dynamic_statuses(&mut self) {
+        self.statuses.retain(|status| !status.dynamic);
+    }
+
     fn insert_plugin(
         &mut self,
         mut plugin: Box<dyn EnginePlugin>,
@@ -428,6 +491,7 @@ impl PluginManager {
         self.ensure_dependencies(plugin.depends_on(), &name)?;
         plugin.build(ctx)?;
         let version = plugin.version().to_string();
+        let depends = plugin.depends_on().iter().map(|s| s.to_string()).collect::<Vec<_>>();
         {
             let mut registry = self.features.borrow_mut();
             registry.register_all(&provides);
@@ -437,9 +501,11 @@ impl PluginManager {
             name: name.clone(),
             version: Some(version.clone()),
             dynamic: is_dynamic,
+            provides: provides.clone(),
+            depends_on: depends.clone(),
             state: PluginState::Loaded,
         });
-        self.plugins.push(PluginSlot { name, plugin, _library: library });
+        self.plugins.push(PluginSlot { name, plugin, provides, depends_on: depends, _library: library });
         Ok(())
     }
 

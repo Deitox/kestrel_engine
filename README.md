@@ -38,6 +38,10 @@
 cargo run
 `
 
+## Plugins
+- `pwsh scripts/build_plugins.ps1 [-Release]` builds every enabled entry from `config/plugins.json` by inferring the crate root from each artifact path.
+- After rebuilding a plugin, open the Plugins panel in-app and click “Reload plugins” to rescan the manifest without restarting.
+
 ## Configuration
 - Edit config/app.json to tweak window title, resolution, vsync, or fullscreen defaults.
 - Toggle dynamic plugins via config/plugins.json (paths are resolved relative to that file; set `enabled` per entry).

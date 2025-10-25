@@ -2,7 +2,7 @@
 
 Kestrel Engine exposes a lightweight plugin API so tooling or gameplay extensions can hook into the main loop without touching the core crate. There are three main pieces:
 
-1. **`EnginePlugin` trait** – Plugins implement lifecycle hooks (`build`, `update`, `fixed_update`, `on_events`, `shutdown`) plus identity helpers (`name`, `version`, `depends_on`). Each plugin is `'static` and receives a `PluginContext` that exposes vetted entry points into the renderer, ECS, assets, materials/meshes, input, the environment registry, the shared `FeatureRegistry`, and helpers such as `emit_script_message`.
+1. **`EnginePlugin` trait** – Plugins implement lifecycle hooks (`build`, `update`, `fixed_update`, `on_events`, `shutdown`) plus identity helpers (`name`, `version`, `depends_on`). Each plugin is `'static` and receives a `PluginContext` that exposes vetted entry points into the renderer, ECS, assets, materials/meshes, input, the environment registry, the shared `FeatureRegistry`, and helpers such as `emit_script_message`. Prefer the lightweight facades (`ctx.renderer_api()`, `ctx.assets_api()`, etc.) instead of reaching into the backing types so future engine changes remain non-breaking.
 2. **Dynamic loader** – At startup the engine scans `config/plugins.json`, resolves each enabled entry, checks feature requirements, and uses `libloading` to pull an exported factory from compiled `.dll` / `.so` / `.dylib` artifacts. Built-in plugins can also be disabled via the same manifest.
 3. **Feature registry** – Strings describe capabilities (`scripts.rhai`, `audio.rodio`, `render.3d`, etc.). Plugins can query the registry (`ctx.features()`) or publish new entries (`ctx.features_mut().register("my.feature")`). The manifest can also gate loading via `requires_features`, while `provides_features` are registered automatically after build.
 
@@ -44,7 +44,14 @@ If the manifest is missing, the loader simply skips dynamic registration.
 
 ## Building a plugin
 
-The repo includes `plugins/example_dynamic`, a `cdylib` crate that exercises the API:
+The repo includes `plugins/example_dynamic`, a `cdylib` crate that exercises the API. To rebuild every enabled plugin listed in the manifest, run:
+
+```powershell
+pwsh scripts/build_plugins.ps1        # Debug
+pwsh scripts/build_plugins.ps1 -Release
+```
+
+The script infers each crate’s root from the artifact path and runs `cargo build` with the requested profile.
 
 ```shell
 cargo build --manifest-path plugins/example_dynamic/Cargo.toml --release
@@ -102,3 +109,7 @@ pub extern "C" fn kestrel_plugin_entry() -> PluginExport {
 The engine expects every dynamic library to export `kestrel_plugin_entry`, which returns a `PluginExport` describing the targeted API version and a factory function that yields a boxed `EnginePlugin`. As soon as the plugin builds successfully, the loader registers any `provides_features` listed in the manifest along with whatever the plugin publishes during `build()`.
 
 If the loader encounters missing libraries, incompatible API versions, unmet feature requirements, or disabled entries, it logs the failure and records the outcome in the “Plugins” section of the right-hand egui panel so you can see which modules are Loaded / Disabled / Failed without digging through stdout.
+
+## Reloading without restart
+
+After rebuilding a plugin or correcting the manifest, open the in-app Plugins panel and press **Reload plugins**. The engine rescans `config/plugins.json`, updates the status list, and attempts to load any entries that were previously skipped without requiring an application restart.

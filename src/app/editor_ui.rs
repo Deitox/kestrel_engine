@@ -30,6 +30,7 @@ pub(super) struct UiActions {
     pub retain_atlases: Vec<(String, Option<String>)>,
     pub retain_meshes: Vec<(String, Option<String>)>,
     pub retain_environments: Vec<(String, Option<String>)>,
+    pub reload_plugins: bool,
 }
 
 pub(super) struct SelectionResult {
@@ -1351,6 +1352,10 @@ impl App {
 
                     ui.separator();
                     ui.heading("Plugins");
+                    if ui.button("Reload plugins").clicked() {
+                        actions.reload_plugins = true;
+                    }
+                    ui.small("Rebuild plugin cdylibs, then click reload to rescan manifest entries.");
                     let statuses = self.plugins.statuses();
                     if statuses.is_empty() {
                         ui.label("No plugins reported");
@@ -1378,6 +1383,12 @@ impl App {
                                         format!("{label} - failed: {reason}"),
                                     );
                                 }
+                            }
+                            if !status.depends_on.is_empty() {
+                                ui.small(format!("Depends on: {}", status.depends_on.join(", ")));
+                            }
+                            if !status.provides.is_empty() {
+                                ui.small(format!("Provides: {}", status.provides.join(", ")));
                             }
                         }
                     }
