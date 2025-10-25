@@ -1638,6 +1638,7 @@ dependencies = [
  "serde_json",
  "smallvec",
  "tempfile",
+ "uuid",
  "wgpu",
  "winit",
 ]

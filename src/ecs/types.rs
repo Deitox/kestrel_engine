@@ -1,4 +1,4 @@
-use crate::scene::MeshLightingData;
+use crate::scene::{MeshLightingData, SceneEntityId};
 use bevy_ecs::prelude::*;
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use rapier2d::prelude::{ColliderHandle, RigidBodyHandle};
@@ -23,6 +23,17 @@ pub struct WorldTransform3D(pub Mat4);
 pub struct Parent(pub Entity);
 #[derive(Component, Default)]
 pub struct Children(pub Vec<Entity>);
+
+#[derive(Component, Clone)]
+pub struct SceneEntityTag {
+    pub id: SceneEntityId,
+}
+
+impl SceneEntityTag {
+    pub fn new(id: SceneEntityId) -> Self {
+        Self { id }
+    }
+}
 #[derive(Component)]
 pub struct Spin {
     pub speed: f32,

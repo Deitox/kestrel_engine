@@ -1,9 +1,10 @@
 use crate::assets::AssetManager;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::Path;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scene {
@@ -59,6 +60,30 @@ pub struct ScenePreviewCamera {
     pub frustum_focus: Vec3Data,
     #[serde(default)]
     pub frustum_distance: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SceneEntityId(String);
+
+impl SceneEntityId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4().to_string())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl Default for SceneEntityId {
+    fn default() -> Self {
+        SceneEntityId::new()
+    }
 }
 
 fn default_light_direction() -> Vec3Data {
@@ -767,6 +792,8 @@ impl SceneDependencies {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SceneEntity {
     #[serde(default)]
+    pub id: SceneEntityId,
+    #[serde(default)]
     pub name: Option<String>,
     pub transform: TransformData,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -789,6 +816,8 @@ pub struct SceneEntity {
     pub orbit: Option<OrbitControllerData>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spin: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<SceneEntityId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<usize>,
 }
@@ -926,6 +955,7 @@ impl Scene {
         let mut scene = serde_json::from_slice::<Scene>(&bytes)
             .with_context(|| format!("Parsing scene file {}", path.display()))?;
         scene.dependencies.normalize();
+        scene.normalize_entities();
         Ok(scene)
     }
 
@@ -937,9 +967,34 @@ impl Scene {
         }
         let mut normalized = self.clone();
         normalized.dependencies.normalize();
+        normalized.normalize_entities();
         let json = serde_json::to_string_pretty(&normalized)?;
         fs::write(path, json.as_bytes()).with_context(|| format!("Writing scene file {}", path.display()))?;
         Ok(())
+    }
+
+    fn normalize_entities(&mut self) {
+        let mut seen = HashSet::new();
+        for entity in &mut self.entities {
+            if entity.id.is_empty() || !seen.insert(entity.id.clone()) {
+                let mut replacement = SceneEntityId::new();
+                while !seen.insert(replacement.clone()) {
+                    replacement = SceneEntityId::new();
+                }
+                entity.id = replacement;
+            }
+        }
+
+        for index in 0..self.entities.len() {
+            if self.entities[index].parent_id.is_some() {
+                continue;
+            }
+            if let Some(parent_index) = self.entities[index].parent {
+                if let Some(parent) = self.entities.get(parent_index) {
+                    self.entities[index].parent_id = Some(parent.id.clone());
+                }
+            }
+        }
     }
 }
 

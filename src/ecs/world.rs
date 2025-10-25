@@ -4,7 +4,7 @@ use crate::events::{EventBus, GameEvent};
 use crate::mesh_registry::MeshRegistry;
 use crate::scene::{
     ColliderData, ColorData, MeshData, MeshLightingData, OrbitControllerData, ParticleEmitterData, Scene,
-    SceneDependencies, SceneEntity, SpriteData, Transform3DData, TransformData,
+    SceneDependencies, SceneEntity, SceneEntityId, SpriteData, Transform3DData, TransformData,
 };
 use anyhow::{anyhow, Context, Result};
 use bevy_ecs::prelude::{Entity, Schedule, With, World};
@@ -12,6 +12,7 @@ use glam::{EulerRot, Mat4, Quat, Vec2, Vec3, Vec4};
 use rand::Rng;
 use rapier2d::prelude::{Rotation, Vector};
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::path::Path;
 
 pub struct EmitterSnapshot {
@@ -983,27 +984,48 @@ impl EcsWorld {
     fn load_scene_internal(&mut self, scene: &Scene, assets: &AssetManager) -> Result<()> {
         self.clear_scene_entities();
         let mut entity_map = Vec::with_capacity(scene.entities.len());
+        let mut id_map: HashMap<SceneEntityId, Entity> = HashMap::with_capacity(scene.entities.len());
         for entity_data in &scene.entities {
             let entity = self.spawn_scene_entity(entity_data, assets)?;
             entity_map.push(entity);
+            id_map.insert(entity_data.id.clone(), entity);
         }
         for (index, entity_data) in scene.entities.iter().enumerate() {
+            let child_entity = entity_map[index];
+            if let Some(parent_id) = entity_data.parent_id.as_ref() {
+                if let Some(&parent_entity) = id_map.get(parent_id) {
+                    self.attach_child_to_parent(child_entity, parent_entity);
+                    continue;
+                }
+            }
             if let Some(parent_index) = entity_data.parent {
                 let parent_entity = *entity_map
                     .get(parent_index)
                     .ok_or_else(|| anyhow!("Scene entity parent index {parent_index} out of bounds"))?;
-                let child_entity = entity_map[index];
-                self.world.entity_mut(child_entity).insert(Parent(parent_entity));
-                if let Some(mut children) = self.world.get_mut::<Children>(parent_entity) {
-                    if !children.0.contains(&child_entity) {
-                        children.0.push(child_entity);
-                    }
-                } else {
-                    self.world.entity_mut(parent_entity).insert(Children(vec![child_entity]));
-                }
+                self.attach_child_to_parent(child_entity, parent_entity);
             }
         }
         Ok(())
+    }
+
+    fn attach_child_to_parent(&mut self, child_entity: Entity, parent_entity: Entity) {
+        self.world.entity_mut(child_entity).insert(Parent(parent_entity));
+        if let Some(mut children) = self.world.get_mut::<Children>(parent_entity) {
+            if !children.0.contains(&child_entity) {
+                children.0.push(child_entity);
+            }
+        } else {
+            self.world.entity_mut(parent_entity).insert(Children(vec![child_entity]));
+        }
+    }
+
+    fn ensure_scene_entity_tag(&mut self, entity: Entity) -> SceneEntityId {
+        if let Some(tag) = self.world.get::<SceneEntityTag>(entity).cloned() {
+            return tag.id;
+        }
+        let id = SceneEntityId::new();
+        self.world.entity_mut(entity).insert(SceneEntityTag::new(id.clone()));
+        id
     }
 
     pub fn export_scene(&mut self, assets: &AssetManager) -> Scene {
@@ -1036,7 +1058,7 @@ impl EcsWorld {
             }
         }
         for root in roots {
-            self.collect_scene_entity(root, None, &mut scene.entities);
+            self.collect_scene_entity(root, None, None, &mut scene.entities);
         }
         scene.dependencies =
             SceneDependencies::from_entities(&scene.entities, assets, mesh_source, material_source);
@@ -1081,6 +1103,7 @@ impl EcsWorld {
 
         let mut entity =
             self.world.spawn((Transform { translation, rotation, scale }, WorldTransform::default()));
+        entity.insert(SceneEntityTag::new(data.id.clone()));
 
         if let Some(transform3d) = data.transform3d.as_ref() {
             let (translation3, rotation3, scale3) = transform3d.components();
@@ -1184,7 +1207,13 @@ impl EcsWorld {
         Ok(entity_id)
     }
 
-    fn collect_scene_entity(&self, entity: Entity, parent_index: Option<usize>, out: &mut Vec<SceneEntity>) {
+    fn collect_scene_entity(
+        &mut self,
+        entity: Entity,
+        parent_index: Option<usize>,
+        parent_id: Option<SceneEntityId>,
+        out: &mut Vec<SceneEntity>,
+    ) {
         if self.world.get::<Transform>(entity).is_none() {
             return;
         }
@@ -1192,9 +1221,11 @@ impl EcsWorld {
             return;
         }
 
+        let entity_id = self.ensure_scene_entity_tag(entity);
         let transform = *self.world.get::<Transform>(entity).unwrap();
-        let mesh_surface = self.world.get::<MeshSurface>(entity);
+        let mesh_surface = self.world.get::<MeshSurface>(entity).cloned();
         let scene_entity = SceneEntity {
+            id: entity_id.clone(),
             name: None,
             transform: TransformData::from_components(
                 transform.translation,
@@ -1236,15 +1267,16 @@ impl EcsWorld {
                 angular_speed: orbit.angular_speed,
             }),
             spin: self.world.get::<Spin>(entity).map(|s| s.speed),
+            parent_id: parent_id.clone(),
             parent: parent_index,
         };
 
         let current_index = out.len();
         out.push(scene_entity);
 
-        if let Some(children) = self.world.get::<Children>(entity) {
-            for &child in &children.0 {
-                self.collect_scene_entity(child, Some(current_index), out);
+        if let Some(child_entities) = self.world.get::<Children>(entity).map(|children| children.0.clone()) {
+            for child in child_entities {
+                self.collect_scene_entity(child, Some(current_index), Some(entity_id.clone()), out);
             }
         }
     }

@@ -430,3 +430,65 @@ fn lighting_shadow_settings_roundtrip() {
     assert!((roundtrip.shadow.bias - 0.0035).abs() < f32::EPSILON);
     assert!((roundtrip.shadow.strength - 0.65).abs() < f32::EPSILON);
 }
+
+#[test]
+fn scene_entity_ids_enable_parent_reconstruction() {
+    let mut world = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    assets
+        .retain_atlas("main", Some("assets/images/atlas.json"))
+        .expect("atlas should load for ID roundtrip");
+
+    let parent = world
+        .world
+        .spawn((Transform::default(), WorldTransform::default()))
+        .id();
+    let child = world
+        .world
+        .spawn((Transform::default(), WorldTransform::default(), Parent(parent)))
+        .id();
+    world.world.entity_mut(parent).insert(Children(vec![child]));
+
+    let scene = world.export_scene(&assets);
+    assert!(
+        scene.entities.iter().all(|entity| !entity.id.as_str().is_empty()),
+        "export should assign IDs to every entity"
+    );
+
+    let mut scene_without_indices = scene.clone();
+    for entity in &mut scene_without_indices.entities {
+        if entity.parent_id.is_some() {
+            entity.parent = None;
+        }
+    }
+
+    let temp_file = NamedTempFile::new().expect("temp scene file for IDs");
+    scene_without_indices
+        .save_to_path(temp_file.path())
+        .expect("scene save without parent indices should succeed");
+
+    let loaded_scene = Scene::load_from_path(temp_file.path()).expect("scene load should succeed");
+    assert_eq!(loaded_scene.entities.len(), scene.entities.len());
+    for (expected, loaded) in scene.entities.iter().zip(loaded_scene.entities.iter()) {
+        assert_eq!(expected.id, loaded.id, "entity IDs should persist across disk roundtrip");
+        assert_eq!(
+            expected.parent_id, loaded.parent_id,
+            "parent IDs should persist across disk roundtrip"
+        );
+    }
+
+    let mut reload_world = EcsWorld::new();
+    reload_world
+        .load_scene_from_path_with_mesh(temp_file.path(), &mut assets, |_, _| Ok(()))
+        .expect("scene load should rebuild hierarchy");
+
+    let mut parent_query = reload_world.world.query::<&Parent>();
+    assert!(
+        parent_query.iter(&reload_world.world).count() > 0,
+        "entities should retain parent components"
+    );
+
+    let mut children_query = reload_world.world.query::<&Children>();
+    let total_children: usize = children_query.iter(&reload_world.world).map(|children| children.0.len()).sum();
+    assert!(total_children > 0, "parents should retain children listings when only parent IDs are stored");
+}
