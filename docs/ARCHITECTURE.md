@@ -28,6 +28,7 @@
 - `src/camera.rs` implements the 2D camera with pan and zoom helpers, while `src/camera3d.rs` provides the perspective preview camera, orbit controller, and free-fly controller.
 - `src/config.rs` loads `config/app.json` and hands window defaults to the renderer.
 - `src/scripts.rs` embeds Rhai, hot-reloads scripts, queues gameplay commands for the app to apply, captures script log messages, and now exposes `ScriptPlugin` so the scripting subsystem hooks into the shared plugin lifecycle.
+- `src/analytics.rs` tracks frame-time history plus a rolling `GameEvent` log through `AnalyticsPlugin`, feeding the stats panels without bloating `App`.
 - `src/events.rs` defines `GameEvent` plus the `EventBus` resource that records gameplay signals for tooling and audio.
 - `src/scene.rs` describes the JSON scene format, tracks atlas/mesh dependencies, and handles serialization/deserialization of entity hierarchies for save/load operations.
 - `src/audio.rs` exposes `AudioManager` plus an `AudioPlugin` wrapper so rodio-backed cues react to `GameEvent`s through the shared plugin system.
@@ -42,7 +43,7 @@
 7. **UI feedback** - egui surfaces frame time, spawn controls, emitter tuning, camera details, the entity inspector (with sprite and mesh metadata), mesh selection/orbit controls, and script toggles.
 
 ### Module Relationships
-- `App` owns `Renderer`, `EcsWorld`, `Input`, `Camera2D`, `AssetManager`, `Time`, and `ScriptHost`.
+- `App` owns `Renderer`, `EcsWorld`, `Input`, `Camera2D`, `AssetManager`, and `Time`, while plugins (scripts, audio, analytics) handle their respective subsystems.
 - `Renderer` consults `WindowConfig` (from `config.rs`) for swapchain setup.
 - `EcsWorld` uses `AssetManager` to resolve atlas regions when building instance buffers.
 - `Camera2D` depends on window size data supplied by `Renderer`.
@@ -50,8 +51,7 @@
 - `RapierState` lives inside `EcsWorld` and synchronizes rigid-body data each fixed tick.
 - `EventBus` is stored as an ECS resource so systems can push `GameEvent` values that the app drains after each frame.
 - `PluginManager` (`src/plugins.rs`) stores `EnginePlugin` implementations, hands them a `PluginContext`, and invokes build/update/fixed/event hooks each frame so extensions stay decoupled from the core loop.
-- `AudioPlugin` wraps `AudioManager`, receives drained `GameEvent`s through the plugin manager, and exposes trigger history + enable state to the editor UI while playing rodio tones when audio is available.
-- `ScriptPlugin` wraps `ScriptHost`, handles update/drain inside the plugin loop, and exposes handle management plus UI-facing controls (enable/reload/status) without the core app owning the scripting subsystem directly.
+- `AnalyticsPlugin` collects frame-time history and recent `GameEvent`s for the analytics panels, `AudioPlugin` wraps `AudioManager` to expose trigger history + enable state to the editor UI while playing rodio tones, and `ScriptPlugin` keeps Rhai hot-reload logic outside the core loop.
 - `MeshRegistry` owns CPU/GPU mesh resources so both the preview mesh and ECS-driven mesh entities share buffers.
 - The editor routes perspective viewport picking through the mesh registry's bounding data so gizmos and inspector edits stay in sync for 3D meshes.
 - The scene toolbar presents dependency health along with retain buttons so missing atlases or meshes can be rehydrated before applying a scene.

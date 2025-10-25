@@ -9,7 +9,7 @@
 - HDR environment lighting - Load equirectangular HDR maps to drive diffuse irradiance, specular reflections, and a BRDF LUT so materials react to image-based lighting alongside the directional key light.
 - Camera tooling - The mesh preview offers three modes (Disabled, Orbit, Free-fly). Free-fly introduces WASD/QE + Shift navigation with mouse look and roll, while orbit mode remains handy for turntable inspection.
 - Perspective viewport editing - Ray-based picking, translate/rotate/scale gizmos, and a frame-selection helper keep mesh workflows aligned with the inspector.
-- Plugin system - The new `EnginePlugin` trait plus runtime registry lets subsystems (audio, scripting, future tooling) hook into init/update/fixed/event stages without modifying the core loop, paving the way for third-party extensions.
+- Plugin system - The new `EnginePlugin` trait plus runtime registry lets subsystems (audio, scripting, analytics, future tooling) hook into init/update/fixed/event stages without modifying the core loop, paving the way for third-party extensions.
 - Scene toolbar upgrades - Quick path history, dependency health readouts, and one-click retain buttons make Save/Load workflows safer.
 - Scene I/O guardrails - Mesh-aware helpers (save_scene_to_path_with_mesh_source, load_scene_with_mesh) ensure custom assets keep their source paths and metadata during save/load workflows.
 

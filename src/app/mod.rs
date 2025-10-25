@@ -1,3 +1,4 @@
+use crate::analytics::AnalyticsPlugin;
 use crate::assets::AssetManager;
 use crate::audio::AudioPlugin;
 use crate::camera::Camera2D;
@@ -138,7 +139,6 @@ pub struct App {
     ui_spawn_per_press: i32,
     ui_auto_spawn_rate: f32, // per second
     ui_cell_size: f32,
-    ui_hist: Vec<f32>,
     ui_root_spin: f32,
     ui_emitter_rate: f32,
     ui_emitter_spread: f32,
@@ -168,10 +168,6 @@ pub struct App {
 
     // Plugins
     plugins: PluginManager,
-
-    // Events
-    recent_events: VecDeque<GameEvent>,
-    event_log_limit: usize,
 
     // Camera / selection
     pub(crate) camera: Camera2D,
@@ -228,14 +224,6 @@ impl App {
         ));
         let emitter = ecs.spawn_demo_scene();
         let initial_events = ecs.drain_events();
-        let event_log_limit = 32;
-        let mut recent_events = VecDeque::with_capacity(event_log_limit);
-        for event in &initial_events {
-            if recent_events.len() == event_log_limit {
-                recent_events.pop_front();
-            }
-            recent_events.push_back(event.clone());
-        }
         let emitter_snapshot = ecs.emitter_snapshot(emitter);
         let (
             ui_emitter_rate,
@@ -330,6 +318,9 @@ impl App {
                 &mut environment_registry,
                 &time,
             );
+            if let Err(err) = plugins.register(Box::new(AnalyticsPlugin::default()), &mut ctx) {
+                eprintln!("[plugin] failed to register analytics plugin: {err:?}");
+            }
             if let Err(err) =
                 plugins.register(Box::new(ScriptPlugin::new("assets/scripts/main.rhai")), &mut ctx)
             {
@@ -374,7 +365,6 @@ impl App {
             ui_spawn_per_press: 200,
             ui_auto_spawn_rate: 0.0,
             ui_cell_size: 0.25,
-            ui_hist: Vec::with_capacity(240),
             ui_root_spin: 1.2,
             ui_emitter_rate,
             ui_emitter_spread,
@@ -402,8 +392,6 @@ impl App {
             scene_history,
             inspector_status: None,
             plugins,
-            recent_events,
-            event_log_limit,
             camera: Camera2D::new(CAMERA_BASE_HALF_HEIGHT),
             viewport_camera_mode: ViewportCameraMode::default(),
             selected_entity: None,
@@ -449,12 +437,6 @@ impl App {
             return;
         }
         self.with_plugins(|plugins, ctx| plugins.handle_events(ctx, &events));
-        for event in events {
-            if self.recent_events.len() == self.event_log_limit {
-                self.recent_events.pop_front();
-            }
-            self.recent_events.push_back(event);
-        }
     }
 
     fn atlas_view(&mut self, key: &str) -> Result<Arc<wgpu::TextureView>> {
@@ -507,6 +489,14 @@ impl App {
 
     fn audio_plugin(&self) -> Option<&AudioPlugin> {
         self.plugins.get::<AudioPlugin>()
+    }
+
+    fn analytics_plugin(&self) -> Option<&AnalyticsPlugin> {
+        self.plugins.get::<AnalyticsPlugin>()
+    }
+
+    fn analytics_plugin_mut(&mut self) -> Option<&mut AnalyticsPlugin> {
+        self.plugins.get_mut::<AnalyticsPlugin>()
     }
 
     fn script_plugin(&self) -> Option<&ScriptPlugin> {
@@ -1330,21 +1320,18 @@ impl ApplicationHandler for App {
         if let Some(screen) = self.egui_screen.as_mut() {
             screen.pixels_per_point = ui_pixels_per_point;
         };
-        let dt_ms = dt * 1000.0;
-        self.ui_hist.push(dt_ms);
-        if self.ui_hist.len() > 240 {
-            self.ui_hist.remove(0);
-        }
-
-        let hist_points: Vec<[f64; 2]> =
-            self.ui_hist.iter().enumerate().map(|(i, v)| [i as f64, *v as f64]).collect();
+        let hist_points =
+            self.analytics_plugin().map(|plugin| plugin.frame_plot_points()).unwrap_or_else(Vec::new);
         let entity_count = self.ecs.entity_count();
         let instances_drawn = instances.len();
         let orbit_target = self.mesh_orbit.target;
         let mesh_camera_for_ui = self.mesh_camera.clone();
         let camera_position = self.camera.position;
         let camera_zoom = self.camera.zoom;
-        let recent_events: Vec<GameEvent> = self.recent_events.iter().cloned().collect();
+        let recent_events: Vec<GameEvent> = self
+            .analytics_plugin()
+            .map(|plugin| plugin.recent_events().cloned().collect())
+            .unwrap_or_default();
         let (audio_triggers, audio_enabled) = if let Some(audio) = self.audio_plugin() {
             (audio.recent_triggers().cloned().collect(), audio.enabled())
         } else {
@@ -1610,7 +1597,9 @@ impl ApplicationHandler for App {
                         if let Some(plugin) = self.script_plugin_mut() {
                             plugin.clear_handles();
                         }
-                        self.ui_hist.clear();
+                        if let Some(analytics) = self.analytics_plugin_mut() {
+                            analytics.clear_frame_history();
+                        }
                         self.sync_emitter_ui();
                         self.inspector_status = None;
                     }
