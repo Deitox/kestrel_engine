@@ -10,10 +10,8 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
 
 ## P0 — Stability & Determinism
 
-1. **[M1] Swapchain regression harness** — *In progress (headless pathway instrumentation lands)*
-   - *Why:* Surface-loss handling is the riskiest WGPU code path today.
-   - *Status:* `Renderer` now records resize attempts even when the GPU surface is absent, and unit tests (`renderer::surface_tests`) verify that synthetic `SurfaceError::Lost` events trigger a reconfigure request. Remaining work: stand up a full headless swapchain (or lightweight window) so `render_frame` itself is exercised after forced `SurfaceError` values.
-   - *Acceptance:* Add a headless integration test (mock surface or `wgpu` headless instance) that recreates the renderer after synthetic `SurfaceError::Lost/Outdated`. The test should fail if `Renderer::render_frame` ever panics after a simulated loss.
+1. **[M1] Swapchain regression harness** — ✅ *Completed via headless render path + synthetic surface-error tests.*
+   - *Highlights:* `Renderer::surface_tests::headless_render_recovers_from_surface_loss` now drives a fully headless render target, injects `SurfaceError::Lost`, and verifies that `render_frame` cleanly errors, triggers a resize, and then succeeds after recovery. Supporting hooks (`prepare_headless_render_target_for_test`, `inject_surface_error_for_test`) keep the harness deterministic.
 2. **[M1] Configurable VSync toggle** — ✅ *Completed (runtime toggle + renderer reconfigure UI panel).*
    - *Why:* Perf testing requires deterministic presentation modes.
    - *Acceptance:* Extend `config/app.json` plus the in-app UI so VSync can be toggled at runtime, with the renderer reconfiguring the surface immediately; log the active mode in analytics.

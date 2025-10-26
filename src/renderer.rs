@@ -94,21 +94,35 @@ pub struct MeshDraw<'a> {
 }
 
 pub struct SurfaceFrame {
-    surface: wgpu::SurfaceTexture,
+    view: wgpu::TextureView,
+    surface: Option<wgpu::SurfaceTexture>,
 }
 
 impl SurfaceFrame {
     fn new(surface: wgpu::SurfaceTexture) -> Self {
-        Self { surface }
+        let view = surface.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        Self { view, surface: Some(surface) }
     }
 
-    pub fn view(&self) -> wgpu::TextureView {
-        self.surface.texture.create_view(&wgpu::TextureViewDescriptor::default())
+    #[cfg(test)]
+    fn headless(view: wgpu::TextureView) -> Self {
+        Self { view, surface: None }
     }
 
-    pub fn present(self) {
-        self.surface.present();
+    pub fn view(&self) -> &wgpu::TextureView {
+        &self.view
     }
+
+    pub fn present(mut self) {
+        if let Some(surface) = self.surface.take() {
+            surface.present();
+        }
+    }
+}
+
+#[cfg(test)]
+struct HeadlessTarget {
+    texture: wgpu::Texture,
 }
 
 struct MeshPipelineResources {
@@ -234,6 +248,10 @@ pub struct Renderer {
     present_modes: Vec<wgpu::PresentMode>,
     #[cfg(test)]
     resize_invocations: usize,
+    #[cfg(test)]
+    headless_target: Option<HeadlessTarget>,
+    #[cfg(test)]
+    surface_error_injector: Option<wgpu::SurfaceError>,
 }
 
 const DEFAULT_PRESENT_MODES: [wgpu::PresentMode; 1] = [wgpu::PresentMode::Fifo];
@@ -278,6 +296,10 @@ impl Renderer {
             present_modes: Vec::new(),
             #[cfg(test)]
             resize_invocations: 0,
+            #[cfg(test)]
+            headless_target: None,
+            #[cfg(test)]
+            surface_error_injector: None,
         }
     }
 
@@ -1395,9 +1417,60 @@ impl Renderer {
         self.window.as_deref()
     }
 
+    fn acquire_surface_frame(&mut self) -> Result<SurfaceFrame> {
+        #[cfg(test)]
+        if let Some(err) = self.surface_error_injector.take() {
+            return Err(self.handle_surface_error(&err));
+        }
+        if let Some(surface) = self.surface.as_ref() {
+            match surface.get_current_texture() {
+                Ok(frame) => Ok(SurfaceFrame::new(frame)),
+                Err(err) => Err(self.handle_surface_error(&err)),
+            }
+        } else {
+            #[cfg(test)]
+            {
+                if let Some(target) = self.headless_target.as_ref() {
+                    let view = target.texture.create_view(&wgpu::TextureViewDescriptor::default());
+                    return Ok(SurfaceFrame::headless(view));
+                }
+            }
+            Err(anyhow!("Surface not initialized"))
+        }
+    }
+
     #[cfg(test)]
     pub fn resize_invocations_for_test(&self) -> usize {
         self.resize_invocations
+    }
+
+    #[cfg(test)]
+    pub fn prepare_headless_render_target_for_test(&mut self) -> Result<()> {
+        let device = self.device()?;
+        if self.size.width == 0 || self.size.height == 0 {
+            return Err(anyhow!("Headless render target requires non-zero dimensions"));
+        }
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Headless Render Target"),
+            size: wgpu::Extent3d {
+                width: self.size.width,
+                height: self.size.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        self.headless_target = Some(HeadlessTarget { texture });
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn inject_surface_error_for_test(&mut self, error: wgpu::SurfaceError) {
+        self.surface_error_injector = Some(error);
     }
 
     pub fn vsync_enabled(&self) -> bool {
@@ -1425,6 +1498,7 @@ impl Renderer {
         #[cfg(test)]
         {
             self.resize_invocations = self.resize_invocations.saturating_add(1);
+            self.headless_target = None;
         }
         if new_size.width > 0 && new_size.height > 0 {
             if let Some(config) = self.config.as_mut() {
@@ -1442,11 +1516,15 @@ impl Renderer {
 
     fn ensure_instance_capacity(&mut self, count: usize) -> Result<()> {
         let device = self.device.as_ref().context("GPU device not initialized")?;
-        if self.instance_capacity >= count {
+        let required = count.max(1);
+        if self.instance_capacity >= required && self.instance_buffer.is_some() {
             return Ok(());
         }
         let mut new_cap = self.instance_capacity.max(256);
-        while new_cap < count {
+        if new_cap == 0 {
+            new_cap = 256;
+        }
+        while new_cap < required {
             new_cap *= 2;
         }
         let buf_size = (new_cap * std::mem::size_of::<InstanceData>()) as u64;
@@ -1553,17 +1631,9 @@ impl Renderer {
             queue.write_buffer(instance_buffer, 0, byte_data);
         }
 
-        let surface = self.surface.as_ref().context("Surface not initialized")?;
+        let frame = self.acquire_surface_frame()?;
         let device = self.device.as_ref().context("GPU device not initialized")?;
-
-        let frame = match surface.get_current_texture() {
-            Ok(frame) => frame,
-            Err(err) => {
-                let reason = self.handle_surface_error(&err);
-                return Err(reason);
-            }
-        };
-        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = frame.view();
         let encoder_label =
             format!("Frame Encoder (sprites={}, meshes={})", instances.len(), mesh_draws.len());
         let mut encoder = device
@@ -1584,7 +1654,7 @@ impl Renderer {
         if let Some(camera) = mesh_camera {
             if !mesh_draws.is_empty() {
                 self.prepare_shadow_map(&mut encoder, mesh_draws, camera)?;
-                self.encode_mesh_pass(&mut encoder, &view, viewport, mesh_draws, camera, clear_color)?;
+                self.encode_mesh_pass(&mut encoder, view, viewport, mesh_draws, camera, clear_color)?;
                 sprite_load_op = wgpu::LoadOp::Load;
             }
         }
@@ -1593,7 +1663,7 @@ impl Renderer {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Sprite Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations { load: sprite_load_op, store: wgpu::StoreOp::Store },
@@ -1660,7 +1730,7 @@ impl Renderer {
         } else {
             return Err(anyhow!("GPU queue not initialized"));
         }
-        Ok(SurfaceFrame::new(frame))
+        Ok(frame)
     }
 
     fn handle_surface_error(&mut self, error: &wgpu::SurfaceError) -> anyhow::Error {
@@ -1794,6 +1864,64 @@ mod surface_tests {
         assert_eq!(renderer.resize_invocations_for_test(), 0);
         let _ = renderer.handle_surface_error(&wgpu::SurfaceError::Lost);
         assert_eq!(renderer.resize_invocations_for_test(), 1);
+    }
+
+    #[test]
+    fn headless_render_recovers_from_surface_loss() {
+        let window_config =
+            WindowConfig { title: "Headless".into(), width: 64, height: 64, vsync: false, fullscreen: false };
+        let mut renderer = block_on(Renderer::new(&window_config));
+        block_on(renderer.init_headless_for_test()).expect("init headless");
+        let (pipeline_sampler, draw_sampler, atlas_view) = {
+            let device = renderer.device().expect("device");
+            let queue = renderer.queue().expect("queue");
+            let atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Test Atlas"),
+                size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &atlas_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &[255, 255, 255, 255],
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4), rows_per_image: Some(1) },
+                wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            );
+            let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let pipeline_sampler = device.create_sampler(&wgpu::SamplerDescriptor::default());
+            let draw_sampler = device.create_sampler(&wgpu::SamplerDescriptor::default());
+            (pipeline_sampler, draw_sampler, atlas_view)
+        };
+        renderer.init_sprite_pipeline_with_atlas(atlas_view, pipeline_sampler).expect("init sprite pipeline");
+        renderer.prepare_headless_render_target_for_test().expect("headless target");
+        let viewport = RenderViewport {
+            origin: (0.0, 0.0),
+            size: (window_config.width as f32, window_config.height as f32),
+        };
+
+        let render_once = |renderer: &mut Renderer| -> anyhow::Result<()> {
+            let frame =
+                renderer.render_frame(&[], &[], &draw_sampler, Mat4::IDENTITY, viewport, &[], None)?;
+            frame.present();
+            Ok(())
+        };
+
+        render_once(&mut renderer).expect("initial render");
+        renderer.inject_surface_error_for_test(wgpu::SurfaceError::Lost);
+        let err = render_once(&mut renderer).expect_err("surface loss should bubble");
+        assert!(err.to_string().contains("Surface lost"));
+        assert!(renderer.resize_invocations_for_test() >= 1);
+        renderer.prepare_headless_render_target_for_test().expect("headless target reinit");
+        render_once(&mut renderer).expect("render after recovery");
     }
 }
 
