@@ -29,6 +29,13 @@ pub struct AppConfig {
     pub particles: ParticleConfig,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct AppConfigOverrides {
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub vsync: Option<bool>,
+}
+
 impl Default for WindowConfig {
     fn default() -> Self {
         Self { title: "Kestrel Engine".to_string(), width: 1280, height: 720, vsync: true, fullscreen: false }
@@ -83,5 +90,37 @@ impl AppConfig {
                 Self::default()
             }
         }
+    }
+
+    pub fn apply_overrides(&mut self, overrides: &AppConfigOverrides) {
+        if let Some(width) = overrides.width {
+            self.window.width = width;
+        }
+        if let Some(height) = overrides.height {
+            self.window.height = height;
+        }
+        if let Some(vsync) = overrides.vsync {
+            self.window.vsync = vsync;
+        }
+    }
+}
+
+impl AppConfigOverrides {
+    pub fn is_empty(&self) -> bool {
+        self.width.is_none() && self.height.is_none() && self.vsync.is_none()
+    }
+
+    pub fn applied_fields(&self) -> Vec<&'static str> {
+        let mut fields = Vec::new();
+        if self.width.is_some() {
+            fields.push("width");
+        }
+        if self.height.is_some() {
+            fields.push("height");
+        }
+        if self.vsync.is_some() {
+            fields.push("vsync");
+        }
+        fields
     }
 }

@@ -31,7 +31,7 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
    - *Acceptance:* Add timeline data to atlas metadata, stream per-instance animation state through the ECS, and expose playback controls in the inspector.
 7. **[M3.5] Quadtree fallback with perf telemetry**
    - *Acceptance:* Implement a density-aware quadtree fallback for the spatial hash, expose cell occupancy metrics to the analytics plugin, and add a toggle in the debug UI.
-8. **[M4] CLI overrides for config values**
+8. **[M4] CLI overrides for config values** - *Completed via CLI parser + AppConfigOverrides (runtime precedence logging + parser tests).*
    - *Acceptance:* Support `kestrel_engine --width 1280 --height 720 --vsync off` (or similar) with precedence rules logged at startup; include unit tests for argument parsing.
 9. **[M5] Profiler & metrics panel with snapshot tests**
    - *Acceptance:* Add a collapsible egui profiler panel (frame timings, ECS system timings) and snapshot tests that catch layout regressions.

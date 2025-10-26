@@ -44,6 +44,7 @@ cargo run
 
 ## Configuration
 - Edit config/app.json to tweak window title, resolution, vsync, or fullscreen defaults.
+- Override width/height/vsync from the CLI with `kestrel_engine --width 1920 --height 1080 --vsync off` (CLI overrides take precedence over config/app.json, which takes precedence over built-in defaults).
 - Remap keyboard input by editing config/input.json (missing or invalid entries fall back to the built-in bindings with warnings).
 - Toggle dynamic plugins via config/plugins.json (paths are resolved relative to that file; set `enabled` per entry).
 - Disable built-in plugins by listing their names in `config/plugins.json` → `disable_builtins`.

@@ -1,6 +1,7 @@
 pub mod analytics;
 pub mod app;
 pub mod assets;
+pub mod cli;
 pub mod audio;
 pub mod camera;
 pub mod camera3d;
@@ -20,7 +21,7 @@ pub mod scene;
 pub mod scripts;
 pub mod time;
 
-pub use app::{run, App};
+pub use app::{run, run_with_overrides, App};
 
 pub(crate) fn wrap_angle(mut radians: f32) -> f32 {
     let two_pi = 2.0 * std::f32::consts::PI;

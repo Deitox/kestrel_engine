@@ -3,7 +3,7 @@ use crate::assets::AssetManager;
 use crate::audio::{AudioHealthSnapshot, AudioPlugin};
 use crate::camera::Camera2D;
 use crate::camera3d::Camera3D;
-use crate::config::AppConfig;
+use crate::config::{AppConfig, AppConfigOverrides};
 use crate::ecs::{EcsWorld, InstanceData, MeshLightingInfo, ParticleCaps};
 use crate::environment::EnvironmentRegistry;
 use crate::events::GameEvent;
@@ -106,7 +106,24 @@ impl Viewport {
     }
 }
 pub async fn run() -> Result<()> {
-    let config = AppConfig::load_or_default("config/app.json");
+    run_with_overrides(AppConfigOverrides::default()).await
+}
+
+pub async fn run_with_overrides(overrides: AppConfigOverrides) -> Result<()> {
+    let mut config = AppConfig::load_or_default("config/app.json");
+    let precedence_note = "Precedence: CLI overrides > config/app.json > defaults.";
+    if overrides.is_empty() {
+        println!("[config] {precedence_note} No CLI overrides supplied.");
+    } else {
+        let fields = overrides.applied_fields();
+        if !fields.is_empty() {
+            println!(
+                "[config] {precedence_note} CLI overrides applied for: {}.",
+                fields.join(", ")
+            );
+        }
+    }
+    config.apply_overrides(&overrides);
     let event_loop = EventLoop::new().context("Failed to create winit event loop")?;
     let mut app = App::new(config).await;
     event_loop.run_app(&mut app).context("Event loop execution failed")?;
