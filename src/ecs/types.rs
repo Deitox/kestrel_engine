@@ -147,6 +147,36 @@ impl ParticleCaps {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ParticleBudgetMetrics {
+    pub active_particles: u32,
+    pub available_spawn_this_frame: u32,
+    pub max_total: u32,
+    pub max_spawn_per_frame: u32,
+    pub total_emitters: u32,
+    pub emitter_backlog_total: f32,
+    pub emitter_backlog_max_observed: f32,
+    pub emitter_backlog_limit: f32,
+}
+
+impl ParticleBudgetMetrics {
+    pub fn cap_utilization(&self) -> f32 {
+        if self.max_total == 0 {
+            0.0
+        } else {
+            self.active_particles as f32 / self.max_total as f32
+        }
+    }
+
+    pub fn average_backlog(&self) -> f32 {
+        if self.total_emitters == 0 {
+            0.0
+        } else {
+            self.emitter_backlog_total / self.total_emitters as f32
+        }
+    }
+}
+
 #[derive(Component, Clone, Copy)]
 pub struct RapierBody {
     pub handle: RigidBodyHandle,

@@ -39,7 +39,7 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
     - *Acceptance:* Allow the viewport to switch between multiple named cameras or follow a selected entity; persist the choice in scene metadata.
 11. **[M7] Scripting debugger / REPL**
     - *Acceptance:* Embed a lightweight Rhai REPL with pause/step controls and command history; script errors should focus in the debugger panel.
-12. **[M8] Particle budget analytics**
+12. **[M8] Particle budget analytics** - *Completed via ECS telemetry + Stats panel (`src/ecs/world.rs:322`, `src/app/editor_ui.rs:250`).*
     - *Acceptance:* Stream current particle counts, emitter backlog, and cap utilization into the analytics UI to spot runaway effects.
 13. **[M9] Audio capability diagnostics** - *Completed via device metadata telemetry + analytics logging (`src/audio.rs:22`, `src/app/mod.rs:471`).*
     - *Acceptance:* Extend the new `AudioHealthSnapshot` telemetry with device name/sample rate info and route it into analytics/logs when initialization fails.

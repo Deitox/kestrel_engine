@@ -1,7 +1,7 @@
 use super::{App, MeshControlMode, ViewportCameraMode};
 use crate::audio::{AudioHealthSnapshot, AudioPlugin};
 use crate::camera3d::Camera3D;
-use crate::ecs::{EntityInfo, SpriteInfo};
+use crate::ecs::{EntityInfo, ParticleBudgetMetrics, SpriteInfo};
 use crate::events::GameEvent;
 use crate::gizmo::{
     Axis2, GizmoInteraction, GizmoMode, ScaleHandle, ScaleHandleKind, GIZMO_ROTATE_INNER_RADIUS_PX,
@@ -45,6 +45,7 @@ pub(super) struct EditorUiParams {
     pub entity_count: usize,
     pub instances_drawn: usize,
     pub vsync_enabled: bool,
+    pub particle_budget: Option<ParticleBudgetMetrics>,
     pub ui_scale: f32,
     pub ui_cell_size: f32,
     pub ui_spawn_per_press: i32,
@@ -184,6 +185,7 @@ impl App {
             audio_triggers,
             mut audio_enabled,
             audio_health,
+            particle_budget,
             mut id_lookup_input,
             mut id_lookup_active,
         } = params;
@@ -268,6 +270,30 @@ impl App {
                             ));
                         });
                         ui.label("Target: 16.7ms for 60 FPS");
+                        if let Some(metrics) = particle_budget {
+                            ui.separator();
+                            ui.label("Particle Budget");
+                            let utilization = metrics.cap_utilization() * 100.0;
+                            ui.label(format!(
+                                "Active: {} / {} ({utilization:.1}%)",
+                                metrics.active_particles, metrics.max_total
+                            ));
+                            ui.label(format!(
+                                "Spawn budget: {} / {} available",
+                                metrics.available_spawn_this_frame, metrics.max_spawn_per_frame
+                            ));
+                            if metrics.total_emitters > 0 {
+                                ui.label(format!(
+                                    "Emitters: {} (avg backlog {:.1} / {:.0}, max {:.1})",
+                                    metrics.total_emitters,
+                                    metrics.average_backlog(),
+                                    metrics.emitter_backlog_limit,
+                                    metrics.emitter_backlog_max_observed
+                                ));
+                            } else {
+                                ui.label("Emitters: none active");
+                            }
+                        }
                         if ui.button("Find entity by ID...").clicked() {
                             id_lookup_active = true;
                         }

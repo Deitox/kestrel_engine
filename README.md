@@ -12,6 +12,7 @@
 - Plugin system - The new `EnginePlugin` trait, feature registry, and manifest-driven loader let subsystems (audio, scripting, analytics, future tooling) hook into init/update/fixed/event stages without modifying the core loop, paving the way for third-party extensions.
 - Scene toolbar upgrades - Quick path history, dependency health readouts, and one-click retain buttons make Save/Load workflows safer.
 - Scene I/O guardrails - Mesh-aware helpers (save_scene_to_path_with_mesh_source, load_scene_with_mesh) ensure custom assets keep their source paths and metadata during save/load workflows.
+- Particle telemetry - The Stats panel now surfaces particle budget metrics (active count, spawn budget, emitter backlog) so runaway emitters are obvious without diving into the ECS.
 
 ## Core Systems
 - Physics - Rapier2D simulates rigid bodies. ECS components (Transform, Velocity, RapierBody, RapierCollider) mirror state back into the world every fixed step.

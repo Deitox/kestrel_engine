@@ -1,3 +1,4 @@
+use crate::ecs::ParticleBudgetMetrics;
 use crate::events::GameEvent;
 use crate::plugins::{EnginePlugin, PluginContext};
 use anyhow::Result;
@@ -9,6 +10,7 @@ pub struct AnalyticsPlugin {
     frame_capacity: usize,
     events: VecDeque<GameEvent>,
     event_capacity: usize,
+    particle_budget: Option<ParticleBudgetMetrics>,
 }
 
 impl AnalyticsPlugin {
@@ -18,6 +20,7 @@ impl AnalyticsPlugin {
             frame_capacity: frame_capacity.max(1),
             events: VecDeque::with_capacity(event_capacity.min(1_024)),
             event_capacity: event_capacity.max(1),
+            particle_budget: None,
         }
     }
 
@@ -31,6 +34,14 @@ impl AnalyticsPlugin {
 
     pub fn clear_frame_history(&mut self) {
         self.frame_hist.clear();
+    }
+
+    pub fn record_particle_budget(&mut self, metrics: ParticleBudgetMetrics) {
+        self.particle_budget = Some(metrics);
+    }
+
+    pub fn particle_budget(&self) -> Option<ParticleBudgetMetrics> {
+        self.particle_budget
     }
 }
 
@@ -74,6 +85,7 @@ impl EnginePlugin for AnalyticsPlugin {
     fn shutdown(&mut self, _ctx: &mut PluginContext<'_>) -> Result<()> {
         self.events.clear();
         self.frame_hist.clear();
+        self.particle_budget = None;
         Ok(())
     }
 

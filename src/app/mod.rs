@@ -1328,6 +1328,10 @@ impl ApplicationHandler for App {
         }
         self.ecs.update(dt);
         self.record_events();
+        let particle_budget_snapshot = self.ecs.particle_budget_metrics();
+        if let Some(analytics) = self.analytics_plugin_mut() {
+            analytics.record_particle_budget(particle_budget_snapshot);
+        }
 
         let sprite_instances = match self.ecs.collect_sprite_instances(&self.assets) {
             Ok(data) => data,
@@ -1548,6 +1552,7 @@ impl ApplicationHandler for App {
             entity_count,
             instances_drawn,
             vsync_enabled: self.renderer.vsync_enabled(),
+            particle_budget: Some(particle_budget_snapshot),
             ui_scale: self.ui_scale,
             ui_cell_size: self.ui_cell_size,
             ui_spawn_per_press: self.ui_spawn_per_press,

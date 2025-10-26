@@ -338,6 +338,32 @@ impl EcsWorld {
         self.world.resource_mut::<ParticleContacts>().pairs.clear();
     }
 
+    pub fn particle_budget_metrics(&mut self) -> ParticleBudgetMetrics {
+        let caps = *self.world.resource::<ParticleCaps>();
+        let mut particle_query = self.world.query::<&Particle>();
+        let active_particles = particle_query.iter(&self.world).count() as u32;
+        let mut emitter_query = self.world.query::<&ParticleEmitter>();
+        let mut total_emitters = 0u32;
+        let mut backlog_total = 0.0f32;
+        let mut backlog_max = 0.0f32;
+        for emitter in emitter_query.iter(&self.world) {
+            total_emitters += 1;
+            backlog_total += emitter.accumulator;
+            backlog_max = backlog_max.max(emitter.accumulator);
+        }
+        let available_spawn = caps.max_total.saturating_sub(active_particles).min(caps.max_spawn_per_frame);
+        ParticleBudgetMetrics {
+            active_particles,
+            available_spawn_this_frame: available_spawn,
+            max_total: caps.max_total,
+            max_spawn_per_frame: caps.max_spawn_per_frame,
+            total_emitters,
+            emitter_backlog_total: backlog_total,
+            emitter_backlog_max_observed: backlog_max,
+            emitter_backlog_limit: caps.max_emitter_backlog,
+        }
+    }
+
     pub fn clear_world(&mut self) {
         {
             let mut rapier = self.world.resource_mut::<RapierState>();
