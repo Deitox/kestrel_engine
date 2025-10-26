@@ -13,7 +13,7 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
 1. **[M1] Swapchain regression harness**
    - *Why:* Surface-loss handling is the riskiest WGPU code path today.
    - *Acceptance:* Add a headless integration test (mock surface or `wgpu` headless instance) that recreates the renderer after synthetic `SurfaceError::Lost/Outdated`. The test should fail if `Renderer::render_frame` ever panics after a simulated loss.
-2. **[M1] Configurable VSync toggle**
+2. **[M1] Configurable VSync toggle** — ✅ *Completed (runtime toggle + renderer reconfigure UI panel).*
    - *Why:* Perf testing requires deterministic presentation modes.
    - *Acceptance:* Extend `config/app.json` plus the in-app UI so VSync can be toggled at runtime, with the renderer reconfiguring the surface immediately; log the active mode in analytics.
 3. **[M3] Config-driven input remapping**
@@ -63,4 +63,3 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
     - *Acceptance:* Expand the particle system with force-field components, attractor/repulsor entities, and stretched billboard trails, all editable via the inspector.
 
 Feel free to slice these issues finer when you import them into your tracker; the acceptance criteria can serve as the initial definition of done.
-

@@ -231,6 +231,17 @@ pub struct Renderer {
     environment_state: Option<RendererEnvironmentState>,
 
     sprite_bind_cache: HashMap<String, SpriteBindCacheEntry>,
+    present_modes: Vec<wgpu::PresentMode>,
+}
+
+const DEFAULT_PRESENT_MODES: [wgpu::PresentMode; 1] = [wgpu::PresentMode::Fifo];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SurfaceErrorAction {
+    Reconfigure,
+    Retry,
+    OutOfMemory,
+    Unknown,
 }
 
 impl Renderer {
@@ -262,6 +273,7 @@ impl Renderer {
             lighting: SceneLightingState::default(),
             environment_state: None,
             sprite_bind_cache: HashMap::new(),
+            present_modes: Vec::new(),
         }
     }
 
@@ -412,6 +424,7 @@ impl Renderer {
         self.config = Some(config);
         self.depth_texture = Some(depth_texture);
         self.depth_view = Some(depth_view);
+        self.present_modes = caps.present_modes.clone();
         Ok(())
     }
 
@@ -961,16 +974,10 @@ impl Renderer {
         let queue = self.queue()?.clone();
         queue.write_buffer(&frame_buffer, 0, bytemuck::bytes_of(&frame_data));
 
-        let frame_bind_group = self
-            .mesh_pass
-            .frame_bind_group
-            .as_ref()
-            .context("Mesh frame bind group missing")?;
-        let draw_bind_group = self
-            .mesh_pass
-            .draw_bind_group
-            .as_ref()
-            .context("Mesh draw bind group missing")?;
+        let frame_bind_group =
+            self.mesh_pass.frame_bind_group.as_ref().context("Mesh frame bind group missing")?;
+        let draw_bind_group =
+            self.mesh_pass.draw_bind_group.as_ref().context("Mesh draw bind group missing")?;
         let shadow_bind_group =
             self.shadow_pass.sample_bind_group.as_ref().context("Shadow sample bind group missing")?;
 
@@ -1383,6 +1390,19 @@ impl Renderer {
     pub fn window(&self) -> Option<&Window> {
         self.window.as_deref()
     }
+
+    pub fn vsync_enabled(&self) -> bool {
+        self.vsync
+    }
+
+    pub fn set_vsync(&mut self, enabled: bool) -> Result<()> {
+        if self.vsync == enabled {
+            return Ok(());
+        }
+        self.vsync = enabled;
+        self.reconfigure_present_mode()
+    }
+
     pub fn aspect_ratio(&self) -> f32 {
         if self.size.height == 0 {
             1.0
@@ -1394,12 +1414,12 @@ impl Renderer {
     pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
         self.size = new_size;
         if new_size.width > 0 && new_size.height > 0 {
-            if let (Some(surface), Some(device), Some(config)) =
-                (&self.surface, &self.device, &mut self.config)
-            {
+            if let Some(config) = self.config.as_mut() {
                 config.width = new_size.width;
                 config.height = new_size.height;
-                surface.configure(device, config);
+                if let Err(err) = self.configure_surface() {
+                    eprintln!("Surface resize failed: {err:?}");
+                }
             }
             if let Err(err) = self.recreate_depth_texture() {
                 eprintln!("Depth texture resize failed: {err:?}");
@@ -1525,18 +1545,9 @@ impl Renderer {
 
         let frame = match surface.get_current_texture() {
             Ok(frame) => frame,
-            Err(wgpu::SurfaceError::Lost) | Err(wgpu::SurfaceError::Outdated) => {
-                self.resize(self.size);
-                return Err(anyhow!("Surface lost or outdated; reconfigured surface"));
-            }
-            Err(wgpu::SurfaceError::Timeout) => {
-                return Err(anyhow!("Surface acquisition timed out"));
-            }
-            Err(wgpu::SurfaceError::OutOfMemory) => {
-                return Err(anyhow!("Surface out of memory"));
-            }
-            Err(wgpu::SurfaceError::Other) => {
-                return Err(anyhow!("Surface reported an unknown error"));
+            Err(err) => {
+                let reason = self.handle_surface_error(&err);
+                return Err(reason);
             }
         };
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -1639,6 +1650,53 @@ impl Renderer {
         Ok(SurfaceFrame::new(frame))
     }
 
+    fn handle_surface_error(&mut self, error: &wgpu::SurfaceError) -> anyhow::Error {
+        match Self::surface_error_action(error) {
+            SurfaceErrorAction::Reconfigure => {
+                self.resize(self.size);
+                anyhow!("Surface lost or outdated; reconfigured surface")
+            }
+            SurfaceErrorAction::Retry => anyhow!("Surface acquisition timed out"),
+            SurfaceErrorAction::OutOfMemory => anyhow!("Surface out of memory"),
+            SurfaceErrorAction::Unknown => anyhow!("Surface reported an unknown error"),
+        }
+    }
+
+    fn surface_error_action(error: &wgpu::SurfaceError) -> SurfaceErrorAction {
+        match error {
+            wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated => SurfaceErrorAction::Reconfigure,
+            wgpu::SurfaceError::Timeout => SurfaceErrorAction::Retry,
+            wgpu::SurfaceError::OutOfMemory => SurfaceErrorAction::OutOfMemory,
+            wgpu::SurfaceError::Other => SurfaceErrorAction::Unknown,
+        }
+    }
+
+    fn configure_surface(&mut self) -> Result<()> {
+        let surface = self.surface.as_ref().context("Surface not initialized")?;
+        let device = self.device.as_ref().context("GPU device not initialized")?;
+        let config = self.config.as_mut().context("Surface configuration missing")?;
+        surface.configure(device, config);
+        Ok(())
+    }
+
+    fn reconfigure_present_mode(&mut self) -> Result<()> {
+        if self.surface.is_none() {
+            // Nothing to reconfigure yet; init_wgpu will respect the new flag.
+            return Ok(());
+        }
+        let modes: &[wgpu::PresentMode] = if self.present_modes.is_empty() {
+            &DEFAULT_PRESENT_MODES
+        } else {
+            self.present_modes.as_slice()
+        };
+        let present_mode = self.select_present_mode(modes);
+        {
+            let config = self.config.as_mut().context("Surface configuration missing")?;
+            config.present_mode = present_mode;
+        }
+        self.configure_surface()
+    }
+
     pub fn render_egui(
         &mut self,
         painter: &mut EguiRenderer,
@@ -1677,6 +1735,44 @@ impl Renderer {
         queue.submit(extra_cmd.into_iter());
         frame.present();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod surface_tests {
+    use super::*;
+    use crate::config::WindowConfig;
+    use pollster::block_on;
+
+    #[test]
+    fn present_mode_respects_vsync_flag() {
+        let cfg = WindowConfig::default();
+        let mut renderer = block_on(Renderer::new(&cfg));
+        renderer.vsync = false;
+        let modes = vec![wgpu::PresentMode::Immediate, wgpu::PresentMode::Fifo];
+        assert_eq!(renderer.select_present_mode(&modes), wgpu::PresentMode::Immediate);
+
+        let mut vsync_renderer = block_on(Renderer::new(&cfg));
+        vsync_renderer.vsync = true;
+        assert_eq!(vsync_renderer.select_present_mode(&modes), wgpu::PresentMode::Fifo);
+    }
+
+    #[test]
+    fn surface_error_action_matches_variants() {
+        assert_eq!(
+            Renderer::surface_error_action(&wgpu::SurfaceError::Lost),
+            SurfaceErrorAction::Reconfigure
+        );
+        assert_eq!(
+            Renderer::surface_error_action(&wgpu::SurfaceError::Outdated),
+            SurfaceErrorAction::Reconfigure
+        );
+        assert_eq!(Renderer::surface_error_action(&wgpu::SurfaceError::Timeout), SurfaceErrorAction::Retry);
+        assert_eq!(
+            Renderer::surface_error_action(&wgpu::SurfaceError::OutOfMemory),
+            SurfaceErrorAction::OutOfMemory
+        );
+        assert_eq!(Renderer::surface_error_action(&wgpu::SurfaceError::Other), SurfaceErrorAction::Unknown);
     }
 }
 
@@ -1729,13 +1825,14 @@ impl Renderer {
 }
 
 #[cfg(test)]
-mod tests {
+mod depth_texture_tests {
     use super::*;
+    use pollster::block_on;
     use winit::dpi::PhysicalSize;
 
     #[test]
     fn depth_texture_respects_size() {
-        pollster::block_on(async {
+        block_on(async {
             let instance = wgpu::Instance::default();
             let adapter = instance
                 .request_adapter(&wgpu::RequestAdapterOptions {

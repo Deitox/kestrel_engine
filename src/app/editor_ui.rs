@@ -44,6 +44,7 @@ pub(super) struct EditorUiParams {
     pub hist_points: Vec<[f64; 2]>,
     pub entity_count: usize,
     pub instances_drawn: usize,
+    pub vsync_enabled: bool,
     pub ui_scale: f32,
     pub ui_cell_size: f32,
     pub ui_spawn_per_press: i32,
@@ -127,6 +128,7 @@ pub(super) struct EditorUiOutput {
     pub id_lookup_active: bool,
     pub debug_show_spatial_hash: bool,
     pub debug_show_colliders: bool,
+    pub vsync_request: Option<bool>,
 }
 
 impl App {
@@ -137,6 +139,7 @@ impl App {
             hist_points,
             entity_count,
             instances_drawn,
+            mut vsync_enabled,
             mut ui_scale,
             mut ui_cell_size,
             mut ui_spawn_per_press,
@@ -242,6 +245,7 @@ impl App {
                 plugin.last_error().map(|err| err.to_string()),
             )
         });
+        let mut vsync_toggle_request: Option<bool> = None;
 
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
             let left_panel =
@@ -249,6 +253,11 @@ impl App {
                     egui::CollapsingHeader::new("Stats").default_open(true).show(ui, |ui| {
                         ui.label(format!("Entities: {}", entity_count));
                         ui.label(format!("Instances drawn: {}", instances_drawn));
+                        let mut checkbox_state = vsync_enabled;
+                        if ui.checkbox(&mut checkbox_state, "Enable VSync").changed() {
+                            vsync_enabled = checkbox_state;
+                            vsync_toggle_request = Some(checkbox_state);
+                        }
                         ui.separator();
                         ui.label("Frame time (ms)");
                         let hist = eplot::Plot::new("fps_plot").height(120.0).include_y(0.0).include_y(40.0);
@@ -1835,6 +1844,7 @@ impl App {
             id_lookup_active,
             debug_show_spatial_hash,
             debug_show_colliders,
+            vsync_request: vsync_toggle_request,
         }
     }
 }

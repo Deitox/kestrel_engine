@@ -7,7 +7,7 @@ This tracker captures the current implementation evidence for milestones 0 throu
 | Milestone | Status | Evidence Snapshot | Key Polish Targets |
 | --- | --- | --- | --- |
 | 0 – Concept & Architecture | Complete | Architecture, module map, decision + style guides committed (`docs/ARCHITECTURE.md:1`, `src/lib.rs:1`) | Keep docs/code in sync as new plugins land; capture high-level diagrams when systems evolve |
-| 1 – Core Runtime & Renderer | Complete | Winit `ApplicationHandler` loop, WGPU init, WGSL quad, `Time` helper, resize path (`src/app/mod.rs:109`, `assets/shaders/sprite_batch.wgsl:1`) | Add automated swapchain regression tests; expose VSync toggle through config/UI |
+| 1 – Core Runtime & Renderer | Complete | Winit `ApplicationHandler` loop, WGPU init, WGSL quad, `Time` helper, resize path (`src/app/mod.rs:109`, `assets/shaders/sprite_batch.wgsl:1`) | Grow the new surface-error regression tests into a headless swapchain harness for full reconfigure coverage |
 | 2 – Sprites, Atlases, Transforms | Complete | AssetManager + ECS components + instancing + batching (`src/assets.rs:6`, `src/ecs/world.rs:580`) | Add animated sprite timelines per stretch goal (`KESTREL_ENGINE_ROADMAP.md:51`) |
 | 3 – Input & Fixed/Variable Time | Complete | Keyboard/mouse manager, 60 Hz fixed step, burst spawning/input stressors (`src/input.rs:1`, `src/app/mod.rs:1262`) | Implement config-driven input remapping (`KESTREL_ENGINE_ROADMAP.md:65`) and document stress test baselines |
 | 3.5 – Spatial Hashing & Collisions | Complete | Spatial hash resource, separation impulse, debug overlays (`src/ecs/physics.rs:317`, `src/app/editor_ui.rs:269`) | Prototype quadtree fallback for dense zones (`KESTREL_ENGINE_ROADMAP.md:78`) and add perf telemetry |
@@ -31,8 +31,8 @@ This tracker captures the current implementation evidence for milestones 0 throu
 
 ### Milestone 1 – Core Runtime and Renderer Initialization
 - **Status:** Complete.
-- **Evidence:** `src/app/mod.rs:109` launches a `winit` event loop and `run_app` handler, while `src/app/mod.rs:1000` implements `ApplicationHandler`; `src/renderer.rs:237` constructs the WGPU device/surface and prepares pipelines feeding the sprite quad shader at `assets/shaders/sprite_batch.wgsl:1`; `src/time.rs:1` tracks delta/elapsed time and feeds the fixed update logic; `src/app/mod.rs:1115` resizes the surface and egui screen descriptor on window events.
-- **Polish targets:** Add automated smoke tests that validate swapchain recreation and surface loss paths, and expose a config/UI toggle for VSync and presentation modes for easier benchmarking.
+- **Evidence:** `src/app/mod.rs:109` launches a `winit` event loop and `run_app` handler, while `src/app/mod.rs:1000` implements `ApplicationHandler`; `src/renderer.rs:237` constructs the WGPU device/surface and prepares pipelines feeding the sprite quad shader at `assets/shaders/sprite_batch.wgsl:1`; `src/time.rs:1` tracks delta/elapsed time and feeds the fixed update logic; `src/app/mod.rs:1115` resizes the surface and egui screen descriptor on window events; `src/renderer.rs:202` now records supported present modes, exposes `set_vsync`, and ships surface-error classification tests, while `src/app/editor_ui.rs:248` wires an interactive VSync toggle into the Stats panel.
+- **Polish targets:** Expand the new surface-error regression tests into a headless swapchain harness that exercises renderer reconfiguration end-to-end.
 
 ### Milestone 2 – Sprites, Atlases, and Transform Hierarchy
 - **Status:** Complete.

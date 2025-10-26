@@ -708,6 +708,24 @@ impl App {
         }
     }
 
+    fn apply_vsync_toggle(&mut self, enabled: bool) {
+        if self.renderer.vsync_enabled() == enabled {
+            self.config.window.vsync = enabled;
+            return;
+        }
+        match self.renderer.set_vsync(enabled) {
+            Ok(()) => {
+                self.config.window.vsync = enabled;
+                self.ui_scene_status =
+                    Some(format!("VSync {}", if enabled { "enabled" } else { "disabled" }));
+            }
+            Err(err) => {
+                eprintln!("Failed to update VSync: {err:?}");
+                self.ui_scene_status = Some(format!("Failed to update VSync: {err}"));
+            }
+        }
+    }
+
     fn apply_particle_caps(&mut self) {
         if self.ui_particle_max_spawn_per_frame > self.ui_particle_max_total {
             self.ui_particle_max_spawn_per_frame = self.ui_particle_max_total;
@@ -1486,6 +1504,7 @@ impl ApplicationHandler for App {
             hist_points,
             entity_count,
             instances_drawn,
+            vsync_enabled: self.renderer.vsync_enabled(),
             ui_scale: self.ui_scale,
             ui_cell_size: self.ui_cell_size,
             ui_spawn_per_press: self.ui_spawn_per_press,
@@ -1571,6 +1590,7 @@ impl ApplicationHandler for App {
             id_lookup_active,
             debug_show_spatial_hash,
             debug_show_colliders,
+            vsync_request,
         } = editor_output;
 
         self.ui_scale = ui_scale;
@@ -1596,6 +1616,10 @@ impl ApplicationHandler for App {
         self.id_lookup_active = id_lookup_active;
         self.debug_show_spatial_hash = debug_show_spatial_hash;
         self.debug_show_colliders = debug_show_colliders;
+
+        if let Some(enabled) = vsync_request {
+            self.apply_vsync_toggle(enabled);
+        }
 
         if let Some(request) = id_lookup_request {
             let trimmed = request.trim();
