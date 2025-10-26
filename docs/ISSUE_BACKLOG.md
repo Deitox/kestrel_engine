@@ -21,7 +21,7 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
 4. **[M10] Scene round-trip regression suite**
    - *Why:* Complex scenes (meshes + materials + environments) need coverage beyond the existing happy-path test.
    - *Acceptance:* Expand `tests/scene_roundtrip.rs` (or add a new suite) to include nested hierarchies, dependency retain/release, and environment metadata. Tests should assert reference counts and serialized JSON diffs.
-5. **[M11] Editor workflow regression tests**
+5. **[M11] Editor workflow regression tests** - *Completed via headless harness test (`src/app/gizmo_interaction.rs:576`).*
    - *Why:* Gizmo/selection bugs are common whenever egui changes land.
    - *Acceptance:* Build a headless egui test that simulates selecting an entity, switching gizmo modes, saving, and reloading. The test should confirm entity IDs remain stable and gizmo interaction state resets cleanly.
 

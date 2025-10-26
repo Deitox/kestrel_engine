@@ -570,3 +570,103 @@ impl App {
         GizmoUpdate { hovered_scale_kind }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::assets::AssetManager;
+    use crate::ecs::{EcsWorld, SceneEntityTag};
+    use bevy_ecs::prelude::Entity;
+    use glam::{Vec2, Vec4};
+    use std::collections::BTreeSet;
+    use tempfile::NamedTempFile;
+
+    #[derive(Default)]
+    struct HeadlessEditorHarness {
+        selected_entity: Option<Entity>,
+        gizmo_mode: GizmoMode,
+        gizmo_interaction: Option<GizmoInteraction>,
+    }
+
+    impl HeadlessEditorHarness {
+        fn select(&mut self, entity: Option<Entity>) {
+            self.selected_entity = entity;
+            if entity.is_none() {
+                self.gizmo_interaction = None;
+            }
+        }
+
+        fn set_gizmo_mode(&mut self, mode: GizmoMode) {
+            if self.gizmo_mode != mode {
+                self.gizmo_mode = mode;
+                self.gizmo_interaction = None;
+            }
+        }
+
+        fn begin_interaction(&mut self, interaction: GizmoInteraction) {
+            self.gizmo_interaction = Some(interaction);
+        }
+    }
+
+    #[test]
+    fn headless_editor_workflow_preserves_ids_and_resets_gizmos() {
+        let mut world = EcsWorld::new();
+        let emitter = world.spawn_particle_emitter(
+            Vec2::ZERO,
+            12.0,
+            0.3,
+            1.0,
+            1.0,
+            Vec4::new(1.0, 0.5, 0.2, 1.0),
+            Vec4::new(0.2, 0.4, 1.0, 0.0),
+            0.4,
+            0.2,
+        );
+
+        let mut harness = HeadlessEditorHarness::default();
+        harness.select(Some(emitter));
+        harness.set_gizmo_mode(GizmoMode::Translate);
+        harness.begin_interaction(GizmoInteraction::Translate {
+            entity: emitter,
+            offset: Vec2::ZERO,
+            start_translation: Vec2::ZERO,
+            start_pointer: Vec2::ZERO,
+            axis_lock: None,
+        });
+        assert!(harness.gizmo_interaction.is_some());
+
+        harness.set_gizmo_mode(GizmoMode::Scale);
+        assert!(harness.gizmo_interaction.is_none(), "switching gizmo modes should reset interaction state");
+
+        harness.begin_interaction(GizmoInteraction::Rotate {
+            entity: emitter,
+            start_rotation: 0.0,
+            start_angle: 0.0,
+        });
+        harness.select(None);
+        assert!(
+            harness.gizmo_interaction.is_none(),
+            "clearing the selection should clear gizmo interaction state"
+        );
+
+        let assets = AssetManager::new();
+        let scene = world.export_scene(&assets);
+        let temp = NamedTempFile::new().expect("temp scene");
+        scene.save_to_path(temp.path()).expect("save headless scene");
+
+        let mut reload_world = EcsWorld::new();
+        let mut reload_assets = AssetManager::new();
+        reload_world
+            .load_scene_from_path_with_mesh(temp.path(), &mut reload_assets, |_, _| Ok(()))
+            .expect("reload scene from disk");
+
+        let original_ids = collect_scene_ids(&mut world);
+        let reloaded_ids = collect_scene_ids(&mut reload_world);
+        assert_eq!(original_ids, reloaded_ids, "scene entity IDs should remain stable across save/load");
+    }
+
+    fn collect_scene_ids(world: &mut EcsWorld) -> BTreeSet<String> {
+        let mut query = world.world.query::<&SceneEntityTag>();
+        query.iter(&world.world).map(|tag| tag.id.as_str().to_string()).collect()
+    }
+}
