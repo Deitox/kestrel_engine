@@ -4,29 +4,17 @@ use kestrel_engine::ecs::{EcsWorld, Sprite, Transform, WorldTransform};
 use std::borrow::Cow;
 
 fn sprite_region(world: &EcsWorld, entity: Entity) -> String {
-    world
-        .world
-        .get::<Sprite>(entity)
-        .expect("sprite component missing")
-        .region
-        .to_string()
+    world.world.get::<Sprite>(entity).expect("sprite component missing").region.to_string()
 }
 
 #[test]
 fn atlas_timelines_expose_metadata() {
     let mut assets = AssetManager::new();
-    assets
-        .retain_atlas("main", Some("assets/images/atlas.json"))
-        .expect("load main atlas");
+    assets.retain_atlas("main", Some("assets/images/atlas.json")).expect("load main atlas");
     let mut names = assets.atlas_timeline_names("main");
     names.sort();
-    assert!(
-        names.contains(&"demo_cycle".to_string()),
-        "demo_cycle timeline should be present"
-    );
-    let timeline = assets
-        .atlas_timeline("main", "demo_cycle")
-        .expect("demo_cycle timeline available");
+    assert!(names.contains(&"demo_cycle".to_string()), "demo_cycle timeline should be present");
+    let timeline = assets.atlas_timeline("main", "demo_cycle").expect("demo_cycle timeline available");
     assert!(timeline.looped);
     assert_eq!(timeline.frames.len(), 3);
     assert!(
@@ -38,9 +26,7 @@ fn atlas_timelines_expose_metadata() {
 #[test]
 fn sprite_animation_advances_and_resets() {
     let mut assets = AssetManager::new();
-    assets
-        .retain_atlas("main", Some("assets/images/atlas.json"))
-        .expect("load main atlas");
+    assets.retain_atlas("main", Some("assets/images/atlas.json")).expect("load main atlas");
     let mut ecs = EcsWorld::new();
     let entity = ecs
         .world

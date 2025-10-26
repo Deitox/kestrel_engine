@@ -1,7 +1,5 @@
 use glam::Vec2;
-use kestrel_engine::ecs::{
-    Aabb, EcsWorld, SpatialMode, Transform, Velocity, WorldTransform,
-};
+use kestrel_engine::ecs::{Aabb, EcsWorld, SpatialMode, Transform, Velocity, WorldTransform};
 
 fn spawn_particle(world: &mut EcsWorld, position: Vec2) {
     world.world.spawn((

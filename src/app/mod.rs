@@ -15,8 +15,8 @@ use crate::mesh_registry::MeshRegistry;
 use crate::plugins::{FeatureRegistryHandle, PluginContext, PluginManager};
 use crate::renderer::{MeshDraw, RenderViewport, Renderer, SpriteBatch};
 use crate::scene::{
-    EnvironmentDependency, SceneCamera2D, SceneDependencies, SceneEnvironment, SceneLightingData,
-    SceneMetadata, SceneShadowData, SceneViewportMode, Vec2Data,
+    EnvironmentDependency, SceneCamera2D, SceneCameraBookmark, SceneDependencies, SceneEntityId,
+    SceneEnvironment, SceneLightingData, SceneMetadata, SceneShadowData, SceneViewportMode, Vec2Data,
 };
 use crate::scripts::{ScriptCommand, ScriptHandle, ScriptPlugin};
 use crate::time::Time;
@@ -104,6 +104,31 @@ impl Viewport {
 
     fn size_physical(&self) -> PhysicalSize<u32> {
         PhysicalSize::new(self.size.x.max(1.0).round() as u32, self.size.y.max(1.0).round() as u32)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CameraBookmark {
+    name: String,
+    position: Vec2,
+    zoom: f32,
+}
+
+impl CameraBookmark {
+    fn to_scene(&self) -> SceneCameraBookmark {
+        SceneCameraBookmark {
+            name: self.name.clone(),
+            position: Vec2Data::from(self.position),
+            zoom: self.zoom,
+        }
+    }
+
+    fn from_scene(bookmark: &SceneCameraBookmark) -> Self {
+        Self {
+            name: bookmark.name.clone(),
+            position: Vec2::from(bookmark.position.clone()),
+            zoom: bookmark.zoom,
+        }
     }
 }
 
@@ -209,6 +234,7 @@ pub struct App {
     ui_scale: f32,
     ui_scene_path: String,
     ui_scene_status: Option<String>,
+    camera_bookmark_input: String,
     scene_dependencies: Option<SceneDependencies>,
     scene_history: VecDeque<String>,
     inspector_status: Option<String>,
@@ -221,6 +247,9 @@ pub struct App {
     // Camera / selection
     pub(crate) camera: Camera2D,
     pub(crate) viewport_camera_mode: ViewportCameraMode,
+    camera_bookmarks: Vec<CameraBookmark>,
+    active_camera_bookmark: Option<String>,
+    camera_follow_target: Option<SceneEntityId>,
     pub(crate) selected_entity: Option<Entity>,
     gizmo_mode: GizmoMode,
     gizmo_interaction: Option<GizmoInteraction>,
@@ -248,6 +277,85 @@ pub struct App {
 }
 
 impl App {
+    fn refresh_camera_follow(&mut self) -> bool {
+        let Some(target_id) = self.camera_follow_target.as_ref().map(|id| id.as_str().to_string()) else {
+            return false;
+        };
+        let Some(entity) = self.ecs.find_entity_by_scene_id(&target_id) else {
+            return false;
+        };
+        let Some(info) = self.ecs.entity_info(entity) else {
+            return false;
+        };
+        self.camera.position = info.translation;
+        true
+    }
+
+    fn apply_camera_bookmark_by_name(&mut self, name: &str) -> bool {
+        if let Some(bookmark) = self.camera_bookmarks.iter().find(|b| b.name == name) {
+            self.camera.position = bookmark.position;
+            self.camera.set_zoom(bookmark.zoom);
+            self.active_camera_bookmark = Some(bookmark.name.clone());
+            self.camera_follow_target = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn upsert_camera_bookmark(&mut self, name: &str) -> bool {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        if let Some(existing) = self.camera_bookmarks.iter_mut().find(|b| b.name == trimmed) {
+            existing.position = self.camera.position;
+            existing.zoom = self.camera.zoom;
+        } else {
+            self.camera_bookmarks.push(CameraBookmark {
+                name: trimmed.to_string(),
+                position: self.camera.position,
+                zoom: self.camera.zoom,
+            });
+            self.camera_bookmarks.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        }
+        self.active_camera_bookmark = Some(trimmed.to_string());
+        self.camera_follow_target = None;
+        true
+    }
+
+    fn delete_camera_bookmark(&mut self, name: &str) -> bool {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        let before = self.camera_bookmarks.len();
+        self.camera_bookmarks.retain(|bookmark| bookmark.name != trimmed);
+        if self.camera_bookmarks.len() != before {
+            if self.active_camera_bookmark.as_deref() == Some(trimmed) {
+                self.active_camera_bookmark = None;
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    fn set_camera_follow_scene_id(&mut self, scene_id: SceneEntityId) -> bool {
+        self.camera_follow_target = Some(scene_id);
+        if self.refresh_camera_follow() {
+            self.active_camera_bookmark = None;
+            true
+        } else {
+            self.camera_follow_target = None;
+            false
+        }
+    }
+
+    fn clear_camera_follow(&mut self) {
+        self.camera_follow_target = None;
+    }
+
     fn reload_dynamic_plugins(&mut self) {
         let manifest = match PluginManager::load_manifest(PLUGIN_MANIFEST_PATH) {
             Ok(data) => data,
@@ -471,6 +579,7 @@ impl App {
             ui_scale: 1.0,
             ui_scene_path: scene_path,
             ui_scene_status: None,
+            camera_bookmark_input: String::new(),
             scene_dependencies: None,
             scene_history,
             inspector_status: None,
@@ -479,6 +588,9 @@ impl App {
             plugins,
             camera: Camera2D::new(CAMERA_BASE_HALF_HEIGHT),
             viewport_camera_mode: ViewportCameraMode::default(),
+            camera_bookmarks: Vec::new(),
+            active_camera_bookmark: None,
+            camera_follow_target: None,
             selected_entity: None,
             gizmo_mode: GizmoMode::default(),
             gizmo_interaction: None,
@@ -674,6 +786,8 @@ impl App {
         let Some(info) = self.ecs.entity_info(entity) else {
             return false;
         };
+        self.camera_follow_target = None;
+        self.active_camera_bookmark = None;
         self.camera.position = info.translation;
         if let Some(plugin) = self.mesh_preview_plugin_mut() {
             plugin.focus_selection_with_info(&info)
@@ -935,6 +1049,10 @@ impl App {
         metadata.viewport = SceneViewportMode::from(self.viewport_camera_mode);
         metadata.camera2d =
             Some(SceneCamera2D { position: Vec2Data::from(self.camera.position), zoom: self.camera.zoom });
+        metadata.camera_bookmarks = self.camera_bookmarks.iter().map(CameraBookmark::to_scene).collect();
+        metadata.active_camera_bookmark =
+            if self.camera_follow_target.is_none() { self.active_camera_bookmark.clone() } else { None };
+        metadata.camera_follow_entity = self.camera_follow_target.clone();
         if let Some(plugin) = self.mesh_preview_plugin() {
             metadata.preview_camera = Some(plugin.capture_preview_camera());
         }
@@ -960,6 +1078,23 @@ impl App {
         if let Some(cam2d) = metadata.camera2d.as_ref() {
             self.camera.position = Vec2::from(cam2d.position.clone());
             self.camera.set_zoom(cam2d.zoom);
+        }
+        self.camera_bookmarks = metadata.camera_bookmarks.iter().map(CameraBookmark::from_scene).collect();
+        self.camera_bookmarks.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        self.camera_follow_target = metadata.camera_follow_entity.clone();
+        if self.camera_follow_target.is_some() && !self.refresh_camera_follow() {
+            self.camera_follow_target = None;
+        }
+        if self.camera_follow_target.is_none() {
+            if let Some(active) = metadata.active_camera_bookmark.as_deref() {
+                if !self.apply_camera_bookmark_by_name(active) {
+                    self.active_camera_bookmark = None;
+                }
+            } else {
+                self.active_camera_bookmark = None;
+            }
+        } else {
+            self.active_camera_bookmark = None;
         }
         if let Some(preview) = metadata.preview_camera.as_ref() {
             if let Some(plugin) = self.mesh_preview_plugin_mut() {
@@ -1284,6 +1419,10 @@ impl ApplicationHandler for App {
 
         self.with_plugins(|plugins, ctx| plugins.update(ctx, dt));
 
+        if self.camera_follow_target.is_some() && !self.refresh_camera_follow() {
+            self.camera_follow_target = None;
+        }
+
         let window_size = self.renderer.size();
         let viewport_size = self.viewport_physical_size();
         let cursor_screen = self.input.cursor_position().map(|(sx, sy)| Vec2::new(sx, sy));
@@ -1333,12 +1472,15 @@ impl ApplicationHandler for App {
         {
             if let Some(delta) = self.input.consume_wheel_delta() {
                 self.camera.apply_scroll_zoom(delta);
+                self.active_camera_bookmark = None;
             }
 
             if self.input.right_held() {
                 let (dx, dy) = self.input.mouse_delta;
                 if dx.abs() > f32::EPSILON || dy.abs() > f32::EPSILON {
                     self.camera.pan_screen_delta(Vec2::new(dx, dy), viewport_size);
+                    self.active_camera_bookmark = None;
+                    self.camera_follow_target = None;
                 }
             }
         }
@@ -1354,7 +1496,6 @@ impl ApplicationHandler for App {
             &selected_info,
         );
         let hovered_scale_kind = gizmo_update.hovered_scale_kind;
-        let view_proj = self.camera.view_projection(viewport_size);
         let selection_changed = self.selected_entity != prev_selected_entity;
         let gizmo_changed = self.gizmo_interaction != prev_gizmo_interaction;
         selected_info = self.selected_entity.and_then(|entity| self.ecs.entity_info(entity));
@@ -1393,6 +1534,9 @@ impl ApplicationHandler for App {
         let update_start = Instant::now();
         self.ecs.update(dt);
         update_time_ms = update_start.elapsed().as_secs_f32() * 1000.0;
+        if self.camera_follow_target.is_some() && !self.refresh_camera_follow() {
+            self.camera_follow_target = None;
+        }
         self.record_events();
         let particle_budget_snapshot = self.ecs.particle_budget_metrics();
         let spatial_metrics_snapshot = self.ecs.spatial_metrics();
@@ -1443,6 +1587,7 @@ impl ApplicationHandler for App {
             origin: (self.viewport.origin.x, self.viewport.origin.y),
             size: (self.viewport.size.x, self.viewport.size.y),
         };
+        let view_proj = self.camera.view_projection(viewport_size);
         let default_material_key = self.material_registry.default_key().to_string();
         let mut mesh_draw_infos: Vec<(String, Mat4, MeshLightingInfo, String)> = Vec::new();
         if let Some((preview_key, preview_model)) = self
@@ -1669,6 +1814,10 @@ impl ApplicationHandler for App {
             mesh_camera_for_ui,
             camera_position,
             camera_zoom,
+            camera_bookmarks: self.camera_bookmarks.clone(),
+            active_camera_bookmark: self.active_camera_bookmark.clone(),
+            camera_follow_target: self.camera_follow_target.as_ref().map(|id| id.as_str().to_string()),
+            camera_bookmark_input: self.camera_bookmark_input.clone(),
             mesh_keys,
             environment_options,
             active_environment,
@@ -1716,6 +1865,9 @@ impl ApplicationHandler for App {
             ui_particle_max_emitter_backlog,
             mut selection,
             viewport_mode_request,
+            camera_bookmark_select,
+            camera_bookmark_save,
+            camera_bookmark_delete,
             mesh_control_request,
             mesh_frustum_request,
             mesh_frustum_snap,
@@ -1726,6 +1878,9 @@ impl ApplicationHandler for App {
             id_lookup_request,
             id_lookup_input,
             id_lookup_active,
+            camera_bookmark_input,
+            camera_follow_selection,
+            camera_follow_clear,
             debug_show_spatial_hash,
             debug_show_colliders,
             vsync_request,
@@ -1754,6 +1909,7 @@ impl ApplicationHandler for App {
         self.ui_particle_max_emitter_backlog = ui_particle_max_emitter_backlog;
         self.id_lookup_input = id_lookup_input;
         self.id_lookup_active = id_lookup_active;
+        self.camera_bookmark_input = camera_bookmark_input;
         self.debug_show_spatial_hash = debug_show_spatial_hash;
         self.debug_show_colliders = debug_show_colliders;
 
@@ -1776,6 +1932,51 @@ impl ApplicationHandler for App {
 
         self.selected_entity = selection.entity;
         self.apply_particle_caps();
+
+        if let Some(request) = camera_bookmark_select {
+            match request {
+                Some(name) => {
+                    if !self.apply_camera_bookmark_by_name(&name) {
+                        self.ui_scene_status = Some(format!("Bookmark '{}' not found.", name));
+                    }
+                }
+                None => {
+                    self.active_camera_bookmark = None;
+                    self.camera_follow_target = None;
+                    self.ui_scene_status = Some("Camera set to free mode.".to_string());
+                }
+            }
+        }
+        if let Some(name) = camera_bookmark_save {
+            if self.upsert_camera_bookmark(&name) {
+                self.ui_scene_status = Some(format!("Saved camera bookmark '{}'.", name.trim()));
+            } else {
+                self.ui_scene_status = Some("Enter a bookmark name to save.".to_string());
+            }
+        }
+        if let Some(name) = camera_bookmark_delete {
+            if self.delete_camera_bookmark(&name) {
+                self.ui_scene_status = Some(format!("Deleted camera bookmark '{}'.", name.trim()));
+            } else {
+                self.ui_scene_status = Some(format!("Bookmark '{}' not found.", name.trim()));
+            }
+        }
+        if camera_follow_selection {
+            if let Some(details) = selection.details.as_ref() {
+                let scene_id = details.scene_id.clone();
+                if self.set_camera_follow_scene_id(scene_id) {
+                    self.ui_scene_status = Some(format!("Following entity {}.", details.scene_id.as_str()));
+                } else {
+                    self.ui_scene_status = Some("Unable to follow selected entity.".to_string());
+                }
+            } else {
+                self.ui_scene_status = Some("Select an entity to follow.".to_string());
+            }
+        }
+        if camera_follow_clear && self.camera_follow_target.is_some() {
+            self.clear_camera_follow();
+            self.ui_scene_status = Some("Camera follow cleared.".to_string());
+        }
 
         if let Some(mode) = viewport_mode_request {
             self.set_viewport_camera_mode(mode);

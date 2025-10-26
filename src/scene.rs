@@ -32,6 +32,12 @@ pub struct SceneMetadata {
     pub viewport: SceneViewportMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub camera2d: Option<SceneCamera2D>,
+    #[serde(default)]
+    pub camera_bookmarks: Vec<SceneCameraBookmark>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_camera_bookmark: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera_follow_entity: Option<SceneEntityId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview_camera: Option<ScenePreviewCamera>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -42,6 +48,13 @@ pub struct SceneMetadata {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SceneCamera2D {
+    pub position: Vec2Data,
+    pub zoom: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SceneCameraBookmark {
+    pub name: String,
     pub position: Vec2Data,
     pub zoom: f32,
 }

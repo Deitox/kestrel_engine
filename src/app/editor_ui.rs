@@ -1,4 +1,4 @@
-use super::{App, FrameTimingSample, MeshControlMode, ViewportCameraMode};
+use super::{App, CameraBookmark, FrameTimingSample, MeshControlMode, ViewportCameraMode};
 use crate::audio::{AudioHealthSnapshot, AudioPlugin};
 use crate::camera3d::Camera3D;
 use crate::ecs::{
@@ -83,6 +83,10 @@ pub(super) struct EditorUiParams {
     pub mesh_camera_for_ui: Camera3D,
     pub camera_position: Vec2,
     pub camera_zoom: f32,
+    pub camera_bookmarks: Vec<CameraBookmark>,
+    pub active_camera_bookmark: Option<String>,
+    pub camera_follow_target: Option<String>,
+    pub camera_bookmark_input: String,
     pub mesh_keys: Vec<String>,
     pub environment_options: Vec<(String, String)>,
     pub active_environment: String,
@@ -126,6 +130,9 @@ pub(super) struct EditorUiOutput {
     pub ui_particle_max_emitter_backlog: f32,
     pub selection: SelectionResult,
     pub viewport_mode_request: Option<ViewportCameraMode>,
+    pub camera_bookmark_select: Option<Option<String>>,
+    pub camera_bookmark_save: Option<String>,
+    pub camera_bookmark_delete: Option<String>,
     pub mesh_control_request: Option<MeshControlMode>,
     pub mesh_frustum_request: Option<bool>,
     pub mesh_frustum_snap: bool,
@@ -136,6 +143,9 @@ pub(super) struct EditorUiOutput {
     pub id_lookup_request: Option<String>,
     pub id_lookup_input: String,
     pub id_lookup_active: bool,
+    pub camera_bookmark_input: String,
+    pub camera_follow_selection: bool,
+    pub camera_follow_clear: bool,
     pub debug_show_spatial_hash: bool,
     pub debug_show_colliders: bool,
     pub vsync_request: Option<bool>,
@@ -184,6 +194,10 @@ impl App {
             mesh_camera_for_ui,
             camera_position,
             camera_zoom,
+            camera_bookmarks,
+            active_camera_bookmark,
+            camera_follow_target,
+            mut camera_bookmark_input,
             mut mesh_keys,
             mut environment_options,
             active_environment,
@@ -206,6 +220,11 @@ impl App {
 
         mesh_keys.sort();
         environment_options.sort_by(|a, b| a.1.cmp(&b.1));
+        let mut camera_bookmark_select: Option<Option<String>> = None;
+        let mut camera_bookmark_save: Option<String> = None;
+        let mut camera_bookmark_delete: Option<String> = None;
+        let mut camera_follow_selection = false;
+        let mut camera_follow_clear = false;
         let (
             preview_mesh_key,
             mesh_control_mode_state,
@@ -313,7 +332,10 @@ impl App {
                         if let Some(metrics) = spatial_metrics {
                             ui.label(format!(
                                 "Mode: {:?} | Cells: {} | Avg occ {:.2} | Max {}",
-                                metrics.mode, metrics.occupied_cells, metrics.average_occupancy, metrics.max_cell_occupancy
+                                metrics.mode,
+                                metrics.occupied_cells,
+                                metrics.average_occupancy,
+                                metrics.max_cell_occupancy
                             ));
                             if metrics.mode == SpatialMode::Quadtree {
                                 ui.label(format!("Quadtree nodes: {}", metrics.quadtree_nodes));
@@ -419,6 +441,74 @@ impl App {
                         } else {
                             ui.label("Cursor world: n/a");
                         }
+                        ui.separator();
+                        ui.label("Camera bookmarks");
+                        let combo_label = if let Some(target) = camera_follow_target.as_ref() {
+                            format!("Following {}", target)
+                        } else if let Some(active) = active_camera_bookmark.as_ref() {
+                            format!("Bookmark: {active}")
+                        } else {
+                            "Free camera".to_string()
+                        };
+                        egui::ComboBox::from_id_salt("camera_bookmark_selector")
+                            .selected_text(combo_label)
+                            .show_ui(ui, |ui| {
+                                let free_selected =
+                                    camera_follow_target.is_none() && active_camera_bookmark.is_none();
+                                if ui.selectable_label(free_selected, "Free camera").clicked() {
+                                    camera_bookmark_select = Some(None);
+                                }
+                                for bookmark in &camera_bookmarks {
+                                    let selected = camera_follow_target.is_none()
+                                        && active_camera_bookmark.as_deref() == Some(bookmark.name.as_str());
+                                    if ui.selectable_label(selected, bookmark.name.as_str()).clicked() {
+                                        camera_bookmark_select = Some(Some(bookmark.name.clone()));
+                                    }
+                                }
+                            });
+                        ui.horizontal(|ui| {
+                            let response = ui.add(
+                                egui::TextEdit::singleline(&mut camera_bookmark_input)
+                                    .hint_text("Bookmark name"),
+                            );
+                            let trimmed = camera_bookmark_input.trim().to_string();
+                            let can_save = !trimmed.is_empty();
+                            if response.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && can_save {
+                                camera_bookmark_save = Some(trimmed.clone());
+                            }
+                            if ui.add_enabled(can_save, egui::Button::new("Save / Overwrite")).clicked() {
+                                camera_bookmark_save = Some(trimmed);
+                            }
+                        });
+                        if let Some(active) = active_camera_bookmark.as_ref() {
+                            ui.horizontal(|ui| {
+                                if ui.button("Update Active").clicked() {
+                                    camera_bookmark_save = Some(active.clone());
+                                }
+                                if ui.button("Delete Active").clicked() {
+                                    camera_bookmark_delete = Some(active.clone());
+                                }
+                            });
+                        }
+                        ui.separator();
+                        ui.label("Camera follow");
+                        let follow_label = camera_follow_target
+                            .as_ref()
+                            .map(|id| format!("Following entity {id}"))
+                            .unwrap_or_else(|| "Following entity: None".to_string());
+                        ui.label(follow_label);
+                        ui.horizontal(|ui| {
+                            ui.add_enabled_ui(selection_details.is_some(), |ui| {
+                                if ui.button("Follow Selection").clicked() {
+                                    camera_follow_selection = true;
+                                }
+                            });
+                            ui.add_enabled_ui(camera_follow_target.is_some(), |ui| {
+                                if ui.button("Clear Follow").clicked() {
+                                    camera_follow_clear = true;
+                                }
+                            });
+                        });
                     });
                     egui::CollapsingHeader::new("Lighting").default_open(true).show(ui, |ui| {
                         let mut lighting_dirty = false;
@@ -966,10 +1056,7 @@ impl App {
                                         let combo_id = ("sprite_timeline_combo", entity.index());
                                         egui::ComboBox::from_id_salt(combo_id)
                                             .selected_text(
-                                                desired_timeline
-                                                    .as_deref()
-                                                    .unwrap_or("None")
-                                                    .to_string(),
+                                                desired_timeline.as_deref().unwrap_or("None").to_string(),
                                             )
                                             .show_ui(ui, |ui| {
                                                 ui.selectable_value(&mut desired_timeline, None, "None");
@@ -983,9 +1070,11 @@ impl App {
                                             });
                                     });
                                     if desired_timeline != original_timeline {
-                                        let success = self
-                                            .ecs
-                                            .set_sprite_timeline(entity, &self.assets, desired_timeline.as_deref());
+                                        let success = self.ecs.set_sprite_timeline(
+                                            entity,
+                                            &self.assets,
+                                            desired_timeline.as_deref(),
+                                        );
                                         if success {
                                             inspector_refresh = true;
                                             self.inspector_status = desired_timeline
@@ -2011,8 +2100,8 @@ impl App {
             pending_viewport,
             ui_scale,
             ui_cell_size,
-             ui_spatial_use_quadtree,
-             ui_spatial_density_threshold,
+            ui_spatial_use_quadtree,
+            ui_spatial_density_threshold,
             ui_spawn_per_press,
             ui_auto_spawn_rate,
             ui_environment_intensity,
@@ -2030,6 +2119,9 @@ impl App {
             ui_particle_max_emitter_backlog,
             selection: SelectionResult { entity: selected_entity, details: selection_details },
             viewport_mode_request,
+            camera_bookmark_select,
+            camera_bookmark_save,
+            camera_bookmark_delete,
             mesh_control_request,
             mesh_frustum_request,
             mesh_frustum_snap,
@@ -2040,6 +2132,9 @@ impl App {
             id_lookup_request,
             id_lookup_input,
             id_lookup_active,
+            camera_bookmark_input,
+            camera_follow_selection,
+            camera_follow_clear,
             debug_show_spatial_hash,
             debug_show_colliders,
             vsync_request: vsync_toggle_request,
@@ -2077,7 +2172,13 @@ mod tests {
 
     #[test]
     fn frame_summary_snapshot() {
-        let sample = FrameTimingSample { frame_ms: 16.67, update_ms: 5.25, fixed_ms: 3.5, render_ms: 6.1, ui_ms: 1.82 };
+        let sample = FrameTimingSample {
+            frame_ms: 16.67,
+            update_ms: 5.25,
+            fixed_ms: 3.5,
+            render_ms: 6.1,
+            ui_ms: 1.82,
+        };
         assert_eq!(
             frame_summary_text(Some(&sample)),
             "Frame 16.67 ms | Update 5.25 ms | Fixed 3.50 ms | Render 6.10 ms | UI 1.82 ms"

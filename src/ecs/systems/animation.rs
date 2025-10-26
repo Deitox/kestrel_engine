@@ -1,6 +1,6 @@
-use crate::ecs::{Sprite, SpriteAnimation};
-use crate::ecs::profiler::SystemProfiler;
 use super::TimeDelta;
+use crate::ecs::profiler::SystemProfiler;
+use crate::ecs::{Sprite, SpriteAnimation};
 use bevy_ecs::prelude::{Query, Res, ResMut};
 use std::borrow::Cow;
 
@@ -30,8 +30,7 @@ pub fn sys_drive_sprite_animations(
             continue;
         }
         while remaining > 0.0 && animation.playing {
-            let frame_duration =
-                animation.frames[animation.frame_index].duration.max(std::f32::EPSILON);
+            let frame_duration = animation.frames[animation.frame_index].duration.max(std::f32::EPSILON);
             let time_left = frame_duration - animation.elapsed_in_frame;
             if remaining < time_left {
                 animation.elapsed_in_frame += remaining;

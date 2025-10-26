@@ -969,17 +969,14 @@ impl EcsWorld {
         let sprite = if let Some(sprite) = self.world.get::<Sprite>(entity) {
             let atlas = sprite.atlas_key.to_string();
             let region = sprite.region.to_string();
-            let animation = self
-                .world
-                .get::<SpriteAnimation>(entity)
-                .map(|anim| SpriteAnimationInfo {
-                    timeline: anim.timeline.clone(),
-                    playing: anim.playing,
-                    looped: anim.looped,
-                    speed: anim.speed,
-                    frame_index: anim.frame_index,
-                    frame_count: anim.frame_count(),
-                });
+            let animation = self.world.get::<SpriteAnimation>(entity).map(|anim| SpriteAnimationInfo {
+                timeline: anim.timeline.clone(),
+                playing: anim.playing,
+                looped: anim.looped,
+                speed: anim.speed,
+                frame_index: anim.frame_index,
+                frame_count: anim.frame_count(),
+            });
             Some(SpriteInfo { atlas, region, animation })
         } else {
             None
@@ -1466,12 +1463,13 @@ impl EcsWorld {
                 .get::<Sprite>(entity)
                 .map(|sprite| (sprite.atlas_key.to_string(), sprite.region.to_string()))
                 .map(|(atlas, region)| {
-                    let animation = self.world.get::<SpriteAnimation>(entity).map(|anim| SpriteAnimationData {
-                        timeline: anim.timeline.clone(),
-                        speed: anim.speed,
-                        looped: anim.looped,
-                        playing: anim.playing,
-                    });
+                    let animation =
+                        self.world.get::<SpriteAnimation>(entity).map(|anim| SpriteAnimationData {
+                            timeline: anim.timeline.clone(),
+                            speed: anim.speed,
+                            looped: anim.looped,
+                            playing: anim.playing,
+                        });
                     SpriteData { atlas, region, animation }
                 }),
             transform3d: self

@@ -46,11 +46,7 @@ impl SystemProfiler {
     pub fn summaries(&self) -> Vec<SystemTimingSummary> {
         let mut out = Vec::with_capacity(self.timings.len());
         for (&name, timing) in &self.timings {
-            let avg = if timing.samples == 0 {
-                0.0
-            } else {
-                timing.total_ms / timing.samples as f32
-            };
+            let avg = if timing.samples == 0 { 0.0 } else { timing.total_ms / timing.samples as f32 };
             out.push(SystemTimingSummary {
                 name,
                 last_ms: timing.last_ms,

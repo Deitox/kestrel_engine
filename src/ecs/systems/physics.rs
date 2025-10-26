@@ -173,11 +173,7 @@ pub fn sys_build_spatial_hash(
         total_entries += list.len();
         max_cell_occupancy = max_cell_occupancy.max(list.len());
     }
-    let average = if occupied_cells > 0 {
-        total_entries as f32 / occupied_cells as f32
-    } else {
-        0.0
-    };
+    let average = if occupied_cells > 0 { total_entries as f32 / occupied_cells as f32 } else { 0.0 };
     let use_quadtree = settings.fallback_enabled && average >= settings.density_threshold.max(1.0);
     let mut node_count = 0usize;
     let mode = if use_quadtree {

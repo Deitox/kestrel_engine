@@ -57,15 +57,7 @@ pub struct SpriteAnimation {
 
 impl SpriteAnimation {
     pub fn new(timeline: String, frames: Vec<SpriteAnimationFrame>, looped: bool) -> Self {
-        Self {
-            timeline,
-            frames,
-            frame_index: 0,
-            elapsed_in_frame: 0.0,
-            playing: true,
-            looped,
-            speed: 1.0,
-        }
+        Self { timeline, frames, frame_index: 0, elapsed_in_frame: 0.0, playing: true, looped, speed: 1.0 }
     }
 
     pub fn current_region_name(&self) -> Option<&str> {
