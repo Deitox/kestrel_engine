@@ -1,6 +1,7 @@
 use crate::events::GameEvent;
 use crate::plugins::{EnginePlugin, PluginContext};
 use anyhow::Result;
+use cpal::traits::{DeviceTrait, HostTrait};
 use rodio::source::{SineWave, Source};
 use rodio::{OutputStream, OutputStreamHandle, Sink};
 use std::any::Any;
@@ -16,6 +17,8 @@ pub struct AudioManager {
     playback_available: bool,
     failed_playbacks: u32,
     last_error: Option<String>,
+    device_name: Option<String>,
+    sample_rate_hz: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -24,11 +27,20 @@ pub struct AudioHealthSnapshot {
     pub enabled: bool,
     pub failed_playbacks: u32,
     pub last_error: Option<String>,
+    pub device_name: Option<String>,
+    pub sample_rate_hz: Option<u32>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct AudioDeviceInfo {
+    name: Option<String>,
+    sample_rate_hz: Option<u32>,
 }
 
 impl AudioManager {
     pub fn new(capacity: usize) -> Self {
         let capacity = capacity.max(1);
+        let device_info = AudioDeviceInfo::detect();
         match OutputStream::try_default() {
             Ok((stream, handle)) => Self {
                 enabled: false,
@@ -39,9 +51,14 @@ impl AudioManager {
                 playback_available: true,
                 failed_playbacks: 0,
                 last_error: None,
+                device_name: device_info.name.clone(),
+                sample_rate_hz: device_info.sample_rate_hz,
             },
             Err(err) => {
-                eprintln!("Audio output unavailable: {err}");
+                eprintln!(
+                    "Audio output unavailable{}: {err}",
+                    device_info.describe().map(|info| format!(" ({info})")).unwrap_or_default()
+                );
                 Self {
                     enabled: false,
                     capacity,
@@ -51,6 +68,8 @@ impl AudioManager {
                     playback_available: false,
                     failed_playbacks: 0,
                     last_error: Some(format!("Audio output unavailable: {err}")),
+                    device_name: device_info.name,
+                    sample_rate_hz: device_info.sample_rate_hz,
                 }
             }
         }
@@ -88,6 +107,8 @@ impl AudioManager {
             enabled: self.enabled,
             failed_playbacks: self.failed_playbacks,
             last_error: self.last_error.clone(),
+            device_name: self.device_name.clone(),
+            sample_rate_hz: self.sample_rate_hz,
         }
     }
 
@@ -227,5 +248,26 @@ impl EnginePlugin for AudioPlugin {
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
+    }
+}
+
+impl AudioDeviceInfo {
+    fn detect() -> Self {
+        let host = cpal::default_host();
+        let Some(device) = host.default_output_device() else {
+            return Self::default();
+        };
+        let name = device.name().ok();
+        let sample_rate_hz = device.default_output_config().ok().map(|config| config.sample_rate().0);
+        Self { name, sample_rate_hz }
+    }
+
+    fn describe(&self) -> Option<String> {
+        match (self.name.as_deref(), self.sample_rate_hz) {
+            (Some(name), Some(rate)) => Some(format!("{name} @ {rate} Hz")),
+            (Some(name), None) => Some(name.to_string()),
+            (None, Some(rate)) => Some(format!("{rate} Hz")),
+            _ => None,
+        }
     }
 }

@@ -1,10 +1,10 @@
 pub mod analytics;
 pub mod app;
 pub mod assets;
-pub mod cli;
 pub mod audio;
 pub mod camera;
 pub mod camera3d;
+pub mod cli;
 pub mod config;
 pub mod ecs;
 pub mod environment;

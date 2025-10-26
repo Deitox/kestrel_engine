@@ -28,11 +28,8 @@ impl CliOverrides {
                 bail!("Unexpected argument '{flag}'. Use --width/--height/--vsync with values.");
             }
             let key = &flag[2..];
-            let value = iter
-                .next()
-                .ok_or_else(|| anyhow!("Expected a value after '{flag}'"))?
-                .as_ref()
-                .to_string();
+            let value =
+                iter.next().ok_or_else(|| anyhow!("Expected a value after '{flag}'"))?.as_ref().to_string();
             match key {
                 "width" => {
                     overrides.width =
@@ -90,10 +87,7 @@ mod tests {
     #[test]
     fn missing_value_errors() {
         let err = CliOverrides::parse(["app", "--width"]).unwrap_err();
-        assert!(
-            err.to_string().contains("Expected a value"),
-            "error should mention missing value"
-        );
+        assert!(err.to_string().contains("Expected a value"), "error should mention missing value");
     }
 
     #[test]

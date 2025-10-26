@@ -1424,6 +1424,17 @@ impl App {
 
                     ui.separator();
                     ui.heading("Audio Debug");
+                    if audio_health.device_name.is_some() || audio_health.sample_rate_hz.is_some() {
+                        let label = match (audio_health.device_name.as_deref(), audio_health.sample_rate_hz) {
+                            (Some(name), Some(rate)) => format!("{name} @ {rate} Hz"),
+                            (Some(name), None) => name.to_string(),
+                            (None, Some(rate)) => format!("{rate} Hz"),
+                            _ => String::new(),
+                        };
+                        if !label.is_empty() {
+                            ui.small(format!("Device: {label}"));
+                        }
+                    }
                     if ui.checkbox(&mut audio_enabled, "Enable audio triggers").changed() {
                         if let Some(audio) = self.plugins.get_mut::<AudioPlugin>() {
                             audio.set_enabled(audio_enabled);

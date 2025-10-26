@@ -1621,6 +1621,7 @@ dependencies = [
  "anyhow",
  "bevy_ecs",
  "bytemuck",
+ "cpal",
  "egui",
  "egui-wgpu",
  "egui-winit",

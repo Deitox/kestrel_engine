@@ -117,10 +117,7 @@ pub async fn run_with_overrides(overrides: AppConfigOverrides) -> Result<()> {
     } else {
         let fields = overrides.applied_fields();
         if !fields.is_empty() {
-            println!(
-                "[config] {precedence_note} CLI overrides applied for: {}.",
-                fields.join(", ")
-            );
+            println!("[config] {precedence_note} CLI overrides applied for: {}.", fields.join(", "));
         }
     }
     config.apply_overrides(&overrides);
@@ -465,6 +462,7 @@ impl App {
             sprite_atlas_views: HashMap::new(),
         };
         app.apply_particle_caps();
+        app.report_audio_startup_status();
         app
     }
 
@@ -474,6 +472,33 @@ impl App {
             return;
         }
         self.with_plugins(|plugins, ctx| plugins.handle_events(ctx, &events));
+    }
+
+    fn report_audio_startup_status(&mut self) {
+        let Some(snapshot) = self.audio_plugin().map(|audio| audio.health_snapshot()) else {
+            return;
+        };
+        if snapshot.playback_available {
+            return;
+        }
+        if snapshot.last_error.is_none() {
+            return;
+        }
+        let mut parts = Vec::new();
+        if let Some(name) = snapshot.device_name.as_deref() {
+            parts.push(format!("device: {name}"));
+        }
+        if let Some(rate) = snapshot.sample_rate_hz {
+            parts.push(format!("sample rate: {rate} Hz"));
+        }
+        let detail_suffix = if parts.is_empty() { String::new() } else { format!(" ({})", parts.join(", ")) };
+        let mut message =
+            format!("[audio] Output initialization failed{detail_suffix}. Audio triggers disabled.");
+        if let Some(err) = snapshot.last_error.as_deref() {
+            message.push_str(&format!(" Last error: {err}"));
+        }
+        self.ecs.push_event(GameEvent::ScriptMessage { message });
+        self.record_events();
     }
 
     fn atlas_view(&mut self, key: &str) -> Result<Arc<wgpu::TextureView>> {

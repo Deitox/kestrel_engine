@@ -41,7 +41,7 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
     - *Acceptance:* Embed a lightweight Rhai REPL with pause/step controls and command history; script errors should focus in the debugger panel.
 12. **[M8] Particle budget analytics**
     - *Acceptance:* Stream current particle counts, emitter backlog, and cap utilization into the analytics UI to spot runaway effects.
-13. **[M9] Audio capability diagnostics**
+13. **[M9] Audio capability diagnostics** - *Completed via device metadata telemetry + analytics logging (`src/audio.rs:22`, `src/app/mod.rs:471`).*
     - *Acceptance:* Extend the new `AudioHealthSnapshot` telemetry with device name/sample rate info and route it into analytics/logs when initialization fails.
 14. **[M10] Binary `.kscene` serializer**
     - *Acceptance:* Implement a binary encoder/decoder (with compression) behind a feature flag; provide migration tooling between JSON and binary formats.
