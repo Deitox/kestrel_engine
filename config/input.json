@@ -1,0 +1,18 @@
+{
+    "bindings": {
+        "spawn_burst_small": ["space"],
+        "spawn_burst_large": ["b"],
+        "mesh_toggle": ["m"],
+        "frustum_lock_toggle": ["l"],
+        "freefly_forward": ["w"],
+        "freefly_backward": ["s"],
+        "freefly_left": ["a"],
+        "freefly_right": ["d"],
+        "freefly_ascend": ["e"],
+        "freefly_descend": ["q"],
+        "freefly_roll_left": ["z"],
+        "freefly_roll_right": ["c"],
+        "freefly_boost": ["shift"],
+        "modifier_ctrl": ["ctrl"]
+    }
+}

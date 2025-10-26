@@ -22,7 +22,7 @@
 - Scene management - JSON scenes capture the full entity graph (including materials/lighting) and can be saved/loaded from the UI or tests.
 
 ## Controls
-- Space - spawn the configured burst count
+- Space - spawn the configured burst count (remappable via `config/input.json`)
 - B - spawn 5x as many sprites (minimum 1000)
 - Right Mouse - pan the 2D camera (Disabled) / orbit preview (Orbit) / look around (Free-fly)
 - Mouse Wheel - zoom the 2D camera (Disabled) / adjust orbit radius (Orbit) / tune fly speed or focus distance (Free-fly)
@@ -44,6 +44,7 @@ cargo run
 
 ## Configuration
 - Edit config/app.json to tweak window title, resolution, vsync, or fullscreen defaults.
+- Remap keyboard input by editing config/input.json (missing or invalid entries fall back to the built-in bindings with warnings).
 - Toggle dynamic plugins via config/plugins.json (paths are resolved relative to that file; set `enabled` per entry).
 - Disable built-in plugins by listing their names in `config/plugins.json` → `disable_builtins`.
 - The engine falls back to built-in defaults and logs a warning if the file is missing or malformed.

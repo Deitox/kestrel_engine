@@ -42,6 +42,7 @@ use egui_winit::State as EguiWinit;
 
 const CAMERA_BASE_HALF_HEIGHT: f32 = 1.2;
 const PLUGIN_MANIFEST_PATH: &str = "config/plugins.json";
+const INPUT_CONFIG_PATH: &str = "config/input.json";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ViewportCameraMode {
@@ -276,7 +277,7 @@ impl App {
         let mut scene_history = VecDeque::with_capacity(8);
         scene_history.push_back(scene_path.clone());
         let time = Time::new();
-        let mut input = Input::new();
+        let mut input = Input::from_config(INPUT_CONFIG_PATH);
         let mut assets = AssetManager::new();
         let mut environment_registry = EnvironmentRegistry::new();
         let default_environment_key = environment_registry.default_key().to_string();

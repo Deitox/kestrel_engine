@@ -1,8 +1,12 @@
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
 use winit::event::{DeviceEvent, ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-#[derive(Default)]
 pub struct Input {
+    bindings: InputBindings,
     pub mouse_delta: (f32, f32),
     pub wheel: f32,
     pub events: Vec<InputEvent>,
@@ -31,32 +35,42 @@ impl Input {
         Self::default()
     }
 
+    pub fn from_config(path: impl AsRef<Path>) -> Self {
+        let bindings = InputBindings::load_or_default(path);
+        Self::with_bindings(bindings)
+    }
+
+    fn with_bindings(bindings: InputBindings) -> Self {
+        Self {
+            bindings,
+            mouse_delta: (0.0, 0.0),
+            wheel: 0.0,
+            events: Vec::new(),
+            space_pressed: false,
+            b_pressed: false,
+            mesh_toggle_pressed: false,
+            forward_held: false,
+            backward_held: false,
+            left_held: false,
+            right_held: false,
+            ascend_held: false,
+            descend_held: false,
+            boost_held: false,
+            ctrl_held: false,
+            roll_left_held: false,
+            roll_right_held: false,
+            frustum_lock_toggle: false,
+            cursor_pos: None,
+            left_pressed: false,
+            left_clicked: false,
+            right_pressed: false,
+        }
+    }
+
     pub fn push(&mut self, ev: InputEvent) {
         match &ev {
             InputEvent::Key { key, pressed } => {
-                if *pressed {
-                    match key {
-                        Key::Named(NamedKey::Space) => self.space_pressed = true,
-                        Key::Character(ch) if ch.eq_ignore_ascii_case("b") => self.b_pressed = true,
-                        Key::Character(ch) if ch.eq_ignore_ascii_case("m") => self.mesh_toggle_pressed = true,
-                        Key::Character(ch) if ch.eq_ignore_ascii_case("l") => self.frustum_lock_toggle = true,
-                        _ => {}
-                    }
-                }
-                let is_down = *pressed;
-                match key {
-                    Key::Character(ch) if ch.eq_ignore_ascii_case("w") => self.forward_held = is_down,
-                    Key::Character(ch) if ch.eq_ignore_ascii_case("s") => self.backward_held = is_down,
-                    Key::Character(ch) if ch.eq_ignore_ascii_case("a") => self.left_held = is_down,
-                    Key::Character(ch) if ch.eq_ignore_ascii_case("d") => self.right_held = is_down,
-                    Key::Character(ch) if ch.eq_ignore_ascii_case("e") => self.ascend_held = is_down,
-                    Key::Character(ch) if ch.eq_ignore_ascii_case("q") => self.descend_held = is_down,
-                    Key::Character(ch) if ch.eq_ignore_ascii_case("z") => self.roll_left_held = is_down,
-                    Key::Character(ch) if ch.eq_ignore_ascii_case("c") => self.roll_right_held = is_down,
-                    Key::Named(NamedKey::Shift) => self.boost_held = is_down,
-                    Key::Named(NamedKey::Control) => self.ctrl_held = is_down,
-                    _ => {}
-                }
+                self.apply_key_binding(key, *pressed);
             }
             InputEvent::MouseMove { dx, dy } => {
                 self.mouse_delta.0 += *dx;
@@ -176,6 +190,291 @@ impl Input {
         let pressed = self.frustum_lock_toggle;
         self.frustum_lock_toggle = false;
         pressed
+    }
+
+    fn apply_key_binding(&mut self, key: &Key, pressed: bool) {
+        if let Some(binding_key) = InputKeyBinding::from_event_key(key) {
+            let actions: Vec<_> = self.bindings.actions_for_key(&binding_key).collect();
+            for action in actions {
+                self.update_action_state(action, pressed);
+            }
+        }
+    }
+
+    fn update_action_state(&mut self, action: InputAction, pressed: bool) {
+        match action {
+            InputAction::SpawnBurstSmall => {
+                if pressed {
+                    self.space_pressed = true;
+                }
+            }
+            InputAction::SpawnBurstLarge => {
+                if pressed {
+                    self.b_pressed = true;
+                }
+            }
+            InputAction::MeshToggle => {
+                if pressed {
+                    self.mesh_toggle_pressed = true;
+                }
+            }
+            InputAction::FrustumLockToggle => {
+                if pressed {
+                    self.frustum_lock_toggle = true;
+                }
+            }
+            InputAction::FreeflyForward => self.forward_held = pressed,
+            InputAction::FreeflyBackward => self.backward_held = pressed,
+            InputAction::FreeflyLeft => self.left_held = pressed,
+            InputAction::FreeflyRight => self.right_held = pressed,
+            InputAction::FreeflyAscend => self.ascend_held = pressed,
+            InputAction::FreeflyDescend => self.descend_held = pressed,
+            InputAction::FreeflyRollLeft => self.roll_left_held = pressed,
+            InputAction::FreeflyRollRight => self.roll_right_held = pressed,
+            InputAction::FreeflyBoost => self.boost_held = pressed,
+            InputAction::ModifierCtrl => self.ctrl_held = pressed,
+        }
+    }
+}
+
+impl Default for Input {
+    fn default() -> Self {
+        Self::with_bindings(InputBindings::default())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct InputBindings {
+    key_to_actions: HashMap<InputKeyBinding, Vec<InputAction>>,
+}
+
+impl InputBindings {
+    fn load_or_default(path: impl AsRef<Path>) -> Self {
+        let path = path.as_ref();
+        match fs::read_to_string(path) {
+            Ok(contents) => match serde_json::from_str::<InputConfigFile>(&contents) {
+                Ok(config) => Self::from_config(config, &path.display().to_string()),
+                Err(err) => {
+                    eprintln!(
+                        "[input] Failed to parse {}: {err}. Falling back to default bindings.",
+                        path.display()
+                    );
+                    Self::default()
+                }
+            },
+            Err(err) => {
+                eprintln!(
+                    "[input] Failed to read {}: {err}. Falling back to default bindings.",
+                    path.display()
+                );
+                Self::default()
+            }
+        }
+    }
+
+    fn from_config(config: InputConfigFile, origin: &str) -> Self {
+        let overrides = config.into_overrides(origin);
+        Self::with_overrides(overrides)
+    }
+
+    fn with_overrides(overrides: HashMap<InputAction, Vec<InputKeyBinding>>) -> Self {
+        let mut action_map = Self::default_action_map();
+        for (action, keys) in overrides {
+            if keys.is_empty() {
+                continue;
+            }
+            action_map.insert(action, keys);
+        }
+        Self::from_action_map(action_map)
+    }
+
+    fn default_action_map() -> HashMap<InputAction, Vec<InputKeyBinding>> {
+        use InputAction::*;
+        let mut map = HashMap::new();
+        map.insert(SpawnBurstSmall, vec![InputKeyBinding::named(NamedKeyCode::Space)]);
+        map.insert(SpawnBurstLarge, vec![InputKeyBinding::character("b")]);
+        map.insert(MeshToggle, vec![InputKeyBinding::character("m")]);
+        map.insert(FrustumLockToggle, vec![InputKeyBinding::character("l")]);
+        map.insert(FreeflyForward, vec![InputKeyBinding::character("w")]);
+        map.insert(FreeflyBackward, vec![InputKeyBinding::character("s")]);
+        map.insert(FreeflyLeft, vec![InputKeyBinding::character("a")]);
+        map.insert(FreeflyRight, vec![InputKeyBinding::character("d")]);
+        map.insert(FreeflyAscend, vec![InputKeyBinding::character("e")]);
+        map.insert(FreeflyDescend, vec![InputKeyBinding::character("q")]);
+        map.insert(FreeflyRollLeft, vec![InputKeyBinding::character("z")]);
+        map.insert(FreeflyRollRight, vec![InputKeyBinding::character("c")]);
+        map.insert(FreeflyBoost, vec![InputKeyBinding::named(NamedKeyCode::Shift)]);
+        map.insert(ModifierCtrl, vec![InputKeyBinding::named(NamedKeyCode::Control)]);
+        map
+    }
+
+    fn from_action_map(action_map: HashMap<InputAction, Vec<InputKeyBinding>>) -> Self {
+        let mut key_to_actions: HashMap<InputKeyBinding, Vec<InputAction>> = HashMap::new();
+        for (action, keys) in action_map {
+            for key in keys {
+                key_to_actions.entry(key).or_default().push(action);
+            }
+        }
+        Self { key_to_actions }
+    }
+
+    fn actions_for_key(&self, key: &InputKeyBinding) -> impl Iterator<Item = InputAction> + '_ {
+        self.key_to_actions.get(key).into_iter().flatten().copied()
+    }
+}
+
+impl Default for InputBindings {
+    fn default() -> Self {
+        Self::from_action_map(Self::default_action_map())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum InputKeyBinding {
+    Character(String),
+    Named(NamedKeyCode),
+}
+
+impl InputKeyBinding {
+    fn character(ch: &str) -> Self {
+        Self::Character(ch.to_lowercase())
+    }
+
+    fn named(named: NamedKeyCode) -> Self {
+        Self::Named(named)
+    }
+
+    fn from_event_key(key: &Key) -> Option<Self> {
+        match key {
+            Key::Character(ch) => {
+                let s = ch.to_string();
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(Self::Character(s.to_lowercase()))
+                }
+            }
+            Key::Named(named) => NamedKeyCode::from_named_key(named).map(Self::Named),
+            _ => None,
+        }
+    }
+
+    fn from_config_value(raw: &str) -> Result<Self, ()> {
+        let normalized = raw.trim().to_lowercase();
+        if normalized.is_empty() {
+            return Err(());
+        }
+        if let Some(named) = NamedKeyCode::from_str(&normalized) {
+            return Ok(Self::Named(named));
+        }
+        if normalized.chars().count() == 1 {
+            return Ok(Self::Character(normalized));
+        }
+        Err(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum NamedKeyCode {
+    Space,
+    Shift,
+    Control,
+}
+
+impl NamedKeyCode {
+    fn from_named_key(key: &NamedKey) -> Option<Self> {
+        match key {
+            NamedKey::Space => Some(Self::Space),
+            NamedKey::Shift => Some(Self::Shift),
+            NamedKey::Control => Some(Self::Control),
+            _ => None,
+        }
+    }
+
+    fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "space" => Some(Self::Space),
+            "shift" | "left_shift" | "right_shift" => Some(Self::Shift),
+            "ctrl" | "control" | "left_ctrl" | "right_ctrl" => Some(Self::Control),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum InputAction {
+    SpawnBurstSmall,
+    SpawnBurstLarge,
+    MeshToggle,
+    FrustumLockToggle,
+    FreeflyForward,
+    FreeflyBackward,
+    FreeflyLeft,
+    FreeflyRight,
+    FreeflyAscend,
+    FreeflyDescend,
+    FreeflyRollLeft,
+    FreeflyRollRight,
+    FreeflyBoost,
+    ModifierCtrl,
+}
+
+impl InputAction {
+    fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "spawn_burst_small" => Some(Self::SpawnBurstSmall),
+            "spawn_burst_large" => Some(Self::SpawnBurstLarge),
+            "mesh_toggle" => Some(Self::MeshToggle),
+            "frustum_lock_toggle" => Some(Self::FrustumLockToggle),
+            "freefly_forward" => Some(Self::FreeflyForward),
+            "freefly_backward" => Some(Self::FreeflyBackward),
+            "freefly_left" => Some(Self::FreeflyLeft),
+            "freefly_right" => Some(Self::FreeflyRight),
+            "freefly_ascend" => Some(Self::FreeflyAscend),
+            "freefly_descend" => Some(Self::FreeflyDescend),
+            "freefly_roll_left" => Some(Self::FreeflyRollLeft),
+            "freefly_roll_right" => Some(Self::FreeflyRollRight),
+            "freefly_boost" => Some(Self::FreeflyBoost),
+            "modifier_ctrl" => Some(Self::ModifierCtrl),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct InputConfigFile {
+    #[serde(default)]
+    bindings: HashMap<String, Vec<String>>,
+}
+
+impl InputConfigFile {
+    fn into_overrides(self, origin: &str) -> HashMap<InputAction, Vec<InputKeyBinding>> {
+        let mut overrides = HashMap::new();
+        for (action_name, keys) in self.bindings {
+            let action_key = action_name.trim().to_lowercase();
+            match InputAction::from_str(&action_key) {
+                Some(action) => {
+                    let mut parsed = Vec::new();
+                    for key in keys {
+                        match InputKeyBinding::from_config_value(&key) {
+                            Ok(binding) => parsed.push(binding),
+                            Err(_) => eprintln!(
+                                "[input] {origin}: unknown key '{key}' for action '{action_name}', ignoring."
+                            ),
+                        }
+                    }
+                    if parsed.is_empty() {
+                        eprintln!(
+                            "[input] {origin}: action '{action_name}' has no valid keys, keeping defaults."
+                        );
+                        continue;
+                    }
+                    overrides.insert(action, parsed);
+                }
+                None => eprintln!("[input] {origin}: unknown action '{action_name}', ignoring."),
+            }
+        }
+        overrides
     }
 }
 
