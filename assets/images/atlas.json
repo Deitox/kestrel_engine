@@ -27,5 +27,37 @@
       "w": 48,
       "h": 48
     }
+  },
+  "animations": {
+    "demo_cycle": {
+      "looped": true,
+      "frames": [
+        {
+          "region": "redorb",
+          "duration_ms": 120
+        },
+        {
+          "region": "bluebox",
+          "duration_ms": 120
+        },
+        {
+          "region": "green",
+          "duration_ms": 120
+        }
+      ]
+    },
+    "checker_pulse": {
+      "looped": true,
+      "frames": [
+        {
+          "region": "checker",
+          "duration_ms": 180
+        },
+        {
+          "region": "green",
+          "duration_ms": 80
+        }
+      ]
+    }
   }
 }

@@ -4,7 +4,8 @@ use crate::events::{EventBus, GameEvent};
 use crate::mesh_registry::MeshRegistry;
 use crate::scene::{
     ColliderData, ColorData, MeshData, MeshLightingData, OrbitControllerData, ParticleEmitterData, Scene,
-    SceneDependencies, SceneEntity, SceneEntityId, SpriteData, Transform3DData, TransformData,
+    SceneDependencies, SceneEntity, SceneEntityId, SpriteAnimationData, SpriteData, Transform3DData,
+    TransformData,
 };
 use anyhow::{anyhow, Context, Result};
 use bevy_ecs::prelude::{Entity, Schedule, With, World};
@@ -57,6 +58,7 @@ impl EcsWorld {
             sys_sync_world3d,
             sys_update_emitters,
             sys_update_particles,
+            sys_drive_sprite_animations,
         ));
 
         let mut schedule_fixed = Schedule::default();
@@ -598,6 +600,98 @@ impl EcsWorld {
                 return false;
             }
             sprite.region = Cow::Owned(region.to_string());
+            drop(sprite);
+            self.world.entity_mut(entity).remove::<SpriteAnimation>();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_sprite_timeline(
+        &mut self,
+        entity: Entity,
+        assets: &AssetManager,
+        timeline: Option<&str>,
+    ) -> bool {
+        match timeline {
+            Some(name) => {
+                let atlas = if let Some(sprite) = self.world.get::<Sprite>(entity) {
+                    sprite.atlas_key.to_string()
+                } else {
+                    return false;
+                };
+                let definition = match assets.atlas_timeline(&atlas, name).cloned() {
+                    Some(def) => def,
+                    None => return false,
+                };
+                if definition.frames.is_empty() {
+                    return false;
+                }
+                let frames: Vec<SpriteAnimationFrame> = definition
+                    .frames
+                    .iter()
+                    .map(|frame| SpriteAnimationFrame {
+                        region: frame.region.clone(),
+                        duration: frame.duration.max(std::f32::EPSILON),
+                    })
+                    .collect();
+                let component = SpriteAnimation::new(name.to_string(), frames, definition.looped);
+                self.world.entity_mut(entity).insert(component);
+                self.reset_sprite_animation(entity);
+                true
+            }
+            None => {
+                self.world.entity_mut(entity).remove::<SpriteAnimation>();
+                true
+            }
+        }
+    }
+
+    pub fn set_sprite_animation_playing(&mut self, entity: Entity, playing: bool) -> bool {
+        if let Some(mut animation) = self.world.get_mut::<SpriteAnimation>(entity) {
+            animation.playing = playing && !animation.frames.is_empty();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_sprite_animation_speed(&mut self, entity: Entity, speed: f32) -> bool {
+        if let Some(mut animation) = self.world.get_mut::<SpriteAnimation>(entity) {
+            if speed.is_finite() {
+                animation.speed = speed.max(0.0);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_sprite_animation_looped(&mut self, entity: Entity, looped: bool) -> bool {
+        if let Some(mut animation) = self.world.get_mut::<SpriteAnimation>(entity) {
+            animation.looped = looped;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn reset_sprite_animation(&mut self, entity: Entity) -> bool {
+        if let Some(mut animation) = self.world.get_mut::<SpriteAnimation>(entity) {
+            if animation.frames.is_empty() {
+                return false;
+            }
+            animation.frame_index = 0;
+            animation.elapsed_in_frame = 0.0;
+            animation.playing = true;
+            let target_region = animation.current_region_name().map(|name| name.to_string());
+            drop(animation);
+            if let Some(region) = target_region {
+                if let Some(mut sprite) = self.world.get_mut::<Sprite>(entity) {
+                    sprite.region = Cow::Owned(region);
+                }
+            }
             true
         } else {
             false
@@ -846,10 +940,24 @@ impl EcsWorld {
         let translation = Vec2::new(world_transform.0.w_axis.x, world_transform.0.w_axis.y);
         let scene_id = self.world.get::<SceneEntityTag>(entity)?.id.clone();
         let velocity = self.world.get::<Velocity>(entity).map(|v| v.0);
-        let sprite = self.world.get::<Sprite>(entity).map(|sprite| SpriteInfo {
-            atlas: sprite.atlas_key.to_string(),
-            region: sprite.region.to_string(),
-        });
+        let sprite = if let Some(sprite) = self.world.get::<Sprite>(entity) {
+            let atlas = sprite.atlas_key.to_string();
+            let region = sprite.region.to_string();
+            let animation = self
+                .world
+                .get::<SpriteAnimation>(entity)
+                .map(|anim| SpriteAnimationInfo {
+                    timeline: anim.timeline.clone(),
+                    playing: anim.playing,
+                    looped: anim.looped,
+                    speed: anim.speed,
+                    frame_index: anim.frame_index,
+                    frame_count: anim.frame_count(),
+                });
+            Some(SpriteInfo { atlas, region, animation })
+        } else {
+            None
+        };
         let mesh_surface = self.world.get::<MeshSurface>(entity);
         let mesh = self.world.get::<MeshRef>(entity).map(|mesh_ref| {
             let material = mesh_surface.and_then(|surface| surface.material.clone());
@@ -1237,7 +1345,6 @@ impl EcsWorld {
                 .insert(OrbitController { center: orbit.center.into(), angular_speed: orbit.angular_speed });
         }
 
-        let mut sprite_event = None;
         if let Some(sprite) = data.sprite.as_ref() {
             if !assets.atlas_region_exists(&sprite.atlas, &sprite.region) {
                 return Err(anyhow!(
@@ -1250,7 +1357,6 @@ impl EcsWorld {
                 atlas_key: Cow::Owned(sprite.atlas.clone()),
                 region: Cow::Owned(sprite.region.clone()),
             });
-            sprite_event = Some((sprite.atlas.clone(), sprite.region.clone()));
         }
 
         if let Some(mesh) = data.mesh.as_ref() {
@@ -1277,8 +1383,28 @@ impl EcsWorld {
             rapier.register_collider_entity(collider, entity_id);
         }
 
-        if let Some((atlas, region)) = sprite_event {
-            self.emit(GameEvent::SpriteSpawned { entity: entity_id, atlas, region });
+        if let Some(sprite) = data.sprite.as_ref().and_then(|sprite_data| sprite_data.animation.as_ref()) {
+            if !self.set_sprite_timeline(entity_id, assets, Some(&sprite.timeline)) {
+                eprintln!(
+                    "[scene] sprite animation '{}' was not found for atlas '{}'",
+                    sprite.timeline,
+                    data.sprite.as_ref().map(|s| s.atlas.as_str()).unwrap_or_default()
+                );
+            } else {
+                self.set_sprite_animation_speed(entity_id, sprite.speed);
+                self.set_sprite_animation_looped(entity_id, sprite.looped);
+                self.set_sprite_animation_playing(entity_id, sprite.playing);
+            }
+        }
+
+        if data.sprite.is_some() {
+            if let Some(sprite) = self.world.get::<Sprite>(entity_id) {
+                self.emit(GameEvent::SpriteSpawned {
+                    entity: entity_id,
+                    atlas: sprite.atlas_key.to_string(),
+                    region: sprite.region.to_string(),
+                });
+            }
         }
 
         Ok(entity_id)
@@ -1309,10 +1435,19 @@ impl EcsWorld {
                 transform.rotation,
                 transform.scale,
             ),
-            sprite: self.world.get::<Sprite>(entity).map(|sprite| SpriteData {
-                atlas: sprite.atlas_key.to_string(),
-                region: sprite.region.to_string(),
-            }),
+            sprite: self
+                .world
+                .get::<Sprite>(entity)
+                .map(|sprite| (sprite.atlas_key.to_string(), sprite.region.to_string()))
+                .map(|(atlas, region)| {
+                    let animation = self.world.get::<SpriteAnimation>(entity).map(|anim| SpriteAnimationData {
+                        timeline: anim.timeline.clone(),
+                        speed: anim.speed,
+                        looped: anim.looped,
+                        playing: anim.playing,
+                    });
+                    SpriteData { atlas, region, animation }
+                }),
             transform3d: self
                 .world
                 .get::<Transform3D>(entity)

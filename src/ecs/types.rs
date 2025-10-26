@@ -43,6 +43,45 @@ pub struct Sprite {
     pub atlas_key: Cow<'static, str>,
     pub region: Cow<'static, str>,
 }
+
+#[derive(Component, Clone)]
+pub struct SpriteAnimation {
+    pub timeline: String,
+    pub frames: Vec<SpriteAnimationFrame>,
+    pub frame_index: usize,
+    pub elapsed_in_frame: f32,
+    pub playing: bool,
+    pub looped: bool,
+    pub speed: f32,
+}
+
+impl SpriteAnimation {
+    pub fn new(timeline: String, frames: Vec<SpriteAnimationFrame>, looped: bool) -> Self {
+        Self {
+            timeline,
+            frames,
+            frame_index: 0,
+            elapsed_in_frame: 0.0,
+            playing: true,
+            looped,
+            speed: 1.0,
+        }
+    }
+
+    pub fn current_region_name(&self) -> Option<&str> {
+        self.frames.get(self.frame_index).map(|frame| frame.region.as_str())
+    }
+
+    pub fn frame_count(&self) -> usize {
+        self.frames.len()
+    }
+}
+
+#[derive(Clone)]
+pub struct SpriteAnimationFrame {
+    pub region: String,
+    pub duration: f32,
+}
 #[derive(Component, Clone)]
 pub struct MeshRef {
     pub key: String,
@@ -224,6 +263,17 @@ pub struct EntityInfo {
 pub struct SpriteInfo {
     pub atlas: String,
     pub region: String,
+    pub animation: Option<SpriteAnimationInfo>,
+}
+
+#[derive(Clone)]
+pub struct SpriteAnimationInfo {
+    pub timeline: String,
+    pub playing: bool,
+    pub looped: bool,
+    pub speed: f32,
+    pub frame_index: usize,
+    pub frame_count: usize,
 }
 
 #[derive(Clone)]

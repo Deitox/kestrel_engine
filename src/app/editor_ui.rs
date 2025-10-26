@@ -870,6 +870,7 @@ impl App {
                                         info.sprite = Some(SpriteInfo {
                                             atlas: sprite.atlas.clone(),
                                             region: region.clone(),
+                                            animation: None,
                                         });
                                         inspector_refresh = true;
                                         self.inspector_status =
@@ -878,6 +879,94 @@ impl App {
                                         self.inspector_status = Some(format!(
                                             "Region '{}' not found in atlas {}",
                                             region, sprite.atlas
+                                        ));
+                                    }
+                                }
+                                let mut timeline_names = self.assets.atlas_timeline_names(&sprite.atlas);
+                                timeline_names.sort();
+                                timeline_names.dedup();
+                                if timeline_names.is_empty() {
+                                    ui.label("Timelines: none defined for atlas");
+                                } else {
+                                    let mut desired_timeline =
+                                        sprite.animation.as_ref().map(|anim| anim.timeline.clone());
+                                    let original_timeline = desired_timeline.clone();
+                                    ui.horizontal(|ui| {
+                                        ui.label("Timeline");
+                                        let combo_id = ("sprite_timeline_combo", entity.index());
+                                        egui::ComboBox::from_id_salt(combo_id)
+                                            .selected_text(
+                                                desired_timeline
+                                                    .as_deref()
+                                                    .unwrap_or("None")
+                                                    .to_string(),
+                                            )
+                                            .show_ui(ui, |ui| {
+                                                ui.selectable_value(&mut desired_timeline, None, "None");
+                                                for name in &timeline_names {
+                                                    ui.selectable_value(
+                                                        &mut desired_timeline,
+                                                        Some(name.clone()),
+                                                        name,
+                                                    );
+                                                }
+                                            });
+                                    });
+                                    if desired_timeline != original_timeline {
+                                        let success = self
+                                            .ecs
+                                            .set_sprite_timeline(entity, &self.assets, desired_timeline.as_deref());
+                                        if success {
+                                            inspector_refresh = true;
+                                            self.inspector_status = desired_timeline
+                                                .as_ref()
+                                                .map(|name| format!("Sprite timeline set to {name}"))
+                                                .or_else(|| Some("Sprite timeline disabled".to_string()));
+                                        } else if let Some(name) = desired_timeline {
+                                            self.inspector_status =
+                                                Some(format!("Timeline '{name}' unavailable"));
+                                        } else {
+                                            self.inspector_status =
+                                                Some("Failed to change sprite timeline".to_string());
+                                        }
+                                    }
+                                    if let Some(anim) = sprite.animation.as_ref() {
+                                        ui.horizontal(|ui| {
+                                            let play_label = if anim.playing { "Pause" } else { "Play" };
+                                            if ui.button(play_label).clicked() {
+                                                if self
+                                                    .ecs
+                                                    .set_sprite_animation_playing(entity, !anim.playing)
+                                                {
+                                                    inspector_refresh = true;
+                                                }
+                                            }
+                                            if ui.button("Reset").clicked() {
+                                                if self.ecs.reset_sprite_animation(entity) {
+                                                    inspector_refresh = true;
+                                                }
+                                            }
+                                            let mut looped = anim.looped;
+                                            if ui.checkbox(&mut looped, "Loop").changed() {
+                                                if self.ecs.set_sprite_animation_looped(entity, looped) {
+                                                    inspector_refresh = true;
+                                                }
+                                            }
+                                        });
+                                        let mut speed = anim.speed;
+                                        if ui
+                                            .add(egui::Slider::new(&mut speed, 0.0..=5.0).text("Speed"))
+                                            .changed()
+                                        {
+                                            if self.ecs.set_sprite_animation_speed(entity, speed) {
+                                                inspector_refresh = true;
+                                            }
+                                        }
+                                        let frame_count = anim.frame_count.max(1);
+                                        ui.label(format!(
+                                            "Frame {}/{}",
+                                            (anim.frame_index + 1).min(frame_count),
+                                            frame_count
                                         ));
                                     }
                                 }

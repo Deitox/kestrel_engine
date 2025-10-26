@@ -941,6 +941,19 @@ pub struct Transform3DData {
 pub struct SpriteData {
     pub atlas: String,
     pub region: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub animation: Option<SpriteAnimationData>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpriteAnimationData {
+    pub timeline: String,
+    #[serde(default = "default_sprite_anim_speed")]
+    pub speed: f32,
+    #[serde(default = "default_sprite_anim_looped")]
+    pub looped: bool,
+    #[serde(default = "default_sprite_anim_playing")]
+    pub playing: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -995,6 +1008,18 @@ fn default_base_color() -> Vec3Data {
 
 const fn default_receive_shadows() -> bool {
     true
+}
+
+const fn default_sprite_anim_looped() -> bool {
+    true
+}
+
+const fn default_sprite_anim_playing() -> bool {
+    true
+}
+
+const fn default_sprite_anim_speed() -> f32 {
+    1.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

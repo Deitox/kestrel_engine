@@ -27,8 +27,8 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
 
 ## P1 — Tooling & Workflow Enhancements
 
-6. **[M2] Animated sprite timelines**
-   - *Acceptance:* Add timeline data to atlas metadata, stream per-instance animation state through the ECS, and expose playback controls in the inspector.
+6. **[M2] Animated sprite timelines** - *Completed via atlas timeline metadata + ECS animation system + inspector controls.*
+   - *Highlights:* Atlas JSON now carries timeline definitions (`assets/images/atlas.json:31`), runtime parsing streams animation frames into ECS components (`src/assets.rs:22`, `src/ecs/systems/animation.rs:1`, `src/ecs/world.rs:595`), and the inspector exposes playback/loop controls with timeline selection (`src/app/editor_ui.rs:885`). A regression test exercises parsing, playback, pause/resume, and reset behavior (`tests/sprite_animation.rs:1`).
 7. **[M3.5] Quadtree fallback with perf telemetry**
    - *Acceptance:* Implement a density-aware quadtree fallback for the spatial hash, expose cell occupancy metrics to the analytics plugin, and add a toggle in the debug UI.
 8. **[M4] CLI overrides for config values** - *Completed via CLI parser + AppConfigOverrides (runtime precedence logging + parser tests).*

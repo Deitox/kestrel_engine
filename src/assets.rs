@@ -19,7 +19,22 @@ pub struct TextureAtlas {
     pub width: u32,
     pub height: u32,
     pub regions: HashMap<String, Rect>,
+    pub animations: HashMap<String, SpriteTimeline>,
 }
+
+#[derive(Clone, Debug)]
+pub struct SpriteTimeline {
+    pub name: String,
+    pub looped: bool,
+    pub frames: Vec<SpriteTimelineFrame>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SpriteTimelineFrame {
+    pub region: String,
+    pub duration: f32,
+}
+
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub struct Rect {
     pub x: u32,
@@ -33,6 +48,31 @@ struct AtlasFile {
     width: u32,
     height: u32,
     regions: HashMap<String, Rect>,
+    #[serde(default)]
+    animations: HashMap<String, AtlasTimelineFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AtlasTimelineFile {
+    #[serde(default)]
+    frames: Vec<AtlasTimelineFrameFile>,
+    #[serde(default = "default_timeline_loop")]
+    looped: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct AtlasTimelineFrameFile {
+    region: String,
+    #[serde(default = "default_frame_duration_ms")]
+    duration_ms: u32,
+}
+
+const fn default_timeline_loop() -> bool {
+    true
+}
+
+const fn default_frame_duration_ms() -> u32 {
+    100
 }
 
 impl AssetManager {
@@ -71,15 +111,51 @@ impl AssetManager {
     fn load_atlas_internal(&mut self, key: &str, json_path: &str) -> Result<()> {
         let bytes = fs::read(json_path)?;
         let af: AtlasFile = serde_json::from_slice(&bytes)?;
+        let regions = af.regions;
+        let animations = Self::parse_timelines(key, &regions, af.animations);
         let atlas = TextureAtlas {
             image_key: af.image.clone(),
             width: af.width,
             height: af.height,
-            regions: af.regions,
+            regions,
+            animations,
         };
         self.atlases.insert(key.to_string(), atlas);
         self.atlas_sources.insert(key.to_string(), json_path.to_string());
         Ok(())
+    }
+
+    fn parse_timelines(
+        atlas_key: &str,
+        regions: &HashMap<String, Rect>,
+        raw: HashMap<String, AtlasTimelineFile>,
+    ) -> HashMap<String, SpriteTimeline> {
+        let mut animations = HashMap::new();
+        for (timeline_name, data) in raw {
+            let mut frames = Vec::new();
+            for frame in data.frames {
+                if !regions.contains_key(&frame.region) {
+                    eprintln!(
+                        "[assets] atlas '{atlas_key}': timeline '{timeline_name}' references unknown region '{}', skipping frame.",
+                        frame.region
+                    );
+                    continue;
+                }
+                let duration = (frame.duration_ms.max(1) as f32) / 1000.0;
+                frames.push(SpriteTimelineFrame { region: frame.region, duration });
+            }
+            if frames.is_empty() {
+                eprintln!(
+                    "[assets] atlas '{atlas_key}': timeline '{timeline_name}' has no valid frames, ignoring."
+                );
+                continue;
+            }
+            animations.insert(
+                timeline_name.clone(),
+                SpriteTimeline { name: timeline_name, looped: data.looped, frames },
+            );
+        }
+        animations
     }
     pub fn retain_atlas(&mut self, key: &str, json_path: Option<&str>) -> Result<()> {
         if self.atlases.contains_key(key) {
@@ -177,6 +253,15 @@ impl AssetManager {
     }
     pub fn atlas_region_exists(&self, atlas_key: &str, region: &str) -> bool {
         self.atlases.get(atlas_key).and_then(|atlas| atlas.regions.get(region)).is_some()
+    }
+    pub fn atlas_timeline(&self, atlas_key: &str, name: &str) -> Option<&SpriteTimeline> {
+        self.atlases.get(atlas_key).and_then(|atlas| atlas.animations.get(name))
+    }
+    pub fn atlas_timeline_names(&self, atlas_key: &str) -> Vec<String> {
+        self.atlases
+            .get(atlas_key)
+            .map(|atlas| atlas.animations.keys().cloned().collect())
+            .unwrap_or_default()
     }
     pub fn has_atlas(&self, key: &str) -> bool {
         self.atlases.contains_key(key)

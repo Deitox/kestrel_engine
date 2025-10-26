@@ -1094,6 +1094,18 @@ impl ApplicationHandler for App {
                 }
             }
         }
+        if let Some(emitter) = self.emitter_entity {
+            let has_animation = self
+                .ecs
+                .entity_info(emitter)
+                .and_then(|info| info.sprite.and_then(|sprite| sprite.animation))
+                .is_some();
+            if !has_animation {
+                if self.ecs.set_sprite_timeline(emitter, &self.assets, Some("demo_cycle")) {
+                    self.ecs.set_sprite_animation_speed(emitter, 0.85);
+                }
+            }
+        }
         let atlas_view = match self.assets.atlas_texture_view("main") {
             Ok(view) => view,
             Err(err) => {
