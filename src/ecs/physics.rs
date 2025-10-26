@@ -7,6 +7,7 @@ use rapier2d::prelude::{
     ImpulseJointSet, IntegrationParameters, IslandManager, MultibodyJointSet, NarrowPhase, PhysicsPipeline,
     QueryPipeline, Real, RigidBody, RigidBodyBuilder, RigidBodyHandle, RigidBodySet, SharedShape, Vector,
 };
+use smallvec::SmallVec;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
@@ -340,6 +341,217 @@ impl SpatialHash {
             }
         }
     }
+}
+
+#[derive(Resource, Clone, Copy)]
+pub struct SpatialIndexConfig {
+    pub fallback_enabled: bool,
+    pub density_threshold: f32,
+}
+
+impl Default for SpatialIndexConfig {
+    fn default() -> Self {
+        Self { fallback_enabled: false, density_threshold: 6.0 }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpatialMode {
+    Grid,
+    Quadtree,
+}
+
+impl Default for SpatialMode {
+    fn default() -> Self {
+        SpatialMode::Grid
+    }
+}
+
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct SpatialMetrics {
+    pub occupied_cells: usize,
+    pub max_cell_occupancy: usize,
+    pub average_occupancy: f32,
+    pub entity_count: usize,
+    pub mode: SpatialMode,
+    pub quadtree_nodes: usize,
+}
+
+impl Default for SpatialMetrics {
+    fn default() -> Self {
+        Self {
+            occupied_cells: 0,
+            max_cell_occupancy: 0,
+            average_occupancy: 0.0,
+            entity_count: 0,
+            mode: SpatialMode::Grid,
+            quadtree_nodes: 0,
+        }
+    }
+}
+
+struct QuadtreeNode {
+    min: Vec2,
+    max: Vec2,
+    children: Option<[usize; 4]>,
+    entries: SmallVec<[usize; 8]>,
+}
+
+impl QuadtreeNode {
+    fn new(min: Vec2, max: Vec2) -> Self {
+        Self { min, max, children: None, entries: SmallVec::new() }
+    }
+}
+
+struct QuadtreeEntry {
+    entity: Entity,
+    center: Vec2,
+    half: Vec2,
+}
+
+#[derive(Resource)]
+pub struct SpatialQuadtree {
+    nodes: Vec<QuadtreeNode>,
+    entries: Vec<QuadtreeEntry>,
+    max_depth: u32,
+    capacity: usize,
+}
+
+impl SpatialQuadtree {
+    pub fn new(max_depth: u32, capacity: usize) -> Self {
+        Self { nodes: Vec::new(), entries: Vec::new(), max_depth, capacity }
+    }
+
+    pub fn clear(&mut self) {
+        self.nodes.clear();
+        self.entries.clear();
+    }
+
+    pub fn rebuild(&mut self, bounds: &WorldBounds, colliders: &[(Entity, Vec2, Vec2)]) {
+        self.clear();
+        self.nodes.push(QuadtreeNode::new(bounds.min, bounds.max));
+        for (entity, center, half) in colliders {
+            let entry_index = self.entries.len();
+            self.entries.push(QuadtreeEntry { entity: *entity, center: *center, half: *half });
+            self.insert_entry(0, entry_index, 0);
+        }
+    }
+
+    fn insert_entry(&mut self, node_index: usize, entry_index: usize, depth: u32) {
+        if depth >= self.max_depth {
+            self.nodes[node_index].entries.push(entry_index);
+            return;
+        }
+        if self.nodes[node_index].entries.len() >= self.capacity {
+            self.subdivide(node_index);
+        }
+        if let Some(children) = self.nodes[node_index].children {
+            if let Some(child_index) = self.child_for_entry(node_index, entry_index) {
+                self.insert_entry(children[child_index], entry_index, depth + 1);
+                return;
+            }
+        }
+        self.nodes[node_index].entries.push(entry_index);
+    }
+
+    fn child_for_entry(&self, node_index: usize, entry_index: usize) -> Option<usize> {
+        let entry = &self.entries[entry_index];
+        let node = &self.nodes[node_index];
+        let mid = (node.min + node.max) * 0.5;
+        let mut quadrant = 0usize;
+        let mut child_min = node.min;
+        let mut child_max = node.max;
+        if entry.center.x >= mid.x {
+            quadrant |= 1;
+            child_min.x = mid.x;
+        } else {
+            child_max.x = mid.x;
+        }
+        if entry.center.y >= mid.y {
+            quadrant |= 2;
+            child_min.y = mid.y;
+        } else {
+            child_max.y = mid.y;
+        }
+        let entry_min = entry.center - entry.half;
+        let entry_max = entry.center + entry.half;
+        if entry_min.x >= child_min.x
+            && entry_max.x <= child_max.x
+            && entry_min.y >= child_min.y
+            && entry_max.y <= child_max.y
+        {
+            Some(quadrant)
+        } else {
+            None
+        }
+    }
+
+    fn subdivide(&mut self, node_index: usize) {
+        if self.nodes[node_index].children.is_some() {
+            return;
+        }
+        let node = &self.nodes[node_index];
+        let mid = (node.min + node.max) * 0.5;
+        let mins = [
+            Vec2::new(node.min.x, node.min.y),
+            Vec2::new(mid.x, node.min.y),
+            Vec2::new(node.min.x, mid.y),
+            Vec2::new(mid.x, mid.y),
+        ];
+        let maxs = [
+            Vec2::new(mid.x, mid.y),
+            Vec2::new(node.max.x, mid.y),
+            Vec2::new(mid.x, node.max.y),
+            Vec2::new(node.max.x, node.max.y),
+        ];
+        let mut children = [0usize; 4];
+        for i in 0..4 {
+            let child_index = self.nodes.len();
+            self.nodes.push(QuadtreeNode::new(mins[i], maxs[i]));
+            children[i] = child_index;
+        }
+        self.nodes[node_index].children = Some(children);
+    }
+
+    pub fn query(&self, center: Vec2, half: Vec2, out: &mut SmallVec<[Entity; 16]>) {
+        out.clear();
+        if self.nodes.is_empty() {
+            return;
+        }
+        self.query_node(0, center, half, out);
+    }
+
+    fn query_node(&self, node_index: usize, center: Vec2, half: Vec2, out: &mut SmallVec<[Entity; 16]>) {
+        let node = &self.nodes[node_index];
+        if !aabb_overlap(center, half, node_center(node), node_half(node)) {
+            return;
+        }
+        for &entry_index in &node.entries {
+            out.push(self.entries[entry_index].entity);
+        }
+        if let Some(children) = node.children {
+            for child in children {
+                self.query_node(child, center, half, out);
+            }
+        }
+    }
+
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+}
+
+fn node_center(node: &QuadtreeNode) -> Vec2 {
+    (node.min + node.max) * 0.5
+}
+
+fn node_half(node: &QuadtreeNode) -> Vec2 {
+    (node.max - node.min) * 0.5
+}
+
+fn aabb_overlap(center_a: Vec2, half_a: Vec2, center_b: Vec2, half_b: Vec2) -> bool {
+    (center_a.x - center_b.x).abs() < (half_a.x + half_b.x)
+        && (center_a.y - center_b.y).abs() < (half_a.y + half_b.y)
 }
 
 #[derive(Resource, Default)]

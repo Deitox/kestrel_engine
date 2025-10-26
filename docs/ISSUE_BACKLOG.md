@@ -29,8 +29,8 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
 
 6. **[M2] Animated sprite timelines** - *Completed via atlas timeline metadata + ECS animation system + inspector controls.*
    - *Highlights:* Atlas JSON now carries timeline definitions (`assets/images/atlas.json:31`), runtime parsing streams animation frames into ECS components (`src/assets.rs:22`, `src/ecs/systems/animation.rs:1`, `src/ecs/world.rs:595`), and the inspector exposes playback/loop controls with timeline selection (`src/app/editor_ui.rs:885`). A regression test exercises parsing, playback, pause/resume, and reset behavior (`tests/sprite_animation.rs:1`).
-7. **[M3.5] Quadtree fallback with perf telemetry**
-   - *Acceptance:* Implement a density-aware quadtree fallback for the spatial hash, expose cell occupancy metrics to the analytics plugin, and add a toggle in the debug UI.
+7. **[M3.5] Quadtree fallback with perf telemetry** - *Completed via density-aware quadtree builder + analytics wiring.*
+   - *Highlights:* `SpatialQuadtree` and adaptive metrics drive the fallback decision inside the physics systems (`src/ecs/physics.rs:160`, `src/ecs/systems/physics.rs:120`), analytics now records spatial occupancy snapshots so the stats panel can report mode/cell pressure plus expose a runtime toggle and threshold control (`src/app/editor_ui.rs:250`, `src/analytics.rs:13`). Regression tests cover the automatic activation path and metric reporting (`tests/spatial_index.rs:1`).
 8. **[M4] CLI overrides for config values** - *Completed via CLI parser + AppConfigOverrides (runtime precedence logging + parser tests).*
    - *Acceptance:* Support `kestrel_engine --width 1280 --height 720 --vsync off` (or similar) with precedence rules logged at startup; include unit tests for argument parsing.
 9. **[M5] Profiler & metrics panel with snapshot tests**

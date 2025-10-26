@@ -152,6 +152,8 @@ pub struct App {
     ui_spawn_per_press: i32,
     ui_auto_spawn_rate: f32, // per second
     ui_cell_size: f32,
+    ui_spatial_use_quadtree: bool,
+    ui_spatial_density_threshold: f32,
     ui_root_spin: f32,
     ui_emitter_rate: f32,
     ui_emitter_spread: f32,
@@ -411,6 +413,8 @@ impl App {
             ui_spawn_per_press: 200,
             ui_auto_spawn_rate: 0.0,
             ui_cell_size: 0.25,
+            ui_spatial_use_quadtree: false,
+            ui_spatial_density_threshold: 6.0,
             ui_root_spin: 1.2,
             ui_emitter_rate,
             ui_emitter_spread,
@@ -1314,6 +1318,8 @@ impl ApplicationHandler for App {
         selected_info = self.selected_entity.and_then(|entity| self.ecs.entity_info(entity));
 
         self.ecs.set_spatial_cell(self.ui_cell_size.max(0.05));
+        self.ecs.set_spatial_quadtree_enabled(self.ui_spatial_use_quadtree);
+        self.ecs.set_spatial_density_threshold(self.ui_spatial_density_threshold);
         if let Some(emitter) = self.emitter_entity {
             self.ecs.set_emitter_rate(emitter, self.ui_emitter_rate);
             self.ecs.set_emitter_spread(emitter, self.ui_emitter_spread);
@@ -1341,8 +1347,10 @@ impl ApplicationHandler for App {
         self.ecs.update(dt);
         self.record_events();
         let particle_budget_snapshot = self.ecs.particle_budget_metrics();
+        let spatial_metrics_snapshot = self.ecs.spatial_metrics();
         if let Some(analytics) = self.analytics_plugin_mut() {
             analytics.record_particle_budget(particle_budget_snapshot);
+            analytics.record_spatial_metrics(spatial_metrics_snapshot);
         }
 
         let sprite_instances = match self.ecs.collect_sprite_instances(&self.assets) {
@@ -1508,6 +1516,7 @@ impl ApplicationHandler for App {
         };
         let hist_points =
             self.analytics_plugin().map(|plugin| plugin.frame_plot_points()).unwrap_or_else(Vec::new);
+        let spatial_metrics = self.analytics_plugin().and_then(|plugin| plugin.spatial_metrics());
         let entity_count = self.ecs.entity_count();
         let instances_drawn = instances.len();
         let orbit_target =
@@ -1565,8 +1574,11 @@ impl ApplicationHandler for App {
             instances_drawn,
             vsync_enabled: self.renderer.vsync_enabled(),
             particle_budget: Some(particle_budget_snapshot),
+            spatial_metrics,
             ui_scale: self.ui_scale,
             ui_cell_size: self.ui_cell_size,
+            ui_spatial_use_quadtree: self.ui_spatial_use_quadtree,
+            ui_spatial_density_threshold: self.ui_spatial_density_threshold,
             ui_spawn_per_press: self.ui_spawn_per_press,
             ui_auto_spawn_rate: self.ui_auto_spawn_rate,
             ui_environment_intensity: self.ui_environment_intensity,
@@ -1621,6 +1633,8 @@ impl ApplicationHandler for App {
             pending_viewport,
             ui_scale,
             ui_cell_size,
+            ui_spatial_use_quadtree,
+            ui_spatial_density_threshold,
             ui_spawn_per_press,
             ui_auto_spawn_rate,
             ui_environment_intensity,
@@ -1655,6 +1669,8 @@ impl ApplicationHandler for App {
 
         self.ui_scale = ui_scale;
         self.ui_cell_size = ui_cell_size;
+        self.ui_spatial_use_quadtree = ui_spatial_use_quadtree;
+        self.ui_spatial_density_threshold = ui_spatial_density_threshold;
         self.ui_spawn_per_press = ui_spawn_per_press;
         self.ui_auto_spawn_rate = ui_auto_spawn_rate;
         self.ui_environment_intensity = ui_environment_intensity;

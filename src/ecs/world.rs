@@ -39,6 +39,9 @@ impl EcsWorld {
         let mut world = World::new();
         world.insert_resource(TimeDelta(0.0));
         world.insert_resource(SpatialHash::new(0.25));
+        world.insert_resource(SpatialQuadtree::new(6, 8));
+        world.insert_resource(SpatialIndexConfig::default());
+        world.insert_resource(SpatialMetrics::default());
         world.insert_resource(ParticleContacts::default());
         world.insert_resource(ParticleCaps::default());
         let world_bounds =
@@ -825,6 +828,20 @@ impl EcsWorld {
     pub fn set_spatial_cell(&mut self, cell: f32) {
         let mut grid = self.world.resource_mut::<SpatialHash>();
         grid.cell = cell;
+    }
+
+    pub fn set_spatial_quadtree_enabled(&mut self, enabled: bool) {
+        let mut config = self.world.resource_mut::<SpatialIndexConfig>();
+        config.fallback_enabled = enabled;
+    }
+
+    pub fn set_spatial_density_threshold(&mut self, threshold: f32) {
+        let mut config = self.world.resource_mut::<SpatialIndexConfig>();
+        config.density_threshold = threshold.max(1.0);
+    }
+
+    pub fn spatial_metrics(&self) -> SpatialMetrics {
+        *self.world.resource::<SpatialMetrics>()
     }
 
     pub fn pick_entity_3d(

@@ -1,7 +1,7 @@
 use super::{App, MeshControlMode, ViewportCameraMode};
 use crate::audio::{AudioHealthSnapshot, AudioPlugin};
 use crate::camera3d::Camera3D;
-use crate::ecs::{EntityInfo, ParticleBudgetMetrics, SpriteInfo};
+use crate::ecs::{EntityInfo, ParticleBudgetMetrics, SpatialMetrics, SpatialMode, SpriteInfo};
 use crate::events::GameEvent;
 use crate::gizmo::{
     Axis2, GizmoInteraction, GizmoMode, ScaleHandle, ScaleHandleKind, GIZMO_ROTATE_INNER_RADIUS_PX,
@@ -46,8 +46,11 @@ pub(super) struct EditorUiParams {
     pub instances_drawn: usize,
     pub vsync_enabled: bool,
     pub particle_budget: Option<ParticleBudgetMetrics>,
+    pub spatial_metrics: Option<SpatialMetrics>,
     pub ui_scale: f32,
     pub ui_cell_size: f32,
+    pub ui_spatial_use_quadtree: bool,
+    pub ui_spatial_density_threshold: f32,
     pub ui_spawn_per_press: i32,
     pub ui_auto_spawn_rate: f32,
     pub ui_environment_intensity: f32,
@@ -100,6 +103,8 @@ pub(super) struct EditorUiOutput {
     pub pending_viewport: Option<(Vec2, Vec2)>,
     pub ui_scale: f32,
     pub ui_cell_size: f32,
+    pub ui_spatial_use_quadtree: bool,
+    pub ui_spatial_density_threshold: f32,
     pub ui_spawn_per_press: i32,
     pub ui_auto_spawn_rate: f32,
     pub ui_environment_intensity: f32,
@@ -143,6 +148,8 @@ impl App {
             mut vsync_enabled,
             mut ui_scale,
             mut ui_cell_size,
+            mut ui_spatial_use_quadtree,
+            mut ui_spatial_density_threshold,
             mut ui_spawn_per_press,
             mut ui_auto_spawn_rate,
             mut ui_environment_intensity,
@@ -186,6 +193,7 @@ impl App {
             mut audio_enabled,
             audio_health,
             particle_budget,
+            spatial_metrics,
             mut id_lookup_input,
             mut id_lookup_active,
         } = params;
@@ -293,6 +301,38 @@ impl App {
                             } else {
                                 ui.label("Emitters: none active");
                             }
+                        }
+                        ui.separator();
+                        ui.label("Spatial Index");
+                        if let Some(metrics) = spatial_metrics {
+                            ui.label(format!(
+                                "Mode: {:?} | Cells: {} | Avg occ {:.2} | Max {}",
+                                metrics.mode, metrics.occupied_cells, metrics.average_occupancy, metrics.max_cell_occupancy
+                            ));
+                            if metrics.mode == SpatialMode::Quadtree {
+                                ui.label(format!("Quadtree nodes: {}", metrics.quadtree_nodes));
+                            }
+                        } else {
+                            ui.label("Metrics unavailable.");
+                        }
+                        if ui.checkbox(&mut ui_spatial_use_quadtree, "Enable quadtree fallback").changed() {
+                            self.inspector_status = Some(if ui_spatial_use_quadtree {
+                                "Quadtree fallback enabled.".to_string()
+                            } else {
+                                "Quadtree fallback disabled.".to_string()
+                            });
+                        }
+                        let mut threshold = ui_spatial_density_threshold;
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut threshold)
+                                    .speed(0.1)
+                                    .range(1.0..=64.0)
+                                    .prefix("Density threshold "),
+                            )
+                            .changed()
+                        {
+                            ui_spatial_density_threshold = threshold.max(1.0);
                         }
                         if ui.button("Find entity by ID...").clicked() {
                             id_lookup_active = true;
@@ -1941,6 +1981,8 @@ impl App {
             pending_viewport,
             ui_scale,
             ui_cell_size,
+             ui_spatial_use_quadtree,
+             ui_spatial_density_threshold,
             ui_spawn_per_press,
             ui_auto_spawn_rate,
             ui_environment_intensity,

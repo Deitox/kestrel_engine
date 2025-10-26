@@ -1,6 +1,7 @@
 use super::TimeDelta;
 use crate::ecs::physics::{
-    CollisionEventKind, ParticleContacts, PhysicsParams, RapierState, SpatialHash, WorldBounds,
+    CollisionEventKind, ParticleContacts, PhysicsParams, RapierState, SpatialHash, SpatialIndexConfig,
+    SpatialMetrics, SpatialMode, SpatialQuadtree, WorldBounds,
 };
 use crate::ecs::types::*;
 use crate::events::{EventBus, GameEvent};
@@ -10,6 +11,7 @@ use bevy_ecs::system::{Res, ResMut};
 use glam::Vec2;
 use rapier2d::prelude::Vector;
 use smallvec::SmallVec;
+use std::collections::HashSet;
 
 pub fn sys_apply_spin(mut q: Query<(&mut Transform, &Spin)>, dt: Res<TimeDelta>) {
     for (mut t, s) in &mut q {
@@ -128,48 +130,104 @@ pub fn sys_world_bounds_bounce(
 
 pub fn sys_build_spatial_hash(
     mut grid: ResMut<SpatialHash>,
+    mut quadtree: ResMut<SpatialQuadtree>,
+    bounds: Res<WorldBounds>,
+    settings: Res<SpatialIndexConfig>,
+    mut metrics: ResMut<SpatialMetrics>,
     q: Query<(Entity, &Transform, &Aabb), Without<RapierBody>>,
 ) {
     grid.clear();
+    let mut collider_data: Vec<(Entity, Vec2, Vec2)> = Vec::new();
     for (e, t, a) in &q {
         grid.insert(e, t.translation, a.half);
+        collider_data.push((e, t.translation, a.half));
     }
+    let occupied_cells = grid.grid.len();
+    let mut total_entries = 0usize;
+    let mut max_cell_occupancy = 0usize;
+    for list in grid.grid.values() {
+        total_entries += list.len();
+        max_cell_occupancy = max_cell_occupancy.max(list.len());
+    }
+    let average = if occupied_cells > 0 {
+        total_entries as f32 / occupied_cells as f32
+    } else {
+        0.0
+    };
+    let use_quadtree = settings.fallback_enabled && average >= settings.density_threshold.max(1.0);
+    let mut node_count = 0usize;
+    let mode = if use_quadtree {
+        quadtree.rebuild(&bounds, &collider_data);
+        node_count = quadtree.node_count();
+        SpatialMode::Quadtree
+    } else {
+        quadtree.clear();
+        SpatialMode::Grid
+    };
+    *metrics = SpatialMetrics {
+        occupied_cells,
+        max_cell_occupancy,
+        average_occupancy: average,
+        entity_count: collider_data.len(),
+        mode,
+        quadtree_nodes: node_count,
+    };
 }
 
 pub fn sys_collide_spatial(
     grid: Res<SpatialHash>,
+    quadtree: Res<SpatialQuadtree>,
+    metrics: Res<SpatialMetrics>,
     mut movers: Query<(Entity, &Transform, &Aabb, &mut Velocity), Without<RapierBody>>,
     positions: Query<(&Transform, &Aabb), Without<RapierBody>>,
     mut events: ResMut<EventBus>,
     mut contacts: ResMut<ParticleContacts>,
 ) {
-    let neighbors = [(-1, -1), (0, -1), (1, -1), (-1, 0), (0, 0), (1, 0), (-1, 1), (0, 1), (1, 1)];
-    let mut checked: SmallVec<[Entity; 16]> = SmallVec::new();
     let mut previous_pairs = std::mem::take(&mut contacts.pairs);
     contacts.pairs.clear();
+    let mut checked: SmallVec<[Entity; 16]> = SmallVec::new();
+    let mut candidates: SmallVec<[Entity; 16]> = SmallVec::new();
+    let neighbors = [(-1, -1), (0, -1), (1, -1), (-1, 0), (0, 0), (1, 0), (-1, 1), (0, 1), (1, 1)];
     for (e, t, a, mut v) in &mut movers {
-        let key = grid.key(t.translation);
         let mut impulse = Vec2::ZERO;
         checked.clear();
-        for (dx, dy) in neighbors {
-            if let Some(list) = grid.grid.get(&(key.0 + dx, key.1 + dy)) {
-                for &other in list {
-                    if other == e || checked.iter().any(|&c| c == other) {
-                        continue;
-                    }
-                    checked.push(other);
-                    if let Ok((ot, oa)) = positions.get(other) {
-                        if overlap(t.translation, a.half, ot.translation, oa.half) {
-                            let delta = t.translation - ot.translation;
-                            let dir = delta.signum();
-                            impulse += dir * 0.04;
-                            let pair = if e.index() <= other.index() { (e, other) } else { (other, e) };
-                            if contacts.pairs.insert(pair) && !previous_pairs.remove(&pair) {
-                                events.push(GameEvent::collision_started(pair.0, pair.1));
-                            }
-                        }
+        match metrics.mode {
+            SpatialMode::Grid => {
+                let key = grid.key(t.translation);
+                for (dx, dy) in neighbors {
+                    if let Some(list) = grid.grid.get(&(key.0 + dx, key.1 + dy)) {
+                        process_neighbors(
+                            e,
+                            t.translation,
+                            a.half,
+                            list.iter().copied(),
+                            &positions,
+                            &mut checked,
+                            &mut impulse,
+                            contacts.as_mut(),
+                            &mut previous_pairs,
+                            events.as_mut(),
+                        );
                     }
                 }
+            }
+            SpatialMode::Quadtree => {
+                if quadtree.node_count() == 0 {
+                    continue;
+                }
+                quadtree.query(t.translation, a.half * 1.05, &mut candidates);
+                process_neighbors(
+                    e,
+                    t.translation,
+                    a.half,
+                    candidates.iter().copied(),
+                    &positions,
+                    &mut checked,
+                    &mut impulse,
+                    contacts.as_mut(),
+                    &mut previous_pairs,
+                    events.as_mut(),
+                );
             }
         }
         v.0 += impulse;
@@ -181,4 +239,37 @@ pub fn sys_collide_spatial(
 
 fn overlap(a_pos: Vec2, a_half: Vec2, b_pos: Vec2, b_half: Vec2) -> bool {
     (a_pos.x - b_pos.x).abs() < (a_half.x + b_half.x) && (a_pos.y - b_pos.y).abs() < (a_half.y + b_half.y)
+}
+
+fn process_neighbors<'a, I>(
+    entity: Entity,
+    translation: Vec2,
+    half: Vec2,
+    neighbors: I,
+    positions: &Query<(&Transform, &Aabb), Without<RapierBody>>,
+    checked: &mut SmallVec<[Entity; 16]>,
+    impulse: &mut Vec2,
+    contacts: &mut ParticleContacts,
+    previous_pairs: &mut HashSet<(Entity, Entity)>,
+    events: &mut EventBus,
+) where
+    I: IntoIterator<Item = Entity>,
+{
+    for other in neighbors {
+        if other == entity || checked.iter().any(|&c| c == other) {
+            continue;
+        }
+        checked.push(other);
+        if let Ok((ot, oa)) = positions.get(other) {
+            if overlap(translation, half, ot.translation, oa.half) {
+                let delta = translation - ot.translation;
+                let dir = delta.signum();
+                *impulse += dir * 0.04;
+                let pair = if entity.index() <= other.index() { (entity, other) } else { (other, entity) };
+                if contacts.pairs.insert(pair) && !previous_pairs.remove(&pair) {
+                    events.push(GameEvent::collision_started(pair.0, pair.1));
+                }
+            }
+        }
+    }
 }
