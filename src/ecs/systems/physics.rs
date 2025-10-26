@@ -3,6 +3,7 @@ use crate::ecs::physics::{
     CollisionEventKind, ParticleContacts, PhysicsParams, RapierState, SpatialHash, SpatialIndexConfig,
     SpatialMetrics, SpatialMode, SpatialQuadtree, WorldBounds,
 };
+use crate::ecs::profiler::SystemProfiler;
 use crate::ecs::types::*;
 use crate::events::{EventBus, GameEvent};
 use bevy_ecs::prelude::*;
@@ -13,17 +14,24 @@ use rapier2d::prelude::Vector;
 use smallvec::SmallVec;
 use std::collections::HashSet;
 
-pub fn sys_apply_spin(mut q: Query<(&mut Transform, &Spin)>, dt: Res<TimeDelta>) {
+pub fn sys_apply_spin(
+    mut profiler: ResMut<SystemProfiler>,
+    mut q: Query<(&mut Transform, &Spin)>,
+    dt: Res<TimeDelta>,
+) {
+    let _span = profiler.scope("sys_apply_spin");
     for (mut t, s) in &mut q {
         t.rotation += s.speed * dt.0;
     }
 }
 
 pub fn sys_solve_forces(
+    mut profiler: ResMut<SystemProfiler>,
     mut q: Query<(&mut Velocity, &mut Force, &Mass, Option<&RapierBody>)>,
     params: Res<PhysicsParams>,
     dt: Res<TimeDelta>,
 ) {
+    let _span = profiler.scope("sys_solve_forces");
     for (mut vel, mut force, mass, rapier_body) in &mut q {
         if rapier_body.is_some() {
             continue;
@@ -39,9 +47,11 @@ pub fn sys_solve_forces(
 }
 
 pub fn sys_integrate_positions(
+    mut profiler: ResMut<SystemProfiler>,
     mut q: Query<(&mut Transform, &Velocity, Option<&RapierBody>)>,
     dt: Res<TimeDelta>,
 ) {
+    let _span = profiler.scope("sys_integrate_positions");
     for (mut t, v, rapier_body) in &mut q {
         if rapier_body.is_some() {
             continue;
@@ -50,7 +60,13 @@ pub fn sys_integrate_positions(
     }
 }
 
-pub fn sys_step_rapier(mut rapier: ResMut<RapierState>, mut events: ResMut<EventBus>, dt: Res<TimeDelta>) {
+pub fn sys_step_rapier(
+    mut profiler: ResMut<SystemProfiler>,
+    mut rapier: ResMut<RapierState>,
+    mut events: ResMut<EventBus>,
+    dt: Res<TimeDelta>,
+) {
+    let _span = profiler.scope("sys_step_rapier");
     if dt.0 > 0.0 {
         rapier.step(dt.0);
     }
@@ -64,9 +80,11 @@ pub fn sys_step_rapier(mut rapier: ResMut<RapierState>, mut events: ResMut<Event
 }
 
 pub fn sys_sync_from_rapier(
+    mut profiler: ResMut<SystemProfiler>,
     rapier: Res<RapierState>,
     mut query: Query<(&RapierBody, &mut Transform, Option<&mut Velocity>)>,
 ) {
+    let _span = profiler.scope("sys_sync_from_rapier");
     for (body_handle, mut transform, velocity) in &mut query {
         if let Some(body) = rapier.body(body_handle.handle) {
             let translation = body.translation();
@@ -81,9 +99,11 @@ pub fn sys_sync_from_rapier(
 }
 
 pub fn sys_drive_orbits(
+    mut profiler: ResMut<SystemProfiler>,
     mut rapier: ResMut<RapierState>,
     query: Query<(&RapierBody, &Transform, &OrbitController)>,
 ) {
+    let _span = profiler.scope("sys_drive_orbits");
     for (body, transform, orbit) in &query {
         if let Some(rb) = rapier.body_mut(body.handle) {
             let offset = transform.translation - orbit.center;
@@ -99,9 +119,11 @@ pub fn sys_drive_orbits(
 }
 
 pub fn sys_world_bounds_bounce(
+    mut profiler: ResMut<SystemProfiler>,
     bounds: Res<WorldBounds>,
     mut q: Query<(&mut Transform, &mut Velocity, Option<&Aabb>, Option<&RapierBody>)>,
 ) {
+    let _span = profiler.scope("sys_world_bounds_bounce");
     let min = bounds.min;
     let max = bounds.max;
     for (mut t, mut v, aabb, rapier_body) in &mut q {
@@ -129,6 +151,7 @@ pub fn sys_world_bounds_bounce(
 }
 
 pub fn sys_build_spatial_hash(
+    mut profiler: ResMut<SystemProfiler>,
     mut grid: ResMut<SpatialHash>,
     mut quadtree: ResMut<SpatialQuadtree>,
     bounds: Res<WorldBounds>,
@@ -136,6 +159,7 @@ pub fn sys_build_spatial_hash(
     mut metrics: ResMut<SpatialMetrics>,
     q: Query<(Entity, &Transform, &Aabb), Without<RapierBody>>,
 ) {
+    let _span = profiler.scope("sys_build_spatial_hash");
     grid.clear();
     let mut collider_data: Vec<(Entity, Vec2, Vec2)> = Vec::new();
     for (e, t, a) in &q {
@@ -175,6 +199,7 @@ pub fn sys_build_spatial_hash(
 }
 
 pub fn sys_collide_spatial(
+    mut profiler: ResMut<SystemProfiler>,
     grid: Res<SpatialHash>,
     quadtree: Res<SpatialQuadtree>,
     metrics: Res<SpatialMetrics>,
@@ -183,6 +208,7 @@ pub fn sys_collide_spatial(
     mut events: ResMut<EventBus>,
     mut contacts: ResMut<ParticleContacts>,
 ) {
+    let _span = profiler.scope("sys_collide_spatial");
     let mut previous_pairs = std::mem::take(&mut contacts.pairs);
     contacts.pairs.clear();
     let mut checked: SmallVec<[Entity; 16]> = SmallVec::new();

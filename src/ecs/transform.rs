@@ -1,4 +1,5 @@
 use super::{Children, Parent, Transform, Transform3D, WorldTransform, WorldTransform3D};
+use crate::ecs::profiler::SystemProfiler;
 use bevy_ecs::prelude::*;
 use glam::Mat4;
 use smallvec::SmallVec;
@@ -11,6 +12,7 @@ pub struct TransformPropagationScratch {
 }
 
 pub fn sys_propagate_scene_transforms(
+    mut profiler: ResMut<SystemProfiler>,
     mut nodes: Query<(
         Entity,
         Option<&Transform>,
@@ -21,6 +23,7 @@ pub fn sys_propagate_scene_transforms(
     roots: Query<Entity, (With<WorldTransform>, Without<Parent>)>,
     mut scratch: ResMut<TransformPropagationScratch>,
 ) {
+    let _span = profiler.scope("sys_propagate_scene_transforms");
     fn compose_local(transform2d: Option<&Transform>, transform3d: Option<&Transform3D>) -> Mat4 {
         if let Some(t3d) = transform3d {
             Mat4::from_scale_rotation_translation(t3d.scale, t3d.rotation, t3d.translation)
@@ -79,7 +82,11 @@ pub fn sys_propagate_scene_transforms(
     scratch.visited = visited;
 }
 
-pub fn sys_sync_world3d(mut query: Query<(&WorldTransform, &mut WorldTransform3D)>) {
+pub fn sys_sync_world3d(
+    mut profiler: ResMut<SystemProfiler>,
+    mut query: Query<(&WorldTransform, &mut WorldTransform3D)>,
+) {
+    let _span = profiler.scope("sys_sync_world3d");
     for (world, mut world3d) in &mut query {
         world3d.0 = world.0;
     }

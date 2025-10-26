@@ -29,6 +29,7 @@ use glam::{Mat4, Vec2, Vec3, Vec4};
 use anyhow::{anyhow, Context, Result};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{DeviceEvent, ElementState, KeyEvent, WindowEvent};
@@ -103,6 +104,37 @@ impl Viewport {
 
     fn size_physical(&self) -> PhysicalSize<u32> {
         PhysicalSize::new(self.size.x.max(1.0).round() as u32, self.size.y.max(1.0).round() as u32)
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct FrameTimingSample {
+    pub frame_ms: f32,
+    pub update_ms: f32,
+    pub fixed_ms: f32,
+    pub render_ms: f32,
+    pub ui_ms: f32,
+}
+
+struct FrameProfiler {
+    history: VecDeque<FrameTimingSample>,
+    capacity: usize,
+}
+
+impl FrameProfiler {
+    fn new(capacity: usize) -> Self {
+        Self { history: VecDeque::with_capacity(capacity), capacity: capacity.max(1) }
+    }
+
+    fn push(&mut self, sample: FrameTimingSample) {
+        if self.history.len() == self.capacity {
+            self.history.pop_front();
+        }
+        self.history.push_back(sample);
+    }
+
+    fn samples(&self) -> Vec<FrameTimingSample> {
+        self.history.iter().copied().collect()
     }
 }
 pub async fn run() -> Result<()> {
@@ -207,6 +239,7 @@ pub struct App {
     viewport: Viewport,
     id_lookup_input: String,
     id_lookup_active: bool,
+    frame_profiler: FrameProfiler,
 
     // Particles
     emitter_entity: Option<Entity>,
@@ -464,6 +497,7 @@ impl App {
             id_lookup_active: false,
             emitter_entity: Some(emitter),
             sprite_atlas_views: HashMap::new(),
+            frame_profiler: FrameProfiler::new(240),
         };
         app.apply_particle_caps();
         app.report_audio_startup_status();
@@ -1219,6 +1253,14 @@ impl ApplicationHandler for App {
         self.time.tick();
         let dt = self.time.delta_seconds();
         self.accumulator += dt;
+        self.ecs.profiler_begin_frame();
+        let frame_start = Instant::now();
+        let mut fixed_time_ms = 0.0;
+        #[allow(unused_assignments)]
+        let mut update_time_ms = 0.0;
+        #[allow(unused_assignments)]
+        let mut render_time_ms = 0.0;
+        let mut ui_time_ms = 0.0;
 
         if let Some(entity) = self.selected_entity {
             if !self.ecs.entity_exists(entity) {
@@ -1340,11 +1382,17 @@ impl ApplicationHandler for App {
 
         while self.accumulator >= self.fixed_dt {
             let fixed_dt = self.fixed_dt;
+            let fixed_start = Instant::now();
             self.ecs.fixed_step(fixed_dt);
+            fixed_time_ms += fixed_start.elapsed().as_secs_f32() * 1000.0;
+            let plugin_fixed_start = Instant::now();
             self.with_plugins(|plugins, ctx| plugins.fixed_update(ctx, fixed_dt));
+            fixed_time_ms += plugin_fixed_start.elapsed().as_secs_f32() * 1000.0;
             self.accumulator -= fixed_dt;
         }
+        let update_start = Instant::now();
         self.ecs.update(dt);
+        update_time_ms = update_start.elapsed().as_secs_f32() * 1000.0;
         self.record_events();
         let particle_budget_snapshot = self.ecs.particle_budget_metrics();
         let spatial_metrics_snapshot = self.ecs.spatial_metrics();
@@ -1480,6 +1528,7 @@ impl ApplicationHandler for App {
             mesh_draws.push(MeshDraw { mesh, model, lighting, material: material_gpu, casts_shadows });
         }
         let mesh_camera_opt = if mesh_draws.is_empty() { None } else { mesh_camera.as_ref() };
+        let render_start = Instant::now();
         let frame = match self.renderer.render_frame(
             &instances,
             &sprite_batches,
@@ -1496,9 +1545,18 @@ impl ApplicationHandler for App {
                 return;
             }
         };
+        render_time_ms = render_start.elapsed().as_secs_f32() * 1000.0;
 
         if self.egui_winit.is_none() {
             frame.present();
+            let frame_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
+            self.frame_profiler.push(FrameTimingSample {
+                frame_ms,
+                update_ms: update_time_ms,
+                fixed_ms: fixed_time_ms,
+                render_ms: render_time_ms,
+                ui_ms: ui_time_ms,
+            });
             return;
         }
 
@@ -1517,6 +1575,8 @@ impl ApplicationHandler for App {
         let hist_points =
             self.analytics_plugin().map(|plugin| plugin.frame_plot_points()).unwrap_or_else(Vec::new);
         let spatial_metrics = self.analytics_plugin().and_then(|plugin| plugin.spatial_metrics());
+        let frame_timings = self.frame_profiler.samples();
+        let system_timings = self.ecs.system_timings();
         let entity_count = self.ecs.entity_count();
         let instances_drawn = instances.len();
         let orbit_target =
@@ -1570,6 +1630,8 @@ impl ApplicationHandler for App {
             raw_input,
             base_pixels_per_point,
             hist_points,
+            frame_timings,
+            system_timings,
             entity_count,
             instances_drawn,
             vsync_enabled: self.renderer.vsync_enabled(),
@@ -1626,7 +1688,9 @@ impl ApplicationHandler for App {
             id_lookup_active: self.id_lookup_active,
         };
 
+        let ui_build_start = Instant::now();
         let editor_output = self.render_editor_ui(editor_params);
+        ui_time_ms += ui_build_start.elapsed().as_secs_f32() * 1000.0;
         let editor_ui::EditorUiOutput {
             full_output,
             actions,
@@ -1966,10 +2030,12 @@ impl ApplicationHandler for App {
                     ren.update_texture(device, queue, *id, delta);
                 }
             }
+            let ui_render_start = Instant::now();
             let meshes = self.egui_ctx.tessellate(shapes, screen.pixels_per_point);
             if let Err(err) = self.renderer.render_egui(ren, &meshes, screen, frame) {
                 eprintln!("Egui render error: {err:?}");
             }
+            ui_time_ms += ui_render_start.elapsed().as_secs_f32() * 1000.0;
             for id in &textures_delta.free {
                 ren.free_texture(id);
             }
@@ -1983,6 +2049,14 @@ impl ApplicationHandler for App {
             w.request_redraw();
         }
         self.input.clear_frame();
+        let frame_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
+        self.frame_profiler.push(FrameTimingSample {
+            frame_ms,
+            update_ms: update_time_ms,
+            fixed_ms: fixed_time_ms,
+            render_ms: render_time_ms,
+            ui_ms: ui_time_ms,
+        });
     }
 }
 

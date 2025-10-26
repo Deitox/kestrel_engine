@@ -1,7 +1,9 @@
-use super::{App, MeshControlMode, ViewportCameraMode};
+use super::{App, FrameTimingSample, MeshControlMode, ViewportCameraMode};
 use crate::audio::{AudioHealthSnapshot, AudioPlugin};
 use crate::camera3d::Camera3D;
-use crate::ecs::{EntityInfo, ParticleBudgetMetrics, SpatialMetrics, SpatialMode, SpriteInfo};
+use crate::ecs::{
+    EntityInfo, ParticleBudgetMetrics, SpatialMetrics, SpatialMode, SpriteInfo, SystemTimingSummary,
+};
 use crate::events::GameEvent;
 use crate::gizmo::{
     Axis2, GizmoInteraction, GizmoMode, ScaleHandle, ScaleHandleKind, GIZMO_ROTATE_INNER_RADIUS_PX,
@@ -42,6 +44,8 @@ pub(super) struct EditorUiParams {
     pub raw_input: egui::RawInput,
     pub base_pixels_per_point: f32,
     pub hist_points: Vec<[f64; 2]>,
+    pub frame_timings: Vec<FrameTimingSample>,
+    pub system_timings: Vec<SystemTimingSummary>,
     pub entity_count: usize,
     pub instances_drawn: usize,
     pub vsync_enabled: bool,
@@ -143,6 +147,8 @@ impl App {
             raw_input,
             base_pixels_per_point,
             hist_points,
+            frame_timings,
+            system_timings,
             entity_count,
             instances_drawn,
             mut vsync_enabled,
@@ -337,6 +343,30 @@ impl App {
                         if ui.button("Find entity by ID...").clicked() {
                             id_lookup_active = true;
                         }
+                        egui::CollapsingHeader::new("Profiler").default_open(false).show(ui, |ui| {
+                            ui.monospace(frame_summary_text(frame_timings.last()));
+                            if system_timings.is_empty() {
+                                ui.label("System timings unavailable");
+                            } else {
+                                egui::Grid::new("system_profiler_grid").striped(true).show(ui, |ui| {
+                                    ui.label("System");
+                                    ui.label("Last (ms)");
+                                    ui.label("Avg (ms)");
+                                    ui.label("Max (ms)");
+                                    ui.label("Samples");
+                                    ui.end_row();
+                                    for timing in system_timings.iter().take(12) {
+                                        ui.label(timing.name);
+                                        let values = system_row_strings(timing);
+                                        ui.label(&values[0]);
+                                        ui.label(&values[1]);
+                                        ui.label(&values[2]);
+                                        ui.label(&values[3]);
+                                        ui.end_row();
+                                    }
+                                });
+                            }
+                        });
                     });
 
                     egui::CollapsingHeader::new("Debug Overlays").default_open(false).show(ui, |ui| {
@@ -2014,5 +2044,59 @@ impl App {
             debug_show_colliders,
             vsync_request: vsync_toggle_request,
         }
+    }
+}
+
+fn frame_summary_text(sample: Option<&FrameTimingSample>) -> String {
+    if let Some(sample) = sample {
+        format!(
+            "Frame {frame:.2} ms | Update {update:.2} ms | Fixed {fixed:.2} ms | Render {render:.2} ms | UI {ui:.2} ms",
+            frame = sample.frame_ms,
+            update = sample.update_ms,
+            fixed = sample.fixed_ms,
+            render = sample.render_ms,
+            ui = sample.ui_ms
+        )
+    } else {
+        "Frame timings unavailable".to_string()
+    }
+}
+
+fn system_row_strings(timing: &SystemTimingSummary) -> [String; 4] {
+    [
+        format!("{:.2}", timing.last_ms),
+        format!("{:.2}", timing.average_ms),
+        format!("{:.2}", timing.max_ms),
+        format!("{}", timing.samples),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_summary_snapshot() {
+        let sample = FrameTimingSample { frame_ms: 16.67, update_ms: 5.25, fixed_ms: 3.5, render_ms: 6.1, ui_ms: 1.82 };
+        assert_eq!(
+            frame_summary_text(Some(&sample)),
+            "Frame 16.67 ms | Update 5.25 ms | Fixed 3.50 ms | Render 6.10 ms | UI 1.82 ms"
+        );
+        assert_eq!(frame_summary_text(None), "Frame timings unavailable");
+    }
+
+    #[test]
+    fn system_row_snapshot() {
+        let timing = SystemTimingSummary {
+            name: "sys_example",
+            last_ms: 0.42,
+            average_ms: 0.25,
+            max_ms: 1.05,
+            samples: 12,
+        };
+        assert_eq!(
+            system_row_strings(&timing),
+            ["0.42".to_string(), "0.25".to_string(), "1.05".to_string(), "12".to_string()]
+        );
     }
 }

@@ -1,4 +1,5 @@
 use super::TimeDelta;
+use crate::ecs::profiler::SystemProfiler;
 use crate::ecs::types::*;
 use bevy_ecs::prelude::*;
 use bevy_ecs::query::With;
@@ -8,12 +9,14 @@ use rand::Rng;
 use std::borrow::Cow;
 
 pub fn sys_update_emitters(
+    mut profiler: ResMut<SystemProfiler>,
     mut commands: Commands,
     mut emitters: Query<(&mut ParticleEmitter, &Transform)>,
     particles: Query<Entity, With<Particle>>,
     caps: Res<ParticleCaps>,
     dt: Res<TimeDelta>,
 ) {
+    let _span = profiler.scope("sys_update_emitters");
     let mut rng = rand::thread_rng();
     let existing_particles = particles.iter().count();
     let max_total = caps.max_total as usize;
@@ -77,6 +80,7 @@ pub fn sys_update_emitters(
 }
 
 pub fn sys_update_particles(
+    mut profiler: ResMut<SystemProfiler>,
     mut commands: Commands,
     mut particles: Query<(
         Entity,
@@ -89,6 +93,7 @@ pub fn sys_update_particles(
     )>,
     dt: Res<TimeDelta>,
 ) {
+    let _span = profiler.scope("sys_update_particles");
     for (entity, mut particle, mut transform, velocity, visual, mut tint, aabb) in &mut particles {
         particle.lifetime -= dt.0;
         if particle.lifetime <= 0.0 {

@@ -1,9 +1,15 @@
 use crate::ecs::{Sprite, SpriteAnimation};
+use crate::ecs::profiler::SystemProfiler;
 use super::TimeDelta;
-use bevy_ecs::prelude::{Query, Res};
+use bevy_ecs::prelude::{Query, Res, ResMut};
 use std::borrow::Cow;
 
-pub fn sys_drive_sprite_animations(dt: Res<TimeDelta>, mut query: Query<(&mut Sprite, &mut SpriteAnimation)>) {
+pub fn sys_drive_sprite_animations(
+    mut profiler: ResMut<SystemProfiler>,
+    dt: Res<TimeDelta>,
+    mut query: Query<(&mut Sprite, &mut SpriteAnimation)>,
+) {
+    let _span = profiler.scope("sys_drive_sprite_animations");
     let delta = dt.0;
     if delta <= 0.0 {
         return;

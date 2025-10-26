@@ -33,8 +33,8 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
    - *Highlights:* `SpatialQuadtree` and adaptive metrics drive the fallback decision inside the physics systems (`src/ecs/physics.rs:160`, `src/ecs/systems/physics.rs:120`), analytics now records spatial occupancy snapshots so the stats panel can report mode/cell pressure plus expose a runtime toggle and threshold control (`src/app/editor_ui.rs:250`, `src/analytics.rs:13`). Regression tests cover the automatic activation path and metric reporting (`tests/spatial_index.rs:1`).
 8. **[M4] CLI overrides for config values** - *Completed via CLI parser + AppConfigOverrides (runtime precedence logging + parser tests).*
    - *Acceptance:* Support `kestrel_engine --width 1280 --height 720 --vsync off` (or similar) with precedence rules logged at startup; include unit tests for argument parsing.
-9. **[M5] Profiler & metrics panel with snapshot tests**
-   - *Acceptance:* Add a collapsible egui profiler panel (frame timings, ECS system timings) and snapshot tests that catch layout regressions.
+9. **[M5] Profiler & metrics panel with snapshot tests** - *Completed via runtime frame/system profiler + egui snapshot helpers.*
+   - *Highlights:* Runtime frame timing history now records per-frame/update/fixed/render/UI durations (`src/app/mod.rs:1250`) and ECS systems report per-system timings through the new profiler resource (`src/ecs/profiler.rs:1`, `src/ecs/systems/*.rs`). The editor stats panel exposes a collapsible profiler table with frame summaries and ranked system timings plus quadtree metrics (`src/app/editor_ui.rs:250`). Snapshot-style tests cover the string summaries used in the panel to detect layout regressions (`src/app/editor_ui.rs:2098`).
 10. **[M6] Multi-camera / follow-target tooling**
     - *Acceptance:* Allow the viewport to switch between multiple named cameras or follow a selected entity; persist the choice in scene metadata.
 11. **[M7] Scripting debugger / REPL**

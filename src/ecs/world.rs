@@ -53,6 +53,7 @@ impl EcsWorld {
         world.insert_resource(RapierState::new(&physics_params, &world_bounds, boundary_entity));
         world.insert_resource(EventBus::default());
         world.insert_resource(TransformPropagationScratch::default());
+        world.insert_resource(SystemProfiler::new());
 
         let mut schedule_var = Schedule::default();
         schedule_var.add_systems((
@@ -842,6 +843,14 @@ impl EcsWorld {
 
     pub fn spatial_metrics(&self) -> SpatialMetrics {
         *self.world.resource::<SpatialMetrics>()
+    }
+
+    pub fn profiler_begin_frame(&mut self) {
+        self.world.resource_mut::<SystemProfiler>().begin_frame();
+    }
+
+    pub fn system_timings(&self) -> Vec<SystemTimingSummary> {
+        self.world.resource::<SystemProfiler>().summaries()
     }
 
     pub fn pick_entity_3d(
