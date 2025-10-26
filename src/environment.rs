@@ -186,6 +186,10 @@ impl EnvironmentRegistry {
         false
     }
 
+    pub fn ref_count(&self, key: &str) -> Option<usize> {
+        self.environments.get(key).map(|entry| entry.ref_count)
+    }
+
     pub fn ensure_gpu(&mut self, key: &str, renderer: &mut Renderer) -> Result<Arc<EnvironmentGpu>> {
         let maps = {
             let entry =

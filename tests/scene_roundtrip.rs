@@ -2,15 +2,17 @@ use bevy_ecs::prelude::Entity;
 use glam::{EulerRot, Quat, Vec2, Vec3, Vec4};
 use kestrel_engine::assets::AssetManager;
 use kestrel_engine::ecs::{
-    Aabb, Children, EcsWorld, Mass, MeshLighting, MeshRef, MeshSurface, Parent, ParticleEmitter, Sprite,
-    Transform, Transform3D, Velocity, WorldTransform, WorldTransform3D,
+    Aabb, Children, EcsWorld, Mass, MeshLighting, MeshRef, MeshSurface, Parent, ParticleEmitter,
+    SceneEntityTag, Sprite, Transform, Transform3D, Velocity, WorldTransform, WorldTransform3D,
 };
+use kestrel_engine::environment::EnvironmentRegistry;
 use kestrel_engine::material_registry::MaterialRegistry;
 use kestrel_engine::mesh_registry::MeshRegistry;
 use kestrel_engine::scene::{
     EnvironmentDependency, Scene, SceneEntity, SceneEntityId, SceneEnvironment, SceneLightingData,
     SceneShadowData, TransformData, Vec3Data,
 };
+use std::borrow::Cow;
 use tempfile::NamedTempFile;
 
 #[test]
@@ -522,4 +524,203 @@ fn scene_clone_subtree_includes_descendants() {
         !subtree.iter().any(|entity| entity.id == root_id),
         "root entity should be excluded when cloning a child subtree"
     );
+}
+
+#[test]
+fn scene_roundtrip_captures_hierarchy_dependencies_and_environment_metadata() {
+    const MESH_KEY: &str = "test_triangle";
+    const MESH_PATH: &str = "assets/models/demo_triangle.gltf";
+    const ENVIRONMENT_KEY: &str = "environment::studio";
+    const ENVIRONMENT_PATH: &str = "assets/environments/studio.png";
+    let env_intensity = 2.0;
+
+    let mut world = EcsWorld::new();
+    let mut export_assets = AssetManager::new();
+    export_assets
+        .retain_atlas("main", Some("assets/images/atlas.json"))
+        .expect("export requires sprite atlas");
+
+    let root = world
+        .world
+        .spawn((
+            Transform { translation: Vec2::new(-0.4, 0.25), rotation: 0.35, scale: Vec2::splat(1.15) },
+            WorldTransform::default(),
+            Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("checker") },
+            Velocity(Vec2::new(0.05, 0.02)),
+        ))
+        .id();
+    world.world.entity_mut(root).insert(SceneEntityTag::new(SceneEntityId::new()));
+
+    let child = world
+        .world
+        .spawn((
+            Transform { translation: Vec2::new(0.5, -0.1), rotation: -0.45, scale: Vec2::splat(0.9) },
+            WorldTransform::default(),
+            Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("redorb") },
+            Aabb { half: Vec2::splat(0.3) },
+            Mass(1.5),
+            Velocity(Vec2::new(-0.1, 0.12)),
+        ))
+        .id();
+    world.world.entity_mut(child).insert(SceneEntityTag::new(SceneEntityId::new()));
+    world.world.entity_mut(child).insert(Parent(root));
+    world.world.entity_mut(root).insert(Children(vec![child]));
+
+    let grandchild = world
+        .world
+        .spawn((
+            Transform { translation: Vec2::new(0.1, 0.65), rotation: 0.9, scale: Vec2::splat(0.55) },
+            WorldTransform::default(),
+            ParticleEmitter {
+                rate: 18.0,
+                spread: 0.6,
+                speed: 2.4,
+                lifetime: 1.6,
+                accumulator: 0.0,
+                start_color: Vec4::new(0.2, 0.8, 1.0, 1.0),
+                end_color: Vec4::new(1.0, 0.25, 0.15, 0.0),
+                start_size: 0.45,
+                end_size: 0.1,
+            },
+        ))
+        .id();
+    world.world.entity_mut(grandchild).insert(SceneEntityTag::new(SceneEntityId::new()));
+    world.world.entity_mut(grandchild).insert(Parent(child));
+
+    let mesh_entity = world.spawn_mesh_entity(MESH_KEY, Vec3::new(0.0, 0.5, 0.0), Vec3::splat(1.35));
+    world.world.entity_mut(mesh_entity).insert(Parent(child));
+    world.world.entity_mut(mesh_entity).insert(MeshSurface {
+        material: Some("materials/brushed_metal.mat".to_string()),
+        lighting: MeshLighting {
+            cast_shadows: true,
+            receive_shadows: false,
+            base_color: Vec3::new(0.8, 0.7, 0.55),
+            emissive: Some(Vec3::new(0.05, 0.1, 0.2)),
+            metallic: 0.9,
+            roughness: 0.2,
+        },
+    });
+
+    world.world.entity_mut(child).insert(Children(vec![grandchild, mesh_entity]));
+
+    let root_id = world.world.get::<SceneEntityTag>(root).unwrap().id.clone();
+    let child_id = world.world.get::<SceneEntityTag>(child).unwrap().id.clone();
+    let grandchild_id = world.world.get::<SceneEntityTag>(grandchild).unwrap().id.clone();
+    let mesh_id = world.world.get::<SceneEntityTag>(mesh_entity).unwrap().id.clone();
+
+    let mut scene = world.export_scene_with_mesh_source(&export_assets, |key| {
+        (key == MESH_KEY).then(|| MESH_PATH.to_string())
+    });
+    scene.dependencies.set_environment_dependency(Some(EnvironmentDependency::new(
+        ENVIRONMENT_KEY.to_string(),
+        Some(ENVIRONMENT_PATH.to_string()),
+    )));
+    scene.metadata.environment = Some(SceneEnvironment::new(ENVIRONMENT_KEY.to_string(), env_intensity));
+
+    assert!(scene.dependencies.contains_atlas("main"));
+    assert!(scene.dependencies.contains_mesh(MESH_KEY));
+    assert!(scene.dependencies.contains_material("materials/brushed_metal.mat"));
+    assert!(scene.dependencies.contains_environment(ENVIRONMENT_KEY));
+    assert_eq!(
+        scene.metadata.environment.as_ref().map(|env| env.key.as_str()),
+        Some(ENVIRONMENT_KEY),
+        "environment metadata should capture key"
+    );
+    assert_eq!(scene.metadata.environment.as_ref().map(|env| env.intensity), Some(env_intensity));
+
+    let root_index = scene.entity_index_by_id(root_id.as_str()).expect("root exported");
+    let child_index = scene.entity_index_by_id(child_id.as_str()).expect("child exported");
+    let grandchild_index = scene.entity_index_by_id(grandchild_id.as_str()).expect("grandchild exported");
+    let mesh_index = scene.entity_index_by_id(mesh_id.as_str()).expect("mesh exported");
+
+    assert!(scene.entities[root_index].parent_id.is_none());
+    assert_eq!(scene.entities[child_index].parent_id.as_ref().map(|id| id.as_str()), Some(root_id.as_str()));
+    assert_eq!(scene.entities[child_index].parent, Some(root_index));
+    assert_eq!(
+        scene.entities[grandchild_index].parent_id.as_ref().map(|id| id.as_str()),
+        Some(child_id.as_str())
+    );
+    assert_eq!(scene.entities[grandchild_index].parent, Some(child_index));
+    assert_eq!(scene.entities[mesh_index].parent_id.as_ref().map(|id| id.as_str()), Some(child_id.as_str()));
+    assert_eq!(scene.entities[mesh_index].parent, Some(child_index));
+
+    let serialized = serde_json::to_string_pretty(&scene).expect("serialize scene");
+    let roundtrip: Scene = serde_json::from_str(&serialized).expect("deserialize scene");
+    let reserialized = serde_json::to_string_pretty(&roundtrip).expect("reserialize scene");
+    assert_eq!(serialized, reserialized, "scene JSON should be stable");
+
+    let temp = NamedTempFile::new().expect("temp scene file");
+    scene.save_to_path(temp.path()).expect("save scene to disk");
+    let saved_scene = Scene::load_from_path(temp.path()).expect("load saved scene");
+    assert_eq!(
+        serde_json::to_string_pretty(&saved_scene).expect("serialize saved scene"),
+        serialized,
+        "disk roundtrip must preserve JSON data"
+    );
+
+    let mut reload_assets = AssetManager::new();
+    reload_assets.retain_atlas("main", Some("assets/images/atlas.json")).expect("retain atlas before reload");
+    let mut mesh_loader_invocations = 0usize;
+    let mut reload_world = EcsWorld::new();
+    reload_world
+        .load_scene_from_path_with_mesh(temp.path(), &mut reload_assets, |key, path| {
+            mesh_loader_invocations += 1;
+            assert_eq!(key, MESH_KEY);
+            assert_eq!(path, Some(MESH_PATH));
+            Ok(())
+        })
+        .expect("reload scene into ECS world");
+    assert_eq!(mesh_loader_invocations, 1, "mesh dependency should be resolved once");
+
+    let mut coverage_mask = 0u8;
+    let mut hierarchy_query =
+        reload_world.world.query::<(&SceneEntityTag, Option<&Parent>, Option<&Children>)>();
+    for (tag, parent, children) in hierarchy_query.iter(&reload_world.world) {
+        if tag.id.as_str() == child_id.as_str() {
+            coverage_mask |= 0b001;
+            let parent_entity = parent.expect("child missing parent").0;
+            let parent_tag = reload_world.world.get::<SceneEntityTag>(parent_entity).unwrap();
+            assert_eq!(parent_tag.id.as_str(), root_id.as_str());
+            let child_list = children.expect("child should have descendants");
+            assert_eq!(child_list.0.len(), 2);
+        } else if tag.id.as_str() == grandchild_id.as_str() {
+            coverage_mask |= 0b010;
+            let parent_entity = parent.expect("grandchild missing parent").0;
+            let parent_tag = reload_world.world.get::<SceneEntityTag>(parent_entity).unwrap();
+            assert_eq!(parent_tag.id.as_str(), child_id.as_str());
+        } else if tag.id.as_str() == mesh_id.as_str() {
+            coverage_mask |= 0b100;
+            let parent_entity = parent.expect("mesh missing parent").0;
+            let parent_tag = reload_world.world.get::<SceneEntityTag>(parent_entity).unwrap();
+            assert_eq!(parent_tag.id.as_str(), child_id.as_str());
+        }
+    }
+    assert_eq!(coverage_mask, 0b111, "all hierarchical relationships should reload");
+
+    let mut runtime_assets = AssetManager::new();
+    for dep in scene.dependencies.atlas_dependencies() {
+        runtime_assets.retain_atlas(dep.key(), dep.path()).expect("retain atlas from dependencies");
+    }
+    assert_eq!(runtime_assets.atlas_ref_count("main"), 1);
+    runtime_assets.release_atlas("main");
+    assert_eq!(runtime_assets.atlas_ref_count("main"), 0);
+
+    let mut runtime_materials = MaterialRegistry::new();
+    let mut runtime_meshes = MeshRegistry::new(&mut runtime_materials);
+    for dep in scene.dependencies.mesh_dependencies() {
+        runtime_meshes
+            .retain_mesh(dep.key(), dep.path(), &mut runtime_materials)
+            .expect("retain mesh from dependencies");
+    }
+    assert_eq!(runtime_meshes.mesh_ref_count(MESH_KEY).unwrap_or(0), 1);
+    runtime_meshes.release_mesh(MESH_KEY);
+    assert_eq!(runtime_meshes.mesh_ref_count(MESH_KEY).unwrap_or(0), 0);
+
+    let mut runtime_environments = EnvironmentRegistry::new();
+    if let Some(dep) = scene.dependencies.environment_dependency() {
+        runtime_environments.retain(dep.key(), dep.path()).expect("retain environment");
+        assert_eq!(runtime_environments.ref_count(dep.key()), Some(1));
+        runtime_environments.release(dep.key());
+        assert_eq!(runtime_environments.ref_count(dep.key()), Some(0));
+    }
 }
