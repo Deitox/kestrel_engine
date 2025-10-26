@@ -14,6 +14,16 @@ pub struct AudioManager {
     _stream: Option<OutputStream>,
     handle: Option<OutputStreamHandle>,
     playback_available: bool,
+    failed_playbacks: u32,
+    last_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct AudioHealthSnapshot {
+    pub playback_available: bool,
+    pub enabled: bool,
+    pub failed_playbacks: u32,
+    pub last_error: Option<String>,
 }
 
 impl AudioManager {
@@ -27,6 +37,8 @@ impl AudioManager {
                 _stream: Some(stream),
                 handle: Some(handle),
                 playback_available: true,
+                failed_playbacks: 0,
+                last_error: None,
             },
             Err(err) => {
                 eprintln!("Audio output unavailable: {err}");
@@ -37,6 +49,8 @@ impl AudioManager {
                     _stream: None,
                     handle: None,
                     playback_available: false,
+                    failed_playbacks: 0,
+                    last_error: Some(format!("Audio output unavailable: {err}")),
                 }
             }
         }
@@ -60,10 +74,21 @@ impl AudioManager {
 
     pub fn clear(&mut self) {
         self.triggers.clear();
+        self.failed_playbacks = 0;
+        self.last_error = None;
     }
 
     pub fn recent_triggers(&self) -> impl ExactSizeIterator<Item = &String> {
         self.triggers.iter()
+    }
+
+    pub fn health_snapshot(&self) -> AudioHealthSnapshot {
+        AudioHealthSnapshot {
+            playback_available: self.playback_available,
+            enabled: self.enabled,
+            failed_playbacks: self.failed_playbacks,
+            last_error: self.last_error.clone(),
+        }
     }
 
     pub fn handle_event(&mut self, event: &GameEvent) {
@@ -91,7 +116,10 @@ impl AudioManager {
     fn play_label(&mut self, label: &str) {
         let handle = match self.handle.as_ref() {
             Some(handle) => handle,
-            None => return,
+            None => {
+                self.record_failure("Audio handle unavailable");
+                return;
+            }
         };
         let mut force_magnitude = None;
         let frequency_hz = if label.starts_with("spawn") {
@@ -113,13 +141,24 @@ impl AudioManager {
         } else {
             return;
         };
-        if let Ok(sink) = Sink::try_new(handle) {
-            let amplitude = force_magnitude.map_or(0.18, |force| 0.12 + (force / 2000.0) * 0.2);
-            let source =
-                SineWave::new(frequency_hz).take_duration(Duration::from_millis(140)).amplify(amplitude);
-            sink.append(source);
-            sink.detach();
+        match Sink::try_new(handle) {
+            Ok(sink) => {
+                let amplitude = force_magnitude.map_or(0.18, |force| 0.12 + (force / 2000.0) * 0.2);
+                let source =
+                    SineWave::new(frequency_hz).take_duration(Duration::from_millis(140)).amplify(amplitude);
+                sink.append(source);
+                sink.detach();
+                self.last_error = None;
+            }
+            Err(err) => {
+                self.record_failure(format!("Failed to create audio sink: {err}"));
+            }
         }
+    }
+
+    fn record_failure(&mut self, message: impl Into<String>) {
+        self.failed_playbacks = self.failed_playbacks.saturating_add(1);
+        self.last_error = Some(message.into());
     }
 }
 
@@ -150,6 +189,10 @@ impl AudioPlugin {
 
     pub fn recent_triggers(&self) -> impl ExactSizeIterator<Item = &String> {
         self.manager.recent_triggers()
+    }
+
+    pub fn health_snapshot(&self) -> AudioHealthSnapshot {
+        self.manager.health_snapshot()
     }
 }
 

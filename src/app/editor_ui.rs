@@ -1,5 +1,5 @@
 use super::{App, MeshControlMode, ViewportCameraMode};
-use crate::audio::AudioPlugin;
+use crate::audio::{AudioHealthSnapshot, AudioPlugin};
 use crate::camera3d::Camera3D;
 use crate::ecs::{EntityInfo, SpriteInfo};
 use crate::events::GameEvent;
@@ -87,6 +87,7 @@ pub(super) struct EditorUiParams {
     pub recent_events: Vec<GameEvent>,
     pub audio_triggers: Vec<String>,
     pub audio_enabled: bool,
+    pub audio_health: AudioHealthSnapshot,
     pub id_lookup_input: String,
     pub id_lookup_active: bool,
 }
@@ -179,6 +180,7 @@ impl App {
             recent_events,
             audio_triggers,
             mut audio_enabled,
+            audio_health,
             mut id_lookup_input,
             mut id_lookup_active,
         } = params;
@@ -1418,21 +1420,31 @@ impl App {
                             audio.set_enabled(audio_enabled);
                         }
                     }
-                    match self.plugins.get::<AudioPlugin>() {
-                        Some(audio) => {
-                            if !audio.available() {
-                                ui.colored_label(
-                                    egui::Color32::from_rgb(200, 80, 80),
-                                    "Audio device unavailable; triggers will be silent.",
-                                );
-                            }
-                        }
-                        None => {
-                            ui.colored_label(
-                                egui::Color32::from_rgb(200, 80, 80),
-                                "Audio plugin unavailable; triggers will be silent.",
-                            );
-                        }
+                    let plugin_present = self.plugins.get::<AudioPlugin>().is_some();
+                    if !plugin_present {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(200, 80, 80),
+                            "Audio plugin unavailable; triggers will be silent.",
+                        );
+                    } else if !audio_health.playback_available {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(220, 120, 80),
+                            "Audio device unavailable; triggers will be silent.",
+                        );
+                    }
+                    if audio_health.failed_playbacks > 0 {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(230, 180, 80),
+                            format!(
+                                "Recent audio failures: {}{}",
+                                audio_health.failed_playbacks,
+                                audio_health
+                                    .last_error
+                                    .as_ref()
+                                    .map(|msg| format!(" (last error: {msg})"))
+                                    .unwrap_or_default()
+                            ),
+                        );
                     }
                     if ui.button("Clear audio log").clicked() {
                         if let Some(audio) = self.plugins.get_mut::<AudioPlugin>() {

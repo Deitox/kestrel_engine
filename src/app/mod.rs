@@ -1,6 +1,6 @@
 use crate::analytics::AnalyticsPlugin;
 use crate::assets::AssetManager;
-use crate::audio::AudioPlugin;
+use crate::audio::{AudioHealthSnapshot, AudioPlugin};
 use crate::camera::Camera2D;
 use crate::camera3d::Camera3D;
 use crate::config::AppConfig;
@@ -1444,10 +1444,10 @@ impl ApplicationHandler for App {
             .analytics_plugin()
             .map(|plugin| plugin.recent_events().cloned().collect())
             .unwrap_or_default();
-        let (audio_triggers, audio_enabled) = if let Some(audio) = self.audio_plugin() {
-            (audio.recent_triggers().cloned().collect(), audio.enabled())
+        let (audio_triggers, audio_enabled, audio_health) = if let Some(audio) = self.audio_plugin() {
+            (audio.recent_triggers().cloned().collect(), audio.enabled(), audio.health_snapshot())
         } else {
-            (Vec::new(), false)
+            (Vec::new(), false, AudioHealthSnapshot::default())
         };
         let mut mesh_keys: Vec<String> = self.mesh_registry.keys().map(|k| k.to_string()).collect();
         mesh_keys.sort();
@@ -1467,20 +1467,18 @@ impl ApplicationHandler for App {
             })
             .collect();
         let active_environment = self.active_environment_key.clone();
-        let collider_rects = if self.debug_show_colliders
-            && self.viewport_camera_mode == ViewportCameraMode::Ortho2D
-        {
-            self.ecs.collider_rects()
-        } else {
-            Vec::new()
-        };
-        let spatial_hash_rects = if self.debug_show_spatial_hash
-            && self.viewport_camera_mode == ViewportCameraMode::Ortho2D
-        {
-            self.ecs.spatial_hash_rects()
-        } else {
-            Vec::new()
-        };
+        let collider_rects =
+            if self.debug_show_colliders && self.viewport_camera_mode == ViewportCameraMode::Ortho2D {
+                self.ecs.collider_rects()
+            } else {
+                Vec::new()
+            };
+        let spatial_hash_rects =
+            if self.debug_show_spatial_hash && self.viewport_camera_mode == ViewportCameraMode::Ortho2D {
+                self.ecs.spatial_hash_rects()
+            } else {
+                Vec::new()
+            };
 
         let editor_params = editor_ui::EditorUiParams {
             raw_input,
@@ -1532,6 +1530,7 @@ impl ApplicationHandler for App {
             recent_events,
             audio_triggers,
             audio_enabled,
+            audio_health,
             id_lookup_input: self.id_lookup_input.clone(),
             id_lookup_active: self.id_lookup_active,
         };
