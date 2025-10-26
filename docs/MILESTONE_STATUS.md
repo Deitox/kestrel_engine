@@ -31,7 +31,7 @@ This tracker captures the current implementation evidence for milestones 0 throu
 
 ### Milestone 1 – Core Runtime and Renderer Initialization
 - **Status:** Complete.
-- **Evidence:** `src/app/mod.rs:109` launches a `winit` event loop and `run_app` handler, while `src/app/mod.rs:1000` implements `ApplicationHandler`; `src/renderer.rs:237` constructs the WGPU device/surface and prepares pipelines feeding the sprite quad shader at `assets/shaders/sprite_batch.wgsl:1`; `src/time.rs:1` tracks delta/elapsed time and feeds the fixed update logic; `src/app/mod.rs:1115` resizes the surface and egui screen descriptor on window events; `src/renderer.rs:202` now records supported present modes, exposes `set_vsync`, and ships surface-error classification tests, while `src/app/editor_ui.rs:248` wires an interactive VSync toggle into the Stats panel.
+- **Evidence:** `src/app/mod.rs:109` launches a `winit` event loop and `run_app` handler, while `src/app/mod.rs:1000` implements `ApplicationHandler`; `src/renderer.rs:237` constructs the WGPU device/surface and prepares pipelines feeding the sprite quad shader at `assets/shaders/sprite_batch.wgsl:1`; `src/time.rs:1` tracks delta/elapsed time and feeds the fixed update logic; `src/app/mod.rs:1115` resizes the surface and egui screen descriptor on window events; `src/renderer.rs:202` now records supported present modes, exposes `set_vsync`, and ships surface-error classification + resize instrumentation tests, while `src/app/editor_ui.rs:248` wires an interactive VSync toggle into the Stats panel.
 - **Polish targets:** Expand the new surface-error regression tests into a headless swapchain harness that exercises renderer reconfiguration end-to-end.
 
 ### Milestone 2 – Sprites, Atlases, and Transform Hierarchy

@@ -232,6 +232,8 @@ pub struct Renderer {
 
     sprite_bind_cache: HashMap<String, SpriteBindCacheEntry>,
     present_modes: Vec<wgpu::PresentMode>,
+    #[cfg(test)]
+    resize_invocations: usize,
 }
 
 const DEFAULT_PRESENT_MODES: [wgpu::PresentMode; 1] = [wgpu::PresentMode::Fifo];
@@ -274,6 +276,8 @@ impl Renderer {
             environment_state: None,
             sprite_bind_cache: HashMap::new(),
             present_modes: Vec::new(),
+            #[cfg(test)]
+            resize_invocations: 0,
         }
     }
 
@@ -1391,6 +1395,11 @@ impl Renderer {
         self.window.as_deref()
     }
 
+    #[cfg(test)]
+    pub fn resize_invocations_for_test(&self) -> usize {
+        self.resize_invocations
+    }
+
     pub fn vsync_enabled(&self) -> bool {
         self.vsync
     }
@@ -1413,6 +1422,10 @@ impl Renderer {
 
     pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
         self.size = new_size;
+        #[cfg(test)]
+        {
+            self.resize_invocations = self.resize_invocations.saturating_add(1);
+        }
         if new_size.width > 0 && new_size.height > 0 {
             if let Some(config) = self.config.as_mut() {
                 config.width = new_size.width;
@@ -1773,6 +1786,14 @@ mod surface_tests {
             SurfaceErrorAction::OutOfMemory
         );
         assert_eq!(Renderer::surface_error_action(&wgpu::SurfaceError::Other), SurfaceErrorAction::Unknown);
+    }
+
+    #[test]
+    fn surface_loss_triggers_resize_attempt_even_without_surface() {
+        let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
+        assert_eq!(renderer.resize_invocations_for_test(), 0);
+        let _ = renderer.handle_surface_error(&wgpu::SurfaceError::Lost);
+        assert_eq!(renderer.resize_invocations_for_test(), 1);
     }
 }
 
