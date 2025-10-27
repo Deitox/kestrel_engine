@@ -2034,10 +2034,6 @@ impl ApplicationHandler for App {
         self.debug_show_spatial_hash = debug_show_spatial_hash;
         self.debug_show_colliders = debug_show_colliders;
 
-        if let Some(enabled) = vsync_request {
-            self.apply_vsync_toggle(enabled);
-        }
-
         if let Some(request) = id_lookup_request {
             let trimmed = request.trim();
             if trimmed.is_empty() {
@@ -2396,6 +2392,10 @@ impl ApplicationHandler for App {
             }
         } else {
             frame.present();
+        }
+
+        if let Some(enabled) = vsync_request {
+            self.apply_vsync_toggle(enabled);
         }
 
         self.ecs.set_root_spin(self.ui_root_spin);
