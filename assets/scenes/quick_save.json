@@ -1,33 +1,34 @@
 {
   "metadata": {
-    "viewport": "Perspective3D",
+    "viewport": "Ortho2D",
     "camera2d": {
       "position": {
         "x": 0.0,
         "y": 0.0
       },
-      "zoom": 0.30119425
+      "zoom": 1.0
     },
+    "camera_bookmarks": [],
     "preview_camera": {
-      "mode": "Orbit",
+      "mode": "Disabled",
       "orbit": {
         "target": {
           "x": 0.0,
           "y": 0.0,
           "z": 0.0
         },
-        "radius": 5.0000005,
-        "yaw": -2.5202916,
-        "pitch": -0.74479634
+        "radius": 5.0,
+        "yaw": 4.425835,
+        "pitch": 1.5607964
       },
       "freefly": {
         "position": {
-          "x": -2.1398518,
-          "y": 3.3891108,
-          "z": -2.9891415
+          "x": -0.04796028,
+          "y": -4.99975,
+          "z": -0.014132023
         },
-        "yaw": 0.6213011,
-        "pitch": -0.7447964,
+        "yaw": 1.2842449,
+        "pitch": 1.5607964,
         "roll": 0.0,
         "speed": 4.0
       },
@@ -37,7 +38,7 @@
         "y": 0.0,
         "z": 0.0
       },
-      "frustum_distance": 5.0000005
+      "frustum_distance": 5.0
     },
     "lighting": {
       "direction": {
@@ -46,25 +47,25 @@
         "z": 0.36440545
       },
       "color": {
-        "x": 0.34454536,
-        "y": 0.0,
-        "z": 1.0
+        "x": 1.05,
+        "y": 0.98,
+        "z": 0.92
       },
       "ambient": {
-        "x": 0.22870465,
-        "y": 0.04509171,
-        "z": 0.22950087
+        "x": 0.03,
+        "y": 0.03,
+        "z": 0.03
       },
-      "exposure": 3.0,
+      "exposure": 1.0,
       "shadow": {
-        "distance": 85.0,
-        "bias": 0.007,
-        "strength": 0.78
+        "distance": 35.0,
+        "bias": 0.002,
+        "strength": 1.0
       }
     },
     "environment": {
       "key": "environment::default",
-      "intensity": 0.6
+      "intensity": 1.0
     }
   },
   "dependencies": {
@@ -82,227 +83,43 @@
   },
   "entities": [
     {
-      "id": "cc3fb764-78d7-4372-864e-afe70f026308",
+      "id": "10caa6b6-b787-4938-9ef6-a4f76ee5e851",
       "name": null,
       "transform": {
         "translation": {
-          "x": -0.96628296,
-          "y": -0.82870126
+          "x": 0.0,
+          "y": 0.0
         },
-        "rotation": 1.570662,
+        "rotation": 21.244043,
         "scale": {
-          "x": 0.34350342,
-          "y": 0.34350342
+          "x": 0.8,
+          "y": 0.8
         }
       },
       "sprite": {
         "atlas": "main",
-        "region": "bluebox"
+        "region": "checker"
       },
-      "velocity": {
-        "x": -6.344635e-9,
-        "y": 0.0
+      "tint": {
+        "r": 1.0,
+        "g": 1.0,
+        "b": 1.0,
+        "a": 0.2
       },
-      "mass": 0.8,
-      "collider": {
-        "half_extents": {
-          "x": 0.17175171,
-          "y": 0.17175171
-        }
-      }
+      "spin": 1.2
     },
     {
-      "id": "bd4e8f0e-c9ec-4d5c-8e2e-a8e1772140a9",
+      "id": "a53366ce-c08e-4cf2-b347-ce6d1e66f856",
       "name": null,
       "transform": {
         "translation": {
-          "x": 0.0069030267,
-          "y": -0.7636084
+          "x": -0.35913107,
+          "y": -0.65408504
         },
-        "rotation": 0.5724574,
+        "rotation": 0.0053536845,
         "scale": {
-          "x": 0.34244466,
-          "y": 0.34244466
-        }
-      },
-      "sprite": {
-        "atlas": "main",
-        "region": "green"
-      },
-      "velocity": {
-        "x": 0.06079779,
-        "y": -0.0129119465
-      },
-      "mass": 0.8,
-      "collider": {
-        "half_extents": {
-          "x": 0.17122233,
-          "y": 0.17122233
-        }
-      }
-    },
-    {
-      "id": "8491b495-6ca3-4c5e-b87f-0ac21c769026",
-      "name": null,
-      "transform": {
-        "translation": {
-          "x": -0.67202795,
-          "y": -0.7538423
-        },
-        "rotation": 1.7408781,
-        "scale": {
-          "x": 0.1703651,
-          "y": 0.1703651
-        }
-      },
-      "sprite": {
-        "atlas": "main",
-        "region": "green"
-      },
-      "velocity": {
-        "x": -0.047744237,
-        "y": 0.0038168277
-      },
-      "mass": 0.8,
-      "collider": {
-        "half_extents": {
-          "x": 0.08518255,
-          "y": 0.08518255
-        }
-      }
-    },
-    {
-      "id": "e3a6f5d9-7b20-4d41-9294-9630aa392296",
-      "name": null,
-      "transform": {
-        "translation": {
-          "x": 0.45940185,
-          "y": -0.86206365
-        },
-        "rotation": 0.000045740722,
-        "scale": {
-          "x": 0.27690494,
-          "y": 0.27690494
-        }
-      },
-      "sprite": {
-        "atlas": "main",
-        "region": "green"
-      },
-      "velocity": {
-        "x": 0.0,
-        "y": 0.0
-      },
-      "mass": 0.8,
-      "collider": {
-        "half_extents": {
-          "x": 0.13845247,
-          "y": 0.13845247
-        }
-      }
-    },
-    {
-      "id": "ee17c88a-d856-4018-ac11-b867e4706106",
-      "name": null,
-      "transform": {
-        "translation": {
-          "x": -0.3006735,
-          "y": -0.90360314
-        },
-        "rotation": 0.0053297663,
-        "scale": {
-          "x": 0.19383693,
-          "y": 0.19383693
-        }
-      },
-      "sprite": {
-        "atlas": "main",
-        "region": "green"
-      },
-      "velocity": {
-        "x": 0.0005473757,
-        "y": 0.000009374852
-      },
-      "mass": 0.8,
-      "collider": {
-        "half_extents": {
-          "x": 0.09691846,
-          "y": 0.09691846
-        }
-      }
-    },
-    {
-      "id": "47ca5abd-6bcc-4f25-aa18-5eb3dd2ef849",
-      "name": null,
-      "transform": {
-        "translation": {
-          "x": -0.6366109,
-          "y": -0.9119633
-        },
-        "rotation": 0.16527885,
-        "scale": {
-          "x": 0.15405558,
-          "y": 0.15405558
-        }
-      },
-      "sprite": {
-        "atlas": "main",
-        "region": "redorb"
-      },
-      "velocity": {
-        "x": -0.016946623,
-        "y": 0.011477575
-      },
-      "mass": 0.8,
-      "collider": {
-        "half_extents": {
-          "x": 0.07702779,
-          "y": 0.07702779
-        }
-      }
-    },
-    {
-      "id": "71234615-cd03-4a10-991e-69e890da965b",
-      "name": null,
-      "transform": {
-        "translation": {
-          "x": 0.7020468,
-          "y": -0.9141609
-        },
-        "rotation": -0.000057156474,
-        "scale": {
-          "x": 0.17270294,
-          "y": 0.17270294
-        }
-      },
-      "sprite": {
-        "atlas": "main",
-        "region": "redorb"
-      },
-      "velocity": {
-        "x": 0.0,
-        "y": 0.0
-      },
-      "mass": 0.8,
-      "collider": {
-        "half_extents": {
-          "x": 0.08635147,
-          "y": 0.08635147
-        }
-      }
-    },
-    {
-      "id": "740c3e5b-7d62-4a12-9c60-948c9fbb00df",
-      "name": null,
-      "transform": {
-        "translation": {
-          "x": -1.2302979,
-          "y": -0.9089555
-        },
-        "rotation": 1.5707312,
-        "scale": {
-          "x": 0.18226969,
-          "y": 0.18226969
+          "x": 0.7,
+          "y": 0.7
         }
       },
       "sprite": {
@@ -310,29 +127,73 @@
         "region": "checker"
       },
       "velocity": {
-        "x": -1.6515667e-10,
-        "y": 1.3391485e-10
+        "x": -0.0032306532,
+        "y": 0.0005232808
       },
-      "mass": 0.8,
+      "mass": 1.0,
       "collider": {
         "half_extents": {
-          "x": 0.091134846,
-          "y": 0.091134846
+          "x": 0.35,
+          "y": 0.35
         }
+      },
+      "orbit": {
+        "center": {
+          "x": 0.0,
+          "y": 0.0
+        },
+        "angular_speed": 0.9
       }
     },
     {
-      "id": "f8159eaa-b1cc-479e-aff2-1a883aa3cb28",
+      "id": "d5c0be91-ba5f-4866-8ad9-19c0cb5bb607",
       "name": null,
       "transform": {
         "translation": {
-          "x": -0.47512132,
-          "y": -0.7359395
+          "x": -1.0332816,
+          "y": 0.42187172
         },
-        "rotation": -2.76559,
+        "rotation": 0.273004,
         "scale": {
-          "x": 0.18915927,
-          "y": 0.18915927
+          "x": 0.6,
+          "y": 0.6
+        }
+      },
+      "sprite": {
+        "atlas": "main",
+        "region": "redorb"
+      },
+      "velocity": {
+        "x": 0.030649327,
+        "y": 0.1534411
+      },
+      "mass": 1.0,
+      "collider": {
+        "half_extents": {
+          "x": 0.3,
+          "y": 0.3
+        }
+      },
+      "orbit": {
+        "center": {
+          "x": 0.0,
+          "y": 0.0
+        },
+        "angular_speed": 0.95
+      }
+    },
+    {
+      "id": "aa900ae3-1bfd-4963-af83-31d1fe8e466c",
+      "name": null,
+      "transform": {
+        "translation": {
+          "x": -0.6240435,
+          "y": -0.033430316
+        },
+        "rotation": 0.2568696,
+        "scale": {
+          "x": 0.5,
+          "y": 0.5
         }
       },
       "sprite": {
@@ -340,45 +201,57 @@
         "region": "bluebox"
       },
       "velocity": {
-        "x": -0.026050115,
-        "y": -0.029014152
+        "x": -0.010829456,
+        "y": 0.18895727
       },
-      "mass": 0.8,
+      "mass": 1.0,
       "collider": {
         "half_extents": {
-          "x": 0.09457964,
-          "y": 0.09457964
+          "x": 0.25,
+          "y": 0.25
         }
+      },
+      "orbit": {
+        "center": {
+          "x": 0.0,
+          "y": 0.0
+        },
+        "angular_speed": 1.05
       }
     },
     {
-      "id": "e9ff3449-e104-47c8-bdda-42fc97c9550e",
+      "id": "fa3fb51b-0800-4750-93ba-8281c555e10d",
       "name": null,
       "transform": {
         "translation": {
-          "x": 0.9320727,
-          "y": -0.8575431
+          "x": 0.0,
+          "y": 0.0
         },
-        "rotation": -0.000020760266,
+        "rotation": 0.0,
         "scale": {
-          "x": 0.28640813,
-          "y": 0.28640813
+          "x": 0.18,
+          "y": 0.18
         }
       },
-      "sprite": {
-        "atlas": "main",
-        "region": "checker"
-      },
-      "velocity": {
-        "x": 0.0,
-        "y": 0.0
-      },
-      "mass": 0.8,
-      "collider": {
-        "half_extents": {
-          "x": 0.14320406,
-          "y": 0.14320406
-        }
+      "particle_emitter": {
+        "rate": 35.0,
+        "spread": 1.0471976,
+        "speed": 0.8,
+        "lifetime": 1.2,
+        "start_color": {
+          "r": 1.0,
+          "g": 0.8000001,
+          "b": 0.20000005,
+          "a": 0.8
+        },
+        "end_color": {
+          "r": 0.0,
+          "g": 0.0,
+          "b": 0.0,
+          "a": 0.0
+        },
+        "start_size": 0.18,
+        "end_size": 0.05
       }
     }
   ]

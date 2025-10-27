@@ -1,7 +1,7 @@
 use crate::assets::AssetManager;
-use anyhow::{bail, Context, Result};
 #[cfg(feature = "binary_scene")]
 use anyhow::anyhow;
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;

@@ -20,8 +20,146 @@ use bevy_ecs::prelude::Entity;
 use egui::Key;
 use egui_plot as eplot;
 use glam::{EulerRot, Quat, Vec2, Vec3, Vec4};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use winit::dpi::PhysicalSize;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum AudioTriggerKind {
+    Spawn,
+    Despawn,
+    CollisionStart,
+    CollisionEnd,
+    CollisionForce,
+    Other,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedAudioTrigger {
+    kind: AudioTriggerKind,
+    summary: String,
+    color: egui::Color32,
+    force: Option<f32>,
+}
+
+fn summarize_game_event(event: &GameEvent) -> (String, egui::Color32) {
+    match event {
+        GameEvent::SpriteSpawned { entity, atlas, region } => (
+            format!("Sprite #{:04} spawned - {atlas}/{region}", entity.index()),
+            egui::Color32::from_rgb(120, 200, 120),
+        ),
+        GameEvent::EntityDespawned { entity } => {
+            (format!("Entity #{:04} despawned", entity.index()), egui::Color32::from_rgb(210, 130, 130))
+        }
+        GameEvent::CollisionStarted { a, b } => (
+            format!("Collision started between #{:04} and #{:04}", a.index(), b.index()),
+            egui::Color32::from_rgb(220, 180, 90),
+        ),
+        GameEvent::CollisionEnded { a, b } => (
+            format!("Collision resolved between #{:04} and #{:04}", a.index(), b.index()),
+            egui::Color32::from_rgb(130, 170, 220),
+        ),
+        GameEvent::CollisionForce { a, b, force } => (
+            format!("Impact #{:04}/{:04} - force {:.1}", a.index(), b.index(), force),
+            egui::Color32::from_rgb(200, 150, 240),
+        ),
+        GameEvent::ScriptMessage { message } => {
+            (format!("Script: {message}"), egui::Color32::from_rgb(170, 170, 170))
+        }
+    }
+}
+
+fn ellipsize(text: &str, max_len: usize) -> String {
+    if text.chars().count() <= max_len {
+        return text.to_string();
+    }
+    if max_len <= 3 {
+        return "...".to_string();
+    }
+    let mut truncated = String::new();
+    let target = max_len - 3;
+    for (idx, ch) in text.chars().enumerate() {
+        if idx >= target {
+            break;
+        }
+        truncated.push(ch);
+    }
+    truncated.push_str("...");
+    truncated
+}
+
+fn parse_audio_trigger(label: &str) -> ParsedAudioTrigger {
+    if let Some(rest) = label.strip_prefix("spawn:") {
+        let mut parts = rest.splitn(2, ':');
+        let atlas = parts.next().unwrap_or_default();
+        let region = parts.next().unwrap_or_default();
+        let summary = if region.is_empty() {
+            format!("Spawn trigger for {atlas}")
+        } else {
+            format!("Spawn trigger for {atlas}/{region}")
+        };
+        return ParsedAudioTrigger {
+            kind: AudioTriggerKind::Spawn,
+            summary,
+            color: egui::Color32::from_rgb(120, 200, 120),
+            force: None,
+        };
+    }
+    if label == "despawn" {
+        return ParsedAudioTrigger {
+            kind: AudioTriggerKind::Despawn,
+            summary: "Despawn trigger".to_string(),
+            color: egui::Color32::from_rgb(210, 130, 130),
+            force: None,
+        };
+    }
+    if label == "collision" {
+        return ParsedAudioTrigger {
+            kind: AudioTriggerKind::CollisionStart,
+            summary: "Collision trigger".to_string(),
+            color: egui::Color32::from_rgb(220, 180, 90),
+            force: None,
+        };
+    }
+    if label == "collision_end" {
+        return ParsedAudioTrigger {
+            kind: AudioTriggerKind::CollisionEnd,
+            summary: "Collision resolved trigger".to_string(),
+            color: egui::Color32::from_rgb(130, 170, 220),
+            force: None,
+        };
+    }
+    if let Some(force_str) = label.strip_prefix("collision_force:") {
+        let parsed_force = force_str.parse::<f32>().ok();
+        let summary = if let Some(force) = parsed_force {
+            format!("Collision impact trigger ({force:.1})")
+        } else {
+            "Collision impact trigger".to_string()
+        };
+        return ParsedAudioTrigger {
+            kind: AudioTriggerKind::CollisionForce,
+            summary,
+            color: egui::Color32::from_rgb(200, 150, 240),
+            force: parsed_force,
+        };
+    }
+    ParsedAudioTrigger {
+        kind: AudioTriggerKind::Other,
+        summary: format!("Trigger: {label}"),
+        color: egui::Color32::from_rgb(180, 180, 180),
+        force: None,
+    }
+}
+
+fn audio_trigger_kind_label(kind: AudioTriggerKind) -> &'static str {
+    match kind {
+        AudioTriggerKind::Spawn => "sprite spawns",
+        AudioTriggerKind::Despawn => "despawns",
+        AudioTriggerKind::CollisionStart => "collisions",
+        AudioTriggerKind::CollisionEnd => "collision ends",
+        AudioTriggerKind::CollisionForce => "collision impacts",
+        AudioTriggerKind::Other => "other",
+    }
+}
 
 #[derive(Default)]
 pub(super) struct UiActions {
@@ -1858,14 +1996,33 @@ impl App {
                     });
 
                     ui.separator();
-                    ui.heading("Recent Events");
-                    if recent_events.is_empty() {
-                        ui.label("No events recorded");
+                    let event_count = recent_events.len();
+                    let latest_event_text = recent_events
+                        .last()
+                        .map(|event| summarize_game_event(event))
+                        .map(|(text, _)| ellipsize(&text, 48));
+                    let events_header_label = if event_count == 0 {
+                        "Recent Events (0)".to_string()
+                    } else if let Some(text) = latest_event_text {
+                        format!("Recent Events ({event_count}) - {text}")
                     } else {
-                        for event in recent_events.iter().rev().take(10) {
-                            ui.label(event.to_string());
+                        format!("Recent Events ({event_count})")
+                    };
+                    egui::CollapsingHeader::new(events_header_label).default_open(false).show(ui, |ui| {
+                        if recent_events.is_empty() {
+                            ui.label("No events recorded");
+                        } else {
+                            const MAX_EVENT_ROWS: usize = 6;
+                            for event in recent_events.iter().rev().take(MAX_EVENT_ROWS) {
+                                let (text, color) = summarize_game_event(event);
+                                ui.colored_label(color, text);
+                            }
+                            let remaining = recent_events.len().saturating_sub(MAX_EVENT_ROWS);
+                            if remaining > 0 {
+                                ui.small(format!("... {remaining} older events hidden"));
+                            }
                         }
-                    }
+                    });
 
                     ui.separator();
                     ui.heading("Plugins");
@@ -1911,61 +2068,113 @@ impl App {
                     }
 
                     ui.separator();
-                    ui.heading("Audio Debug");
-                    if audio_health.device_name.is_some() || audio_health.sample_rate_hz.is_some() {
-                        let label = match (audio_health.device_name.as_deref(), audio_health.sample_rate_hz) {
-                            (Some(name), Some(rate)) => format!("{name} @ {rate} Hz"),
-                            (Some(name), None) => name.to_string(),
-                            (None, Some(rate)) => format!("{rate} Hz"),
-                            _ => String::new(),
-                        };
-                        if !label.is_empty() {
-                            ui.small(format!("Device: {label}"));
-                        }
-                    }
-                    if ui.checkbox(&mut audio_enabled, "Enable audio triggers").changed() {
-                        if let Some(audio) = self.plugins.get_mut::<AudioPlugin>() {
-                            audio.set_enabled(audio_enabled);
-                        }
-                    }
                     let plugin_present = self.plugins.get::<AudioPlugin>().is_some();
-                    if !plugin_present {
-                        ui.colored_label(
-                            egui::Color32::from_rgb(200, 80, 80),
-                            "Audio plugin unavailable; triggers will be silent.",
-                        );
-                    } else if !audio_health.playback_available {
-                        ui.colored_label(
-                            egui::Color32::from_rgb(220, 120, 80),
-                            "Audio device unavailable; triggers will be silent.",
-                        );
-                    }
-                    if audio_health.failed_playbacks > 0 {
-                        ui.colored_label(
-                            egui::Color32::from_rgb(230, 180, 80),
-                            format!(
-                                "Recent audio failures: {}{}",
-                                audio_health.failed_playbacks,
-                                audio_health
-                                    .last_error
-                                    .as_ref()
-                                    .map(|msg| format!(" (last error: {msg})"))
-                                    .unwrap_or_default()
-                            ),
-                        );
-                    }
-                    if ui.button("Clear audio log").clicked() {
-                        if let Some(audio) = self.plugins.get_mut::<AudioPlugin>() {
-                            audio.clear();
+                    let parsed_triggers: Vec<ParsedAudioTrigger> =
+                        audio_triggers.iter().map(|label| parse_audio_trigger(label)).collect();
+                    let mut trigger_counts: BTreeMap<AudioTriggerKind, usize> = BTreeMap::new();
+                    let mut peak_force = 0.0f32;
+                    for parsed in &parsed_triggers {
+                        *trigger_counts.entry(parsed.kind).or_insert(0) += 1;
+                        if let Some(force) = parsed.force {
+                            peak_force = peak_force.max(force);
                         }
                     }
-                    if audio_triggers.is_empty() {
-                        ui.label("No audio triggers");
+                    let trigger_summary_line = if trigger_counts.is_empty() {
+                        None
                     } else {
-                        for trigger in audio_triggers.iter().rev() {
-                            ui.label(trigger);
+                        Some(
+                            trigger_counts
+                                .iter()
+                                .map(|(kind, count)| format!("{count} x {}", audio_trigger_kind_label(*kind)))
+                                .collect::<Vec<_>>()
+                                .join(" | "),
+                        )
+                    };
+                    let peak_force_text =
+                        (peak_force > 0.0).then(|| format!("Peak collision force: {:.1}", peak_force));
+                    let latest_trigger_summary = parsed_triggers
+                        .last()
+                        .map(|parsed| ellipsize(&parsed.summary, 48))
+                        .unwrap_or_else(|| "no recent triggers".to_string());
+                    let audio_status = if !plugin_present {
+                        "plugin missing"
+                    } else if !audio_health.playback_available {
+                        "device unavailable"
+                    } else if audio_enabled {
+                        "enabled"
+                    } else {
+                        "muted"
+                    };
+                    let audio_header_label = format!(
+                        "Audio Debug ({}) [{}] - {}",
+                        parsed_triggers.len(),
+                        audio_status,
+                        latest_trigger_summary
+                    );
+                    egui::CollapsingHeader::new(audio_header_label).default_open(false).show(ui, |ui| {
+                        if let (Some(name), Some(rate)) =
+                            (audio_health.device_name.as_deref(), audio_health.sample_rate_hz)
+                        {
+                            ui.small(format!("Device: {name} @ {rate} Hz"));
+                        } else if let Some(name) = audio_health.device_name.as_deref() {
+                            ui.small(format!("Device: {name}"));
+                        } else if let Some(rate) = audio_health.sample_rate_hz {
+                            ui.small(format!("Sample rate: {rate} Hz"));
                         }
-                    }
+                        if ui.checkbox(&mut audio_enabled, "Enable audio triggers").changed() {
+                            if let Some(audio) = self.plugins.get_mut::<AudioPlugin>() {
+                                audio.set_enabled(audio_enabled);
+                            }
+                        }
+                        if !plugin_present {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(200, 80, 80),
+                                "Audio plugin unavailable; triggers will be silent.",
+                            );
+                        } else if !audio_health.playback_available {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(220, 120, 80),
+                                "Audio device unavailable; triggers will be silent.",
+                            );
+                        }
+                        if audio_health.failed_playbacks > 0 {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(230, 180, 80),
+                                format!(
+                                    "Recent audio failures: {}{}",
+                                    audio_health.failed_playbacks,
+                                    audio_health
+                                        .last_error
+                                        .as_ref()
+                                        .map(|msg| format!(" (last error: {msg})"))
+                                        .unwrap_or_default()
+                                ),
+                            );
+                        }
+                        if let Some(summary_line) = trigger_summary_line.as_deref() {
+                            ui.small(summary_line);
+                        }
+                        if let Some(force_text) = peak_force_text.as_deref() {
+                            ui.small(force_text);
+                        }
+                        if ui.button("Clear audio log").clicked() {
+                            if let Some(audio) = self.plugins.get_mut::<AudioPlugin>() {
+                                audio.clear();
+                            }
+                        }
+                        if parsed_triggers.is_empty() {
+                            ui.label("No audio triggers");
+                        } else {
+                            const MAX_AUDIO_ROWS: usize = 8;
+                            for parsed in parsed_triggers.iter().rev().take(MAX_AUDIO_ROWS) {
+                                ui.colored_label(parsed.color, parsed.summary.as_str());
+                            }
+                            let remaining = parsed_triggers.len().saturating_sub(MAX_AUDIO_ROWS);
+                            if remaining > 0 {
+                                ui.small(format!("... {remaining} older triggers hidden"));
+                            }
+                        }
+                    });
                 });
             left_panel_width_px = left_panel.response.rect.width() * ui_pixels_per_point;
             right_panel_width_px = right_panel.response.rect.width() * ui_pixels_per_point;
