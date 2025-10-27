@@ -15,10 +15,12 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
 2. **[M1] Configurable VSync toggle** — ✅ *Completed (runtime toggle + renderer reconfigure UI panel).*
    - *Why:* Perf testing requires deterministic presentation modes.
    - *Acceptance:* Extend `config/app.json` plus the in-app UI so VSync can be toggled at runtime, with the renderer reconfiguring the surface immediately; log the active mode in analytics.
-3. **[M3] Config-driven input remapping**
+3. **[M3] Config-driven input remapping** - *Completed via `Input::from_config` loader + `InputBindings` overrides + regression test (`tests/input_bindings.rs:1`).*
+   - *Highlights:* `InputBindings::load_or_default` consumes `config/input.json` with warnings for unknown keys, and `src/app/mod.rs:460` wires the config-driven bindings at startup.
    - *Why:* Hard-coded bindings block automated stress tests and accessibility.
    - *Acceptance:* Introduce `config/input.json` (or similar) and update `Input` so bindings load at startup with sensible fallbacks; emit warnings for unknown keys and add a regression test that remaps spawn controls.
-4. **[M10] Scene round-trip regression suite**
+4. **[M10] Scene round-trip regression suite** - *Completed via expanded `tests/scene_roundtrip.rs` coverage and dependency retention checks (`tests/scene_roundtrip.rs:530`).*
+   - *Highlights:* The suite now serializes nested hierarchies, asserts parent/child IDs, round-trips JSON without diffs, and exercises retain/release flows for atlases, meshes, and environments (`tests/scene_roundtrip.rs:631`, `tests/scene_roundtrip.rs:700`).
    - *Why:* Complex scenes (meshes + materials + environments) need coverage beyond the existing happy-path test.
    - *Acceptance:* Expand `tests/scene_roundtrip.rs` (or add a new suite) to include nested hierarchies, dependency retain/release, and environment metadata. Tests should assert reference counts and serialized JSON diffs.
 5. **[M11] Editor workflow regression tests** - *Completed via headless harness test (`src/app/gizmo_interaction.rs:576`).*
@@ -35,7 +37,8 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
    - *Acceptance:* Support `kestrel_engine --width 1280 --height 720 --vsync off` (or similar) with precedence rules logged at startup; include unit tests for argument parsing.
 9. **[M5] Profiler & metrics panel with snapshot tests** - *Completed via runtime frame/system profiler + egui snapshot helpers.*
    - *Highlights:* Runtime frame timing history now records per-frame/update/fixed/render/UI durations (`src/app/mod.rs:1250`) and ECS systems report per-system timings through the new profiler resource (`src/ecs/profiler.rs:1`, `src/ecs/systems/*.rs`). The editor stats panel exposes a collapsible profiler table with frame summaries and ranked system timings plus quadtree metrics (`src/app/editor_ui.rs:250`). Snapshot-style tests cover the string summaries used in the panel to detect layout regressions (`src/app/editor_ui.rs:2098`).
-10. **[M6] Multi-camera / follow-target tooling**
+10. **[M6] Multi-camera / follow-target tooling** - *Completed via camera bookmark selector + follow controls (`src/app/editor_ui.rs:490`).*
+    - *Highlights:* The editor UI now manages bookmarks and follow targets, while scene metadata captures the active bookmark or followed entity (`src/app/mod.rs:1140`, `src/scene.rs:44`).
     - *Acceptance:* Allow the viewport to switch between multiple named cameras or follow a selected entity; persist the choice in scene metadata.
 11. **[M7] Scripting debugger / REPL** - *Completed via debugger window + Rhai REPL plumbing (`src/scripts.rs:202`, `src/app/mod.rs:780`, `src/app/editor_ui.rs:860`).*
     - *Highlights:* `ScriptHost::eval_repl` shares scope state with runtime scripts and queues commands/logs for the engine (`src/scripts.rs:202`), the app tracks console/history state plus pause/step control wiring (`src/app/mod.rs:780`), and the egui debugger window exposes REPL input, command history, and auto-focus on errors (`src/app/editor_ui.rs:860`).
