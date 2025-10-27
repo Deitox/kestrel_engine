@@ -311,9 +311,20 @@ impl Renderer {
             Window::default_attributes().with_title(self.title.clone()).with_inner_size(self.size);
         if self.fullscreen {
             attrs = attrs.with_fullscreen(Some(Fullscreen::Borderless(None)));
+        } else {
+            attrs = attrs.with_maximized(true);
         }
         let window = Arc::new(event_loop.create_window(attrs).context("Failed to create window")?);
+        if !self.fullscreen {
+            window.set_maximized(true);
+        }
         pollster::block_on(self.init_wgpu(&window))?;
+        if !self.fullscreen {
+            let maximized_size = window.inner_size();
+            if maximized_size.width > 0 && maximized_size.height > 0 && maximized_size != self.size {
+                self.resize(maximized_size);
+            }
+        }
         self.window = Some(window);
         Ok(())
     }
