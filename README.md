@@ -34,6 +34,13 @@
 - Shift - boost movement speed in Free-fly
 - Esc - quit
 
+## Script Debugger & REPL
+- Open the **Stats → Scripts** section inside the left panel to toggle scripting, pause updates, step once while paused, or hot-reload the active Rhai file. Click **Open debugger** from that section (or press the same button inside the Scripts window) to pop out the dedicated console.
+- The debugger window shows a scrollback console that mixes script logs, REPL input/output, and runtime errors. Use **Clear Console** to reset the log without touching the underlying script state.
+- Type Rhai commands into the REPL field and press **Enter** or **Run**; commands execute against the live `World` just like the main script, so you can tweak emitters, spawn sprites, or inspect state at runtime.
+- Arrow keys cycle through command history, and the History list lets you click to rehydrate older commands for editing. The input box auto-focuses whenever a script error occurs so you can fix issues quickly.
+- Errors that occur during REPL execution or regular script updates automatically reopen the debugger and highlight the failure, keeping the workflow tight during iteration.
+
 ## Build
 `
 cargo run
