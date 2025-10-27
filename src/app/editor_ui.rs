@@ -685,217 +685,9 @@ impl App {
                             });
                         });
                     });
-                    egui::CollapsingHeader::new("Lighting").default_open(true).show(ui, |ui| {
-                        let mut lighting_dirty = false;
-                        let default_dir = glam::Vec3::new(0.4, 0.8, 0.35).normalize();
-                        let mut light_dir = self.ui_light_direction;
-                        ui.horizontal(|ui| {
-                            ui.label("Direction (XYZ)");
-                            let mut changed = false;
-                            changed |= ui
-                                .add(egui::DragValue::new(&mut light_dir.x).speed(0.01).range(-1.0..=1.0))
-                                .changed();
-                            changed |= ui
-                                .add(egui::DragValue::new(&mut light_dir.y).speed(0.01).range(-1.0..=1.0))
-                                .changed();
-                            changed |= ui
-                                .add(egui::DragValue::new(&mut light_dir.z).speed(0.01).range(-1.0..=1.0))
-                                .changed();
-                            if changed {
-                                if !light_dir.is_finite() || light_dir.length_squared() < 1e-4 {
-                                    light_dir = default_dir;
-                                } else {
-                                    light_dir = light_dir.normalize_or_zero();
-                                    if light_dir.length_squared() < 1e-4 {
-                                        light_dir = default_dir;
-                                    }
-                                }
-                                self.ui_light_direction = light_dir;
-                                lighting_dirty = true;
-                            }
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Color");
-                            let mut color_arr = self.ui_light_color.to_array();
-                            if ui.color_edit_button_rgb(&mut color_arr).changed() {
-                                self.ui_light_color = Vec3::from_array(color_arr);
-                                lighting_dirty = true;
-                            }
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Ambient");
-                            let mut ambient_arr = self.ui_light_ambient.to_array();
-                            if ui.color_edit_button_rgb(&mut ambient_arr).changed() {
-                                self.ui_light_ambient = Vec3::from_array(ambient_arr);
-                                lighting_dirty = true;
-                            }
-                        });
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut self.ui_light_exposure, 0.1..=5.0)
-                                    .text("Exposure")
-                                    .logarithmic(true),
-                            )
-                            .changed()
-                        {
-                            self.ui_light_exposure = self.ui_light_exposure.clamp(0.1, 20.0);
-                            lighting_dirty = true;
-                        }
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut self.ui_shadow_distance, 5.0..=200.0)
-                                    .text("Shadow distance"),
-                            )
-                            .changed()
-                        {
-                            self.ui_shadow_distance = self.ui_shadow_distance.clamp(5.0, 200.0);
-                            lighting_dirty = true;
-                        }
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut self.ui_shadow_bias, 0.0001..=0.02)
-                                    .text("Shadow bias")
-                                    .logarithmic(true),
-                            )
-                            .changed()
-                        {
-                            self.ui_shadow_bias = self.ui_shadow_bias.clamp(0.0001, 0.02);
-                            lighting_dirty = true;
-                        }
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut self.ui_shadow_strength, 0.0..=1.0)
-                                    .text("Shadow strength"),
-                            )
-                            .changed()
-                        {
-                            self.ui_shadow_strength = self.ui_shadow_strength.clamp(0.0, 1.0);
-                            lighting_dirty = true;
-                        }
-                        ui.separator();
-                        ui.label("Environment");
-                        if environment_options.is_empty() {
-                            ui.label("No environments available.");
-                        } else {
-                            let mut selected_environment = active_environment.clone();
-                            let current_label = environment_options
-                                .iter()
-                                .find(|(key, _)| key == &selected_environment)
-                                .map(|(_, label)| label.as_str())
-                                .unwrap_or(selected_environment.as_str());
-                            egui::ComboBox::from_id_salt("environment_select")
-                                .selected_text(current_label)
-                                .show_ui(ui, |ui| {
-                                    for (key, label) in &environment_options {
-                                        ui.selectable_value(&mut selected_environment, key.clone(), label);
-                                    }
-                                });
-                            if selected_environment != active_environment {
-                                environment_selection_request = Some(selected_environment);
-                            }
-                        }
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut ui_environment_intensity, 0.0..=5.0)
-                                    .text("Environment intensity")
-                                    .logarithmic(true),
-                            )
-                            .changed()
-                        {
-                            ui_environment_intensity = ui_environment_intensity.clamp(0.0, 20.0);
-                        }
+                    // Lighting controls moved to the right panel.
 
-                        if ui.button("Reset lighting").clicked() {
-                            self.ui_light_direction = default_dir;
-                            self.ui_light_color = Vec3::new(1.05, 0.98, 0.92);
-                            self.ui_light_ambient = Vec3::splat(0.03);
-                            self.ui_light_exposure = 1.0;
-                            self.ui_shadow_distance = 35.0;
-                            self.ui_shadow_bias = 0.002;
-                            self.ui_shadow_strength = 1.0;
-                            self.ui_environment_intensity = 1.0;
-                            ui_environment_intensity = 1.0;
-
-                            lighting_dirty = true;
-                        }
-                        if lighting_dirty {
-                            let lighting = self.renderer.lighting_mut();
-                            lighting.direction = self.ui_light_direction;
-                            lighting.color = self.ui_light_color;
-                            lighting.ambient = self.ui_light_ambient;
-                            lighting.exposure = self.ui_light_exposure;
-                            lighting.shadow_distance = self.ui_shadow_distance.clamp(1.0, 500.0);
-                            lighting.shadow_bias = self.ui_shadow_bias.clamp(0.00005, 0.05);
-                            lighting.shadow_strength = self.ui_shadow_strength.clamp(0.0, 1.0);
-                            self.renderer.mark_shadow_settings_dirty();
-                        }
-                    });
-
-                    egui::CollapsingHeader::new("Spawn & Emitters").default_open(true).show(ui, |ui| {
-                        ui.add(egui::Slider::new(&mut ui_cell_size, 0.05..=0.8).text("Spatial cell size"));
-                        ui.add(egui::Slider::new(&mut ui_spawn_per_press, 1..=5000).text("Spawn per press"));
-                        ui.add(
-                            egui::Slider::new(&mut ui_auto_spawn_rate, 0.0..=5000.0)
-                                .text("Auto-spawn per second"),
-                        );
-                        ui.add(
-                            egui::Slider::new(&mut ui_emitter_rate, 0.0..=200.0)
-                                .text("Emitter rate (particles/s)"),
-                        );
-                        ui.add(
-                            egui::Slider::new(&mut ui_emitter_spread, 0.0..=std::f32::consts::PI)
-                                .text("Emitter spread (rad)"),
-                        );
-                        ui.add(egui::Slider::new(&mut ui_emitter_speed, 0.0..=3.0).text("Emitter speed"));
-                        ui.add(
-                            egui::Slider::new(&mut ui_emitter_lifetime, 0.1..=5.0)
-                                .text("Particle lifetime (s)"),
-                        );
-                        ui.add(
-                            egui::Slider::new(&mut ui_emitter_start_size, 0.01..=0.5)
-                                .text("Particle start size"),
-                        );
-                        ui.add(
-                            egui::Slider::new(&mut ui_emitter_end_size, 0.01..=0.5).text("Particle end size"),
-                        );
-                        ui.horizontal(|ui| {
-                            ui.label("Start color");
-                            ui.color_edit_button_rgba_unmultiplied(&mut ui_emitter_start_color);
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("End color");
-                            ui.color_edit_button_rgba_unmultiplied(&mut ui_emitter_end_color);
-                        });
-                        ui.add(egui::Slider::new(&mut ui_root_spin, -5.0..=5.0).text("Root spin speed"));
-                        ui.horizontal(|ui| {
-                            if ui.button("Spawn now").clicked() {
-                                actions.spawn_now = true;
-                            }
-                            if ui.button("Clear particles").clicked() {
-                                actions.clear_particles = true;
-                            }
-                            if ui.button("Reset world").clicked() {
-                                actions.reset_world = true;
-                            }
-                        });
-                        ui.separator();
-                        ui.label("Particle caps");
-                        ui.add(
-                            egui::Slider::new(&mut ui_particle_max_total, 0..=10_000)
-                                .text("Max total particles"),
-                        );
-                        ui.add(
-                            egui::Slider::new(&mut ui_particle_max_spawn_per_frame, 0..=2_000)
-                                .text("Max spawn per frame"),
-                        );
-                        ui.add(
-                            egui::Slider::new(&mut ui_particle_max_emitter_backlog, 0.0..=256.0)
-                                .text("Emitter backlog cap"),
-                        );
-                        if ui_particle_max_spawn_per_frame > ui_particle_max_total {
-                            ui_particle_max_spawn_per_frame = ui_particle_max_total;
-                        }
-                    });
+                    // Spawn controls moved to the right panel.
 
                     egui::CollapsingHeader::new("Scripts").default_open(false).show(ui, |ui| {
                         if script_debugger.available {
@@ -1992,6 +1784,221 @@ impl App {
                         }
                         if self.scene_dependencies.is_none() {
                             ui.small("Load or save a scene to populate dependency details.");
+                        }
+                    });
+
+                    ui.separator();
+                    egui::CollapsingHeader::new("Lighting & Environment").default_open(true).show(ui, |ui| {
+                        let mut lighting_dirty = false;
+                        let default_dir = glam::Vec3::new(0.4, 0.8, 0.35).normalize();
+                        let mut light_dir = self.ui_light_direction;
+                        ui.horizontal(|ui| {
+                            ui.label("Direction (XYZ)");
+                            let mut changed = false;
+                            changed |= ui
+                                .add(egui::DragValue::new(&mut light_dir.x).speed(0.01).range(-1.0..=1.0))
+                                .changed();
+                            changed |= ui
+                                .add(egui::DragValue::new(&mut light_dir.y).speed(0.01).range(-1.0..=1.0))
+                                .changed();
+                            changed |= ui
+                                .add(egui::DragValue::new(&mut light_dir.z).speed(0.01).range(-1.0..=1.0))
+                                .changed();
+                            if changed {
+                                if !light_dir.is_finite() || light_dir.length_squared() < 1e-4 {
+                                    light_dir = default_dir;
+                                } else {
+                                    light_dir = light_dir.normalize_or_zero();
+                                    if light_dir.length_squared() < 1e-4 {
+                                        light_dir = default_dir;
+                                    }
+                                }
+                                self.ui_light_direction = light_dir;
+                                lighting_dirty = true;
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Color");
+                            let mut color_arr = self.ui_light_color.to_array();
+                            if ui.color_edit_button_rgb(&mut color_arr).changed() {
+                                self.ui_light_color = Vec3::from_array(color_arr);
+                                lighting_dirty = true;
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Ambient");
+                            let mut ambient_arr = self.ui_light_ambient.to_array();
+                            if ui.color_edit_button_rgb(&mut ambient_arr).changed() {
+                                self.ui_light_ambient = Vec3::from_array(ambient_arr);
+                                lighting_dirty = true;
+                            }
+                        });
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut self.ui_light_exposure, 0.1..=5.0)
+                                    .text("Exposure")
+                                    .logarithmic(true),
+                            )
+                            .changed()
+                        {
+                            self.ui_light_exposure = self.ui_light_exposure.clamp(0.1, 20.0);
+                            lighting_dirty = true;
+                        }
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut self.ui_shadow_distance, 5.0..=200.0)
+                                    .text("Shadow distance"),
+                            )
+                            .changed()
+                        {
+                            self.ui_shadow_distance = self.ui_shadow_distance.clamp(5.0, 200.0);
+                            lighting_dirty = true;
+                        }
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut self.ui_shadow_bias, 0.0001..=0.02)
+                                    .text("Shadow bias")
+                                    .logarithmic(true),
+                            )
+                            .changed()
+                        {
+                            self.ui_shadow_bias = self.ui_shadow_bias.clamp(0.0001, 0.02);
+                            lighting_dirty = true;
+                        }
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut self.ui_shadow_strength, 0.0..=1.0)
+                                    .text("Shadow strength"),
+                            )
+                            .changed()
+                        {
+                            self.ui_shadow_strength = self.ui_shadow_strength.clamp(0.0, 1.0);
+                            lighting_dirty = true;
+                        }
+
+                        ui.separator();
+                        ui.label("Environment");
+                        if environment_options.is_empty() {
+                            ui.label("No environments available.");
+                        } else {
+                            let mut selected_environment = active_environment.clone();
+                            let current_label = environment_options
+                                .iter()
+                                .find(|(key, _)| key == &selected_environment)
+                                .map(|(_, label)| label.as_str())
+                                .unwrap_or(selected_environment.as_str());
+                            egui::ComboBox::from_id_salt("environment_select")
+                                .selected_text(current_label)
+                                .show_ui(ui, |ui| {
+                                    for (key, label) in &environment_options {
+                                        ui.selectable_value(&mut selected_environment, key.clone(), label);
+                                    }
+                                });
+                            if selected_environment != active_environment {
+                                environment_selection_request = Some(selected_environment);
+                            }
+                        }
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut ui_environment_intensity, 0.0..=5.0)
+                                    .text("Environment intensity")
+                                    .logarithmic(true),
+                            )
+                            .changed()
+                        {
+                            ui_environment_intensity = ui_environment_intensity.clamp(0.0, 20.0);
+                        }
+
+                        if ui.button("Reset lighting").clicked() {
+                            self.ui_light_direction = default_dir;
+                            self.ui_light_color = Vec3::new(1.05, 0.98, 0.92);
+                            self.ui_light_ambient = Vec3::splat(0.03);
+                            self.ui_light_exposure = 1.0;
+                            self.ui_shadow_distance = 35.0;
+                            self.ui_shadow_bias = 0.002;
+                            self.ui_shadow_strength = 1.0;
+                            self.ui_environment_intensity = 1.0;
+                            ui_environment_intensity = 1.0;
+
+                            lighting_dirty = true;
+                        }
+                        if lighting_dirty {
+                            let lighting = self.renderer.lighting_mut();
+                            lighting.direction = self.ui_light_direction;
+                            lighting.color = self.ui_light_color;
+                            lighting.ambient = self.ui_light_ambient;
+                            lighting.exposure = self.ui_light_exposure;
+                            lighting.shadow_distance = self.ui_shadow_distance.clamp(1.0, 500.0);
+                            lighting.shadow_bias = self.ui_shadow_bias.clamp(0.00005, 0.05);
+                            lighting.shadow_strength = self.ui_shadow_strength.clamp(0.0, 1.0);
+                            self.renderer.mark_shadow_settings_dirty();
+                        }
+                    });
+
+                    ui.separator();
+                    egui::CollapsingHeader::new("Spawn & Emitters").default_open(true).show(ui, |ui| {
+                        ui.add(egui::Slider::new(&mut ui_cell_size, 0.05..=0.8).text("Spatial cell size"));
+                        ui.add(egui::Slider::new(&mut ui_spawn_per_press, 1..=5000).text("Spawn per press"));
+                        ui.add(
+                            egui::Slider::new(&mut ui_auto_spawn_rate, 0.0..=5000.0)
+                                .text("Auto-spawn per second"),
+                        );
+                        ui.add(
+                            egui::Slider::new(&mut ui_emitter_rate, 0.0..=200.0)
+                                .text("Emitter rate (particles/s)"),
+                        );
+                        ui.add(
+                            egui::Slider::new(&mut ui_emitter_spread, 0.0..=std::f32::consts::PI)
+                                .text("Emitter spread (rad)"),
+                        );
+                        ui.add(egui::Slider::new(&mut ui_emitter_speed, 0.0..=3.0).text("Emitter speed"));
+                        ui.add(
+                            egui::Slider::new(&mut ui_emitter_lifetime, 0.1..=5.0)
+                                .text("Particle lifetime (s)"),
+                        );
+                        ui.add(
+                            egui::Slider::new(&mut ui_emitter_start_size, 0.01..=0.5)
+                                .text("Particle start size"),
+                        );
+                        ui.add(
+                            egui::Slider::new(&mut ui_emitter_end_size, 0.01..=0.5).text("Particle end size"),
+                        );
+                        ui.horizontal(|ui| {
+                            ui.label("Start color");
+                            ui.color_edit_button_rgba_unmultiplied(&mut ui_emitter_start_color);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("End color");
+                            ui.color_edit_button_rgba_unmultiplied(&mut ui_emitter_end_color);
+                        });
+                        ui.add(egui::Slider::new(&mut ui_root_spin, -5.0..=5.0).text("Root spin speed"));
+                        ui.horizontal(|ui| {
+                            if ui.button("Spawn now").clicked() {
+                                actions.spawn_now = true;
+                            }
+                            if ui.button("Clear particles").clicked() {
+                                actions.clear_particles = true;
+                            }
+                            if ui.button("Reset world").clicked() {
+                                actions.reset_world = true;
+                            }
+                        });
+                        ui.separator();
+                        ui.label("Particle caps");
+                        ui.add(
+                            egui::Slider::new(&mut ui_particle_max_total, 0..=10_000)
+                                .text("Max total particles"),
+                        );
+                        ui.add(
+                            egui::Slider::new(&mut ui_particle_max_spawn_per_frame, 0..=2_000)
+                                .text("Max spawn per frame"),
+                        );
+                        ui.add(
+                            egui::Slider::new(&mut ui_particle_max_emitter_backlog, 0.0..=256.0)
+                                .text("Emitter backlog cap"),
+                        );
+                        if ui_particle_max_spawn_per_frame > ui_particle_max_total {
+                            ui_particle_max_spawn_per_frame = ui_particle_max_total;
                         }
                     });
 
