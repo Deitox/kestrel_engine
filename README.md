@@ -41,6 +41,13 @@
 - Arrow keys cycle through command history, and the History list lets you click to rehydrate older commands for editing. The input box auto-focuses whenever a script error occurs so you can fix issues quickly.
 - Errors that occur during REPL execution or regular script updates automatically reopen the debugger and highlight the failure, keeping the workflow tight during iteration.
 
+## Scene Formats
+- JSON scenes (`.json`) remain human-readable and are always supported.
+- When the crate is built with the `binary_scene` feature, saving to a path that ends in `.kscene` writes a compressed binary payload (magic `KSCN`, versioned, LZ4-compressed bincode) that loads faster and takes less disk space.
+- Use the scene tool to convert between formats without reauthoring content:  
+  `cargo run --bin scene_tool --features binary_scene -- convert input.json output.kscene`
+- Binary scenes cannot be opened without the feature flag; the loader emits a clear error if you try to open a `.kscene` from a build that lacks `binary_scene`.
+
 ## Build
 `
 cargo run

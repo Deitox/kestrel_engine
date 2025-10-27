@@ -38,6 +38,15 @@ fn run() -> Result<()> {
             let output_path = args.next().ok_or_else(|| anyhow!("extract missing output path argument"))?;
             cmd_extract(&scene_path, &entity_id, &output_path)
         }
+        "convert" => {
+            let input = args
+                .next()
+                .ok_or_else(|| anyhow!("convert requires input path: scene_tool convert <in> <out>"))?;
+            let output = args
+                .next()
+                .ok_or_else(|| anyhow!("convert requires output path: scene_tool convert <in> <out>"))?;
+            cmd_convert(&input, &output)
+        }
         "help" | "--help" | "-h" => {
             print_usage();
             Ok(())
@@ -54,6 +63,7 @@ Usage:
   scene_tool validate <scene_path>     Validate entity IDs and dependencies
   scene_tool list <scene_path>         List entity IDs, parents, and optional names
   scene_tool extract <scene> <id> <out>  Extract a subtree by entity ID into a new scene
+  scene_tool convert <input> <output>  Convert between JSON (.json) and binary (.kscene) scenes
   scene_tool help                      Show this message
 "
     );
@@ -171,6 +181,13 @@ fn cmd_extract(scene_path: &str, entity_id: &str, output_path: &str) -> Result<(
         Scene { metadata: scene.metadata.clone(), dependencies, entities: std::mem::take(&mut entities) };
     prefab.save_to_path(output_path)?;
     println!("Extracted {} entities rooted at '{}' into '{}'", prefab.entities.len(), entity_id, output_path);
+    Ok(())
+}
+
+fn cmd_convert(input_path: &str, output_path: &str) -> Result<()> {
+    let scene = load_scene(input_path)?;
+    scene.save_to_path(output_path)?;
+    println!("Converted '{}' -> '{}'", input_path, output_path);
     Ok(())
 }
 

@@ -44,7 +44,9 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
     - *Acceptance:* Stream current particle counts, emitter backlog, and cap utilization into the analytics UI to spot runaway effects.
 13. **[M9] Audio capability diagnostics** - *Completed via device metadata telemetry + analytics logging (`src/audio.rs:22`, `src/app/mod.rs:471`).*
     - *Acceptance:* Extend the new `AudioHealthSnapshot` telemetry with device name/sample rate info and route it into analytics/logs when initialization fails.
-14. **[M10] Binary `.kscene` serializer**
+14. **[M10] Binary `.kscene` serializer** - *Completed via bincode+LZ4 pipeline with feature flag + tooling (`src/scene.rs:1100`, `src/bin/scene_tool.rs:10`).*
+    - *Highlights:* Scenes saved with a `.kscene` extension now emit a versioned `KSCN` payload that bincode-serializes the normalized scene graph and compresses it with LZ4 (gated behind the `binary_scene` feature), while the loader auto-detects the magic header to decode or surface a helpful error if the feature is disabled.
+    - *Tooling:* `scene_tool convert <input> <output>` converts between `.json` and `.kscene`, so existing content can migrate without manual edits.
     - *Acceptance:* Implement a binary encoder/decoder (with compression) behind a feature flag; provide migration tooling between JSON and binary formats.
 15. **[M11] Drag-and-drop prefab authoring**
     - *Acceptance:* Allow entities or hierarchies to be dragged from the inspector into a prefab shelf, saved as JSON/`kscene`, and instanced via drag/drop.

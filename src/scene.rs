@@ -1,10 +1,16 @@
 use crate::assets::AssetManager;
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
+#[cfg(feature = "binary_scene")]
+use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use uuid::Uuid;
+
+const BINARY_SCENE_MAGIC: [u8; 4] = *b"KSCN";
+#[cfg(feature = "binary_scene")]
+const BINARY_SCENE_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scene {
@@ -1091,6 +1097,23 @@ impl Scene {
     pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let bytes = fs::read(path).with_context(|| format!("Reading scene file {}", path.display()))?;
+        if Self::is_binary_payload(&bytes) {
+            #[cfg(feature = "binary_scene")]
+            {
+                let mut scene = Self::from_binary_bytes(&bytes)
+                    .with_context(|| format!("Parsing binary scene {}", path.display()))?;
+                scene.dependencies.normalize();
+                scene.normalize_entities();
+                return Ok(scene);
+            }
+            #[cfg(not(feature = "binary_scene"))]
+            {
+                bail!(
+                    "Scene '{}' is binary (.kscene), but this build lacks the 'binary_scene' feature.",
+                    path.display()
+                );
+            }
+        }
         let mut scene = serde_json::from_slice::<Scene>(&bytes)
             .with_context(|| format!("Parsing scene file {}", path.display()))?;
         scene.dependencies.normalize();
@@ -1104,9 +1127,22 @@ impl Scene {
             fs::create_dir_all(parent)
                 .with_context(|| format!("Creating scene directory {}", parent.display()))?;
         }
-        let mut normalized = self.clone();
-        normalized.dependencies.normalize();
-        normalized.normalize_entities();
+        let normalized = self.normalized_clone();
+        if Self::path_wants_binary(path) {
+            #[cfg(feature = "binary_scene")]
+            {
+                let bytes = normalized.to_binary_bytes()?;
+                fs::write(path, bytes).with_context(|| format!("Writing scene file {}", path.display()))?;
+                return Ok(());
+            }
+            #[cfg(not(feature = "binary_scene"))]
+            {
+                bail!(
+                    "Cannot write binary scene '{}': recompile with the 'binary_scene' feature enabled.",
+                    path.display()
+                );
+            }
+        }
         let json = serde_json::to_string_pretty(&normalized)?;
         fs::write(path, json.as_bytes()).with_context(|| format!("Writing scene file {}", path.display()))?;
         Ok(())
@@ -1159,6 +1195,61 @@ impl Scene {
                 }
             }
         }
+    }
+
+    fn normalized_clone(&self) -> Self {
+        let mut clone = self.clone();
+        clone.dependencies.normalize();
+        clone.normalize_entities();
+        clone
+    }
+
+    fn path_wants_binary(path: &Path) -> bool {
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("kscene"))
+            .unwrap_or(false)
+    }
+
+    fn is_binary_payload(bytes: &[u8]) -> bool {
+        bytes.len() >= BINARY_SCENE_MAGIC.len() && &bytes[..BINARY_SCENE_MAGIC.len()] == BINARY_SCENE_MAGIC
+    }
+
+    #[cfg(feature = "binary_scene")]
+    fn to_binary_bytes(&self) -> Result<Vec<u8>> {
+        use lz4_flex::block::compress_prepend_size;
+        let payload =
+            bincode::serialize(self).with_context(|| "Serializing scene payload before compression")?;
+        let mut bytes = Vec::with_capacity(BINARY_SCENE_MAGIC.len() + 4 + payload.len());
+        bytes.extend_from_slice(&BINARY_SCENE_MAGIC);
+        bytes.extend_from_slice(&BINARY_SCENE_VERSION.to_le_bytes());
+        let compressed = compress_prepend_size(&payload);
+        bytes.extend_from_slice(&compressed);
+        Ok(bytes)
+    }
+
+    #[cfg(feature = "binary_scene")]
+    fn from_binary_bytes(bytes: &[u8]) -> Result<Self> {
+        use lz4_flex::block::decompress_size_prepended;
+        if !Self::is_binary_payload(bytes) {
+            bail!("buffer does not contain a binary scene payload");
+        }
+        if bytes.len() < BINARY_SCENE_MAGIC.len() + 4 {
+            bail!("binary scene header is truncated");
+        }
+        let version_offset = BINARY_SCENE_MAGIC.len();
+        let mut version_bytes = [0u8; 4];
+        version_bytes.copy_from_slice(&bytes[version_offset..version_offset + 4]);
+        let version = u32::from_le_bytes(version_bytes);
+        if version != BINARY_SCENE_VERSION {
+            bail!("unsupported .kscene version {} (expected {})", version, BINARY_SCENE_VERSION);
+        }
+        let compressed = &bytes[version_offset + 4..];
+        let decompressed = decompress_size_prepended(compressed)
+            .map_err(|err| anyhow!("Decompressing .kscene payload failed: {err}"))?;
+        let scene = bincode::deserialize::<Scene>(&decompressed)
+            .map_err(|err| anyhow!("Deserializing .kscene payload failed: {err}"))?;
+        Ok(scene)
     }
 
     pub fn entity_index_by_id(&self, id: &str) -> Option<usize> {
