@@ -735,6 +735,31 @@ impl App {
                             ui.label("Script plugin unavailable");
                         }
                     });
+                    ui.separator();
+                    {
+                        let inspector_ctx = entity_inspector::InspectorAppContext {
+                            ecs: &mut self.ecs,
+                            gizmo_mode: &mut self.gizmo_mode,
+                            gizmo_interaction: &mut self.gizmo_interaction,
+                            input: &self.input,
+                            inspector_status: &mut self.inspector_status,
+                            material_registry: &mut self.material_registry,
+                            mesh_registry: &mut self.mesh_registry,
+                            scene_material_refs: &mut self.scene_material_refs,
+                            assets: &self.assets,
+                        };
+                        entity_inspector::show_entity_inspector(
+                            inspector_ctx,
+                            ui,
+                            &mut selected_entity,
+                            &mut selection_details,
+                            &mut id_lookup_input,
+                            &mut id_lookup_active,
+                            &mut frame_selection_request,
+                            &persistent_materials,
+                            &mut actions,
+                        );
+                    }
                 });
 
             let mut lookup_open = id_lookup_active;
@@ -931,13 +956,13 @@ impl App {
                                 }
                             }
                         });
-                    });
-                script_debugger.open = debugger_open;
-            }
+                });
+            script_debugger.open = debugger_open;
+        }
 
-            let right_panel =
-                egui::SidePanel::right("kestrel_right_panel").default_width(360.0).show(ctx, |ui| {
-                    ui.heading("3D Preview");
+        let right_panel =
+            egui::SidePanel::right("kestrel_right_panel").default_width(360.0).show(ctx, |ui| {
+                ui.heading("3D Preview");
                     egui::ComboBox::from_label("Mesh asset").selected_text(&preview_mesh_key).show_ui(
                         ui,
                         |ui| {
@@ -1570,31 +1595,6 @@ impl App {
                             }
                         }
                     });
-                    ui.separator();
-                    {
-                        let inspector_ctx = entity_inspector::InspectorAppContext {
-                            ecs: &mut self.ecs,
-                            gizmo_mode: &mut self.gizmo_mode,
-                            gizmo_interaction: &mut self.gizmo_interaction,
-                            input: &self.input,
-                            inspector_status: &mut self.inspector_status,
-                            material_registry: &mut self.material_registry,
-                            mesh_registry: &mut self.mesh_registry,
-                            scene_material_refs: &mut self.scene_material_refs,
-                            assets: &self.assets,
-                        };
-                        entity_inspector::show_entity_inspector(
-                            inspector_ctx,
-                            ui,
-                            &mut selected_entity,
-                            &mut selection_details,
-                            &mut id_lookup_input,
-                            &mut id_lookup_active,
-                            &mut frame_selection_request,
-                            &persistent_materials,
-                            &mut actions,
-                        );
-                    }
                 });
             left_panel_width_px = left_panel.response.rect.width() * ui_pixels_per_point;
             right_panel_width_px = right_panel.response.rect.width() * ui_pixels_per_point;
