@@ -44,6 +44,8 @@ use egui_winit::State as EguiWinit;
 const CAMERA_BASE_HALF_HEIGHT: f32 = 1.2;
 const PLUGIN_MANIFEST_PATH: &str = "config/plugins.json";
 const INPUT_CONFIG_PATH: &str = "config/input.json";
+const SCRIPT_CONSOLE_CAPACITY: usize = 200;
+const SCRIPT_HISTORY_CAPACITY: usize = 64;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ViewportCameraMode {
@@ -105,6 +107,20 @@ impl Viewport {
     fn size_physical(&self) -> PhysicalSize<u32> {
         PhysicalSize::new(self.size.x.max(1.0).round() as u32, self.size.y.max(1.0).round() as u32)
     }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ScriptConsoleEntry {
+    pub kind: ScriptConsoleKind,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScriptConsoleKind {
+    Input,
+    Output,
+    Error,
+    Log,
 }
 
 #[derive(Debug, Clone)]
@@ -240,6 +256,13 @@ pub struct App {
     inspector_status: Option<String>,
     debug_show_spatial_hash: bool,
     debug_show_colliders: bool,
+    script_debugger_open: bool,
+    script_focus_repl: bool,
+    script_repl_input: String,
+    script_repl_history: VecDeque<String>,
+    script_repl_history_index: Option<usize>,
+    script_console: VecDeque<ScriptConsoleEntry>,
+    last_reported_script_error: Option<String>,
 
     // Plugins
     plugins: PluginManager,
@@ -585,6 +608,13 @@ impl App {
             inspector_status: None,
             debug_show_spatial_hash: false,
             debug_show_colliders: false,
+            script_debugger_open: false,
+            script_focus_repl: false,
+            script_repl_input: String::new(),
+            script_repl_history: VecDeque::new(),
+            script_repl_history_index: None,
+            script_console: VecDeque::with_capacity(SCRIPT_CONSOLE_CAPACITY),
+            last_reported_script_error: None,
             plugins,
             camera: Camera2D::new(CAMERA_BASE_HALF_HEIGHT),
             viewport_camera_mode: ViewportCameraMode::default(),
@@ -776,6 +806,69 @@ impl App {
         self.scene_history.push_front(trimmed.to_string());
         while self.scene_history.len() > 8 {
             self.scene_history.pop_back();
+        }
+    }
+
+    fn push_script_console(&mut self, kind: ScriptConsoleKind, text: impl Into<String>) {
+        self.script_console.push_back(ScriptConsoleEntry { kind, text: text.into() });
+        while self.script_console.len() > SCRIPT_CONSOLE_CAPACITY {
+            self.script_console.pop_front();
+        }
+    }
+
+    fn append_script_history(&mut self, command: &str) {
+        if command.is_empty() {
+            return;
+        }
+        self.script_repl_history.push_back(command.to_string());
+        while self.script_repl_history.len() > SCRIPT_HISTORY_CAPACITY {
+            self.script_repl_history.pop_front();
+        }
+        self.script_repl_history_index = None;
+    }
+
+    fn execute_repl_command(&mut self, command: String) {
+        let trimmed = command.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        self.append_script_history(trimmed);
+        self.push_script_console(ScriptConsoleKind::Input, format!("> {trimmed}"));
+        self.script_repl_input.clear();
+        self.script_focus_repl = true;
+        let result: Result<Option<String>, String> = if let Some(plugin) = self.script_plugin_mut() {
+            match plugin.eval_repl(trimmed) {
+                Ok(value) => Ok(value),
+                Err(err) => {
+                    let message = err.to_string();
+                    plugin.set_error_message(message.clone());
+                    Err(message)
+                }
+            }
+        } else {
+            Err("Script plugin unavailable; cannot evaluate command.".to_string())
+        };
+        match result {
+            Ok(Some(value)) => self.push_script_console(ScriptConsoleKind::Output, value),
+            Ok(None) => {}
+            Err(message) => {
+                self.push_script_console(ScriptConsoleKind::Error, message);
+                self.script_debugger_open = true;
+            }
+        }
+    }
+
+    fn sync_script_error_state(&mut self) {
+        let current_error =
+            self.script_plugin().and_then(|plugin| plugin.last_error().map(|err| err.to_string()));
+        if current_error == self.last_reported_script_error {
+            return;
+        }
+        self.last_reported_script_error = current_error.clone();
+        if let Some(err) = current_error {
+            self.push_script_console(ScriptConsoleKind::Error, format!("Runtime error: {err}"));
+            self.script_debugger_open = true;
+            self.script_focus_repl = true;
         }
     }
 
@@ -1518,6 +1611,7 @@ impl ApplicationHandler for App {
         let commands = self.drain_script_commands();
         self.apply_script_commands(commands);
         for message in self.drain_script_logs() {
+            self.push_script_console(ScriptConsoleKind::Log, format!("[log] {message}"));
             self.ecs.push_event(GameEvent::ScriptMessage { message });
         }
 
@@ -1731,6 +1825,7 @@ impl ApplicationHandler for App {
         });
         let camera_position = self.camera.position;
         let camera_zoom = self.camera.zoom;
+        self.sync_script_error_state();
         let recent_events: Vec<GameEvent> = self
             .analytics_plugin()
             .map(|plugin| plugin.recent_events().cloned().collect())
@@ -1740,6 +1835,18 @@ impl ApplicationHandler for App {
         } else {
             (Vec::new(), false, AudioHealthSnapshot::default())
         };
+        let (script_plugin_available, script_path, scripts_enabled, scripts_paused, script_last_error) =
+            if let Some(plugin) = self.script_plugin() {
+                (
+                    true,
+                    Some(plugin.script_path().display().to_string()),
+                    plugin.enabled(),
+                    plugin.paused(),
+                    plugin.last_error().map(|err| err.to_string()),
+                )
+            } else {
+                (false, None, false, false, None)
+            };
         let mut mesh_keys: Vec<String> = self.mesh_registry.keys().map(|k| k.to_string()).collect();
         mesh_keys.sort();
         let scene_history_list: Vec<String> = self.scene_history.iter().cloned().collect();
@@ -1833,6 +1940,19 @@ impl ApplicationHandler for App {
             audio_triggers,
             audio_enabled,
             audio_health,
+            script_debugger: editor_ui::ScriptDebuggerParams {
+                open: self.script_debugger_open,
+                available: script_plugin_available,
+                script_path,
+                enabled: scripts_enabled,
+                paused: scripts_paused,
+                last_error: script_last_error,
+                repl_input: self.script_repl_input.clone(),
+                repl_history_index: self.script_repl_history_index,
+                repl_history: self.script_repl_history.iter().cloned().collect(),
+                console_entries: self.script_console.iter().cloned().collect(),
+                focus_repl: self.script_focus_repl,
+            },
             id_lookup_input: self.id_lookup_input.clone(),
             id_lookup_active: self.id_lookup_active,
         };
@@ -1884,6 +2004,7 @@ impl ApplicationHandler for App {
             debug_show_spatial_hash,
             debug_show_colliders,
             vsync_request,
+            script_debugger,
         } = editor_output;
 
         self.ui_scale = ui_scale;
@@ -2015,6 +2136,39 @@ impl ApplicationHandler for App {
             self.egui_winit.as_mut().unwrap().handle_platform_output(window, platform_output);
         } else {
             return;
+        }
+
+        self.script_debugger_open = script_debugger.open;
+        self.script_repl_input = script_debugger.repl_input;
+        self.script_repl_history_index = script_debugger.repl_history_index;
+        self.script_focus_repl = script_debugger.focus_repl;
+        if script_debugger.clear_console {
+            self.script_console.clear();
+        }
+        if let Some(enabled) = script_debugger.set_enabled {
+            if let Some(plugin) = self.script_plugin_mut() {
+                plugin.set_enabled(enabled);
+            }
+        }
+        if let Some(paused) = script_debugger.set_paused {
+            if let Some(plugin) = self.script_plugin_mut() {
+                plugin.set_paused(paused);
+            }
+        }
+        if script_debugger.step_once {
+            if let Some(plugin) = self.script_plugin_mut() {
+                plugin.step_once();
+            }
+        }
+        if script_debugger.reload {
+            if let Some(plugin) = self.script_plugin_mut() {
+                if let Err(err) = plugin.force_reload() {
+                    plugin.set_error_message(err.to_string());
+                }
+            }
+        }
+        if let Some(command) = script_debugger.submit_command {
+            self.execute_repl_command(command);
         }
 
         if let Some((origin, size)) = pending_viewport {

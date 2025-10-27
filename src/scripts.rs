@@ -10,7 +10,7 @@ use crate::plugins::{EnginePlugin, PluginContext};
 use anyhow::{anyhow, Context, Result};
 use glam::{Vec2, Vec4};
 use rand::Rng;
-use rhai::{Engine, EvalAltResult, Scope, AST};
+use rhai::{Dynamic, Engine, EvalAltResult, Scope, AST};
 
 use bevy_ecs::prelude::Entity;
 
@@ -257,13 +257,16 @@ impl ScriptHost {
         self.load_script().map(|_| ())
     }
 
-    pub fn update(&mut self, dt: f32) {
+    pub fn update(&mut self, dt: f32, run_scripts: bool) {
         if let Err(err) = self.reload_if_needed() {
             self.error = Some(err.to_string());
             return;
         }
 
         if !self.enabled {
+            return;
+        }
+        if !run_scripts {
             return;
         }
         let ast = match &self.ast {
@@ -314,6 +317,30 @@ impl ScriptHost {
 
     pub fn drain_logs(&mut self) -> Vec<String> {
         self.shared.borrow_mut().logs.drain(..).collect()
+    }
+
+    pub fn eval_repl(&mut self, source: &str) -> Result<Option<String>> {
+        let trimmed = source.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        self.reload_if_needed()?;
+        let marker = self.scope.len();
+        self.scope.push_constant("world", ScriptWorld::new(self.shared.clone()));
+        let eval = self.engine.eval_with_scope::<Dynamic>(&mut self.scope, trimmed);
+        while self.scope.len() > marker {
+            self.scope.pop();
+        }
+        match eval {
+            Ok(value) => {
+                if value.is_unit() {
+                    Ok(None)
+                } else {
+                    Ok(Some(value.to_string()))
+                }
+            }
+            Err(err) => Err(anyhow!(err.to_string())),
+        }
     }
 
     pub fn register_spawn_result(&mut self, handle: ScriptHandle, entity: Entity) {
@@ -370,11 +397,19 @@ pub struct ScriptPlugin {
     host: ScriptHost,
     commands: Vec<ScriptCommand>,
     logs: Vec<String>,
+    paused: bool,
+    step_once: bool,
 }
 
 impl ScriptPlugin {
     pub fn new(path: impl AsRef<Path>) -> Self {
-        Self { host: ScriptHost::new(path), commands: Vec::new(), logs: Vec::new() }
+        Self {
+            host: ScriptHost::new(path),
+            commands: Vec::new(),
+            logs: Vec::new(),
+            paused: false,
+            step_once: false,
+        }
     }
 
     pub fn take_commands(&mut self) -> Vec<ScriptCommand> {
@@ -417,6 +452,21 @@ impl ScriptPlugin {
         self.host.set_enabled(enabled);
     }
 
+    pub fn paused(&self) -> bool {
+        self.paused
+    }
+
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
+        if !paused {
+            self.step_once = false;
+        }
+    }
+
+    pub fn step_once(&mut self) {
+        self.step_once = true;
+    }
+
     pub fn force_reload(&mut self) -> Result<()> {
         self.host.force_reload()
     }
@@ -427,6 +477,13 @@ impl ScriptPlugin {
 
     pub fn last_error(&self) -> Option<&str> {
         self.host.last_error()
+    }
+
+    pub fn eval_repl(&mut self, source: &str) -> Result<Option<String>> {
+        let result = self.host.eval_repl(source)?;
+        self.commands.extend(self.host.drain_commands());
+        self.logs.extend(self.host.drain_logs());
+        Ok(result)
     }
 }
 
@@ -440,7 +497,20 @@ impl EnginePlugin for ScriptPlugin {
     }
 
     fn update(&mut self, _ctx: &mut PluginContext<'_>, dt: f32) -> Result<()> {
-        self.host.update(dt);
+        let run_scripts = if self.paused {
+            if self.step_once {
+                self.step_once = false;
+                true
+            } else {
+                false
+            }
+        } else {
+            true
+        };
+        self.host.update(dt, run_scripts);
+        if !self.paused {
+            self.step_once = false;
+        }
         self.commands.extend(self.host.drain_commands());
         self.logs.extend(self.host.drain_logs());
         Ok(())
@@ -483,4 +553,40 @@ fn register_api(engine: &mut Engine) {
     engine.register_fn("set_emitter_end_size", ScriptWorld::set_emitter_end_size);
     engine.register_fn("log", ScriptWorld::log);
     engine.register_fn("rand", ScriptWorld::random_range);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn write_script(contents: &str) -> NamedTempFile {
+        let mut temp = NamedTempFile::new().expect("temp script");
+        write!(temp, "{contents}").expect("write script");
+        temp
+    }
+
+    #[test]
+    fn repl_mutates_scope_and_enqueues_commands() {
+        let script = write_script(
+            r#"
+                let counter = 0;
+                fn init(world) {}
+                fn update(world, dt) {}
+            "#,
+        );
+        let mut host = ScriptHost::new(script.path());
+        host.force_reload().expect("load script");
+
+        let out = host.eval_repl("counter += 5; counter").expect("repl result");
+        assert_eq!(out.as_deref(), Some("5"));
+
+        let confirm = host.eval_repl("counter").expect("counter read");
+        assert_eq!(confirm.as_deref(), Some("5"));
+
+        host.eval_repl("world.set_spawn_per_press(7);").expect("repl command");
+        let commands = host.drain_commands();
+        assert!(matches!(&commands[..], [ScriptCommand::SetSpawnPerPress { count }] if *count == 7));
+    }
 }

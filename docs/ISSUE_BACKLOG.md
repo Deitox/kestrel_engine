@@ -37,7 +37,8 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
    - *Highlights:* Runtime frame timing history now records per-frame/update/fixed/render/UI durations (`src/app/mod.rs:1250`) and ECS systems report per-system timings through the new profiler resource (`src/ecs/profiler.rs:1`, `src/ecs/systems/*.rs`). The editor stats panel exposes a collapsible profiler table with frame summaries and ranked system timings plus quadtree metrics (`src/app/editor_ui.rs:250`). Snapshot-style tests cover the string summaries used in the panel to detect layout regressions (`src/app/editor_ui.rs:2098`).
 10. **[M6] Multi-camera / follow-target tooling**
     - *Acceptance:* Allow the viewport to switch between multiple named cameras or follow a selected entity; persist the choice in scene metadata.
-11. **[M7] Scripting debugger / REPL**
+11. **[M7] Scripting debugger / REPL** - *Completed via debugger window + Rhai REPL plumbing (`src/scripts.rs:202`, `src/app/mod.rs:780`, `src/app/editor_ui.rs:860`).*
+    - *Highlights:* `ScriptHost::eval_repl` shares scope state with runtime scripts and queues commands/logs for the engine (`src/scripts.rs:202`), the app tracks console/history state plus pause/step control wiring (`src/app/mod.rs:780`), and the egui debugger window exposes REPL input, command history, and auto-focus on errors (`src/app/editor_ui.rs:860`).
     - *Acceptance:* Embed a lightweight Rhai REPL with pause/step controls and command history; script errors should focus in the debugger panel.
 12. **[M8] Particle budget analytics** - *Completed via ECS telemetry + Stats panel (`src/ecs/world.rs:322`, `src/app/editor_ui.rs:250`).*
     - *Acceptance:* Stream current particle counts, emitter backlog, and cap utilization into the analytics UI to spot runaway effects.

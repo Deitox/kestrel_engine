@@ -1,4 +1,7 @@
-use super::{App, CameraBookmark, FrameTimingSample, MeshControlMode, ViewportCameraMode};
+use super::{
+    App, CameraBookmark, FrameTimingSample, MeshControlMode, ScriptConsoleEntry, ScriptConsoleKind,
+    ViewportCameraMode,
+};
 use crate::audio::{AudioHealthSnapshot, AudioPlugin};
 use crate::camera3d::Camera3D;
 use crate::ecs::{
@@ -38,6 +41,33 @@ pub(super) struct UiActions {
 pub(super) struct SelectionResult {
     pub entity: Option<Entity>,
     pub details: Option<EntityInfo>,
+}
+
+pub(super) struct ScriptDebuggerParams {
+    pub open: bool,
+    pub available: bool,
+    pub script_path: Option<String>,
+    pub enabled: bool,
+    pub paused: bool,
+    pub last_error: Option<String>,
+    pub repl_input: String,
+    pub repl_history_index: Option<usize>,
+    pub repl_history: Vec<String>,
+    pub console_entries: Vec<ScriptConsoleEntry>,
+    pub focus_repl: bool,
+}
+
+pub(super) struct ScriptDebuggerOutput {
+    pub open: bool,
+    pub repl_input: String,
+    pub repl_history_index: Option<usize>,
+    pub focus_repl: bool,
+    pub submit_command: Option<String>,
+    pub clear_console: bool,
+    pub set_enabled: Option<bool>,
+    pub set_paused: Option<bool>,
+    pub step_once: bool,
+    pub reload: bool,
 }
 
 pub(super) struct EditorUiParams {
@@ -101,6 +131,7 @@ pub(super) struct EditorUiParams {
     pub audio_triggers: Vec<String>,
     pub audio_enabled: bool,
     pub audio_health: AudioHealthSnapshot,
+    pub script_debugger: ScriptDebuggerParams,
     pub id_lookup_input: String,
     pub id_lookup_active: bool,
 }
@@ -149,6 +180,7 @@ pub(super) struct EditorUiOutput {
     pub debug_show_spatial_hash: bool,
     pub debug_show_colliders: bool,
     pub vsync_request: Option<bool>,
+    pub script_debugger: ScriptDebuggerOutput,
 }
 
 impl App {
@@ -216,6 +248,7 @@ impl App {
             spatial_metrics,
             mut id_lookup_input,
             mut id_lookup_active,
+            mut script_debugger,
         } = params;
 
         mesh_keys.sort();
@@ -271,16 +304,20 @@ impl App {
             screen.pixels_per_point = ui_pixels_per_point;
         }
 
-        let mut script_enable_request: Option<bool> = None;
-        let mut script_reload_request = false;
-        let mut script_panel_data = self.script_plugin().map(|plugin| {
-            (
-                plugin.script_path().display().to_string(),
-                plugin.enabled(),
-                plugin.last_error().map(|err| err.to_string()),
-            )
-        });
         let mut vsync_toggle_request: Option<bool> = None;
+
+        let mut script_debugger_output = ScriptDebuggerOutput {
+            open: script_debugger.open,
+            repl_input: script_debugger.repl_input.clone(),
+            repl_history_index: script_debugger.repl_history_index,
+            focus_repl: script_debugger.focus_repl,
+            submit_command: None,
+            clear_console: false,
+            set_enabled: None,
+            set_paused: None,
+            step_once: false,
+            reload: false,
+        };
 
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
             let left_panel =
@@ -723,21 +760,42 @@ impl App {
                     });
 
                     egui::CollapsingHeader::new("Scripts").default_open(false).show(ui, |ui| {
-                        if let Some((path, enabled, last_error)) = script_panel_data.as_mut() {
-                            ui.label(format!("Path: {}", path));
-                            let mut scripts_enabled = *enabled;
-                            if ui.checkbox(&mut scripts_enabled, "Enable scripts").changed() {
-                                *enabled = scripts_enabled;
-                                script_enable_request = Some(scripts_enabled);
+                        if script_debugger.available {
+                            if let Some(path) = script_debugger.script_path.as_ref() {
+                                ui.label(format!("Path: {path}"));
                             }
-                            if ui.button("Reload script").clicked() {
-                                script_reload_request = true;
-                                *last_error = None;
+                            let mut enabled = script_debugger.enabled;
+                            if ui.checkbox(&mut enabled, "Enable scripts").changed() {
+                                script_debugger.enabled = enabled;
+                                script_debugger_output.set_enabled = Some(enabled);
                             }
-                            if let Some(err) = last_error.as_ref() {
+                            let mut paused = script_debugger.paused;
+                            if ui
+                                .checkbox(&mut paused, "Pause updates")
+                                .on_hover_text("Stop invoking update; use Step to run once while paused.")
+                                .changed()
+                            {
+                                script_debugger.paused = paused;
+                                script_debugger_output.set_paused = Some(paused);
+                            }
+                            ui.horizontal(|ui| {
+                                ui.add_enabled_ui(script_debugger.paused, |ui| {
+                                    if ui.button("Step").clicked() {
+                                        script_debugger_output.step_once = true;
+                                    }
+                                });
+                                if ui.button("Reload").clicked() {
+                                    script_debugger_output.reload = true;
+                                }
+                                if ui.button("Open debugger").clicked() {
+                                    script_debugger.open = true;
+                                }
+                            });
+                            if let Some(err) = script_debugger.last_error.as_ref() {
                                 ui.colored_label(egui::Color32::RED, format!("Error: {err}"));
-                            } else if *enabled {
-                                ui.label("Script running");
+                            } else if script_debugger.enabled {
+                                let status = if script_debugger.paused { "paused" } else { "running" };
+                                ui.label(format!("Scripts {status}"));
                             } else {
                                 ui.label("Scripts disabled");
                             }
@@ -788,6 +846,162 @@ impl App {
                 lookup_open = false;
             }
             id_lookup_active = lookup_open;
+
+            if script_debugger.open {
+                let mut debugger_open = script_debugger.open;
+                egui::Window::new("Script Debugger")
+                    .open(&mut debugger_open)
+                    .resizable(true)
+                    .default_width(460.0)
+                    .min_height(360.0)
+                    .show(ctx, |ui| {
+                        if !script_debugger.available {
+                            ui.label("Script plugin unavailable.");
+                            return;
+                        }
+                        if let Some(path) = script_debugger.script_path.as_ref() {
+                            ui.label(format!("Path: {path}"));
+                        }
+                        let mut enabled = script_debugger.enabled;
+                        if ui.checkbox(&mut enabled, "Enable scripts").changed() {
+                            script_debugger.enabled = enabled;
+                            script_debugger_output.set_enabled = Some(enabled);
+                        }
+                        let mut paused = script_debugger.paused;
+                        if ui.checkbox(&mut paused, "Pause updates").changed() {
+                            script_debugger.paused = paused;
+                            script_debugger_output.set_paused = Some(paused);
+                        }
+                        ui.horizontal(|ui| {
+                            ui.add_enabled_ui(script_debugger.paused, |ui| {
+                                if ui.button("Step").clicked() {
+                                    script_debugger_output.step_once = true;
+                                }
+                            });
+                            if ui.button("Reload").clicked() {
+                                script_debugger_output.reload = true;
+                            }
+                            if ui.button("Clear Console").clicked() {
+                                script_debugger_output.clear_console = true;
+                                script_debugger.console_entries.clear();
+                            }
+                        });
+                        if let Some(err) = script_debugger.last_error.as_ref() {
+                            ui.colored_label(egui::Color32::RED, format!("Error: {err}"));
+                        }
+                        ui.separator();
+                        ui.label("Console");
+                        egui::ScrollArea::vertical().stick_to_bottom(true).max_height(220.0).show(ui, |ui| {
+                            if script_debugger.console_entries.is_empty() {
+                                ui.small("No console output yet.");
+                            } else {
+                                for entry in &script_debugger.console_entries {
+                                    let color = match entry.kind {
+                                        ScriptConsoleKind::Input => egui::Color32::from_rgb(130, 200, 255),
+                                        ScriptConsoleKind::Output => egui::Color32::LIGHT_GREEN,
+                                        ScriptConsoleKind::Error => egui::Color32::from_rgb(255, 120, 120),
+                                        ScriptConsoleKind::Log => egui::Color32::WHITE,
+                                    };
+                                    ui.colored_label(color, entry.text.as_str());
+                                }
+                            }
+                        });
+                        ui.separator();
+                        ui.label("REPL");
+                        let mut submitted = false;
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut script_debugger.repl_input)
+                                .desired_width(f32::INFINITY)
+                                .hint_text(
+                                    "world.spawn_sprite(\"atlas\", \"spark\", 0.0, 0.0, 1.0, 0.0, 0.0);",
+                                ),
+                        );
+                        if script_debugger.focus_repl {
+                            response.request_focus();
+                            script_debugger.focus_repl = false;
+                        }
+                        let mut history_used = false;
+                        let history_len = script_debugger.repl_history.len();
+                        if response.has_focus() && history_len > 0 {
+                            let (up, down) =
+                                ui.input(|i| (i.key_pressed(Key::ArrowUp), i.key_pressed(Key::ArrowDown)));
+                            let mut index = script_debugger.repl_history_index.unwrap_or(history_len);
+                            if up {
+                                if index == history_len {
+                                    index = history_len.saturating_sub(1);
+                                } else if index > 0 {
+                                    index -= 1;
+                                }
+                                if index < history_len {
+                                    script_debugger.repl_history_index = Some(index);
+                                    script_debugger.repl_input =
+                                        script_debugger.repl_history.get(index).cloned().unwrap_or_default();
+                                    script_debugger.focus_repl = true;
+                                    history_used = true;
+                                }
+                            } else if down {
+                                if index < history_len {
+                                    index += 1;
+                                    if index >= history_len {
+                                        script_debugger.repl_history_index = None;
+                                        script_debugger.repl_input.clear();
+                                    } else {
+                                        script_debugger.repl_history_index = Some(index);
+                                        script_debugger.repl_input = script_debugger
+                                            .repl_history
+                                            .get(index)
+                                            .cloned()
+                                            .unwrap_or_default();
+                                    }
+                                    script_debugger.focus_repl = true;
+                                    history_used = true;
+                                }
+                            }
+                        }
+                        if response.changed() && !history_used {
+                            script_debugger.repl_history_index = None;
+                        }
+                        if response.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                            submitted = true;
+                        }
+                        ui.horizontal(|ui| {
+                            if ui.button("Run").clicked() {
+                                submitted = true;
+                            }
+                            if ui.button("Clear Input").clicked() {
+                                script_debugger.repl_input.clear();
+                                script_debugger.repl_history_index = None;
+                                script_debugger.focus_repl = true;
+                            }
+                        });
+                        if submitted {
+                            let command = script_debugger.repl_input.trim().to_string();
+                            if !command.is_empty() {
+                                script_debugger_output.submit_command = Some(command);
+                                script_debugger.repl_input.clear();
+                                script_debugger.repl_history_index = None;
+                                script_debugger.focus_repl = true;
+                            }
+                        }
+                        ui.separator();
+                        ui.label("History");
+                        egui::ScrollArea::vertical().max_height(140.0).show(ui, |ui| {
+                            if script_debugger.repl_history.is_empty() {
+                                ui.small("No commands yet.");
+                            } else {
+                                for (idx, entry) in script_debugger.repl_history.iter().enumerate().rev() {
+                                    let selected = script_debugger.repl_history_index == Some(idx);
+                                    if ui.selectable_label(selected, entry).clicked() {
+                                        script_debugger.repl_input = entry.clone();
+                                        script_debugger.repl_history_index = Some(idx);
+                                        script_debugger.focus_repl = true;
+                                    }
+                                }
+                            }
+                        });
+                    });
+                script_debugger.open = debugger_open;
+            }
 
             let right_panel =
                 egui::SidePanel::right("kestrel_right_panel").default_width(360.0).show(ctx, |ui| {
@@ -2081,18 +2295,10 @@ impl App {
             }
         });
 
-        if let Some(enabled) = script_enable_request {
-            if let Some(plugin) = self.script_plugin_mut() {
-                plugin.set_enabled(enabled);
-            }
-        }
-        if script_reload_request {
-            if let Some(plugin) = self.script_plugin_mut() {
-                if let Err(err) = plugin.force_reload() {
-                    plugin.set_error_message(err.to_string());
-                }
-            }
-        }
+        script_debugger_output.open = script_debugger.open;
+        script_debugger_output.repl_input = script_debugger.repl_input.clone();
+        script_debugger_output.repl_history_index = script_debugger.repl_history_index;
+        script_debugger_output.focus_repl = script_debugger.focus_repl;
 
         EditorUiOutput {
             full_output,
@@ -2138,6 +2344,7 @@ impl App {
             debug_show_spatial_hash,
             debug_show_colliders,
             vsync_request: vsync_toggle_request,
+            script_debugger: script_debugger_output,
         }
     }
 }
