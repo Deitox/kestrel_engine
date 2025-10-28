@@ -304,6 +304,7 @@ pub(super) struct EditorUiParams {
     pub audio_triggers: Vec<String>,
     pub audio_enabled: bool,
     pub audio_health: AudioHealthSnapshot,
+    pub binary_prefabs_enabled: bool,
     pub prefab_entries: Vec<PrefabShelfEntry>,
     pub prefab_name_input: String,
     pub prefab_format: PrefabFormat,
@@ -428,6 +429,7 @@ impl App {
             spatial_metrics,
             mut id_lookup_input,
             mut id_lookup_active,
+            binary_prefabs_enabled,
             prefab_entries,
             mut prefab_name_input,
             mut prefab_format,
@@ -1587,11 +1589,22 @@ impl App {
                     ui.horizontal(|ui| {
                         ui.label("Format");
                         for format in [PrefabFormat::Json, PrefabFormat::Binary] {
-                            if ui.selectable_label(prefab_format == format, format.label()).clicked() {
+                            let enabled = format != PrefabFormat::Binary || binary_prefabs_enabled;
+                            let label = if enabled {
+                                format.label().to_string()
+                            } else {
+                                format!("{} (requires 'binary_scene')", format.label())
+                            };
+                            let button = egui::Button::new(label).selected(prefab_format == format);
+                            let response = ui.add_enabled(enabled, button);
+                            if enabled && response.clicked() {
                                 prefab_format = format;
                             }
                         }
                     });
+                    if !binary_prefabs_enabled {
+                        ui.small("Enable the 'binary_scene' Cargo feature to export binary prefabs.");
+                    }
                     let drop_result =
                         ui.dnd_drop_zone::<PrefabDragPayload, _>(egui::Frame::group(&ui.style()), |ui| {
                             ui.set_min_height(48.0);
@@ -1774,10 +1787,16 @@ impl App {
                         if let Some(payload) = DragAndDrop::take_payload::<PrefabSpawnPayload>(&self.egui_ctx)
                         {
                             let payload = (*payload).clone();
+                            let drop_position =
+                                if self.viewport_camera_mode == ViewportCameraMode::Ortho2D {
+                                    cursor_world_2d
+                                } else {
+                                    None
+                                };
                             actions.instantiate_prefab = Some(PrefabInstantiateRequest {
                                 name: payload.name,
                                 format: payload.format,
-                                drop_position: cursor_world_2d,
+                                drop_position,
                             });
                         }
                     }

@@ -49,6 +49,7 @@ const PLUGIN_MANIFEST_PATH: &str = "config/plugins.json";
 const INPUT_CONFIG_PATH: &str = "config/input.json";
 const SCRIPT_CONSOLE_CAPACITY: usize = 200;
 const SCRIPT_HISTORY_CAPACITY: usize = 64;
+const BINARY_PREFABS_ENABLED: bool = cfg!(feature = "binary_scene");
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ViewportCameraMode {
@@ -695,6 +696,13 @@ impl App {
             self.set_prefab_status(PrefabStatusKind::Warning, "Prefab name cannot be empty.");
             return;
         }
+        if request.format == PrefabFormat::Binary && !BINARY_PREFABS_ENABLED {
+            self.set_prefab_status(
+                PrefabStatusKind::Error,
+                "Binary prefab format requires building with the 'binary_scene' feature.",
+            );
+            return;
+        }
         if !self.ecs.entity_exists(request.entity) {
             self.set_prefab_status(PrefabStatusKind::Error, "Selected entity is no longer available.");
             return;
@@ -704,21 +712,30 @@ impl App {
             return;
         };
         let path = self.prefab_library.path_for(trimmed, request.format);
+        let existed = path.exists();
         let sanitized_name = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or(trimmed).to_string();
         match scene.save_to_path(&path) {
             Ok(()) => {
                 self.prefab_name_input = sanitized_name.clone();
                 if let Err(err) = self.prefab_library.refresh() {
-                    self.set_prefab_status(
-                        PrefabStatusKind::Warning,
-                        format!("Prefab '{}' saved but refresh failed: {err}", sanitized_name),
-                    );
-                } else {
-                    self.set_prefab_status(
-                        PrefabStatusKind::Success,
-                        format!("Saved prefab '{}' ({})", sanitized_name, request.format.short_label()),
-                    );
-                }
+                self.set_prefab_status(
+                    PrefabStatusKind::Warning,
+                    format!("Prefab '{}' saved but refresh failed: {err}", sanitized_name),
+                );
+            } else {
+                self.set_prefab_status(
+                    if existed { PrefabStatusKind::Info } else { PrefabStatusKind::Success },
+                    if existed {
+                        format!(
+                            "Overwrote prefab '{}' ({})",
+                            sanitized_name,
+                            request.format.short_label()
+                        )
+                    } else {
+                        format!("Saved prefab '{}' ({})", sanitized_name, request.format.short_label())
+                    },
+                );
+            }
             }
             Err(err) => {
                 self.set_prefab_status(PrefabStatusKind::Error, format!("Saving prefab failed: {err}"));
@@ -759,8 +776,10 @@ impl App {
         }
         scene = scene.with_fresh_entity_ids();
         if let Some(target) = request.drop_position {
-            let current: Vec2 = scene.entities.first().unwrap().transform.translation.clone().into();
-            scene.offset_entities_2d(target - current);
+            if self.viewport_camera_mode == ViewportCameraMode::Ortho2D {
+                let current: Vec2 = scene.entities.first().unwrap().transform.translation.clone().into();
+                scene.offset_entities_2d(target - current);
+            }
         }
         match self.ecs.instantiate_prefab_with_mesh(&scene, &mut self.assets, |key, path| {
             self.mesh_registry.ensure_mesh(key, path, &mut self.material_registry)
@@ -2026,6 +2045,9 @@ impl ApplicationHandler for App {
             } else {
                 Vec::new()
             };
+        if !BINARY_PREFABS_ENABLED && self.prefab_format == PrefabFormat::Binary {
+            self.prefab_format = PrefabFormat::Json;
+        }
         let prefab_entries: Vec<editor_ui::PrefabShelfEntry> = self
             .prefab_library
             .entries()
@@ -2106,6 +2128,7 @@ impl ApplicationHandler for App {
             audio_triggers,
             audio_enabled,
             audio_health,
+            binary_prefabs_enabled: BINARY_PREFABS_ENABLED,
             prefab_entries,
             prefab_name_input: self.prefab_name_input.clone(),
             prefab_format: self.prefab_format,
