@@ -2171,7 +2171,7 @@ impl ApplicationHandler for App {
         ui_time_ms += ui_build_start.elapsed().as_secs_f32() * 1000.0;
         let editor_ui::EditorUiOutput {
             full_output,
-            actions,
+            mut actions,
             pending_viewport,
             ui_scale,
             ui_cell_size,
@@ -2263,6 +2263,13 @@ impl ApplicationHandler for App {
         }
 
         self.selected_entity = selection.entity;
+        if self.input.take_delete_selection() {
+            if let Some(entity) = self.selected_entity {
+                if actions.delete_entity.is_none() {
+                    actions.delete_entity = Some(entity);
+                }
+            }
+        }
         self.apply_particle_caps();
 
         if let Some(request) = camera_bookmark_select {

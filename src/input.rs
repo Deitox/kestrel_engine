@@ -13,6 +13,7 @@ pub struct Input {
     space_pressed: bool,
     b_pressed: bool,
     mesh_toggle_pressed: bool,
+    delete_selection_pressed: bool,
     forward_held: bool,
     backward_held: bool,
     left_held: bool,
@@ -49,6 +50,7 @@ impl Input {
             space_pressed: false,
             b_pressed: false,
             mesh_toggle_pressed: false,
+            delete_selection_pressed: false,
             forward_held: false,
             backward_held: false,
             left_held: false,
@@ -108,6 +110,7 @@ impl Input {
         self.left_clicked = false;
         self.mesh_toggle_pressed = false;
         self.frustum_lock_toggle = false;
+        self.delete_selection_pressed = false;
     }
 
     pub fn consume_wheel_delta(&mut self) -> Option<f32> {
@@ -192,6 +195,12 @@ impl Input {
         pressed
     }
 
+    pub fn take_delete_selection(&mut self) -> bool {
+        let pressed = self.delete_selection_pressed;
+        self.delete_selection_pressed = false;
+        pressed
+    }
+
     fn apply_key_binding(&mut self, key: &Key, pressed: bool) {
         if let Some(binding_key) = InputKeyBinding::from_event_key(key) {
             let actions: Vec<_> = self.bindings.actions_for_key(&binding_key).collect();
@@ -216,6 +225,11 @@ impl Input {
             InputAction::MeshToggle => {
                 if pressed {
                     self.mesh_toggle_pressed = true;
+                }
+            }
+            InputAction::DeleteSelection => {
+                if pressed {
+                    self.delete_selection_pressed = true;
                 }
             }
             InputAction::FrustumLockToggle => {
@@ -294,6 +308,7 @@ impl InputBindings {
         map.insert(SpawnBurstSmall, vec![InputKeyBinding::named(NamedKeyCode::Space)]);
         map.insert(SpawnBurstLarge, vec![InputKeyBinding::character("b")]);
         map.insert(MeshToggle, vec![InputKeyBinding::character("m")]);
+        map.insert(DeleteSelection, vec![InputKeyBinding::named(NamedKeyCode::Delete)]);
         map.insert(FrustumLockToggle, vec![InputKeyBinding::character("l")]);
         map.insert(FreeflyForward, vec![InputKeyBinding::character("w")]);
         map.insert(FreeflyBackward, vec![InputKeyBinding::character("s")]);
@@ -379,6 +394,7 @@ enum NamedKeyCode {
     Space,
     Shift,
     Control,
+    Delete,
 }
 
 impl NamedKeyCode {
@@ -387,6 +403,7 @@ impl NamedKeyCode {
             NamedKey::Space => Some(Self::Space),
             NamedKey::Shift => Some(Self::Shift),
             NamedKey::Control => Some(Self::Control),
+            NamedKey::Delete => Some(Self::Delete),
             _ => None,
         }
     }
@@ -396,6 +413,7 @@ impl NamedKeyCode {
             "space" => Some(Self::Space),
             "shift" | "left_shift" | "right_shift" => Some(Self::Shift),
             "ctrl" | "control" | "left_ctrl" | "right_ctrl" => Some(Self::Control),
+            "delete" | "del" => Some(Self::Delete),
             _ => None,
         }
     }
@@ -406,6 +424,7 @@ enum InputAction {
     SpawnBurstSmall,
     SpawnBurstLarge,
     MeshToggle,
+    DeleteSelection,
     FrustumLockToggle,
     FreeflyForward,
     FreeflyBackward,
@@ -425,6 +444,7 @@ impl InputAction {
             "spawn_burst_small" => Some(Self::SpawnBurstSmall),
             "spawn_burst_large" => Some(Self::SpawnBurstLarge),
             "mesh_toggle" => Some(Self::MeshToggle),
+            "delete_selection" => Some(Self::DeleteSelection),
             "frustum_lock_toggle" => Some(Self::FrustumLockToggle),
             "freefly_forward" => Some(Self::FreeflyForward),
             "freefly_backward" => Some(Self::FreeflyBackward),
