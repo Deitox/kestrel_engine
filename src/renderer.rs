@@ -78,6 +78,219 @@ struct SpriteBindCacheEntry {
     bind_group: Arc<wgpu::BindGroup>,
 }
 
+#[derive(Debug, Clone)]
+pub struct GpuPassTiming {
+    pub label: &'static str,
+    pub duration_ms: f32,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+enum GpuTimestampLabel {
+    FrameStart,
+    ShadowStart,
+    ShadowEnd,
+    MeshStart,
+    MeshEnd,
+    SpriteStart,
+    SpriteEnd,
+    FrameEnd,
+    EguiStart,
+    EguiEnd,
+}
+
+#[derive(Copy, Clone, Debug)]
+struct GpuTimestampMark {
+    label: GpuTimestampLabel,
+    index: u32,
+}
+
+#[derive(Clone)]
+struct GpuTimer {
+    supported: bool,
+    timestamp_period: f32,
+    max_queries: u32,
+    query_set: Option<wgpu::QuerySet>,
+    query_buffer: Option<wgpu::Buffer>,
+    readback_buffer: Option<wgpu::Buffer>,
+    marks: Vec<GpuTimestampMark>,
+    pending_query_count: u32,
+    latest: Vec<GpuPassTiming>,
+    frame_active: bool,
+    next_query: u32,
+}
+
+impl Default for GpuTimer {
+    fn default() -> Self {
+        Self {
+            supported: false,
+            timestamp_period: 0.0,
+            max_queries: 32,
+            query_set: None,
+            query_buffer: None,
+            readback_buffer: None,
+            marks: Vec::new(),
+            pending_query_count: 0,
+            latest: Vec::new(),
+            frame_active: false,
+            next_query: 0,
+        }
+    }
+}
+
+impl GpuTimer {
+    fn configure(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, supported: bool) {
+        self.supported = supported;
+        if !supported {
+            self.timestamp_period = 0.0;
+            self.query_set = None;
+            self.query_buffer = None;
+            self.readback_buffer = None;
+            self.marks.clear();
+            self.pending_query_count = 0;
+            self.latest.clear();
+            self.frame_active = false;
+            self.next_query = 0;
+            return;
+        }
+        self.timestamp_period = queue.get_timestamp_period();
+        if self.query_set.is_none() {
+            self.query_set = Some(device.create_query_set(&wgpu::QuerySetDescriptor {
+                label: Some("gpu-timer"),
+                ty: wgpu::QueryType::Timestamp,
+                count: self.max_queries,
+            }));
+        }
+        if self.query_buffer.is_none() {
+            let size = self.max_queries as u64 * std::mem::size_of::<u64>() as u64;
+            self.query_buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("gpu-timer-buffer"),
+                size,
+                usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            }));
+            self.readback_buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("gpu-timer-readback"),
+                size,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+    }
+
+    fn begin_frame(&mut self) {
+        if !self.supported {
+            return;
+        }
+        self.next_query = 0;
+        self.marks.clear();
+        self.pending_query_count = 0;
+        self.frame_active = true;
+    }
+
+    fn write_timestamp(&mut self, encoder: &mut wgpu::CommandEncoder, label: GpuTimestampLabel) {
+        if !self.supported || !self.frame_active {
+            return;
+        }
+        if self.next_query >= self.max_queries {
+            return;
+        }
+        if let Some(query_set) = self.query_set.as_ref() {
+            encoder.write_timestamp(query_set, self.next_query);
+            self.marks.push(GpuTimestampMark { label, index: self.next_query });
+            self.next_query += 1;
+        }
+    }
+
+    fn finish_frame(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        if !self.supported || !self.frame_active {
+            return;
+        }
+        if self.next_query == 0 {
+            self.frame_active = false;
+            return;
+        }
+        if let (Some(query_set), Some(buffer)) = (self.query_set.as_ref(), self.query_buffer.as_ref()) {
+            encoder.resolve_query_set(query_set, 0..self.next_query, buffer, 0);
+            if let Some(readback) = self.readback_buffer.as_ref() {
+                let byte_len = self.next_query as u64 * std::mem::size_of::<u64>() as u64;
+                encoder.copy_buffer_to_buffer(buffer, 0, readback, 0, byte_len);
+            }
+            self.pending_query_count = self.next_query;
+        }
+        self.frame_active = false;
+    }
+
+    fn collect_results(&mut self, device: &wgpu::Device) {
+        if !self.supported || self.pending_query_count == 0 {
+            return;
+        }
+        let buffer = match self.readback_buffer.as_ref() {
+            Some(buffer) => buffer,
+            None => return,
+        };
+        let byte_len = self.pending_query_count as usize * std::mem::size_of::<u64>();
+        let slice = buffer.slice(0..byte_len as u64);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        match receiver.recv() {
+            Ok(Ok(())) => {}
+            _ => {
+                return;
+            }
+        }
+        let data = slice.get_mapped_range();
+        let mut timestamps: Vec<u64> = Vec::with_capacity(self.pending_query_count as usize);
+        for chunk in data.chunks_exact(std::mem::size_of::<u64>()) {
+            let mut bytes = [0u8; 8];
+            bytes.copy_from_slice(chunk);
+            timestamps.push(u64::from_le_bytes(bytes));
+        }
+        drop(data);
+        buffer.unmap();
+
+        let mut value_map: HashMap<GpuTimestampLabel, u64> = HashMap::new();
+        for mark in &self.marks {
+            if let Some(value) = timestamps.get(mark.index as usize) {
+                value_map.insert(mark.label, *value);
+            }
+        }
+
+        self.latest.clear();
+        let nanos_per_tick = self.timestamp_period as f64;
+        let mut push_pass = |label: &'static str, start: GpuTimestampLabel, end: GpuTimestampLabel| {
+            if let (Some(s), Some(e)) = (value_map.get(&start), value_map.get(&end)) {
+                if e > s {
+                    let duration_ms = ((*e - *s) as f64 * nanos_per_tick) / 1_000_000.0;
+                    self.latest.push(GpuPassTiming { label, duration_ms: duration_ms as f32 });
+                }
+            }
+        };
+
+        push_pass("Shadow pass", GpuTimestampLabel::ShadowStart, GpuTimestampLabel::ShadowEnd);
+        push_pass("Mesh pass", GpuTimestampLabel::MeshStart, GpuTimestampLabel::MeshEnd);
+        push_pass("Sprite pass", GpuTimestampLabel::SpriteStart, GpuTimestampLabel::SpriteEnd);
+        push_pass("Frame (pre-egui)", GpuTimestampLabel::FrameStart, GpuTimestampLabel::FrameEnd);
+        push_pass("Egui pass", GpuTimestampLabel::EguiStart, GpuTimestampLabel::EguiEnd);
+        if value_map.contains_key(&GpuTimestampLabel::EguiEnd) {
+            push_pass("Frame (with egui)", GpuTimestampLabel::FrameStart, GpuTimestampLabel::EguiEnd);
+        }
+
+        self.pending_query_count = 0;
+        self.marks.clear();
+    }
+
+    fn take_latest(&mut self) -> Vec<GpuPassTiming> {
+        if self.latest.is_empty() {
+            Vec::new()
+        } else {
+            std::mem::take(&mut self.latest)
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct GpuMesh {
     pub vertex_buffer: wgpu::Buffer,
@@ -246,6 +459,7 @@ pub struct Renderer {
 
     sprite_bind_cache: HashMap<String, SpriteBindCacheEntry>,
     present_modes: Vec<wgpu::PresentMode>,
+    gpu_timer: GpuTimer,
     #[cfg(test)]
     resize_invocations: usize,
     #[cfg(test)]
@@ -294,6 +508,7 @@ impl Renderer {
             environment_state: None,
             sprite_bind_cache: HashMap::new(),
             present_modes: Vec::new(),
+            gpu_timer: GpuTimer::default(),
             #[cfg(test)]
             resize_invocations: 0,
             #[cfg(test)]
@@ -424,12 +639,24 @@ impl Renderer {
             })
             .await
             .context("Failed to request WGPU adapter")?;
+        let adapter_features = adapter.features();
+        let supports_timestamp = adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY);
+        let supports_encoder_queries =
+            adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
+        let gpu_timing_supported = supports_timestamp && supports_encoder_queries;
+        let mut required_features = wgpu::Features::empty();
+        if supports_timestamp {
+            required_features |= wgpu::Features::TIMESTAMP_QUERY;
+        }
+        if supports_encoder_queries {
+            required_features |= wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+        }
         let mut required_limits =
             wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits());
         required_limits.max_bind_groups = required_limits.max_bind_groups.max(5);
         let device_desc = wgpu::DeviceDescriptor {
             label: Some("Device"),
-            required_features: wgpu::Features::empty(),
+            required_features,
             required_limits,
             experimental_features: wgpu::ExperimentalFeatures::default(),
             memory_hints: wgpu::MemoryHints::default(),
@@ -458,6 +685,9 @@ impl Renderer {
         self.surface = Some(surface);
         self.device = Some(device);
         self.queue = Some(queue);
+        if let (Some(device), Some(queue)) = (self.device.as_ref(), self.queue.as_ref()) {
+            self.gpu_timer.configure(device, queue, gpu_timing_supported);
+        }
         self.config = Some(config);
         self.depth_texture = Some(depth_texture);
         self.depth_view = Some(depth_view);
@@ -1649,6 +1879,8 @@ impl Renderer {
             format!("Frame Encoder (sprites={}, meshes={})", instances.len(), mesh_draws.len());
         let mut encoder = device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(encoder_label.as_str()) });
+        self.gpu_timer.begin_frame();
+        self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::FrameStart);
 
         let mut sprite_bind_groups: Vec<(Range<u32>, Arc<wgpu::BindGroup>)> = Vec::new();
         for batch in sprite_batches {
@@ -1664,13 +1896,18 @@ impl Renderer {
         let mut sprite_load_op = wgpu::LoadOp::Clear(clear_color);
         if let Some(camera) = mesh_camera {
             if !mesh_draws.is_empty() {
+                self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::ShadowStart);
                 self.prepare_shadow_map(&mut encoder, mesh_draws, camera)?;
+                self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::ShadowEnd);
+                self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::MeshStart);
                 self.encode_mesh_pass(&mut encoder, view, viewport, mesh_draws, camera, clear_color)?;
+                self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::MeshEnd);
                 sprite_load_op = wgpu::LoadOp::Load;
             }
         }
 
         {
+            self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::SpriteStart);
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Sprite Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1735,6 +1972,8 @@ impl Renderer {
                 }
             }
         }
+        self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::SpriteEnd);
+        self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::FrameEnd);
 
         if let Some(queue) = self.queue.as_ref() {
             queue.submit(std::iter::once(encoder.finish()));
@@ -1804,6 +2043,7 @@ impl Renderer {
 
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Egui Encoder") });
+        self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::EguiStart);
         let mut extra_cmd = painter.update_buffers(device, queue, &mut encoder, paint_jobs, screen);
 
         {
@@ -1824,11 +2064,21 @@ impl Renderer {
             };
             painter.render(pass, paint_jobs, screen);
         }
-
+        self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::EguiEnd);
+        self.gpu_timer.finish_frame(&mut encoder);
         extra_cmd.push(encoder.finish());
         queue.submit(extra_cmd.into_iter());
+        self.gpu_timer.collect_results(device);
         frame.present();
         Ok(())
+    }
+
+    pub fn gpu_timing_supported(&self) -> bool {
+        self.gpu_timer.supported
+    }
+
+    pub fn take_gpu_timings(&mut self) -> Vec<GpuPassTiming> {
+        self.gpu_timer.take_latest()
     }
 }
 
@@ -1950,12 +2200,24 @@ impl Renderer {
             })
             .await
             .context("Failed to request headless adapter")?;
+        let adapter_features = adapter.features();
+        let supports_timestamp = adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY);
+        let supports_encoder_queries =
+            adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
+        let gpu_timing_supported = supports_timestamp && supports_encoder_queries;
+        let mut required_features = wgpu::Features::empty();
+        if supports_timestamp {
+            required_features |= wgpu::Features::TIMESTAMP_QUERY;
+        }
+        if supports_encoder_queries {
+            required_features |= wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+        }
         let mut required_limits =
             wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits());
         required_limits.max_bind_groups = required_limits.max_bind_groups.max(5);
         let device_desc = wgpu::DeviceDescriptor {
             label: Some("Headless Device"),
-            required_features: wgpu::Features::empty(),
+            required_features,
             required_limits,
             experimental_features: wgpu::ExperimentalFeatures::default(),
             memory_hints: wgpu::MemoryHints::default(),
@@ -1965,6 +2227,9 @@ impl Renderer {
             adapter.request_device(&device_desc).await.context("Failed to request headless device")?;
         self.device = Some(device);
         self.queue = Some(queue);
+        if let (Some(device), Some(queue)) = (self.device.as_ref(), self.queue.as_ref()) {
+            self.gpu_timer.configure(device, queue, gpu_timing_supported);
+        }
         if self.config.is_none() {
             self.config = Some(wgpu::SurfaceConfiguration {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,

@@ -1289,11 +1289,7 @@ impl EcsWorld {
         Some(scene)
     }
 
-    pub fn instantiate_prefab(
-        &mut self,
-        scene: &Scene,
-        assets: &AssetManager,
-    ) -> Result<Vec<Entity>> {
+    pub fn instantiate_prefab(&mut self, scene: &Scene, assets: &AssetManager) -> Result<Vec<Entity>> {
         self.instantiate_scene_entities(scene, assets)
     }
 
@@ -1329,11 +1325,7 @@ impl EcsWorld {
         })
     }
 
-    fn instantiate_scene_entities(
-        &mut self,
-        scene: &Scene,
-        assets: &AssetManager,
-    ) -> Result<Vec<Entity>> {
+    fn instantiate_scene_entities(&mut self, scene: &Scene, assets: &AssetManager) -> Result<Vec<Entity>> {
         if scene.entities.is_empty() {
             return Ok(Vec::new());
         }

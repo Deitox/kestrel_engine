@@ -4,18 +4,16 @@ use super::{
 };
 use crate::audio::{AudioHealthSnapshot, AudioPlugin};
 use crate::camera3d::Camera3D;
-use crate::ecs::{
-    EntityInfo, ParticleBudgetMetrics, SpatialMetrics, SpatialMode, SystemTimingSummary,
-};
+use crate::ecs::{EntityInfo, ParticleBudgetMetrics, SpatialMetrics, SpatialMode, SystemTimingSummary};
 use crate::events::GameEvent;
 use crate::gizmo::{
     Axis2, GizmoInteraction, GizmoMode, ScaleHandleKind, GIZMO_ROTATE_INNER_RADIUS_PX,
     GIZMO_ROTATE_OUTER_RADIUS_PX, GIZMO_SCALE_AXIS_LENGTH_PX, GIZMO_SCALE_AXIS_THICKNESS_PX,
     GIZMO_SCALE_HANDLE_SIZE_PX, GIZMO_SCALE_INNER_RADIUS_PX, GIZMO_SCALE_OUTER_RADIUS_PX,
 };
-use crate::prefab::{PrefabFormat, PrefabStatusKind, PrefabStatusMessage};
 use crate::mesh_preview::{GIZMO_3D_AXIS_LENGTH_SCALE, GIZMO_3D_AXIS_MAX, GIZMO_3D_AXIS_MIN};
 use crate::plugins::PluginState;
+use crate::prefab::{PrefabFormat, PrefabStatusKind, PrefabStatusMessage};
 
 use bevy_ecs::prelude::Entity;
 use egui::{DragAndDrop, Key};
@@ -466,6 +464,7 @@ impl App {
         let mut actions = UiActions::default();
         let mut viewport_mode_request: Option<ViewportCameraMode> = None;
         let mut mesh_control_request: Option<MeshControlMode> = None;
+        let mut gpu_export_requested = false;
         let persistent_materials: HashSet<String> = self
             .mesh_preview_plugin()
             .map(|plugin| plugin.persistent_materials().iter().cloned().collect())
@@ -1002,13 +1001,13 @@ impl App {
                                 }
                             }
                         });
-                });
-            script_debugger.open = debugger_open;
-        }
+                    });
+                script_debugger.open = debugger_open;
+            }
 
-        let right_panel =
-            egui::SidePanel::right("kestrel_right_panel").default_width(360.0).show(ctx, |ui| {
-                ui.heading("3D Preview");
+            let right_panel =
+                egui::SidePanel::right("kestrel_right_panel").default_width(360.0).show(ctx, |ui| {
+                    ui.heading("3D Preview");
                     egui::ComboBox::from_label("Mesh asset").selected_text(&preview_mesh_key).show_ui(
                         ui,
                         |ui| {
@@ -1534,6 +1533,41 @@ impl App {
                     }
 
                     ui.separator();
+                    ui.heading("GPU Timings");
+                    if !self.renderer.gpu_timing_supported() {
+                        ui.small("Device does not support GPU timestamp queries.");
+                    } else if self.gpu_timing_history.is_empty() {
+                        ui.small("No GPU timing samples captured yet.");
+                    } else {
+                        let mut averages: BTreeMap<&'static str, (f32, u32)> = BTreeMap::new();
+                        for frame in &self.gpu_timing_history {
+                            for timing in &frame.timings {
+                                let entry = averages.entry(timing.label).or_insert((0.0, 0));
+                                entry.0 += timing.duration_ms;
+                                entry.1 += 1;
+                            }
+                        }
+                        if !self.gpu_timings.is_empty() {
+                            for timing in &self.gpu_timings {
+                                let average = averages
+                                    .get(&timing.label)
+                                    .map(|(sum, count)| sum / (*count as f32))
+                                    .unwrap_or(timing.duration_ms);
+                                ui.label(format!(
+                                    "{:<20} {:>6.2} ms (avg {:>6.2} ms)",
+                                    timing.label, timing.duration_ms, average
+                                ));
+                            }
+                        }
+                        if ui.button("Export GPU CSV").clicked() {
+                            gpu_export_requested = true;
+                        }
+                        if let Some(status) = self.gpu_metrics_status.as_ref() {
+                            ui.small(status.as_str());
+                        }
+                    }
+
+                    ui.separator();
                     ui.heading("Prefab Shelf");
                     if let Some(status) = prefab_status.as_ref() {
                         let color = match status.kind {
@@ -1547,8 +1581,7 @@ impl App {
                     ui.horizontal(|ui| {
                         ui.label("Name");
                         ui.add(
-                            egui::TextEdit::singleline(&mut prefab_name_input)
-                                .hint_text("e.g. crate_small"),
+                            egui::TextEdit::singleline(&mut prefab_name_input).hint_text("e.g. crate_small"),
                         );
                     });
                     ui.horizontal(|ui| {
@@ -1559,17 +1592,15 @@ impl App {
                             }
                         }
                     });
-                    let drop_result = ui.dnd_drop_zone::<PrefabDragPayload, _>(
-                        egui::Frame::group(&ui.style()),
-                        |ui| {
+                    let drop_result =
+                        ui.dnd_drop_zone::<PrefabDragPayload, _>(egui::Frame::group(&ui.style()), |ui| {
                             ui.set_min_height(48.0);
                             if selected_entity.is_some() {
                                 ui.label("Drag the selected entity here to save it as a prefab.");
                             } else {
                                 ui.label("Select an entity, then drag it here to save a prefab.");
                             }
-                        },
-                    );
+                        });
                     let dropped_prefab = drop_result.1;
                     if let Some(payload) = dropped_prefab {
                         let payload = (*payload).clone();
@@ -1578,22 +1609,25 @@ impl App {
                             prefab_name = format!("prefab_{}", payload.entity.index());
                             prefab_name_input = prefab_name.clone();
                         }
-                        actions.save_prefab =
-                            Some(PrefabSaveRequest { entity: payload.entity, name: prefab_name, format: prefab_format });
+                        actions.save_prefab = Some(PrefabSaveRequest {
+                            entity: payload.entity,
+                            name: prefab_name,
+                            format: prefab_format,
+                        });
                     }
                     egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
                         if prefab_entries.is_empty() {
                             ui.small("No prefabs saved yet.");
                         } else {
                             for entry in &prefab_entries {
-                                let entry_label =
-                                    format!("{} ({})", entry.name, entry.format.short_label());
-                                let payload = PrefabSpawnPayload {
-                                    name: entry.name.clone(),
-                                    format: entry.format,
-                                };
-                                let drag_id =
-                                    egui::Id::new(("prefab_shelf_entry", entry.name.as_str(), entry.format.short_label()));
+                                let entry_label = format!("{} ({})", entry.name, entry.format.short_label());
+                                let payload =
+                                    PrefabSpawnPayload { name: entry.name.clone(), format: entry.format };
+                                let drag_id = egui::Id::new((
+                                    "prefab_shelf_entry",
+                                    entry.name.as_str(),
+                                    entry.format.short_label(),
+                                ));
                                 ui.dnd_drag_source(drag_id, payload.clone(), |ui| {
                                     ui.label(&entry_label);
                                     ui.weak(entry.path_display.as_str());
@@ -1737,7 +1771,8 @@ impl App {
             if self.egui_ctx.input(|i| i.pointer.any_released()) {
                 if let Some(pointer_pos) = self.egui_ctx.pointer_interact_pos() {
                     if viewport_rect_points.contains(pointer_pos) {
-                        if let Some(payload) = DragAndDrop::take_payload::<PrefabSpawnPayload>(&self.egui_ctx) {
+                        if let Some(payload) = DragAndDrop::take_payload::<PrefabSpawnPayload>(&self.egui_ctx)
+                        {
                             let payload = (*payload).clone();
                             actions.instantiate_prefab = Some(PrefabInstantiateRequest {
                                 name: payload.name,
@@ -2069,6 +2104,17 @@ impl App {
         script_debugger_output.repl_history_index = script_debugger.repl_history_index;
         script_debugger_output.focus_repl = script_debugger.focus_repl;
 
+        if gpu_export_requested {
+            match self.export_gpu_timings_csv("target/gpu_timings.csv") {
+                Ok(path) => {
+                    self.gpu_metrics_status = Some(format!("GPU timings exported to {}", path.display()));
+                }
+                Err(err) => {
+                    self.gpu_metrics_status = Some(format!("GPU timing export failed: {err}"));
+                }
+            }
+        }
+
         EditorUiOutput {
             full_output,
             actions,
@@ -2180,4 +2226,3 @@ mod tests {
         );
     }
 }
-

@@ -2,11 +2,11 @@ use crate::assets::AssetManager;
 #[cfg(feature = "binary_scene")]
 use anyhow::anyhow;
 use anyhow::{bail, Context, Result};
+use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
-use glam::{Vec2, Vec3};
 use uuid::Uuid;
 
 const BINARY_SCENE_MAGIC: [u8; 4] = *b"KSCN";

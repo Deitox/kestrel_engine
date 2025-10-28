@@ -113,20 +113,13 @@ impl PrefabLibrary {
             let Some(name) = path.file_stem().and_then(|stem| stem.to_str()) else {
                 continue;
             };
-            let descriptor = PrefabDescriptor {
-                name: name.to_string(),
-                format,
-                path: path.clone(),
-            };
+            let descriptor = PrefabDescriptor { name: name.to_string(), format, path: path.clone() };
             let key = format!("{}::{}", name.to_lowercase(), format.short_label());
             grouped.insert(key, descriptor);
         }
         self.entries = grouped.into_values().collect();
         self.entries.sort_by(|a, b| {
-            a.name
-                .to_lowercase()
-                .cmp(&b.name.to_lowercase())
-                .then_with(|| a.format.cmp(&b.format))
+            a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| a.format.cmp(&b.format))
         });
         Ok(())
     }
@@ -138,13 +131,7 @@ impl PrefabLibrary {
         }
         let sanitized = file_name
             .chars()
-            .map(|ch| {
-                if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
-                    ch
-                } else {
-                    '_'
-                }
-            })
+            .map(|ch| if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' { ch } else { '_' })
             .collect::<String>();
         self.root.join(format!("{sanitized}.{}", format.extension()))
     }

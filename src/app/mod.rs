@@ -14,7 +14,7 @@ use crate::mesh_preview::{MeshControlMode, MeshPreviewPlugin};
 use crate::mesh_registry::MeshRegistry;
 use crate::plugins::{FeatureRegistryHandle, PluginContext, PluginManager};
 use crate::prefab::{PrefabFormat, PrefabLibrary, PrefabStatusKind, PrefabStatusMessage};
-use crate::renderer::{MeshDraw, RenderViewport, Renderer, SpriteBatch};
+use crate::renderer::{GpuPassTiming, MeshDraw, RenderViewport, Renderer, SpriteBatch};
 use crate::scene::{
     EnvironmentDependency, Scene, SceneCamera2D, SceneCameraBookmark, SceneDependencies, SceneEntityId,
     SceneEnvironment, SceneLightingData, SceneMetadata, SceneShadowData, SceneViewportMode, Vec2Data,
@@ -29,6 +29,8 @@ use glam::{Mat4, Vec2, Vec3, Vec4};
 
 use anyhow::{anyhow, Context, Result};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::fs;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
@@ -179,6 +181,12 @@ impl FrameProfiler {
         self.history.iter().copied().collect()
     }
 }
+
+#[derive(Clone)]
+struct GpuTimingFrame {
+    frame_index: u64,
+    timings: Vec<GpuPassTiming>,
+}
 pub async fn run() -> Result<()> {
     run_with_overrides(AppConfigOverrides::default()).await
 }
@@ -297,6 +305,11 @@ pub struct App {
     id_lookup_input: String,
     id_lookup_active: bool,
     frame_profiler: FrameProfiler,
+    gpu_timings: Vec<GpuPassTiming>,
+    gpu_timing_history: VecDeque<GpuTimingFrame>,
+    gpu_timing_history_capacity: usize,
+    gpu_frame_counter: u64,
+    gpu_metrics_status: Option<String>,
 
     // Particles
     emitter_entity: Option<Entity>,
@@ -653,6 +666,11 @@ impl App {
             emitter_entity: Some(emitter),
             sprite_atlas_views: HashMap::new(),
             frame_profiler: FrameProfiler::new(240),
+            gpu_timings: Vec::new(),
+            gpu_timing_history: VecDeque::with_capacity(240),
+            gpu_timing_history_capacity: 240,
+            gpu_frame_counter: 0,
+            gpu_metrics_status: None,
         };
         app.apply_particle_caps();
         app.report_audio_startup_status();
@@ -686,30 +704,19 @@ impl App {
             return;
         };
         let path = self.prefab_library.path_for(trimmed, request.format);
-        let sanitized_name = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or(trimmed)
-            .to_string();
+        let sanitized_name = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or(trimmed).to_string();
         match scene.save_to_path(&path) {
             Ok(()) => {
                 self.prefab_name_input = sanitized_name.clone();
                 if let Err(err) = self.prefab_library.refresh() {
                     self.set_prefab_status(
                         PrefabStatusKind::Warning,
-                        format!(
-                            "Prefab '{}' saved but refresh failed: {err}",
-                            sanitized_name
-                        ),
+                        format!("Prefab '{}' saved but refresh failed: {err}", sanitized_name),
                     );
                 } else {
                     self.set_prefab_status(
                         PrefabStatusKind::Success,
-                        format!(
-                            "Saved prefab '{}' ({})",
-                            sanitized_name,
-                            request.format.short_label()
-                        ),
+                        format!("Saved prefab '{}' ({})", sanitized_name, request.format.short_label()),
                     );
                 }
             }
@@ -729,11 +736,7 @@ impl App {
         let Some(path) = entry_path else {
             self.set_prefab_status(
                 PrefabStatusKind::Error,
-                format!(
-                    "Prefab '{}' ({}) not found.",
-                    request.name,
-                    request.format.short_label()
-                ),
+                format!("Prefab '{}' ({}) not found.", request.name, request.format.short_label()),
             );
             return;
         };
@@ -759,11 +762,9 @@ impl App {
             let current: Vec2 = scene.entities.first().unwrap().transform.translation.clone().into();
             scene.offset_entities_2d(target - current);
         }
-        match self.ecs.instantiate_prefab_with_mesh(
-            &scene,
-            &mut self.assets,
-            |key, path| self.mesh_registry.ensure_mesh(key, path, &mut self.material_registry),
-        ) {
+        match self.ecs.instantiate_prefab_with_mesh(&scene, &mut self.assets, |key, path| {
+            self.mesh_registry.ensure_mesh(key, path, &mut self.material_registry)
+        }) {
             Ok(spawned) => {
                 if let Some(&root) = spawned.first() {
                     self.selected_entity = Some(root);
@@ -771,20 +772,35 @@ impl App {
                 self.gizmo_interaction = None;
                 self.set_prefab_status(
                     PrefabStatusKind::Success,
-                    format!(
-                        "Instantiated prefab '{}' ({})",
-                        request.name,
-                        request.format.short_label()
-                    ),
+                    format!("Instantiated prefab '{}' ({})", request.name, request.format.short_label()),
                 );
             }
             Err(err) => {
-                self.set_prefab_status(
-                    PrefabStatusKind::Error,
-                    format!("Prefab instantiate failed: {err}"),
-                );
+                self.set_prefab_status(PrefabStatusKind::Error, format!("Prefab instantiate failed: {err}"));
             }
         }
+    }
+
+    fn export_gpu_timings_csv<P: AsRef<std::path::Path>>(&self, path: P) -> Result<PathBuf> {
+        if self.gpu_timing_history.is_empty() {
+            return Err(anyhow!("No GPU timing samples available to export."));
+        }
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("Creating GPU timing export directory {}", parent.display()))?;
+            }
+        }
+        let mut rows = String::from("frame,label,duration_ms\n");
+        for frame in &self.gpu_timing_history {
+            for timing in &frame.timings {
+                rows.push_str(&format!("{},{},{:.4}\n", frame.frame_index, timing.label, timing.duration_ms));
+            }
+        }
+        fs::write(path, rows.as_bytes())
+            .with_context(|| format!("Writing GPU timing export {}", path.display()))?;
+        Ok(path.to_path_buf())
     }
 
     fn report_audio_startup_status(&mut self) {
@@ -2556,8 +2572,28 @@ impl ApplicationHandler for App {
             for id in &textures_delta.free {
                 ren.free_texture(id);
             }
+            let timings = self.renderer.take_gpu_timings();
+            if !timings.is_empty() {
+                self.gpu_frame_counter = self.gpu_frame_counter.saturating_add(1);
+                self.gpu_timings = timings.clone();
+                self.gpu_timing_history
+                    .push_back(GpuTimingFrame { frame_index: self.gpu_frame_counter, timings });
+                while self.gpu_timing_history.len() > self.gpu_timing_history_capacity {
+                    self.gpu_timing_history.pop_front();
+                }
+            }
         } else {
             frame.present();
+            let timings = self.renderer.take_gpu_timings();
+            if !timings.is_empty() {
+                self.gpu_frame_counter = self.gpu_frame_counter.saturating_add(1);
+                self.gpu_timings = timings.clone();
+                self.gpu_timing_history
+                    .push_back(GpuTimingFrame { frame_index: self.gpu_frame_counter, timings });
+                while self.gpu_timing_history.len() > self.gpu_timing_history_capacity {
+                    self.gpu_timing_history.pop_front();
+                }
+            }
         }
 
         if let Some(enabled) = vsync_request {

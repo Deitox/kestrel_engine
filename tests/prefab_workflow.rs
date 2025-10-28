@@ -1,7 +1,7 @@
+use glam::Vec2;
 use kestrel_engine::assets::AssetManager;
 use kestrel_engine::ecs::{EcsWorld, Transform, WorldTransform};
 use kestrel_engine::scene::Scene;
-use glam::Vec2;
 
 #[test]
 fn prefab_export_and_instantiate_roundtrip() {

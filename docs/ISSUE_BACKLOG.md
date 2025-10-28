@@ -58,8 +58,8 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
 
 16. **[M12] Advanced shadow mapping & light culling**
     - *Acceptance:* Introduce cascaded or clustered shadows plus light culling for 3D meshes, with performance counters exposed in analytics.
-17. **[M12] GPU performance baselines**
-    - *Acceptance:* Capture GPU timing queries per pass and surface them in the profiler UI with CSV export for CI trend tracking.
+17. **[M12] GPU performance baselines** - *Completed via timestamp query instrumentation + profiler export.*
+    - *Highlights:* The renderer now wraps render passes with timestamp queries and resolves per-pass GPU durations (`src/renderer.rs:108`, `src/renderer.rs:1869`), the app records recent GPU timing history and provides a CSV exporter (`src/app/mod.rs:308`, `src/app/mod.rs:784`), and the stats panel surfaces latest/average GPU timings with an export control (`src/app/editor_ui.rs:1536`).
 18. **[M13] Plugin sandbox for untrusted modules**
     - *Acceptance:* Design an opt-in sandbox (capabilities/IPC or WASM) so dynamic plugins run without direct memory access; include a compatibility matrix and contract tests.
 19. **[M9] Positional audio & falloff curves**
