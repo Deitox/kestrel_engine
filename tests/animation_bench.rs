@@ -4,7 +4,8 @@
 //! `cargo test -- --ignored animation_bench_run`.
 
 use kestrel_engine::ecs::{
-    EcsWorld, Sprite, SpriteAnimation, SpriteAnimationFrame, Transform, WorldTransform,
+    EcsWorld, Sprite, SpriteAnimation, SpriteAnimationFrame, SpriteAnimationLoopMode, Transform,
+    WorldTransform,
 };
 use std::borrow::Cow;
 use std::fs::{create_dir_all, File};
@@ -59,9 +60,9 @@ fn run_bench_case(animator_count: usize, steps: u32, dt: f32) -> BenchResult {
 
 fn seed_sprite_animators(world: &mut EcsWorld, count: usize) {
     let frames = vec![
-        SpriteAnimationFrame { region: "frame_a".to_string(), duration: 0.08 },
-        SpriteAnimationFrame { region: "frame_b".to_string(), duration: 0.08 },
-        SpriteAnimationFrame { region: "frame_c".to_string(), duration: 0.08 },
+        SpriteAnimationFrame { region: "frame_a".to_string(), duration: 0.08, events: Vec::new() },
+        SpriteAnimationFrame { region: "frame_b".to_string(), duration: 0.08, events: Vec::new() },
+        SpriteAnimationFrame { region: "frame_c".to_string(), duration: 0.08, events: Vec::new() },
     ];
 
     for _ in 0..count {
@@ -69,7 +70,12 @@ fn seed_sprite_animators(world: &mut EcsWorld, count: usize) {
             Transform::default(),
             WorldTransform::default(),
             Sprite { atlas_key: Cow::Borrowed("bench"), region: Cow::Borrowed("frame_a") },
-            SpriteAnimation::new("bench_cycle".to_string(), frames.clone(), true),
+            SpriteAnimation::new(
+                "bench_cycle".to_string(),
+                frames.clone(),
+                true,
+                SpriteAnimationLoopMode::Loop,
+            ),
         ));
     }
 }

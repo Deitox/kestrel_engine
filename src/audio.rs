@@ -119,6 +119,7 @@ impl AudioManager {
             GameEvent::CollisionStarted { .. } => String::from("collision"),
             GameEvent::CollisionEnded { .. } => String::from("collision_end"),
             GameEvent::CollisionForce { force, .. } => format!("collision_force:{force:.3}"),
+            GameEvent::SpriteAnimationEvent { .. } => return,
             GameEvent::ScriptMessage { .. } => return,
         };
         self.push_trigger(label.clone());

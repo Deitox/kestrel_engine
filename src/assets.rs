@@ -1,3 +1,4 @@
+use crate::ecs::SpriteAnimationLoopMode;
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -26,6 +27,7 @@ pub struct TextureAtlas {
 pub struct SpriteTimeline {
     pub name: String,
     pub looped: bool,
+    pub loop_mode: String,
     pub frames: Vec<SpriteTimelineFrame>,
 }
 
@@ -33,6 +35,7 @@ pub struct SpriteTimeline {
 pub struct SpriteTimelineFrame {
     pub region: String,
     pub duration: f32,
+    pub events: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -58,6 +61,10 @@ struct AtlasTimelineFile {
     frames: Vec<AtlasTimelineFrameFile>,
     #[serde(default = "default_timeline_loop")]
     looped: bool,
+    #[serde(default)]
+    loop_mode: Option<String>,
+    #[serde(default)]
+    events: Vec<AtlasTimelineEventFile>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -65,6 +72,12 @@ struct AtlasTimelineFrameFile {
     region: String,
     #[serde(default = "default_frame_duration_ms")]
     duration_ms: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct AtlasTimelineEventFile {
+    frame: usize,
+    name: String,
 }
 
 const fn default_timeline_loop() -> bool {
@@ -131,9 +144,13 @@ impl AssetManager {
         raw: HashMap<String, AtlasTimelineFile>,
     ) -> HashMap<String, SpriteTimeline> {
         let mut animations = HashMap::new();
-        for (timeline_name, data) in raw {
+        for (timeline_name, mut data) in raw {
             let mut frames = Vec::new();
-            for frame in data.frames {
+            let mut event_map: HashMap<usize, Vec<String>> = HashMap::new();
+            for event in data.events.drain(..) {
+                event_map.entry(event.frame).or_default().push(event.name);
+            }
+            for (frame_index, frame) in data.frames.into_iter().enumerate() {
                 if !regions.contains_key(&frame.region) {
                     eprintln!(
                         "[assets] atlas '{atlas_key}': timeline '{timeline_name}' references unknown region '{}', skipping frame.",
@@ -142,7 +159,8 @@ impl AssetManager {
                     continue;
                 }
                 let duration = (frame.duration_ms.max(1) as f32) / 1000.0;
-                frames.push(SpriteTimelineFrame { region: frame.region, duration });
+                let events = event_map.remove(&frame_index).unwrap_or_default();
+                frames.push(SpriteTimelineFrame { region: frame.region, duration, events });
             }
             if frames.is_empty() {
                 eprintln!(
@@ -150,9 +168,25 @@ impl AssetManager {
                 );
                 continue;
             }
+            let mode_str = data.loop_mode.clone().unwrap_or_else(|| {
+                if data.looped {
+                    "loop".to_string()
+                } else {
+                    "once_stop".to_string()
+                }
+            });
+            let mode_enum = SpriteAnimationLoopMode::from_str(&mode_str);
+            let normalized_mode = mode_enum.as_str().to_string();
+            let looped = mode_enum.looped();
+            for (frame, names) in event_map {
+                eprintln!(
+                    "[assets] atlas '{atlas_key}': timeline '{timeline_name}' has events {:?} referencing missing frame index {}.",
+                    names, frame
+                );
+            }
             animations.insert(
                 timeline_name.clone(),
-                SpriteTimeline { name: timeline_name, looped: data.looped, frames },
+                SpriteTimeline { name: timeline_name, looped, loop_mode: normalized_mode, frames },
             );
         }
         animations

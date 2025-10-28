@@ -11,6 +11,7 @@
   - Converts the Aseprite JSON into an atlas definition containing `regions` and `animations` compatible with `assets/images/atlas.json`.
   - Use `--atlas-key` to override the default atlas identifier (`main`) when targeting alternative atlases.
   - Use loop-mode flags to map Aseprite tag directions to engine loop semantics (e.g., `--default-loop-mode once_hold` for UI bursts, `--reverse-loop-mode once_stop` for exit animations).
+  - Attach per-frame events with `--events-file events.json`, where the JSON maps timeline names to `{ "frame": <0-based index>, "name": "event" }` entries; these emit `SpriteAnimationEvent` records when frames become active.
 - **Hot-reload verification:** place the generated JSON alongside project content, launch the editor, and modify the source file—look for `Hot reloaded atlas '<key>'` in the console while entities keep their current frame.
 - **Troubleshooting:**
   - Duplicate frame names surface descriptive errors; rename frames in Aseprite or adjust export settings.

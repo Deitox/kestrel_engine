@@ -13,6 +13,7 @@
 - Scene toolbar upgrades - Quick path history, dependency health readouts, and one-click retain buttons make Save/Load workflows safer.
 - Scene I/O guardrails - Mesh-aware helpers (save_scene_to_path_with_mesh_source, load_scene_with_mesh) ensure custom assets keep their source paths and metadata during save/load workflows.
 - Particle telemetry - The Stats panel now surfaces particle budget metrics (active count, spawn budget, emitter backlog) so runaway emitters are obvious without diving into the ECS.
+- Animation workflow polish - Sprite timelines now support explicit loop modes (loop, ping-pong, once-hold, once-stop) plus per-frame events that surface through the `GameEvent` bus. A command-line Aseprite importer (`cargo run --bin aseprite_to_atlas`) converts authoring exports into engine-ready atlases, complete with optional loop overrides and timeline event metadata, and hot-reload keeps running scenes in sync with file edits.
 
 ## Core Systems
 - Physics - Rapier2D simulates rigid bodies. ECS components (Transform, Velocity, RapierBody, RapierCollider) mirror state back into the world every fixed step.
@@ -71,4 +72,5 @@ cargo run
 - docs/DECISIONS.md - crate and technology choices (e.g., winit, wgpu, gltf, Rapier).
 - docs/CODE_STYLE.md - formatting, linting, and error-handling guidelines.
 - docs/PLUGINS.md - dynamic plugin manifest format, feature registry rules, and an example cdylib plugin.
+- docs/animation_workflows.md - sprite timeline authoring, Aseprite importer usage, loop-mode tuning, and hot-reload troubleshooting tips.
 

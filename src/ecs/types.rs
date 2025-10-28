@@ -52,12 +52,35 @@ pub struct SpriteAnimation {
     pub elapsed_in_frame: f32,
     pub playing: bool,
     pub looped: bool,
+    pub mode: SpriteAnimationLoopMode,
+    pub forward: bool,
     pub speed: f32,
 }
 
 impl SpriteAnimation {
-    pub fn new(timeline: String, frames: Vec<SpriteAnimationFrame>, looped: bool) -> Self {
-        Self { timeline, frames, frame_index: 0, elapsed_in_frame: 0.0, playing: true, looped, speed: 1.0 }
+    pub fn new(
+        timeline: String,
+        frames: Vec<SpriteAnimationFrame>,
+        looped: bool,
+        mode: SpriteAnimationLoopMode,
+    ) -> Self {
+        Self {
+            timeline,
+            frames,
+            frame_index: 0,
+            elapsed_in_frame: 0.0,
+            playing: true,
+            looped,
+            forward: true,
+            speed: 1.0,
+            mode,
+        }
+    }
+
+    pub fn set_mode(&mut self, mode: SpriteAnimationLoopMode) {
+        self.mode = mode;
+        self.looped = mode.looped();
+        self.forward = true;
     }
 
     pub fn current_region_name(&self) -> Option<&str> {
@@ -73,6 +96,39 @@ impl SpriteAnimation {
 pub struct SpriteAnimationFrame {
     pub region: String,
     pub duration: f32,
+    pub events: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpriteAnimationLoopMode {
+    Loop,
+    OnceHold,
+    OnceStop,
+    PingPong,
+}
+
+impl SpriteAnimationLoopMode {
+    pub fn from_str(value: &str) -> Self {
+        match value.to_ascii_lowercase().as_str() {
+            "once_hold" | "oncehold" => Self::OnceHold,
+            "once_stop" | "oncestop" | "once" => Self::OnceStop,
+            "pingpong" | "ping_pong" => Self::PingPong,
+            _ => Self::Loop,
+        }
+    }
+
+    pub fn looped(self) -> bool {
+        matches!(self, Self::Loop | Self::PingPong)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Loop => "loop",
+            Self::OnceHold => "once_hold",
+            Self::OnceStop => "once_stop",
+            Self::PingPong => "pingpong",
+        }
+    }
 }
 #[derive(Component, Clone)]
 pub struct MeshRef {
@@ -263,6 +319,7 @@ pub struct SpriteAnimationInfo {
     pub timeline: String,
     pub playing: bool,
     pub looped: bool,
+    pub loop_mode: String,
     pub speed: f32,
     pub frame_index: usize,
     pub frame_count: usize,

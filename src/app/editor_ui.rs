@@ -101,6 +101,10 @@ fn summarize_game_event(event: &GameEvent) -> (String, egui::Color32) {
             format!("Impact #{:04}/{:04} - force {:.1}", a.index(), b.index(), force),
             egui::Color32::from_rgb(200, 150, 240),
         ),
+        GameEvent::SpriteAnimationEvent { entity, timeline, event } => (
+            format!("Anim event #{:04} {}::{}", entity.index(), timeline, event),
+            egui::Color32::from_rgb(180, 200, 255),
+        ),
         GameEvent::ScriptMessage { message } => {
             (format!("Script: {message}"), egui::Color32::from_rgb(170, 170, 170))
         }

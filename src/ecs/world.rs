@@ -638,9 +638,11 @@ impl EcsWorld {
                     .map(|frame| SpriteAnimationFrame {
                         region: frame.region.clone(),
                         duration: frame.duration.max(std::f32::EPSILON),
+                        events: frame.events.clone(),
                     })
                     .collect();
-                let component = SpriteAnimation::new(name.to_string(), frames, definition.looped);
+                let loop_mode = SpriteAnimationLoopMode::from_str(&definition.loop_mode);
+                let component = SpriteAnimation::new(name.to_string(), frames, loop_mode.looped(), loop_mode);
                 self.world.entity_mut(entity).insert(component);
                 self.reset_sprite_animation(entity);
                 true
@@ -674,7 +676,26 @@ impl EcsWorld {
 
     pub fn set_sprite_animation_looped(&mut self, entity: Entity, looped: bool) -> bool {
         if let Some(mut animation) = self.world.get_mut::<SpriteAnimation>(entity) {
-            animation.looped = looped;
+            if looped {
+                if !animation.mode.looped() {
+                    animation.set_mode(SpriteAnimationLoopMode::Loop);
+                } else {
+                    animation.looped = true;
+                }
+            } else if animation.mode.looped() {
+                animation.set_mode(SpriteAnimationLoopMode::OnceStop);
+            } else {
+                animation.looped = false;
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_sprite_animation_loop_mode(&mut self, entity: Entity, mode: SpriteAnimationLoopMode) -> bool {
+        if let Some(mut animation) = self.world.get_mut::<SpriteAnimation>(entity) {
+            animation.set_mode(mode);
             true
         } else {
             false
@@ -731,14 +752,15 @@ impl EcsWorld {
             let prev_elapsed = animation.elapsed_in_frame;
             let prev_playing = animation.playing;
             let prev_speed = animation.speed;
+            let loop_mode = SpriteAnimationLoopMode::from_str(&definition.loop_mode);
 
-            animation.looped = definition.looped;
             animation.frames = definition
                 .frames
                 .iter()
                 .map(|frame| SpriteAnimationFrame {
                     region: frame.region.clone(),
                     duration: frame.duration.max(std::f32::EPSILON),
+                    events: frame.events.clone(),
                 })
                 .collect();
 
@@ -749,6 +771,7 @@ impl EcsWorld {
                 updated += 1;
                 continue;
             }
+            animation.set_mode(loop_mode);
 
             let mut target_index = animation.frame_index.min(animation.frames.len() - 1);
             if let Some(region_name) = prev_region.as_ref() {
@@ -781,6 +804,7 @@ impl EcsWorld {
             animation.frame_index = 0;
             animation.elapsed_in_frame = 0.0;
             animation.playing = true;
+            animation.forward = true;
             let target_region = animation.current_region_name().map(|name| name.to_string());
             drop(animation);
             if let Some(region) = target_region {
@@ -1065,6 +1089,7 @@ impl EcsWorld {
                 timeline: anim.timeline.clone(),
                 playing: anim.playing,
                 looped: anim.looped,
+                loop_mode: anim.mode.as_str().to_string(),
                 speed: anim.speed,
                 frame_index: anim.frame_index,
                 frame_count: anim.frame_count(),
@@ -1568,7 +1593,12 @@ impl EcsWorld {
                 );
             } else {
                 self.set_sprite_animation_speed(entity_id, sprite.speed);
-                self.set_sprite_animation_looped(entity_id, sprite.looped);
+                if let Some(mode_str) = sprite.loop_mode.as_ref() {
+                    let mode = SpriteAnimationLoopMode::from_str(mode_str);
+                    self.set_sprite_animation_loop_mode(entity_id, mode);
+                } else {
+                    self.set_sprite_animation_looped(entity_id, sprite.looped);
+                }
                 self.set_sprite_animation_playing(entity_id, sprite.playing);
             }
         }
@@ -1622,6 +1652,7 @@ impl EcsWorld {
                             speed: anim.speed,
                             looped: anim.looped,
                             playing: anim.playing,
+                            loop_mode: Some(anim.mode.as_str().to_string()),
                         });
                     SpriteData { atlas, region, animation }
                 }),

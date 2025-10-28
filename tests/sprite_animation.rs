@@ -1,9 +1,9 @@
 use bevy_ecs::prelude::Entity;
 use kestrel_engine::assets::AssetManager;
-use kestrel_engine::ecs::{EcsWorld, Sprite, Transform, WorldTransform};
+use kestrel_engine::ecs::{EcsWorld, Sprite, SpriteAnimationLoopMode, Transform, WorldTransform};
+use kestrel_engine::events::GameEvent;
 use serde_json::json;
 use std::borrow::Cow;
-use std::io::Write;
 use tempfile::NamedTempFile;
 
 fn sprite_region(world: &EcsWorld, entity: Entity) -> String {
@@ -103,10 +103,9 @@ fn sprite_animation_seek_updates_frame() {
 
 #[test]
 fn sprite_animation_hot_reload_preserves_frame() {
-    let mut temp = NamedTempFile::new().expect("temp atlas");
+    let temp = NamedTempFile::new().expect("temp atlas");
     let source = std::fs::read("assets/images/atlas.json").expect("read atlas");
-    temp.write_all(&source).expect("write copy");
-    temp.flush().expect("flush copy");
+    std::fs::write(temp.path(), &source).expect("write copy");
     let temp_path = temp.path().to_path_buf();
 
     let mut assets = AssetManager::new();
@@ -144,4 +143,110 @@ fn sprite_animation_hot_reload_preserves_frame() {
 
     let sprite = ecs.world.get::<Sprite>(entity).expect("sprite component");
     assert_eq!(sprite.region.as_ref(), "bluebox");
+}
+
+#[test]
+fn sprite_animation_ping_pong_reverses_direction() {
+    let mut assets = AssetManager::new();
+    assets.retain_atlas("main", Some("assets/images/atlas.json")).expect("load main atlas");
+    let mut ecs = EcsWorld::new();
+    let entity = ecs
+        .world
+        .spawn((
+            Transform::default(),
+            WorldTransform::default(),
+            Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("redorb") },
+        ))
+        .id();
+    assert!(ecs.set_sprite_timeline(entity, &assets, Some("demo_cycle")));
+    assert!(ecs.set_sprite_animation_loop_mode(entity, SpriteAnimationLoopMode::PingPong));
+
+    ecs.update(0.12);
+    let first_forward = ecs
+        .world
+        .get::<kestrel_engine::ecs::SpriteAnimation>(entity)
+        .expect("animation component")
+        .frame_index;
+    ecs.update(0.12);
+    let reached_end = ecs
+        .world
+        .get::<kestrel_engine::ecs::SpriteAnimation>(entity)
+        .expect("animation component")
+        .frame_index;
+    ecs.update(0.12);
+    let reversed = ecs
+        .world
+        .get::<kestrel_engine::ecs::SpriteAnimation>(entity)
+        .expect("animation component")
+        .frame_index;
+
+    assert!(first_forward > 0, "animation should advance forward before reversing");
+    assert!(reached_end >= first_forward, "animation should hit the end frame");
+    assert!(
+        reversed < reached_end,
+        "animation should walk backward after reaching the end in ping-pong mode"
+    );
+}
+
+#[test]
+fn sprite_animation_once_hold_stays_on_last_frame() {
+    let mut assets = AssetManager::new();
+    assets.retain_atlas("main", Some("assets/images/atlas.json")).expect("load main atlas");
+    let mut ecs = EcsWorld::new();
+    let entity = ecs
+        .world
+        .spawn((
+            Transform::default(),
+            WorldTransform::default(),
+            Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("redorb") },
+        ))
+        .id();
+    assert!(ecs.set_sprite_timeline(entity, &assets, Some("demo_cycle")));
+    assert!(ecs.set_sprite_animation_loop_mode(entity, SpriteAnimationLoopMode::OnceHold));
+
+    ecs.update(1.0);
+    let anim = ecs.world.get::<kestrel_engine::ecs::SpriteAnimation>(entity).expect("animation component");
+    assert!(!anim.playing, "once_hold should stop playback");
+    assert_eq!(
+        anim.frame_index,
+        anim.frame_count().saturating_sub(1),
+        "animation should remain on the last frame"
+    );
+    let held_region = sprite_region(&ecs, entity);
+    assert_eq!(held_region, "green", "last frame should remain active");
+}
+
+#[test]
+fn sprite_animation_events_emit_on_frame_entry() {
+    let temp = NamedTempFile::new().expect("temp atlas");
+    let source = std::fs::read("assets/images/atlas.json").expect("read atlas");
+    let mut atlas_json: serde_json::Value = serde_json::from_slice(&source).expect("parse atlas");
+    atlas_json["animations"]["demo_cycle"]["events"] = json!([{ "frame": 1, "name": "footstep" }]);
+    atlas_json["animations"]["demo_cycle"]["loop_mode"] = json!("loop");
+    std::fs::write(&temp, serde_json::to_vec_pretty(&atlas_json).expect("encode"))
+        .expect("write modified atlas");
+    let temp_path = temp.path().to_path_buf();
+
+    let mut assets = AssetManager::new();
+    assets.retain_atlas("main", temp_path.to_str()).expect("load atlas with events");
+    let mut ecs = EcsWorld::new();
+    let entity = ecs
+        .world
+        .spawn((
+            Transform::default(),
+            WorldTransform::default(),
+            Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("redorb") },
+        ))
+        .id();
+    assert!(ecs.set_sprite_timeline(entity, &assets, Some("demo_cycle")));
+
+    ecs.drain_events();
+    ecs.update(0.12);
+    let events = ecs.drain_events();
+    assert!(
+        events.iter().any(
+            |event| matches!(event, GameEvent::SpriteAnimationEvent { event, .. } if event == "footstep")
+        ),
+        "animation should emit declared events when entering the frame"
+    );
 }

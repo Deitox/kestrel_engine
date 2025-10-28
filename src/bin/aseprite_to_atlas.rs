@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fmt::{Display, Formatter};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize)]
 struct AsepriteFile {
@@ -65,6 +65,13 @@ struct Timeline {
 struct TimelineFrame {
     region: String,
     duration_ms: u32,
+    events: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TimelineEventRecord {
+    frame: usize,
+    name: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -122,6 +129,7 @@ fn run() -> Result<()> {
     let mut atlas_key = "main".to_string();
     let mut default_mode = LoopMode::Loop;
     let mut reverse_mode = LoopMode::Loop;
+    let mut events_file: Option<PathBuf> = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -135,6 +143,10 @@ fn run() -> Result<()> {
             "--reverse-loop-mode" => {
                 let value = args.next().ok_or_else(|| anyhow!("--reverse-loop-mode requires a value"))?;
                 reverse_mode = LoopMode::parse(&value)?;
+            }
+            "--events-file" => {
+                let value = args.next().ok_or_else(|| anyhow!("--events-file requires a value"))?;
+                events_file = Some(PathBuf::from(value));
             }
             "--help" | "-h" => {
                 print_usage();
@@ -158,7 +170,8 @@ fn run() -> Result<()> {
 
     let regions = build_regions(&ase)?;
     let loop_config = LoopModeConfig { default_mode, reverse_mode };
-    let timelines = build_timelines(&ase, &loop_config)?;
+    let events_map = if let Some(path) = events_file { load_events_file(&path)? } else { HashMap::new() };
+    let timelines = build_timelines(&ase, &loop_config, &events_map)?;
 
     let atlas_json = json!({
         "image": ase.meta.image,
@@ -182,6 +195,13 @@ fn run() -> Result<()> {
         output_path.display()
     );
     Ok(())
+}
+
+fn load_events_file(path: &Path) -> Result<HashMap<String, Vec<TimelineEventRecord>>> {
+    let data = fs::read_to_string(path).with_context(|| format!("reading events file {}", path.display()))?;
+    let parsed: HashMap<String, Vec<TimelineEventRecord>> =
+        serde_json::from_str(&data).with_context(|| format!("parsing events file {}", path.display()))?;
+    Ok(parsed)
 }
 
 fn print_usage() {
@@ -228,11 +248,27 @@ fn build_regions(ase: &AsepriteFile) -> Result<HashMap<String, serde_json::Value
     Ok(map)
 }
 
-fn build_timelines(ase: &AsepriteFile, config: &LoopModeConfig) -> Result<Vec<Timeline>> {
+fn build_timelines(
+    ase: &AsepriteFile,
+    config: &LoopModeConfig,
+    events: &HashMap<String, Vec<TimelineEventRecord>>,
+) -> Result<Vec<Timeline>> {
     if ase.meta.frame_tags.is_empty() {
         let mut frames = Vec::new();
-        for frame in &ase.frames {
-            frames.push(TimelineFrame { region: frame.filename.clone(), duration_ms: frame.duration.max(1) });
+        let mut event_map = collate_events(events.get("default"));
+        for (index, frame) in ase.frames.iter().enumerate() {
+            let frame_events = event_map.remove(&index).unwrap_or_default();
+            frames.push(TimelineFrame {
+                region: frame.filename.clone(),
+                duration_ms: frame.duration.max(1),
+                events: frame_events,
+            });
+        }
+        for (frame, names) in event_map {
+            eprintln!(
+                "[aseprite_to_atlas] warning: events {:?} reference frame {} in 'default' timeline, but it does not exist.",
+                names, frame
+            );
         }
         let timeline = Timeline { name: "default".to_string(), frames, mode: config.default_mode };
         return Ok(vec![timeline]);
@@ -241,6 +277,7 @@ fn build_timelines(ase: &AsepriteFile, config: &LoopModeConfig) -> Result<Vec<Ti
     let mut timelines = Vec::new();
     for tag in &ase.meta.frame_tags {
         let mut frames = Vec::new();
+        let mut event_map = collate_events(events.get(&tag.name));
         let from = tag.from as usize;
         let to = tag.to as usize;
         if from >= ase.frames.len() || to >= ase.frames.len() || from > to {
@@ -252,18 +289,39 @@ fn build_timelines(ase: &AsepriteFile, config: &LoopModeConfig) -> Result<Vec<Ti
                 ase.frames.len()
             ));
         }
-        for index in from..=to {
-            let frame = &ase.frames[index];
-            frames.push(TimelineFrame { region: frame.filename.clone(), duration_ms: frame.duration.max(1) });
+        for (local_index, frame_index) in (from..=to).enumerate() {
+            let frame = &ase.frames[frame_index];
+            let frame_events = event_map.remove(&local_index).unwrap_or_default();
+            frames.push(TimelineFrame {
+                region: frame.filename.clone(),
+                duration_ms: frame.duration.max(1),
+                events: frame_events,
+            });
         }
         let mode = match tag.direction.as_deref().map(|s| s.to_ascii_lowercase()) {
             Some(direction) if direction == "pingpong" => LoopMode::PingPong,
             Some(direction) if direction == "reverse" => config.reverse_mode,
             _ => config.default_mode,
         };
+        for (frame, names) in event_map {
+            eprintln!(
+                "[aseprite_to_atlas] warning: events {:?} reference frame {} in timeline '{}', but it does not exist.",
+                names, frame, tag.name
+            );
+        }
         timelines.push(Timeline { name: tag.name.clone(), frames, mode });
     }
     Ok(timelines)
+}
+
+fn collate_events(records: Option<&Vec<TimelineEventRecord>>) -> HashMap<usize, Vec<String>> {
+    let mut map = HashMap::new();
+    if let Some(entries) = records {
+        for record in entries {
+            map.entry(record.frame).or_insert_with(Vec::new).push(record.name.clone());
+        }
+    }
+    map
 }
 
 fn timelines_to_json(timelines: &[Timeline]) -> serde_json::Value {
@@ -279,14 +337,22 @@ fn timelines_to_json(timelines: &[Timeline]) -> serde_json::Value {
                 })
             })
             .collect();
-        map.insert(
-            timeline.name.clone(),
-            json!({
-                "loop_mode": timeline.mode.to_string(),
-                "looped": timeline.mode.looped(),
-                "frames": frames_json,
-            }),
-        );
+        let events_json: Vec<serde_json::Value> = timeline
+            .frames
+            .iter()
+            .enumerate()
+            .flat_map(|(index, frame)| {
+                frame.events.iter().map(move |event| json!({ "frame": index, "name": event }))
+            })
+            .collect();
+        let mut timeline_json = serde_json::Map::new();
+        timeline_json.insert("loop_mode".to_string(), json!(timeline.mode.to_string()));
+        timeline_json.insert("looped".to_string(), json!(timeline.mode.looped()));
+        timeline_json.insert("frames".to_string(), serde_json::Value::Array(frames_json));
+        if !events_json.is_empty() {
+            timeline_json.insert("events".to_string(), serde_json::Value::Array(events_json));
+        }
+        map.insert(timeline.name.clone(), serde_json::Value::Object(timeline_json));
     }
     serde_json::Value::Object(map)
 }

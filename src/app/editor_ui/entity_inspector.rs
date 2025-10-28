@@ -249,6 +249,7 @@ pub(super) fn show_entity_inspector(
                         }
                     }
                     if let Some(anim) = sprite.animation.as_ref() {
+                        ui.label(format!("Loop Mode: {}", anim.loop_mode));
                         ui.horizontal(|ui| {
                             let play_label = if anim.playing { "Pause" } else { "Play" };
                             if ui.button(play_label).clicked() {

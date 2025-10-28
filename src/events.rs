@@ -4,6 +4,7 @@ use std::fmt;
 #[derive(Debug, Clone)]
 pub enum GameEvent {
     SpriteSpawned { entity: Entity, atlas: String, region: String },
+    SpriteAnimationEvent { entity: Entity, timeline: String, event: String },
     EntityDespawned { entity: Entity },
     CollisionStarted { a: Entity, b: Entity },
     CollisionEnded { a: Entity, b: Entity },
@@ -38,6 +39,15 @@ impl fmt::Display for GameEvent {
         match self {
             GameEvent::SpriteSpawned { entity, atlas, region } => {
                 write!(f, "SpriteSpawned entity={} atlas={} region={}", entity.index(), atlas, region)
+            }
+            GameEvent::SpriteAnimationEvent { entity, timeline, event } => {
+                write!(
+                    f,
+                    "SpriteAnimationEvent entity={} timeline={} event={}",
+                    entity.index(),
+                    timeline,
+                    event
+                )
             }
             GameEvent::EntityDespawned { entity } => {
                 write!(f, "EntityDespawned entity={}", entity.index())
