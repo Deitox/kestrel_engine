@@ -35,6 +35,12 @@ pub(super) struct PrefabSpawnPayload {
     pub format: PrefabFormat,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) enum PrefabDropTarget {
+    World2D(Vec2),
+    World3D(Vec3),
+}
+
 #[derive(Clone)]
 pub(super) struct PrefabShelfEntry {
     pub name: String,
@@ -53,7 +59,7 @@ pub(super) struct PrefabSaveRequest {
 pub(super) struct PrefabInstantiateRequest {
     pub name: String,
     pub format: PrefabFormat,
-    pub drop_position: Option<Vec2>,
+    pub drop_target: Option<PrefabDropTarget>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -281,6 +287,7 @@ pub(super) struct EditorUiParams {
     pub gizmo_changed: bool,
     pub cursor_screen: Option<Vec2>,
     pub cursor_world_2d: Option<Vec2>,
+    pub cursor_ray: Option<(Vec3, Vec3)>,
     pub hovered_scale_kind: Option<ScaleHandleKind>,
     pub window_size: PhysicalSize<u32>,
     pub mesh_camera_for_ui: Camera3D,
@@ -402,6 +409,7 @@ impl App {
             mut gizmo_changed,
             cursor_screen,
             cursor_world_2d,
+            cursor_ray,
             hovered_scale_kind,
             window_size,
             mesh_camera_for_ui,
@@ -1787,16 +1795,20 @@ impl App {
                         if let Some(payload) = DragAndDrop::take_payload::<PrefabSpawnPayload>(&self.egui_ctx)
                         {
                             let payload = (*payload).clone();
-                            let drop_position =
-                                if self.viewport_camera_mode == ViewportCameraMode::Ortho2D {
-                                    cursor_world_2d
-                                } else {
-                                    None
-                                };
+                            let drop_target = match self.viewport_camera_mode {
+                                ViewportCameraMode::Ortho2D => {
+                                    cursor_world_2d.map(PrefabDropTarget::World2D)
+                                }
+                                ViewportCameraMode::Perspective3D => cursor_ray
+                                    .and_then(|(origin, dir)| {
+                                        Self::intersect_ray_plane(origin, dir, Vec3::ZERO, Vec3::Z)
+                                    })
+                                    .map(PrefabDropTarget::World3D),
+                            };
                             actions.instantiate_prefab = Some(PrefabInstantiateRequest {
                                 name: payload.name,
                                 format: payload.format,
-                                drop_position,
+                                drop_target,
                             });
                         }
                     }

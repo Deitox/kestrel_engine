@@ -1326,6 +1326,23 @@ impl Scene {
             }
         }
     }
+
+    pub fn offset_entities_3d(&mut self, offset: Vec3) {
+        if offset.length_squared() == 0.0 {
+            return;
+        }
+        for entity in &mut self.entities {
+            let mut translation: Vec2 = entity.transform.translation.clone().into();
+            translation.x += offset.x;
+            translation.y += offset.y;
+            entity.transform.translation = translation.into();
+            if let Some(transform3d) = entity.transform3d.as_mut() {
+                let mut translation3: Vec3 = transform3d.translation.clone().into();
+                translation3 += offset;
+                transform3d.translation = translation3.into();
+            }
+        }
+    }
 }
 
 impl TransformData {

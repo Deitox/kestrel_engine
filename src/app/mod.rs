@@ -775,10 +775,25 @@ impl App {
             return;
         }
         scene = scene.with_fresh_entity_ids();
-        if let Some(target) = request.drop_position {
-            if self.viewport_camera_mode == ViewportCameraMode::Ortho2D {
-                let current: Vec2 = scene.entities.first().unwrap().transform.translation.clone().into();
-                scene.offset_entities_2d(target - current);
+        if let Some(target) = request.drop_target {
+            match target {
+                editor_ui::PrefabDropTarget::World2D(target_2d) => {
+                    let current: Vec2 = scene.entities.first().unwrap().transform.translation.clone().into();
+                    scene.offset_entities_2d(target_2d - current);
+                }
+                editor_ui::PrefabDropTarget::World3D(target_3d) => {
+                    if let Some(root) = scene.entities.first() {
+                        let current = root
+                            .transform3d
+                            .as_ref()
+                            .map(|tx| Vec3::from(tx.translation.clone()))
+                            .unwrap_or_else(|| {
+                                let base: Vec2 = root.transform.translation.clone().into();
+                                Vec3::new(base.x, base.y, 0.0)
+                            });
+                        scene.offset_entities_3d(target_3d - current);
+                    }
+                }
             }
         }
         match self.ecs.instantiate_prefab_with_mesh(&scene, &mut self.assets, |key, path| {
@@ -2104,6 +2119,7 @@ impl ApplicationHandler for App {
             gizmo_changed,
             cursor_screen,
             cursor_world_2d,
+            cursor_ray,
             hovered_scale_kind,
             window_size,
             mesh_camera_for_ui,

@@ -53,6 +53,7 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
     - *Acceptance:* Implement a binary encoder/decoder (with compression) behind a feature flag; provide migration tooling between JSON and binary formats.
 15. **[M11] Drag-and-drop prefab authoring**
     - *Acceptance:* Allow entities or hierarchies to be dragged from the inspector into a prefab shelf, saved as JSON/`kscene`, and instanced via drag/drop.
+    - *Note:* Binary `.kscene` export requires launching with the `binary_scene` feature enabled; when absent the Prefab Shelf surfaces guidance to switch formats.
 
 ## P2 — Strategic Feature Bets
 
