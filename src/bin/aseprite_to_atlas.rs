@@ -2,7 +2,10 @@
 //!
 //! Usage:
 //! ```bash
-//! cargo run --bin aseprite_to_atlas -- <input.json> <output.json> [--atlas-key main]
+//! cargo run --bin aseprite_to_atlas -- <input.json> <output.json> \
+//!     [--atlas-key main] \
+//!     [--default-loop-mode loop|once_hold|once_stop|pingpong] \
+//!     [--reverse-loop-mode loop|once_hold|once_stop|pingpong]
 //! ```
 
 use anyhow::{anyhow, Context, Result};
@@ -10,6 +13,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
 use std::env;
+use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::PathBuf;
 
@@ -54,13 +58,54 @@ struct AseTag {
 struct Timeline {
     name: String,
     frames: Vec<TimelineFrame>,
-    looped: bool,
+    mode: LoopMode,
 }
 
 #[derive(Debug)]
 struct TimelineFrame {
     region: String,
     duration_ms: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LoopMode {
+    Loop,
+    OnceHold,
+    OnceStop,
+    PingPong,
+}
+
+impl LoopMode {
+    fn parse(value: &str) -> Result<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "loop" => Ok(Self::Loop),
+            "once_hold" | "oncehold" => Ok(Self::OnceHold),
+            "once_stop" | "oncestop" | "once" => Ok(Self::OnceStop),
+            "pingpong" | "ping_pong" => Ok(Self::PingPong),
+            other => Err(anyhow!("unknown loop mode '{other}' (expected loop|once_hold|once_stop|pingpong)")),
+        }
+    }
+
+    fn looped(self) -> bool {
+        matches!(self, LoopMode::Loop | LoopMode::PingPong)
+    }
+}
+
+impl Display for LoopMode {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoopMode::Loop => write!(f, "loop"),
+            LoopMode::OnceHold => write!(f, "once_hold"),
+            LoopMode::OnceStop => write!(f, "once_stop"),
+            LoopMode::PingPong => write!(f, "pingpong"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LoopModeConfig {
+    default_mode: LoopMode,
+    reverse_mode: LoopMode,
 }
 
 fn main() {
@@ -75,11 +120,21 @@ fn run() -> Result<()> {
     let input = args.next().ok_or_else(|| anyhow!("input JSON path required"))?;
     let output = args.next().ok_or_else(|| anyhow!("output JSON path required"))?;
     let mut atlas_key = "main".to_string();
+    let mut default_mode = LoopMode::Loop;
+    let mut reverse_mode = LoopMode::Loop;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--atlas-key" => {
                 atlas_key = args.next().ok_or_else(|| anyhow!("--atlas-key requires a value"))?;
+            }
+            "--default-loop-mode" => {
+                let value = args.next().ok_or_else(|| anyhow!("--default-loop-mode requires a value"))?;
+                default_mode = LoopMode::parse(&value)?;
+            }
+            "--reverse-loop-mode" => {
+                let value = args.next().ok_or_else(|| anyhow!("--reverse-loop-mode requires a value"))?;
+                reverse_mode = LoopMode::parse(&value)?;
             }
             "--help" | "-h" => {
                 print_usage();
@@ -102,7 +157,8 @@ fn run() -> Result<()> {
     }
 
     let regions = build_regions(&ase)?;
-    let timelines = build_timelines(&ase)?;
+    let loop_config = LoopModeConfig { default_mode, reverse_mode };
+    let timelines = build_timelines(&ase, &loop_config)?;
 
     let atlas_json = json!({
         "image": ase.meta.image,
@@ -129,7 +185,10 @@ fn run() -> Result<()> {
 }
 
 fn print_usage() {
-    println!("Usage: aseprite_to_atlas <input.json> <output.json> [--atlas-key name]");
+    println!(
+        "Usage: aseprite_to_atlas <input.json> <output.json> [--atlas-key name] \\\n    \
+         [--default-loop-mode loop|once_hold|once_stop|pingpong] [--reverse-loop-mode loop|once_hold|once_stop|pingpong]"
+    );
     println!("Converts an Aseprite JSON export into an atlas timeline definition.");
 }
 
@@ -169,13 +228,13 @@ fn build_regions(ase: &AsepriteFile) -> Result<HashMap<String, serde_json::Value
     Ok(map)
 }
 
-fn build_timelines(ase: &AsepriteFile) -> Result<Vec<Timeline>> {
+fn build_timelines(ase: &AsepriteFile, config: &LoopModeConfig) -> Result<Vec<Timeline>> {
     if ase.meta.frame_tags.is_empty() {
         let mut frames = Vec::new();
         for frame in &ase.frames {
             frames.push(TimelineFrame { region: frame.filename.clone(), duration_ms: frame.duration.max(1) });
         }
-        let timeline = Timeline { name: "default".to_string(), frames, looped: true };
+        let timeline = Timeline { name: "default".to_string(), frames, mode: config.default_mode };
         return Ok(vec![timeline]);
     }
 
@@ -197,12 +256,12 @@ fn build_timelines(ase: &AsepriteFile) -> Result<Vec<Timeline>> {
             let frame = &ase.frames[index];
             frames.push(TimelineFrame { region: frame.filename.clone(), duration_ms: frame.duration.max(1) });
         }
-        let looped = match tag.direction.as_deref() {
-            Some("pingpong") => true,
-            Some("reverse") => false,
-            _ => true,
+        let mode = match tag.direction.as_deref().map(|s| s.to_ascii_lowercase()) {
+            Some(direction) if direction == "pingpong" => LoopMode::PingPong,
+            Some(direction) if direction == "reverse" => config.reverse_mode,
+            _ => config.default_mode,
         };
-        timelines.push(Timeline { name: tag.name.clone(), frames, looped });
+        timelines.push(Timeline { name: tag.name.clone(), frames, mode });
     }
     Ok(timelines)
 }
@@ -223,7 +282,8 @@ fn timelines_to_json(timelines: &[Timeline]) -> serde_json::Value {
         map.insert(
             timeline.name.clone(),
             json!({
-                "looped": timeline.looped,
+                "loop_mode": timeline.mode.to_string(),
+                "looped": timeline.mode.looped(),
                 "frames": frames_json,
             }),
         );

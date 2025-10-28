@@ -7,9 +7,10 @@
 
 ## Sprite Atlas Timelines
 - **Authoring prerequisites:** export sprite sheets from Aseprite using `File > Export Sprite Sheet` with `Layout: Packed`, `JSON Data` enabled (Array format), and frame tags for every animation you intend to drive.
-- **Run importer CLI:** `cargo run --bin aseprite_to_atlas -- <input.json> <output.json> [--atlas-key name]`
+- **Run importer CLI:** `cargo run --bin aseprite_to_atlas -- <input.json> <output.json> [--atlas-key name] [--default-loop-mode loop|once_hold|once_stop|pingpong] [--reverse-loop-mode loop|once_hold|once_stop|pingpong]`
   - Converts the Aseprite JSON into an atlas definition containing `regions` and `animations` compatible with `assets/images/atlas.json`.
   - Use `--atlas-key` to override the default atlas identifier (`main`) when targeting alternative atlases.
+  - Use loop-mode flags to map Aseprite tag directions to engine loop semantics (e.g., `--default-loop-mode once_hold` for UI bursts, `--reverse-loop-mode once_stop` for exit animations).
 - **Hot-reload verification:** place the generated JSON alongside project content, launch the editor, and modify the source file—look for `Hot reloaded atlas '<key>'` in the console while entities keep their current frame.
 - **Troubleshooting:**
   - Duplicate frame names surface descriptive errors; rename frames in Aseprite or adjust export settings.
