@@ -66,3 +66,34 @@ fn sprite_animation_advances_and_resets() {
     let reset = sprite_region(&ecs, entity);
     assert_eq!(initial, reset, "reset should snap back to first frame");
 }
+
+#[test]
+fn sprite_animation_seek_updates_frame() {
+    let mut assets = AssetManager::new();
+    assets.retain_atlas("main", Some("assets/images/atlas.json")).expect("load main atlas");
+    let mut ecs = EcsWorld::new();
+    let entity = ecs
+        .world
+        .spawn((
+            Transform::default(),
+            WorldTransform::default(),
+            Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("redorb") },
+        ))
+        .id();
+    assert!(ecs.set_sprite_timeline(entity, &assets, Some("demo_cycle")));
+
+    // Seek to the final frame (green) and verify sprite region updates immediately.
+    assert!(ecs.seek_sprite_animation_frame(entity, 2));
+    let region = sprite_region(&ecs, entity);
+    assert_eq!(region, "green");
+
+    // Seeking beyond the available frames should clamp to the last frame.
+    assert!(ecs.seek_sprite_animation_frame(entity, 99));
+    let clamped = sprite_region(&ecs, entity);
+    assert_eq!(clamped, "green");
+
+    // Seek back to the first frame.
+    assert!(ecs.seek_sprite_animation_frame(entity, 0));
+    let first = sprite_region(&ecs, entity);
+    assert_eq!(first, "redorb");
+}

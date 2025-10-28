@@ -680,6 +680,31 @@ impl EcsWorld {
             false
         }
     }
+    pub fn seek_sprite_animation_frame(&mut self, entity: Entity, frame: usize) -> bool {
+        let Some(mut animation) = self.world.get_mut::<SpriteAnimation>(entity) else {
+            return false;
+        };
+        if animation.frames.is_empty() {
+            return false;
+        }
+        let target = frame.min(animation.frames.len() - 1);
+        let region_name = if animation.frame_index != target || animation.elapsed_in_frame != 0.0 {
+            animation.frame_index = target;
+            animation.elapsed_in_frame = 0.0;
+            animation.current_region_name().map(|name| name.to_string())
+        } else {
+            None
+        };
+        drop(animation);
+        if let Some(region) = region_name {
+            if let Some(mut sprite) = self.world.get_mut::<Sprite>(entity) {
+                if sprite.region.as_ref() != region.as_str() {
+                    sprite.region = Cow::Owned(region);
+                }
+            }
+        }
+        true
+    }
 
     pub fn reset_sprite_animation(&mut self, entity: Entity) -> bool {
         if let Some(mut animation) = self.world.get_mut::<SpriteAnimation>(entity) {
