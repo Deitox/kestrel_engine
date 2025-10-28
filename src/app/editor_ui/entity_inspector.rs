@@ -1,4 +1,4 @@
-use super::{UiActions};
+use super::{PrefabDragPayload, UiActions};
 use crate::assets::AssetManager;
 use crate::ecs::{EcsWorld, EntityInfo, SpriteInfo};
 use crate::gizmo::{GizmoInteraction, GizmoMode, ScaleHandle};
@@ -626,6 +626,14 @@ pub(super) fn show_entity_inspector(
                 *frame_selection_request = true;
             }
         });
+
+        let drag_id = egui::Id::new(("prefab_drag_source", entity.index()));
+        let drag_response = ui
+            .dnd_drag_source(drag_id, PrefabDragPayload { entity }, |ui| {
+                ui.label("Drag to Prefab Shelf");
+            })
+            .response;
+        drag_response.on_hover_text("Drop onto the Prefab Shelf to save this entity (and children) as a prefab.");
 
         if inspector_refresh {
             selection_details_value =

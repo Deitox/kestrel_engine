@@ -1273,6 +1273,43 @@ impl EcsWorld {
         scene
     }
 
+    pub fn export_prefab(&mut self, root: Entity, assets: &AssetManager) -> Option<Scene> {
+        if !self.entity_exists(root) {
+            return None;
+        }
+        let mut entities = Vec::new();
+        self.collect_scene_entity(root, None, None, &mut entities);
+        if entities.is_empty() {
+            return None;
+        }
+        let dependencies = SceneDependencies::from_entities(&entities, assets, |_| None, |_| None);
+        let mut scene = Scene::default();
+        scene.entities = entities;
+        scene.dependencies = dependencies;
+        Some(scene)
+    }
+
+    pub fn instantiate_prefab(
+        &mut self,
+        scene: &Scene,
+        assets: &AssetManager,
+    ) -> Result<Vec<Entity>> {
+        self.instantiate_scene_entities(scene, assets)
+    }
+
+    pub fn instantiate_prefab_with_mesh<F>(
+        &mut self,
+        scene: &Scene,
+        assets: &mut AssetManager,
+        mut mesh_loader: F,
+    ) -> Result<Vec<Entity>>
+    where
+        F: FnMut(&str, Option<&str>) -> Result<()>,
+    {
+        self.ensure_scene_dependencies_with_mesh(scene, assets, &mut mesh_loader)?;
+        self.instantiate_scene_entities(scene, assets)
+    }
+
     pub fn first_emitter(&mut self) -> Option<Entity> {
         let mut query = self.world.query::<(Entity, &ParticleEmitter)>();
         query.iter(&self.world).map(|(entity, _)| entity).next()
@@ -1290,6 +1327,38 @@ impl EcsWorld {
             start_size: emitter.start_size,
             end_size: emitter.end_size,
         })
+    }
+
+    fn instantiate_scene_entities(
+        &mut self,
+        scene: &Scene,
+        assets: &AssetManager,
+    ) -> Result<Vec<Entity>> {
+        if scene.entities.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut entity_map = Vec::with_capacity(scene.entities.len());
+        let mut id_map: HashMap<SceneEntityId, Entity> = HashMap::with_capacity(scene.entities.len());
+        for entity_data in &scene.entities {
+            let entity = self.spawn_scene_entity(entity_data, assets)?;
+            id_map.insert(entity_data.id.clone(), entity);
+            entity_map.push(entity);
+        }
+        for (index, entity_data) in scene.entities.iter().enumerate() {
+            let child_entity = entity_map[index];
+            if let Some(parent_id) = entity_data.parent_id.as_ref() {
+                if let Some(&parent_entity) = id_map.get(parent_id) {
+                    self.attach_child_to_parent(child_entity, parent_entity);
+                    continue;
+                }
+            }
+            if let Some(parent_index) = entity_data.parent {
+                if let Some(&parent_entity) = entity_map.get(parent_index) {
+                    self.attach_child_to_parent(child_entity, parent_entity);
+                }
+            }
+        }
+        Ok(entity_map)
     }
 
     fn spawn_scene_entity(&mut self, data: &SceneEntity, assets: &AssetManager) -> Result<Entity> {

@@ -17,6 +17,7 @@ pub(crate) mod mesh_preview;
 pub mod mesh_registry;
 pub mod plugins;
 pub mod renderer;
+pub mod prefab;
 pub mod scene;
 pub mod scripts;
 pub mod time;

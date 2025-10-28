@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
+use glam::{Vec2, Vec3};
 use uuid::Uuid;
 
 const BINARY_SCENE_MAGIC: [u8; 4] = *b"KSCN";
@@ -1286,6 +1287,44 @@ impl Scene {
             }
         }
         Some(ordered)
+    }
+
+    pub fn with_fresh_entity_ids(&self) -> Self {
+        let mut cloned = self.clone();
+        let mut remap: HashMap<String, SceneEntityId> = HashMap::with_capacity(cloned.entities.len());
+        for entity in &mut cloned.entities {
+            let old_id = entity.id.clone();
+            let new_id = SceneEntityId::new();
+            remap.insert(old_id.as_str().to_string(), new_id.clone());
+            entity.id = new_id;
+        }
+        for entity in &mut cloned.entities {
+            if let Some(existing_parent) = entity.parent_id.clone() {
+                if let Some(mapped) = remap.get(existing_parent.as_str()) {
+                    entity.parent_id = Some(mapped.clone());
+                } else {
+                    entity.parent_id = None;
+                }
+            }
+        }
+        cloned
+    }
+
+    pub fn offset_entities_2d(&mut self, offset: Vec2) {
+        if offset.length_squared() == 0.0 {
+            return;
+        }
+        for entity in &mut self.entities {
+            let mut translation: Vec2 = entity.transform.translation.clone().into();
+            translation += offset;
+            entity.transform.translation = translation.into();
+            if let Some(transform3d) = entity.transform3d.as_mut() {
+                let mut translation3: Vec3 = transform3d.translation.clone().into();
+                translation3.x += offset.x;
+                translation3.y += offset.y;
+                transform3d.translation = translation3.into();
+            }
+        }
     }
 }
 

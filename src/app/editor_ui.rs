@@ -13,17 +13,50 @@ use crate::gizmo::{
     GIZMO_ROTATE_OUTER_RADIUS_PX, GIZMO_SCALE_AXIS_LENGTH_PX, GIZMO_SCALE_AXIS_THICKNESS_PX,
     GIZMO_SCALE_HANDLE_SIZE_PX, GIZMO_SCALE_INNER_RADIUS_PX, GIZMO_SCALE_OUTER_RADIUS_PX,
 };
+use crate::prefab::{PrefabFormat, PrefabStatusKind, PrefabStatusMessage};
 use crate::mesh_preview::{GIZMO_3D_AXIS_LENGTH_SCALE, GIZMO_3D_AXIS_MAX, GIZMO_3D_AXIS_MIN};
 use crate::plugins::PluginState;
 
 use bevy_ecs::prelude::Entity;
-use egui::Key;
+use egui::{DragAndDrop, Key};
 use egui_plot as eplot;
 use glam::{Vec2, Vec3};
 use std::collections::{BTreeMap, HashSet};
 use winit::dpi::PhysicalSize;
 
 mod entity_inspector;
+
+#[derive(Clone, Copy)]
+pub(super) struct PrefabDragPayload {
+    pub entity: Entity,
+}
+
+#[derive(Clone)]
+pub(super) struct PrefabSpawnPayload {
+    pub name: String,
+    pub format: PrefabFormat,
+}
+
+#[derive(Clone)]
+pub(super) struct PrefabShelfEntry {
+    pub name: String,
+    pub format: PrefabFormat,
+    pub path_display: String,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct PrefabSaveRequest {
+    pub entity: Entity,
+    pub name: String,
+    pub format: PrefabFormat,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct PrefabInstantiateRequest {
+    pub name: String,
+    pub format: PrefabFormat,
+    pub drop_position: Option<Vec2>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum AudioTriggerKind {
@@ -176,6 +209,8 @@ pub(super) struct UiActions {
     pub retain_meshes: Vec<(String, Option<String>)>,
     pub retain_environments: Vec<(String, Option<String>)>,
     pub reload_plugins: bool,
+    pub save_prefab: Option<PrefabSaveRequest>,
+    pub instantiate_prefab: Option<PrefabInstantiateRequest>,
 }
 
 pub(super) struct SelectionResult {
@@ -271,6 +306,10 @@ pub(super) struct EditorUiParams {
     pub audio_triggers: Vec<String>,
     pub audio_enabled: bool,
     pub audio_health: AudioHealthSnapshot,
+    pub prefab_entries: Vec<PrefabShelfEntry>,
+    pub prefab_name_input: String,
+    pub prefab_format: PrefabFormat,
+    pub prefab_status: Option<PrefabStatusMessage>,
     pub script_debugger: ScriptDebuggerParams,
     pub id_lookup_input: String,
     pub id_lookup_active: bool,
@@ -321,6 +360,9 @@ pub(super) struct EditorUiOutput {
     pub debug_show_colliders: bool,
     pub vsync_request: Option<bool>,
     pub script_debugger: ScriptDebuggerOutput,
+    pub prefab_name_input: String,
+    pub prefab_format: PrefabFormat,
+    pub prefab_status: Option<PrefabStatusMessage>,
 }
 
 impl App {
@@ -388,6 +430,10 @@ impl App {
             spatial_metrics,
             mut id_lookup_input,
             mut id_lookup_active,
+            prefab_entries,
+            mut prefab_name_input,
+            mut prefab_format,
+            prefab_status,
             mut script_debugger,
         } = params;
 
@@ -1488,6 +1534,75 @@ impl App {
                     }
 
                     ui.separator();
+                    ui.heading("Prefab Shelf");
+                    if let Some(status) = prefab_status.as_ref() {
+                        let color = match status.kind {
+                            PrefabStatusKind::Info => egui::Color32::from_rgb(120, 180, 250),
+                            PrefabStatusKind::Success => egui::Color32::LIGHT_GREEN,
+                            PrefabStatusKind::Warning => egui::Color32::from_rgb(230, 200, 120),
+                            PrefabStatusKind::Error => egui::Color32::from_rgb(240, 120, 120),
+                        };
+                        ui.colored_label(color, status.message.as_str());
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("Name");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut prefab_name_input)
+                                .hint_text("e.g. crate_small"),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Format");
+                        for format in [PrefabFormat::Json, PrefabFormat::Binary] {
+                            if ui.selectable_label(prefab_format == format, format.label()).clicked() {
+                                prefab_format = format;
+                            }
+                        }
+                    });
+                    let drop_result = ui.dnd_drop_zone::<PrefabDragPayload, _>(
+                        egui::Frame::group(&ui.style()),
+                        |ui| {
+                            ui.set_min_height(48.0);
+                            if selected_entity.is_some() {
+                                ui.label("Drag the selected entity here to save it as a prefab.");
+                            } else {
+                                ui.label("Select an entity, then drag it here to save a prefab.");
+                            }
+                        },
+                    );
+                    let dropped_prefab = drop_result.1;
+                    if let Some(payload) = dropped_prefab {
+                        let payload = (*payload).clone();
+                        let mut prefab_name = prefab_name_input.trim().to_string();
+                        if prefab_name.is_empty() {
+                            prefab_name = format!("prefab_{}", payload.entity.index());
+                            prefab_name_input = prefab_name.clone();
+                        }
+                        actions.save_prefab =
+                            Some(PrefabSaveRequest { entity: payload.entity, name: prefab_name, format: prefab_format });
+                    }
+                    egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                        if prefab_entries.is_empty() {
+                            ui.small("No prefabs saved yet.");
+                        } else {
+                            for entry in &prefab_entries {
+                                let entry_label =
+                                    format!("{} ({})", entry.name, entry.format.short_label());
+                                let payload = PrefabSpawnPayload {
+                                    name: entry.name.clone(),
+                                    format: entry.format,
+                                };
+                                let drag_id =
+                                    egui::Id::new(("prefab_shelf_entry", entry.name.as_str(), entry.format.short_label()));
+                                ui.dnd_drag_source(drag_id, payload.clone(), |ui| {
+                                    ui.label(&entry_label);
+                                    ui.weak(entry.path_display.as_str());
+                                });
+                            }
+                        }
+                    });
+
+                    ui.separator();
                     let plugin_present = self.plugins.get::<AudioPlugin>().is_some();
                     let parsed_triggers: Vec<ParsedAudioTrigger> =
                         audio_triggers.iter().map(|label| parse_audio_trigger(label)).collect();
@@ -1608,6 +1723,31 @@ impl App {
                 viewport_size_vec2.y.max(1.0).round() as u32,
             );
             pending_viewport = Some((viewport_origin_vec2, viewport_size_vec2));
+
+            let viewport_rect_points = egui::Rect::from_min_size(
+                egui::pos2(
+                    viewport_origin_vec2.x / ui_pixels_per_point,
+                    viewport_origin_vec2.y / ui_pixels_per_point,
+                ),
+                egui::vec2(
+                    viewport_size_vec2.x / ui_pixels_per_point,
+                    viewport_size_vec2.y / ui_pixels_per_point,
+                ),
+            );
+            if self.egui_ctx.input(|i| i.pointer.any_released()) {
+                if let Some(pointer_pos) = self.egui_ctx.pointer_interact_pos() {
+                    if viewport_rect_points.contains(pointer_pos) {
+                        if let Some(payload) = DragAndDrop::take_payload::<PrefabSpawnPayload>(&self.egui_ctx) {
+                            let payload = (*payload).clone();
+                            actions.instantiate_prefab = Some(PrefabInstantiateRequest {
+                                name: payload.name,
+                                format: payload.format,
+                                drop_position: cursor_world_2d,
+                            });
+                        }
+                    }
+                }
+            }
 
             let cursor_in_new_viewport = cursor_screen
                 .map(|pos| {
@@ -1974,6 +2114,9 @@ impl App {
             debug_show_colliders,
             vsync_request: vsync_toggle_request,
             script_debugger: script_debugger_output,
+            prefab_name_input,
+            prefab_format,
+            prefab_status,
         }
     }
 }

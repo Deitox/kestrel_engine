@@ -13,9 +13,10 @@ use crate::material_registry::{MaterialGpu, MaterialRegistry};
 use crate::mesh_preview::{MeshControlMode, MeshPreviewPlugin};
 use crate::mesh_registry::MeshRegistry;
 use crate::plugins::{FeatureRegistryHandle, PluginContext, PluginManager};
+use crate::prefab::{PrefabFormat, PrefabLibrary, PrefabStatusKind, PrefabStatusMessage};
 use crate::renderer::{MeshDraw, RenderViewport, Renderer, SpriteBatch};
 use crate::scene::{
-    EnvironmentDependency, SceneCamera2D, SceneCameraBookmark, SceneDependencies, SceneEntityId,
+    EnvironmentDependency, Scene, SceneCamera2D, SceneCameraBookmark, SceneDependencies, SceneEntityId,
     SceneEnvironment, SceneLightingData, SceneMetadata, SceneShadowData, SceneViewportMode, Vec2Data,
 };
 use crate::scripts::{ScriptCommand, ScriptHandle, ScriptPlugin};
@@ -206,6 +207,7 @@ pub struct App {
     time: Time,
     pub(crate) input: Input,
     assets: AssetManager,
+    prefab_library: PrefabLibrary,
     environment_registry: EnvironmentRegistry,
     persistent_environments: HashSet<String>,
     scene_environment_ref: Option<String>,
@@ -250,6 +252,9 @@ pub struct App {
     ui_scale: f32,
     ui_scene_path: String,
     ui_scene_status: Option<String>,
+    prefab_name_input: String,
+    prefab_format: PrefabFormat,
+    prefab_status: Option<PrefabStatusMessage>,
     camera_bookmark_input: String,
     scene_dependencies: Option<SceneDependencies>,
     scene_history: VecDeque<String>,
@@ -459,6 +464,10 @@ impl App {
         let time = Time::new();
         let mut input = Input::from_config(INPUT_CONFIG_PATH);
         let mut assets = AssetManager::new();
+        let mut prefab_library = PrefabLibrary::new("assets/prefabs");
+        if let Err(err) = prefab_library.refresh() {
+            eprintln!("[prefab] failed to scan prefabs: {err:?}");
+        }
         let mut environment_registry = EnvironmentRegistry::new();
         let default_environment_key = environment_registry.default_key().to_string();
         let default_environment_intensity = 1.0;
@@ -562,6 +571,7 @@ impl App {
             time,
             input,
             assets,
+            prefab_library,
             environment_registry,
             persistent_environments,
             scene_environment_ref: None,
@@ -602,6 +612,9 @@ impl App {
             ui_scale: 1.0,
             ui_scene_path: scene_path,
             ui_scene_status: None,
+            prefab_name_input: String::new(),
+            prefab_format: PrefabFormat::Json,
+            prefab_status: None,
             camera_bookmark_input: String::new(),
             scene_dependencies: None,
             scene_history,
@@ -652,6 +665,126 @@ impl App {
             return;
         }
         self.with_plugins(|plugins, ctx| plugins.handle_events(ctx, &events));
+    }
+
+    fn set_prefab_status(&mut self, kind: PrefabStatusKind, message: impl Into<String>) {
+        self.prefab_status = Some(PrefabStatusMessage { kind, message: message.into() });
+    }
+
+    fn handle_save_prefab(&mut self, request: editor_ui::PrefabSaveRequest) {
+        let trimmed = request.name.trim();
+        if trimmed.is_empty() {
+            self.set_prefab_status(PrefabStatusKind::Warning, "Prefab name cannot be empty.");
+            return;
+        }
+        if !self.ecs.entity_exists(request.entity) {
+            self.set_prefab_status(PrefabStatusKind::Error, "Selected entity is no longer available.");
+            return;
+        }
+        let Some(scene) = self.ecs.export_prefab(request.entity, &self.assets) else {
+            self.set_prefab_status(PrefabStatusKind::Error, "Failed to export selection to prefab.");
+            return;
+        };
+        let path = self.prefab_library.path_for(trimmed, request.format);
+        let sanitized_name = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or(trimmed)
+            .to_string();
+        match scene.save_to_path(&path) {
+            Ok(()) => {
+                self.prefab_name_input = sanitized_name.clone();
+                if let Err(err) = self.prefab_library.refresh() {
+                    self.set_prefab_status(
+                        PrefabStatusKind::Warning,
+                        format!(
+                            "Prefab '{}' saved but refresh failed: {err}",
+                            sanitized_name
+                        ),
+                    );
+                } else {
+                    self.set_prefab_status(
+                        PrefabStatusKind::Success,
+                        format!(
+                            "Saved prefab '{}' ({})",
+                            sanitized_name,
+                            request.format.short_label()
+                        ),
+                    );
+                }
+            }
+            Err(err) => {
+                self.set_prefab_status(PrefabStatusKind::Error, format!("Saving prefab failed: {err}"));
+            }
+        }
+    }
+
+    fn handle_instantiate_prefab(&mut self, request: editor_ui::PrefabInstantiateRequest) {
+        let entry_path = self
+            .prefab_library
+            .entries()
+            .iter()
+            .find(|entry| entry.name == request.name && entry.format == request.format)
+            .map(|entry| entry.path.clone());
+        let Some(path) = entry_path else {
+            self.set_prefab_status(
+                PrefabStatusKind::Error,
+                format!(
+                    "Prefab '{}' ({}) not found.",
+                    request.name,
+                    request.format.short_label()
+                ),
+            );
+            return;
+        };
+        let mut scene = match Scene::load_from_path(&path) {
+            Ok(scene) => scene,
+            Err(err) => {
+                self.set_prefab_status(
+                    PrefabStatusKind::Error,
+                    format!("Failed to load prefab '{}': {err}", request.name),
+                );
+                return;
+            }
+        };
+        if scene.entities.is_empty() {
+            self.set_prefab_status(
+                PrefabStatusKind::Warning,
+                format!("Prefab '{}' contains no entities.", request.name),
+            );
+            return;
+        }
+        scene = scene.with_fresh_entity_ids();
+        if let Some(target) = request.drop_position {
+            let current: Vec2 = scene.entities.first().unwrap().transform.translation.clone().into();
+            scene.offset_entities_2d(target - current);
+        }
+        match self.ecs.instantiate_prefab_with_mesh(
+            &scene,
+            &mut self.assets,
+            |key, path| self.mesh_registry.ensure_mesh(key, path, &mut self.material_registry),
+        ) {
+            Ok(spawned) => {
+                if let Some(&root) = spawned.first() {
+                    self.selected_entity = Some(root);
+                }
+                self.gizmo_interaction = None;
+                self.set_prefab_status(
+                    PrefabStatusKind::Success,
+                    format!(
+                        "Instantiated prefab '{}' ({})",
+                        request.name,
+                        request.format.short_label()
+                    ),
+                );
+            }
+            Err(err) => {
+                self.set_prefab_status(
+                    PrefabStatusKind::Error,
+                    format!("Prefab instantiate failed: {err}"),
+                );
+            }
+        }
     }
 
     fn report_audio_startup_status(&mut self) {
@@ -1877,6 +2010,23 @@ impl ApplicationHandler for App {
             } else {
                 Vec::new()
             };
+        let prefab_entries: Vec<editor_ui::PrefabShelfEntry> = self
+            .prefab_library
+            .entries()
+            .iter()
+            .map(|entry| {
+                let relative = entry
+                    .path
+                    .strip_prefix(self.prefab_library.root())
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| entry.path.display().to_string());
+                editor_ui::PrefabShelfEntry {
+                    name: entry.name.clone(),
+                    format: entry.format,
+                    path_display: relative,
+                }
+            })
+            .collect();
 
         let editor_params = editor_ui::EditorUiParams {
             raw_input,
@@ -1940,6 +2090,10 @@ impl ApplicationHandler for App {
             audio_triggers,
             audio_enabled,
             audio_health,
+            prefab_entries,
+            prefab_name_input: self.prefab_name_input.clone(),
+            prefab_format: self.prefab_format,
+            prefab_status: self.prefab_status.clone(),
             script_debugger: editor_ui::ScriptDebuggerParams {
                 open: self.script_debugger_open,
                 available: script_plugin_available,
@@ -2005,6 +2159,9 @@ impl ApplicationHandler for App {
             debug_show_colliders,
             vsync_request,
             script_debugger,
+            prefab_name_input,
+            prefab_format,
+            prefab_status,
         } = editor_output;
 
         self.ui_scale = ui_scale;
@@ -2033,6 +2190,9 @@ impl ApplicationHandler for App {
         self.camera_bookmark_input = camera_bookmark_input;
         self.debug_show_spatial_hash = debug_show_spatial_hash;
         self.debug_show_colliders = debug_show_colliders;
+        self.prefab_name_input = prefab_name_input;
+        self.prefab_format = prefab_format;
+        self.prefab_status = prefab_status;
 
         if let Some(request) = id_lookup_request {
             let trimmed = request.trim();
@@ -2318,6 +2478,12 @@ impl ApplicationHandler for App {
                     self.ui_scene_status = Some(format!("Load failed: {err}"));
                 }
             }
+        }
+        if let Some(request) = actions.save_prefab {
+            self.handle_save_prefab(request);
+        }
+        if let Some(request) = actions.instantiate_prefab {
+            self.handle_instantiate_prefab(request);
         }
         if actions.spawn_now {
             self.ecs.spawn_burst(&self.assets, self.ui_spawn_per_press as usize);
