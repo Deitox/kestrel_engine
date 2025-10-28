@@ -28,11 +28,15 @@ use bevy_ecs::prelude::Entity;
 use glam::{Mat4, Vec2, Vec3, Vec4};
 
 use anyhow::{anyhow, Context, Result};
+use notify::event::ModifyKind;
+use notify::{Config as NotifyConfig, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{DeviceEvent, ElementState, KeyEvent, WindowEvent};
@@ -188,6 +192,144 @@ struct GpuTimingFrame {
     frame_index: u64,
     timings: Vec<GpuPassTiming>,
 }
+
+struct AtlasWatchEntry {
+    key: String,
+    original: PathBuf,
+}
+
+struct AtlasHotReload {
+    watcher: RecommendedWatcher,
+    rx: Receiver<notify::Result<Event>>,
+    watched: HashMap<PathBuf, AtlasWatchEntry>,
+}
+
+fn normalize_path_for_watch(path: &Path) -> Option<(PathBuf, PathBuf)> {
+    let absolute = if path.is_absolute() { path.to_path_buf() } else { env::current_dir().ok()?.join(path) };
+    let canonical = fs::canonicalize(&absolute).unwrap_or_else(|_| absolute.clone());
+    Some((absolute, canonical))
+}
+
+fn normalize_event_path(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    } else if let Ok(cwd) = env::current_dir() {
+        let absolute = cwd.join(path);
+        fs::canonicalize(&absolute).unwrap_or(absolute)
+    } else {
+        PathBuf::from(path)
+    }
+}
+
+impl AtlasHotReload {
+    fn new() -> Result<Self> {
+        let (tx, rx) = channel();
+        let mut watcher = notify::recommended_watcher(move |res| {
+            let _ = tx.send(res);
+        })?;
+        if let Err(err) = watcher.configure(
+            NotifyConfig::default()
+                .with_compare_contents(true)
+                .with_poll_interval(Duration::from_millis(250)),
+        ) {
+            eprintln!("[assets] atlas watcher configuration warning: {err}");
+        }
+        Ok(Self { watcher, rx, watched: HashMap::new() })
+    }
+
+    fn sync(&mut self, desired: &[(PathBuf, PathBuf, String)]) -> Result<()> {
+        let mut desired_map: HashMap<PathBuf, (PathBuf, String)> = HashMap::new();
+        for (original, normalized, key) in desired {
+            desired_map.insert(normalized.clone(), (original.clone(), key.clone()));
+        }
+        for (normalized, (original, key)) in desired_map.iter() {
+            match self.watched.get_mut(normalized) {
+                Some(entry) => {
+                    if entry.key != *key {
+                        entry.key = key.clone();
+                    }
+                }
+                None => {
+                    self.watch_path(original.clone(), normalized.clone(), key.clone())
+                        .map_err(|err| anyhow!("watch failed for '{}': {err}", original.display()))?;
+                }
+            }
+        }
+        let obsolete: Vec<PathBuf> =
+            self.watched.keys().filter(|path| !desired_map.contains_key(*path)).cloned().collect();
+        for normalized in obsolete {
+            self.unwatch_path(&normalized)
+                .map_err(|err| anyhow!("unwatch failed for '{}': {err}", normalized.display()))?;
+        }
+        Ok(())
+    }
+
+    fn drain_keys(&mut self) -> Vec<String> {
+        let mut keys = Vec::new();
+        while let Ok(res) = self.rx.try_recv() {
+            match res {
+                Ok(event) => {
+                    if !Self::is_relevant(&event.kind) {
+                        continue;
+                    }
+                    for path in event.paths {
+                        if let Some(key) = self.resolve_path(&path) {
+                            if !keys.contains(&key) {
+                                keys.push(key);
+                            }
+                        }
+                    }
+                }
+                Err(err) => eprintln!("[assets] Atlas watcher error: {err}"),
+            }
+        }
+        keys
+    }
+
+    fn watch_path(&mut self, original: PathBuf, normalized: PathBuf, key: String) -> notify::Result<()> {
+        self.watcher.watch(&original, RecursiveMode::NonRecursive)?;
+        self.watched.insert(normalized, AtlasWatchEntry { key, original });
+        Ok(())
+    }
+
+    fn unwatch_path(&mut self, normalized: &Path) -> notify::Result<()> {
+        if let Some(entry) = self.watched.remove(normalized) {
+            self.watcher.unwatch(&entry.original)?;
+        }
+        Ok(())
+    }
+
+    fn resolve_path(&self, path: &Path) -> Option<String> {
+        let normalized = normalize_event_path(path);
+        if let Some(entry) = self.watched.get(&normalized) {
+            return Some(entry.key.clone());
+        }
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else if let Ok(cwd) = env::current_dir() {
+            cwd.join(path)
+        } else {
+            PathBuf::from(path)
+        };
+        for entry in self.watched.values() {
+            if entry.original == absolute {
+                return Some(entry.key.clone());
+            }
+        }
+        None
+    }
+
+    fn is_relevant(kind: &EventKind) -> bool {
+        match kind {
+            EventKind::Modify(ModifyKind::Data(_))
+            | EventKind::Modify(ModifyKind::Name(_))
+            | EventKind::Modify(ModifyKind::Any)
+            | EventKind::Create(_)
+            | EventKind::Remove(_) => true,
+            _ => false,
+        }
+    }
+}
 pub async fn run() -> Result<()> {
     run_with_overrides(AppConfigOverrides::default()).await
 }
@@ -316,12 +458,59 @@ pub struct App {
     emitter_entity: Option<Entity>,
 
     sprite_atlas_views: HashMap<String, Arc<wgpu::TextureView>>,
+    atlas_hot_reload: Option<AtlasHotReload>,
 }
 
 impl App {
     pub fn hot_reload_atlas(&mut self, key: &str) -> Result<usize> {
         self.assets.reload_atlas(key)?;
+        self.invalidate_atlas_view(key);
         Ok(self.ecs.refresh_sprite_animations_for_atlas(key, &self.assets))
+    }
+
+    fn sync_atlas_hot_reload(&mut self) {
+        let Some(watcher) = self.atlas_hot_reload.as_mut() else {
+            return;
+        };
+        let mut desired = Vec::new();
+        for (key, path) in self.assets.atlas_sources() {
+            let path_buf = PathBuf::from(path);
+            if let Some((original, normalized)) = normalize_path_for_watch(&path_buf) {
+                desired.push((original, normalized, key));
+            } else {
+                eprintln!("[assets] skipping atlas '{key}' – unable to resolve path for watching");
+            }
+        }
+        if let Err(err) = watcher.sync(&desired) {
+            eprintln!("[assets] failed to sync atlas hot-reload watchers: {err}");
+        }
+    }
+
+    fn process_atlas_hot_reload_events(&mut self) {
+        let keys = if let Some(watcher) = self.atlas_hot_reload.as_mut() {
+            watcher.drain_keys()
+        } else {
+            Vec::new()
+        };
+        if keys.is_empty() {
+            return;
+        }
+        let mut unique = keys;
+        unique.sort();
+        unique.dedup();
+        for key in unique {
+            match self.hot_reload_atlas(&key) {
+                Ok(updated) => {
+                    println!(
+                        "[assets] Hot reloaded atlas '{key}' ({updated} animation component{} refreshed)",
+                        if updated == 1 { "" } else { "s" }
+                    );
+                }
+                Err(err) => {
+                    eprintln!("[assets] Failed to hot reload atlas '{key}': {err}");
+                }
+            }
+        }
     }
 
     fn refresh_camera_follow(&mut self) -> bool {
@@ -584,6 +773,14 @@ impl App {
             plugins.handle_events(&mut ctx, &initial_events);
         }
 
+        let atlas_hot_reload = match AtlasHotReload::new() {
+            Ok(watcher) => Some(watcher),
+            Err(err) => {
+                eprintln!("[assets] atlas hot-reload disabled: {err}");
+                None
+            }
+        };
+
         let mut app = Self {
             renderer,
             ecs,
@@ -671,6 +868,7 @@ impl App {
             id_lookup_active: false,
             emitter_entity: Some(emitter),
             sprite_atlas_views: HashMap::new(),
+            atlas_hot_reload,
             frame_profiler: FrameProfiler::new(240),
             gpu_timings: Vec::new(),
             gpu_timing_history: VecDeque::with_capacity(240),
@@ -1667,6 +1865,8 @@ impl ApplicationHandler for App {
             return;
         }
         self.time.tick();
+        self.sync_atlas_hot_reload();
+        self.process_atlas_hot_reload_events();
         let dt = self.time.delta_seconds();
         self.accumulator += dt;
         self.ecs.profiler_begin_frame();

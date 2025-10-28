@@ -270,6 +270,10 @@ impl AssetManager {
         self.atlas_sources.get(key).map(|s| s.as_str())
     }
 
+    pub fn atlas_sources(&self) -> Vec<(String, String)> {
+        self.atlas_sources.iter().map(|(key, path)| (key.clone(), path.clone())).collect()
+    }
+
     pub fn reload_atlas(&mut self, key: &str) -> Result<()> {
         let source = self
             .atlas_sources
