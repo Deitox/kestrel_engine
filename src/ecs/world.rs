@@ -680,6 +680,7 @@ impl EcsWorld {
             false
         }
     }
+
     pub fn seek_sprite_animation_frame(&mut self, entity: Entity, frame: usize) -> bool {
         let Some(mut animation) = self.world.get_mut::<SpriteAnimation>(entity) else {
             return false;
@@ -704,6 +705,72 @@ impl EcsWorld {
             }
         }
         true
+    }
+
+    pub fn refresh_sprite_animations_for_atlas(&mut self, atlas_key: &str, assets: &AssetManager) -> usize {
+        let mut updated = 0usize;
+        let mut query = self.world.query::<(Entity, &mut Sprite, &mut SpriteAnimation)>();
+        for (entity, mut sprite, mut animation) in query.iter_mut(&mut self.world) {
+            if sprite.atlas_key.as_ref() != atlas_key {
+                continue;
+            }
+            let timeline_name = animation.timeline.clone();
+            let Some(definition) = assets.atlas_timeline(atlas_key, &timeline_name) else {
+                animation.frames.clear();
+                animation.frame_index = 0;
+                animation.elapsed_in_frame = 0.0;
+                animation.playing = false;
+                updated += 1;
+                eprintln!(
+                    "[assets] Atlas '{atlas_key}' no longer defines timeline '{timeline_name}' (entity {:?})",
+                    entity
+                );
+                continue;
+            };
+            let prev_region = animation.current_region_name().map(|name| name.to_string());
+            let prev_elapsed = animation.elapsed_in_frame;
+            let prev_playing = animation.playing;
+            let prev_speed = animation.speed;
+
+            animation.looped = definition.looped;
+            animation.frames = definition
+                .frames
+                .iter()
+                .map(|frame| SpriteAnimationFrame {
+                    region: frame.region.clone(),
+                    duration: frame.duration.max(std::f32::EPSILON),
+                })
+                .collect();
+
+            if animation.frames.is_empty() {
+                animation.frame_index = 0;
+                animation.elapsed_in_frame = 0.0;
+                animation.playing = false;
+                updated += 1;
+                continue;
+            }
+
+            let mut target_index = animation.frame_index.min(animation.frames.len() - 1);
+            if let Some(region_name) = prev_region.as_ref() {
+                if let Some(found) = animation.frames.iter().position(|frame| frame.region == *region_name) {
+                    target_index = found;
+                }
+            }
+            animation.frame_index = target_index;
+            let current_duration = animation.frames[target_index].duration.max(std::f32::EPSILON);
+            animation.elapsed_in_frame = prev_elapsed.min(current_duration);
+            animation.playing = prev_playing && !animation.frames.is_empty();
+            animation.speed = prev_speed;
+
+            if let Some(region) = animation.current_region_name() {
+                if sprite.region.as_ref() != region {
+                    sprite.region = Cow::Owned(region.to_string());
+                }
+            }
+
+            updated += 1;
+        }
+        updated
     }
 
     pub fn reset_sprite_animation(&mut self, entity: Entity) -> bool {

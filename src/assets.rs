@@ -2,7 +2,6 @@ use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
 
 pub struct AssetManager {
     atlases: HashMap<String, TextureAtlas>,
@@ -271,22 +270,29 @@ impl AssetManager {
         self.atlas_sources.get(key).map(|s| s.as_str())
     }
 
-    /// Stub hook for future atlas hot-reload integration.
-    /// Accepts a list of atlas sources and logs the intent without installing watchers yet.
-    pub fn watch_atlas_sources_stub<'a, I, P>(&self, paths: I)
-    where
-        I: IntoIterator<Item = &'a P>,
-        P: AsRef<Path> + 'a,
-    {
-        let joined =
-            paths.into_iter().map(|p| p.as_ref().display().to_string()).collect::<Vec<_>>().join(", ");
-        if joined.is_empty() {
-            println!("[assets] atlas hot-reload stub: no sources registered.");
-        } else {
-            println!(
-                "[assets] atlas hot-reload stub registered for: {joined}. \
-                 File watching will be implemented in Milestone 1."
-            );
+    pub fn reload_atlas(&mut self, key: &str) -> Result<()> {
+        let source = self
+            .atlas_sources
+            .get(key)
+            .cloned()
+            .ok_or_else(|| anyhow!("Atlas '{key}' has no recorded source; cannot hot-reload"))?;
+
+        let previous_image = self.atlases.get(key).map(|atlas| format!("assets/images/{}", atlas.image_key));
+
+        self.load_atlas_internal(key, &source)?;
+
+        if let Some(image_path) = previous_image {
+            self.texture_cache.remove(&image_path);
         }
+        if let Some(current) = self.atlases.get(key) {
+            let image_path = format!("assets/images/{}", current.image_key);
+            self.texture_cache.remove(&image_path);
+            if self.device.is_some() {
+                if let Err(err) = self.load_or_reload_view(key, true) {
+                    eprintln!("[assets] Warning: failed to refresh GPU texture for atlas '{key}': {err}");
+                }
+            }
+        }
+        Ok(())
     }
 }

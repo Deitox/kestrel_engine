@@ -319,6 +319,11 @@ pub struct App {
 }
 
 impl App {
+    pub fn hot_reload_atlas(&mut self, key: &str) -> Result<usize> {
+        self.assets.reload_atlas(key)?;
+        Ok(self.ecs.refresh_sprite_animations_for_atlas(key, &self.assets))
+    }
+
     fn refresh_camera_follow(&mut self) -> bool {
         let Some(target_id) = self.camera_follow_target.as_ref().map(|id| id.as_str().to_string()) else {
             return false;
