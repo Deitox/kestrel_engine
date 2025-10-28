@@ -54,11 +54,8 @@ fn prefab_offset_entities_3d_aligns_with_drop_target() {
 
     let mut scene = ecs.export_prefab(entity, &assets).expect("export prefab");
     let root = scene.entities.first().expect("prefab root");
-    let current = root
-        .transform3d
-        .as_ref()
-        .map(|tx| Vec3::from(tx.translation.clone()))
-        .unwrap_or_else(|| {
+    let current =
+        root.transform3d.as_ref().map(|tx| Vec3::from(tx.translation.clone())).unwrap_or_else(|| {
             let base: Vec2 = root.transform.translation.clone().into();
             Vec3::new(base.x, base.y, 0.0)
         });
@@ -68,11 +65,8 @@ fn prefab_offset_entities_3d_aligns_with_drop_target() {
 
     let updated = scene.entities.first().expect("updated root");
     let updated2d: Vec2 = updated.transform.translation.clone().into();
-    let updated3d = updated
-        .transform3d
-        .as_ref()
-        .map(|tx| Vec3::from(tx.translation.clone()))
-        .expect("3d transform");
+    let updated3d =
+        updated.transform3d.as_ref().map(|tx| Vec3::from(tx.translation.clone())).expect("3d transform");
 
     assert!((updated2d.x - target.x).abs() < 1e-4);
     assert!((updated2d.y - target.y).abs() < 1e-4);

@@ -718,24 +718,24 @@ impl App {
             Ok(()) => {
                 self.prefab_name_input = sanitized_name.clone();
                 if let Err(err) = self.prefab_library.refresh() {
-                self.set_prefab_status(
-                    PrefabStatusKind::Warning,
-                    format!("Prefab '{}' saved but refresh failed: {err}", sanitized_name),
-                );
-            } else {
-                self.set_prefab_status(
-                    if existed { PrefabStatusKind::Info } else { PrefabStatusKind::Success },
-                    if existed {
-                        format!(
-                            "Overwrote prefab '{}' ({})",
-                            sanitized_name,
-                            request.format.short_label()
-                        )
-                    } else {
-                        format!("Saved prefab '{}' ({})", sanitized_name, request.format.short_label())
-                    },
-                );
-            }
+                    self.set_prefab_status(
+                        PrefabStatusKind::Warning,
+                        format!("Prefab '{}' saved but refresh failed: {err}", sanitized_name),
+                    );
+                } else {
+                    self.set_prefab_status(
+                        if existed { PrefabStatusKind::Info } else { PrefabStatusKind::Success },
+                        if existed {
+                            format!(
+                                "Overwrote prefab '{}' ({})",
+                                sanitized_name,
+                                request.format.short_label()
+                            )
+                        } else {
+                            format!("Saved prefab '{}' ({})", sanitized_name, request.format.short_label())
+                        },
+                    );
+                }
             }
             Err(err) => {
                 self.set_prefab_status(PrefabStatusKind::Error, format!("Saving prefab failed: {err}"));

@@ -1796,9 +1796,7 @@ impl App {
                         {
                             let payload = (*payload).clone();
                             let drop_target = match self.viewport_camera_mode {
-                                ViewportCameraMode::Ortho2D => {
-                                    cursor_world_2d.map(PrefabDropTarget::World2D)
-                                }
+                                ViewportCameraMode::Ortho2D => cursor_world_2d.map(PrefabDropTarget::World2D),
                                 ViewportCameraMode::Perspective3D => cursor_ray
                                     .and_then(|(origin, dir)| {
                                         Self::intersect_ray_plane(origin, dir, Vec3::ZERO, Vec3::Z)

@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
+use std::path::Path;
 
 pub struct AssetManager {
     atlases: HashMap<String, TextureAtlas>,
@@ -268,5 +269,24 @@ impl AssetManager {
     }
     pub fn atlas_source(&self, key: &str) -> Option<&str> {
         self.atlas_sources.get(key).map(|s| s.as_str())
+    }
+
+    /// Stub hook for future atlas hot-reload integration.
+    /// Accepts a list of atlas sources and logs the intent without installing watchers yet.
+    pub fn watch_atlas_sources_stub<'a, I, P>(&self, paths: I)
+    where
+        I: IntoIterator<Item = &'a P>,
+        P: AsRef<Path> + 'a,
+    {
+        let joined =
+            paths.into_iter().map(|p| p.as_ref().display().to_string()).collect::<Vec<_>>().join(", ");
+        if joined.is_empty() {
+            println!("[assets] atlas hot-reload stub: no sources registered.");
+        } else {
+            println!(
+                "[assets] atlas hot-reload stub registered for: {joined}. \
+                 File watching will be implemented in Milestone 1."
+            );
+        }
     }
 }

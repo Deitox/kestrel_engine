@@ -280,6 +280,18 @@ pub(super) fn show_entity_inspector(
                             (anim.frame_index + 1).min(frame_count),
                             frame_count
                         ));
+                        ui.separator();
+                        let max_index = (frame_count.saturating_sub(1)) as f32;
+                        let mut preview_frame = anim.frame_index as f32;
+                        ui.add_enabled(
+                            false,
+                            egui::Slider::new(&mut preview_frame, 0.0..=max_index).text("Scrub (stub)"),
+                        );
+                        ui.horizontal(|ui| {
+                            ui.add_enabled(false, egui::Button::new("<"));
+                            ui.add_enabled(false, egui::Button::new(">"));
+                            ui.label("Timeline preview controls forthcoming.");
+                        });
                     }
                 }
             } else {
