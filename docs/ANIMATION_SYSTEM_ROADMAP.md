@@ -138,9 +138,9 @@ Benchmarks emit CSV summaries for CI. Failing budgets block the milestone exit.
 - **Risk Watch:** Ping-pong edge duplication, event flood at high FPS, skinning buffer exhaustion, and graph oscillation loops - each gets targeted tests before milestone close.
 
 ## Immediate Next Actions
-1. Implement `tests/animation_bench.rs` with entity-count sweeps and CSV output; wire into CI.
-2. Add inspector scrubber + frame nudge controls to the existing sprite UI.
-3. Introduce hot-reload-by-name logic for atlas timelines, preserving frame continuity.
-4. Land Aseprite timeline importer (CLI) with sample fixtures.
+- [x] Implement `tests/animation_bench.rs` with entity-count sweeps and CSV output; wire into CI.
+- [ ] Add inspector scrubber + frame nudge controls to the existing sprite UI.
+- [ ] Introduce hot-reload-by-name logic for atlas timelines, preserving frame continuity.
+- [ ] Land Aseprite timeline importer (CLI) with sample fixtures.
 
 This roadmap supersedes earlier drafts and reflects the final agreed-upon plan for animation system development. Further adjustments will follow formal change control once milestones begin execution.
