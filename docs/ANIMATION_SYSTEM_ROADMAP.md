@@ -26,17 +26,17 @@ This foundation remains unchanged; new work layers on top of it.
 
 | Feature Area             | Budget (Release Build)                     | Test Coverage                          |
 |--------------------------|--------------------------------------------|----------------------------------------|
-| Sprite timelines         | ≤ 0.20 ms CPU for 10 000 animators         | `animation_bench` sweep + golden tests |
-| Transform/property clips | ≤ 0.40 ms CPU for 2 000 clips (linear/step)| Bench sweep + end-pose golden tests    |
-| Skeletal evaluation      | ≤ 1.20 ms CPU for 1 000 bones              | Bench sweep + pose verification        |
-| Skeletal upload          | ≤ 0.50 ms GPU upload per frame             | Renderer metrics + analytics hook      |
-| Graph evaluation         | TBD (track with 5 actors × 3 layers)       | Deterministic state/transition tests   |
+| Sprite timelines         | <= 0.20 ms CPU for 10 000 animators        | `animation_bench` sweep + golden tests |
+| Transform/property clips | <= 0.40 ms CPU for 2 000 clips (linear/step) | Bench sweep + end-pose golden tests   |
+| Skeletal evaluation      | <= 1.20 ms CPU for 1 000 bones             | Bench sweep + pose verification        |
+| Skeletal upload          | <= 0.50 ms GPU upload per frame            | Renderer metrics + analytics hook      |
+| Graph evaluation         | TBD (track with 5 actors x 3 layers)       | Deterministic state/transition tests   |
 
 Benchmarks emit CSV summaries for CI. Failing budgets block the milestone exit.
 
 ---
 
-## Milestone 1 — Productionize Sprite Timelines
+## Milestone 1 - Productionize Sprite Timelines
 **Objective:** Turn the existing sprite animation into a hot-reloadable, ergonomic, performant system ready for shipped games.
 
 ### Scope
@@ -50,32 +50,32 @@ Benchmarks emit CSV summaries for CI. Failing budgets block the milestone exit.
 - **Performance Polish:** Intern region names to IDs, store `u16` region indices, precompute UV rectangles, and only write to `Sprite` when frames change. Enforce zero allocations per frame.
 
 ### Exit Criteria
-- `animation_bench` demonstrates ≤ 0.20 ms CPU for 10 000 animators (release build).
+- `animation_bench` demonstrates <= 0.20 ms CPU for 10 000 animators (release build).
 - Golden playback tests cover all loop modes, phase offsets, ping-pong edge frames, and event dispatch.
 - Hot-reload regression test confirms frame continuity when names persist.
 - Authoring doc published; importer validated via automated test using a fixture Aseprite export.
 
 ---
 
-## Milestone 2 — Transform & Property Tracks
+## Milestone 2 - Transform & Property Tracks
 **Objective:** Introduce clip-driven animation for transforms and simple properties with deterministic playback.
 
 ### Scope
 - `AnimationClip` assets (JSON/`.kscene`) with versioned schema containing named tracks for translation, rotation, scale, and tint.
-- Interpolation limited to **Step** and **Linear**; track resolution operates in O(N) with “last writer wins” semantics per component.
+- Interpolation limited to **Step** and **Linear**; track resolution operates in O(N) with "last writer wins" semantics per component.
 - ECS components/resources: `ClipInstance`, `TransformTrackPlayer`, `PropertyTrackPlayer`, reuse global/layer time scale controls.
 - Systems: `sys_drive_transform_tracks` and property update systems respecting the no-allocation rule.
 - Inspector: clip assignment widget, play/pause, speed, scrubber (read-only keyframe markers), and per-entity track status.
 - Serialization updates for scenes/prefabs with versioned migrations.
 
 ### Exit Criteria
-- Benchmarks show ≤ 0.40 ms CPU for 2 000 active clips (release).
+- Benchmarks show <= 0.40 ms CPU for 2 000 active clips (release).
 - Golden tests validate interpolation correctness and final poses after deterministic playback.
 - Scene/prefab round-trip tests verify clip bindings remain intact.
 
 ---
 
-## Milestone 3 — Skeletal Animation MVP (GLTF Focus)
+## Milestone 3 - Skeletal Animation MVP (GLTF Focus)
 **Objective:** Support bone-driven animation for character rigs using GLTF assets and GPU skinning.
 
 ### Scope
@@ -87,13 +87,13 @@ Benchmarks emit CSV summaries for CI. Failing budgets block the milestone exit.
 - Analytics: expose active bone counts and CPU/GPU timings via existing profiler panel.
 
 ### Exit Criteria
-- Benchmarks confirm ≤ 1.20 ms CPU for evaluating 1 000 bones and ≤ 0.50 ms GPU upload per frame.
+- Benchmarks confirm <= 1.20 ms CPU for evaluating 1 000 bones and <= 0.50 ms GPU upload per frame.
 - Golden pose tests compare evaluator output against fixture data.
 - Import regression test validates skeleton/clip data across sample GLTF files.
 
 ---
 
-## Milestone 4 — Animation Graphs v0
+## Milestone 4 - Animation Graphs v0
 **Objective:** Enable deterministic state machines with light blending for sprite, transform, and skeletal clips.
 
 ### Scope
@@ -107,12 +107,12 @@ Benchmarks emit CSV summaries for CI. Failing budgets block the milestone exit.
 
 ### Exit Criteria
 - Deterministic graph tests (unit + integration) pass with seeded parameter drives.
-- Performance tracked with scenario: 5 characters × 3 layers stays within allocated CPU budget (TBD, record and set threshold).
+- Performance tracked with scenario: 5 characters x 3 layers stays within allocated CPU budget (TBD, record and set threshold).
 - Scripting API documented with samples.
 
 ---
 
-## Milestone 5 — Tooling, Automation, and Analytics
+## Milestone 5 - Tooling, Automation, and Analytics
 **Objective:** Round out authoring experience, automation, and visibility.
 
 ### Scope
@@ -135,7 +135,7 @@ Benchmarks emit CSV summaries for CI. Failing budgets block the milestone exit.
 - **Error Surfacing:** Log asset/schema issues via `EventBus`, show warnings in inspector, and track analytics counters for failures.
 - **Serialization & Migration:** Maintain changelog of schema updates; provide scripts for migrating legacy files; enforce version checks in loaders.
 - **Platform Constraints:** Track GPU palette limits (WebGPU/DX12/Vulkan) and split draw calls accordingly; gate features behind flags when not supported.
-- **Risk Watch:** Ping-pong edge duplication, event flood at high FPS, skinning buffer exhaustion, and graph oscillation loops—each gets targeted tests before milestone close.
+- **Risk Watch:** Ping-pong edge duplication, event flood at high FPS, skinning buffer exhaustion, and graph oscillation loops - each gets targeted tests before milestone close.
 
 ## Immediate Next Actions
 1. Implement `tests/animation_bench.rs` with entity-count sweeps and CSV output; wire into CI.
