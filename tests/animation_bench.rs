@@ -4,8 +4,10 @@
 //! `cargo test --release animation_bench_run -- --ignored --nocapture`.
 
 use kestrel_engine::ecs::{EcsWorld, Sprite, SpriteAnimation, SpriteAnimationFrame, SpriteAnimationLoopMode};
+use std::collections::hash_map::DefaultHasher;
 use std::env;
 use std::fs::{create_dir_all, File};
+use std::hash::{Hash, Hasher};
 use std::hint::black_box;
 use std::io::Write;
 use std::path::PathBuf;
@@ -26,6 +28,7 @@ struct BenchConfig {
     warmup_steps: u32,
     samples: usize,
     sweep: Vec<usize>,
+    randomize_phase: bool,
 }
 
 struct BenchSummary {
@@ -61,8 +64,8 @@ fn animation_bench_run() {
     }
 
     println!(
-        "[animation_bench] config: steps={} warmup={} samples={} dt={:.6}",
-        config.steps, config.warmup_steps, config.samples, config.dt
+        "[animation_bench] config: steps={} warmup={} samples={} dt={:.6} randomize_phase={}",
+        config.steps, config.warmup_steps, config.samples, config.dt, config.randomize_phase
     );
 
     let mut results = Vec::with_capacity(config.sweep.len());
@@ -101,7 +104,7 @@ fn run_bench_case(animator_count: usize, config: &BenchConfig) -> BenchResult {
 
     for _ in 0..config.samples {
         let mut world = EcsWorld::new();
-        seed_sprite_animators(&mut world, animator_count);
+        seed_sprite_animators(&mut world, animator_count, config.randomize_phase);
 
         for _ in 0..config.warmup_steps {
             world.update(config.dt);
@@ -166,15 +169,16 @@ fn bench_config() -> BenchConfig {
     let dt = parse_env::<f32>("ANIMATION_BENCH_DT").unwrap_or(DEFAULT_DT);
     let samples = parse_env::<usize>("ANIMATION_BENCH_SAMPLES").unwrap_or(DEFAULT_SAMPLES).max(1);
     let sweep = parse_sweep("ANIMATION_BENCH_SWEEP").unwrap_or_else(|| DEFAULT_ANIMATOR_SWEEP.to_vec());
+    let randomize_phase = parse_env_bool("ANIMATION_BENCH_RANDOMIZE_PHASES").unwrap_or(true);
 
-    BenchConfig { steps, dt, warmup_steps, samples, sweep }
+    BenchConfig { steps, dt, warmup_steps, samples, sweep, randomize_phase }
 }
 
 fn budget_for(animators: usize) -> Option<f64> {
     BUDGETS_MS.iter().find_map(|(count, budget)| (*count == animators).then_some(*budget))
 }
 
-fn seed_sprite_animators(world: &mut EcsWorld, count: usize) {
+fn seed_sprite_animators(world: &mut EcsWorld, count: usize, randomize_phase: bool) {
     let empty_events: Arc<[Arc<str>]> = Arc::from(Vec::<Arc<str>>::new());
     let frame_template: Arc<[SpriteAnimationFrame]> = Arc::from(vec![
         SpriteAnimationFrame {
@@ -200,22 +204,76 @@ fn seed_sprite_animators(world: &mut EcsWorld, count: usize) {
         },
     ]);
     let timeline_name = Arc::from("bench_cycle");
+    let atlas_key = Arc::from("bench");
 
-    for _ in 0..count {
-        world.world.spawn((
-            Sprite {
-                atlas_key: Arc::from("bench"),
-                region: Arc::from("frame_a"),
-                region_id: 0,
-                uv: [0.0; 4],
-            },
-            SpriteAnimation::new(
-                Arc::clone(&timeline_name),
-                Arc::clone(&frame_template),
-                SpriteAnimationLoopMode::Loop,
-            ),
-        ));
+    for index in 0..count {
+        let mut animation = SpriteAnimation::new(
+            Arc::clone(&timeline_name),
+            Arc::clone(&frame_template),
+            SpriteAnimationLoopMode::Loop,
+        );
+
+        if randomize_phase {
+            apply_randomized_phase(&mut animation, index as u64, timeline_name.as_ref());
+        } else {
+        }
+
+        let mut sprite = Sprite::uninitialized(Arc::clone(&atlas_key), Arc::clone(&frame_template[0].region));
+        if let Some(frame) = animation.current_frame() {
+            sprite.apply_frame(frame);
+        }
+
+        world.world.spawn((sprite, animation));
     }
+}
+
+fn apply_randomized_phase(animation: &mut SpriteAnimation, seed: u64, timeline: &str) {
+    if animation.frames.is_empty() {
+        return;
+    }
+    let total = animation.total_duration();
+    if total <= 0.0 {
+        return;
+    }
+    let fraction = stable_phase_fraction(seed, timeline);
+    let offset = (fraction * total).rem_euclid(total.max(std::f32::EPSILON));
+    apply_phase_offset(animation, offset);
+}
+
+fn apply_phase_offset(animation: &mut SpriteAnimation, mut offset: f32) {
+    if animation.frames.is_empty() {
+        animation.frame_index = 0;
+        animation.elapsed_in_frame = 0.0;
+        animation.forward = true;
+        return;
+    }
+    let total = animation.total_duration().max(std::f32::EPSILON);
+    offset = offset.rem_euclid(total);
+
+    animation.frame_index = 0;
+    animation.elapsed_in_frame = 0.0;
+    animation.forward = true;
+
+    let mut accumulated = 0.0;
+    for (index, frame) in animation.frames.iter().enumerate() {
+        let duration = frame.duration.max(std::f32::EPSILON);
+        if offset < accumulated + duration {
+            animation.frame_index = index;
+            animation.elapsed_in_frame = (offset - accumulated).clamp(0.0, duration);
+            return;
+        }
+        accumulated += duration;
+    }
+
+    animation.frame_index = animation.frames.len().saturating_sub(1);
+    animation.elapsed_in_frame = 0.0;
+}
+fn stable_phase_fraction(seed: u64, timeline: &str) -> f32 {
+    let mut hasher = DefaultHasher::new();
+    seed.hash(&mut hasher);
+    timeline.hash(&mut hasher);
+    const SCALE: f64 = 1.0 / (u64::MAX as f64 + 1.0);
+    (hasher.finish() as f64 * SCALE) as f32
 }
 
 fn write_csv(results: &[BenchResult]) -> std::io::Result<()> {
@@ -306,5 +364,21 @@ fn parse_sweep(key: &str) -> Option<Vec<usize>> {
         None
     } else {
         Some(counts)
+    }
+}
+
+fn parse_env_bool(key: &str) -> Option<bool> {
+    let raw = env::var(key).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    match trimmed.to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "y" | "on" => Some(true),
+        "0" | "false" | "no" | "n" | "off" => Some(false),
+        other => {
+            eprintln!("[animation_bench] Ignoring {key}={raw:?}: unsupported boolean value '{other}'");
+            None
+        }
     }
 }

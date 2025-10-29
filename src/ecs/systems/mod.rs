@@ -46,6 +46,10 @@ impl AnimationTime {
         group.and_then(|name| self.group_scales.get(name).copied()).unwrap_or(1.0).max(0.0)
     }
 
+    pub fn has_group_scales(&self) -> bool {
+        !self.group_scales.is_empty()
+    }
+
     pub fn set_fixed_step(&mut self, value: Option<f32>) {
         self.fixed_step = value.map(|step| step.max(std::f32::EPSILON));
         if self.fixed_step.is_none() {
@@ -76,8 +80,6 @@ impl AnimationTime {
         }
     }
 }
-
-#[derive(Clone, Copy)]
 pub enum AnimationDelta {
     None,
     Single(f32),
