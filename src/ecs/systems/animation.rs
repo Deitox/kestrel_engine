@@ -16,23 +16,30 @@ pub fn sys_drive_sprite_animations(
     let _span = profiler.scope("sys_drive_sprite_animations");
     let plan = animation_time.consume(dt.0);
     let has_steps = plan.has_steps();
+    let has_group_scales = animation_time.has_group_scales();
 
     for (entity, mut sprite, mut animation) in query.iter_mut() {
-        if animation.frames.is_empty() {
+        let frame_count = animation.frames.len();
+        if frame_count == 0 {
             continue;
         }
-        if animation.frame_index >= animation.frames.len() {
+        if animation.frame_index >= frame_count {
             animation.frame_index = 0;
             animation.elapsed_in_frame = 0.0;
         }
-        if !animation.playing {
+        if !animation.playing || !has_steps {
             continue;
         }
-        if !has_steps {
-            continue;
-        }
-        let group_scale = animation_time.group_scale(animation.group());
-        if group_scale <= 0.0 {
+
+        let playback_rate = if animation.playback_rate_dirty {
+            let group_scale =
+                if has_group_scales { animation_time.group_scale(animation.group.as_deref()) } else { 1.0 };
+            animation.ensure_playback_rate(group_scale)
+        } else {
+            animation.playback_rate
+        };
+
+        if playback_rate <= 0.0 {
             continue;
         }
 
@@ -40,9 +47,17 @@ pub fn sys_drive_sprite_animations(
         match plan {
             AnimationDelta::None => {}
             AnimationDelta::Single(delta) => {
-                let scaled = delta * animation.speed.max(0.0) * group_scale;
+                let scaled = delta * playback_rate;
                 if scaled > 0.0 {
-                    if animation.has_events {
+                    if animation.fast_loop {
+                        let current_duration = animation.frames[animation.frame_index].duration;
+                        let time_left = current_duration - animation.elapsed_in_frame;
+                        if scaled <= time_left {
+                            animation.elapsed_in_frame += scaled;
+                        } else if advance_animation_loop_no_events(&mut animation, scaled) {
+                            sprite_changed = true;
+                        }
+                    } else if animation.has_events {
                         let events_ref = &mut *events;
                         if advance_animation(&mut animation, scaled, entity, Some(events_ref), true) {
                             sprite_changed = true;
@@ -56,11 +71,20 @@ pub fn sys_drive_sprite_animations(
                 if steps == 0 {
                     continue;
                 }
-                let scaled_step = step * animation.speed.max(0.0) * group_scale;
+                let scaled_step = step * playback_rate;
                 if scaled_step <= 0.0 {
                     continue;
                 }
-                if animation.has_events {
+                if animation.fast_loop {
+                    let total = scaled_step * steps as f32;
+                    let current_duration = animation.frames[animation.frame_index].duration;
+                    let time_left = current_duration - animation.elapsed_in_frame;
+                    if total <= time_left {
+                        animation.elapsed_in_frame += total;
+                    } else if advance_animation_loop_no_events(&mut animation, total) {
+                        sprite_changed = true;
+                    }
+                } else if animation.has_events {
                     let events_ref = &mut *events;
                     for _ in 0..steps {
                         if !animation.playing {
@@ -84,13 +108,11 @@ pub fn sys_drive_sprite_animations(
         }
 
         if sprite_changed {
-            if let Some(frame) = animation.current_frame() {
-                sprite.apply_frame(frame);
-            }
+            let frame = &animation.frames[animation.frame_index];
+            sprite.apply_frame(frame);
         }
     }
 }
-
 pub(crate) fn initialize_animation_phase(animation: &mut SpriteAnimation, entity: Entity) -> bool {
     if animation.frames.is_empty() {
         return false;
@@ -130,14 +152,15 @@ pub(crate) fn advance_animation(
     if delta <= 0.0 {
         return false;
     }
-    if animation.frames.is_empty() {
+    let frames = animation.frames.as_ref();
+    if frames.is_empty() {
         return false;
     }
 
-    let len = animation.frames.len();
+    let len = frames.len();
     let mut frame_changed = false;
     while delta > 0.0 && animation.playing {
-        let frame_duration = animation.frames[animation.frame_index].duration;
+        let frame_duration = unsafe { frames.get_unchecked(animation.frame_index).duration };
         let time_left = frame_duration - animation.elapsed_in_frame;
         if delta < time_left {
             animation.elapsed_in_frame += delta;
@@ -168,7 +191,7 @@ pub(crate) fn advance_animation(
             }
             SpriteAnimationLoopMode::OnceHold => {
                 animation.frame_index = len.saturating_sub(1);
-                if let Some(last) = animation.frames.last() {
+                if let Some(last) = frames.last() {
                     animation.elapsed_in_frame = last.duration;
                 }
                 frame_changed = true;
@@ -212,6 +235,43 @@ pub(crate) fn advance_animation(
         }
     }
 
+    frame_changed
+}
+
+#[inline(always)]
+fn advance_animation_loop_no_events(animation: &mut SpriteAnimation, mut delta: f32) -> bool {
+    if delta <= 0.0 || !animation.playing {
+        return false;
+    }
+    let frames = animation.frames.as_ref();
+    let len = frames.len();
+    if len == 0 {
+        return false;
+    }
+
+    let mut index = animation.frame_index;
+    let mut elapsed = animation.elapsed_in_frame;
+    let mut frame_changed = false;
+
+    while delta > 0.0 {
+        let frame_duration = unsafe { frames.get_unchecked(index).duration };
+        let time_left = frame_duration - elapsed;
+        if delta <= time_left {
+            elapsed += delta;
+            break;
+        }
+
+        delta -= time_left;
+        elapsed = 0.0;
+        index += 1;
+        if index == len {
+            index = 0;
+        }
+        frame_changed = true;
+    }
+
+    animation.frame_index = index;
+    animation.elapsed_in_frame = elapsed;
     frame_changed
 }
 

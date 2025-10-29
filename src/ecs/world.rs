@@ -697,7 +697,7 @@ impl EcsWorld {
     pub fn set_sprite_animation_speed(&mut self, entity: Entity, speed: f32) -> bool {
         if let Some(mut animation) = self.world.get_mut::<SpriteAnimation>(entity) {
             if speed.is_finite() {
-                animation.speed = speed.max(0.0);
+                animation.set_speed(speed);
             }
             true
         } else {
@@ -747,7 +747,16 @@ impl EcsWorld {
     }
 
     pub fn set_animation_group_scale(&mut self, group: &str, scale: f32) {
-        self.world.resource_mut::<AnimationTime>().set_group_scale(group, scale);
+        {
+            let mut animation_time = self.world.resource_mut::<AnimationTime>();
+            animation_time.set_group_scale(group, scale);
+        }
+        let mut query = self.world.query::<&mut SpriteAnimation>();
+        for mut animation in query.iter_mut(&mut self.world) {
+            if animation.group.as_deref() == Some(group) {
+                animation.mark_playback_rate_dirty();
+            }
+        }
     }
 
     fn reinitialize_sprite_animation_phase(&mut self, entity: Entity) {
@@ -819,6 +828,7 @@ impl EcsWorld {
             let Some(definition) = assets.atlas_timeline(atlas_key, timeline_name.as_ref()) else {
                 animation.frames = Arc::from(Vec::<SpriteAnimationFrame>::new());
                 animation.has_events = false;
+                animation.fast_loop = false;
                 animation.frame_index = 0;
                 animation.elapsed_in_frame = 0.0;
                 animation.playing = false;
@@ -840,6 +850,8 @@ impl EcsWorld {
             animation.frames = Arc::clone(&definition.frames);
             animation.timeline = Arc::clone(&definition.name);
             animation.has_events = animation.frames.iter().any(|frame| !frame.events.is_empty());
+            animation.fast_loop =
+                !animation.has_events && matches!(animation.mode, SpriteAnimationLoopMode::Loop);
 
             if animation.frames.is_empty() {
                 animation.frame_index = 0;
@@ -899,7 +911,7 @@ impl EcsWorld {
             animation.elapsed_in_frame = (progress * new_duration).min(new_duration);
             animation.playing = prev_playing && !animation.frames.is_empty();
             animation.forward = prev_forward;
-            animation.speed = prev_speed;
+            animation.set_speed(prev_speed);
 
             if let Some(frame) = animation.current_frame() {
                 sprite.apply_frame(frame);

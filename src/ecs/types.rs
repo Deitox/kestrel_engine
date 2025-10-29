@@ -84,6 +84,9 @@ pub struct SpriteAnimation {
     pub random_start: bool,
     pub group: Option<String>,
     pub has_events: bool,
+    pub playback_rate: f32,
+    pub playback_rate_dirty: bool,
+    pub fast_loop: bool,
 }
 
 impl SpriteAnimation {
@@ -93,6 +96,7 @@ impl SpriteAnimation {
         mode: SpriteAnimationLoopMode,
     ) -> Self {
         let has_events = frames.iter().any(|frame| !frame.events.is_empty());
+        let fast_loop = !has_events && matches!(mode, SpriteAnimationLoopMode::Loop);
         Self {
             timeline,
             frames,
@@ -107,6 +111,9 @@ impl SpriteAnimation {
             random_start: false,
             group: None,
             has_events,
+            playback_rate: 0.0,
+            playback_rate_dirty: true,
+            fast_loop,
         }
     }
 
@@ -114,6 +121,7 @@ impl SpriteAnimation {
         self.mode = mode;
         self.looped = mode.looped();
         self.forward = true;
+        self.fast_loop = !self.has_events && matches!(self.mode, SpriteAnimationLoopMode::Loop);
     }
 
     pub fn set_start_offset(&mut self, offset: f32) {
@@ -126,6 +134,7 @@ impl SpriteAnimation {
 
     pub fn set_group<S: Into<Option<String>>>(&mut self, group: S) {
         self.group = group.into();
+        self.mark_playback_rate_dirty();
     }
 
     pub fn group(&self) -> Option<&str> {
@@ -154,6 +163,25 @@ impl SpriteAnimation {
 
     pub fn total_duration(&self) -> f32 {
         self.frames.iter().map(|frame| frame.duration).sum()
+    }
+
+    pub fn mark_playback_rate_dirty(&mut self) {
+        self.playback_rate_dirty = true;
+    }
+
+    pub fn set_speed(&mut self, speed: f32) {
+        self.speed = speed.max(0.0);
+        self.playback_rate_dirty = true;
+    }
+
+    pub fn ensure_playback_rate(&mut self, group_scale: f32) -> f32 {
+        let clamped_group = group_scale.max(0.0);
+        let base_speed = self.speed.max(0.0);
+        if self.playback_rate_dirty {
+            self.playback_rate = (base_speed * clamped_group).max(0.0);
+            self.playback_rate_dirty = false;
+        }
+        self.playback_rate
     }
 }
 
