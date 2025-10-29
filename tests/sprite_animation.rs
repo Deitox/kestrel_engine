@@ -39,7 +39,7 @@ fn sprite_animation_advances_and_resets() {
         .spawn((
             Transform::default(),
             WorldTransform::default(),
-            Sprite { atlas_key: Arc::from("main"), region: Arc::from("redorb") },
+            Sprite::uninitialized(Arc::from("main"), Arc::from("redorb")),
         ))
         .id();
     assert!(
@@ -83,7 +83,7 @@ fn sprite_animation_seek_updates_frame() {
         .spawn((
             Transform::default(),
             WorldTransform::default(),
-            Sprite { atlas_key: Arc::from("main"), region: Arc::from("redorb") },
+            Sprite::uninitialized(Arc::from("main"), Arc::from("redorb")),
         ))
         .id();
     assert!(ecs.set_sprite_timeline(entity, &assets, Some("demo_cycle")));
@@ -119,7 +119,7 @@ fn sprite_animation_hot_reload_preserves_frame() {
         .spawn((
             Transform::default(),
             WorldTransform::default(),
-            Sprite { atlas_key: Arc::from("main"), region: Arc::from("redorb") },
+            Sprite::uninitialized(Arc::from("main"), Arc::from("redorb")),
         ))
         .id();
     assert!(ecs.set_sprite_timeline(entity, &assets, Some("demo_cycle")));
@@ -175,7 +175,7 @@ fn sprite_animation_ping_pong_reverses_direction() {
         .spawn((
             Transform::default(),
             WorldTransform::default(),
-            Sprite { atlas_key: Arc::from("main"), region: Arc::from("redorb") },
+            Sprite::uninitialized(Arc::from("main"), Arc::from("redorb")),
         ))
         .id();
     assert!(ecs.set_sprite_timeline(entity, &assets, Some("demo_cycle")));
@@ -218,7 +218,7 @@ fn sprite_animation_once_hold_stays_on_last_frame() {
         .spawn((
             Transform::default(),
             WorldTransform::default(),
-            Sprite { atlas_key: Arc::from("main"), region: Arc::from("redorb") },
+            Sprite::uninitialized(Arc::from("main"), Arc::from("redorb")),
         ))
         .id();
     assert!(ecs.set_sprite_timeline(entity, &assets, Some("demo_cycle")));
@@ -255,7 +255,7 @@ fn sprite_animation_events_emit_on_frame_entry() {
         .spawn((
             Transform::default(),
             WorldTransform::default(),
-            Sprite { atlas_key: Arc::from("main"), region: Arc::from("redorb") },
+            Sprite::uninitialized(Arc::from("main"), Arc::from("redorb")),
         ))
         .id();
     assert!(ecs.set_sprite_timeline(entity, &assets, Some("demo_cycle")));
@@ -289,7 +289,7 @@ fn sprite_animation_info_reports_frame_metadata() {
         .spawn((
             Transform::default(),
             WorldTransform::default(),
-            Sprite { atlas_key: Arc::from("main"), region: Arc::from("redorb") },
+            Sprite::uninitialized(Arc::from("main"), Arc::from("redorb")),
             SceneEntityTag::new(SceneEntityId::new()),
         ))
         .id();
@@ -333,7 +333,7 @@ fn sprite_animation_hot_reload_handles_duplicate_regions() {
         .spawn((
             Transform::default(),
             WorldTransform::default(),
-            Sprite { atlas_key: Arc::from("main"), region: Arc::from("redorb") },
+            Sprite::uninitialized(Arc::from("main"), Arc::from("redorb")),
         ))
         .id();
     assert!(ecs.set_sprite_timeline(entity, &assets, Some("demo_cycle")));
@@ -389,7 +389,7 @@ fn sprite_animation_respects_start_offset() {
         .spawn((
             Transform::default(),
             WorldTransform::default(),
-            Sprite { atlas_key: Arc::from("main"), region: Arc::from("redorb") },
+            Sprite::uninitialized(Arc::from("main"), Arc::from("redorb")),
         ))
         .id();
     assert!(ecs.set_sprite_timeline(entity, &assets, Some("demo_cycle")));
@@ -409,7 +409,7 @@ fn sprite_animation_random_start_is_stable() {
         .spawn((
             Transform::default(),
             WorldTransform::default(),
-            Sprite { atlas_key: Arc::from("main"), region: Arc::from("redorb") },
+            Sprite::uninitialized(Arc::from("main"), Arc::from("redorb")),
         ))
         .id();
     assert!(world_a.set_sprite_timeline(entity_a, &assets, Some("demo_cycle")));
@@ -422,7 +422,7 @@ fn sprite_animation_random_start_is_stable() {
         .spawn((
             Transform::default(),
             WorldTransform::default(),
-            Sprite { atlas_key: Arc::from("main"), region: Arc::from("redorb") },
+            Sprite::uninitialized(Arc::from("main"), Arc::from("redorb")),
         ))
         .id();
     assert!(world_b.set_sprite_timeline(entity_b, &assets, Some("demo_cycle")));
@@ -445,7 +445,7 @@ fn animation_time_scales_and_gates_playback() {
         .spawn((
             Transform::default(),
             WorldTransform::default(),
-            Sprite { atlas_key: Arc::from("main"), region: Arc::from("redorb") },
+            Sprite::uninitialized(Arc::from("main"), Arc::from("redorb")),
         ))
         .id();
     assert!(ecs.set_sprite_timeline(entity, &assets, Some("demo_cycle")));

@@ -84,10 +84,8 @@ pub fn sys_drive_sprite_animations(
         }
 
         if sprite_changed {
-            if let Some(region) = animation.current_region_handle() {
-                if sprite.region.as_ref() != region.as_ref() {
-                    sprite.region = region;
-                }
+            if let Some(frame) = animation.current_frame() {
+                sprite.apply_frame(frame);
             }
         }
     }

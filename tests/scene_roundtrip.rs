@@ -545,7 +545,7 @@ fn scene_roundtrip_captures_hierarchy_dependencies_and_environment_metadata() {
         .spawn((
             Transform { translation: Vec2::new(-0.4, 0.25), rotation: 0.35, scale: Vec2::splat(1.15) },
             WorldTransform::default(),
-            Sprite { atlas_key: Arc::from("main"), region: Arc::from("checker") },
+            Sprite::uninitialized(Arc::from("main"), Arc::from("checker")),
             Velocity(Vec2::new(0.05, 0.02)),
         ))
         .id();
@@ -556,7 +556,7 @@ fn scene_roundtrip_captures_hierarchy_dependencies_and_environment_metadata() {
         .spawn((
             Transform { translation: Vec2::new(0.5, -0.1), rotation: -0.45, scale: Vec2::splat(0.9) },
             WorldTransform::default(),
-            Sprite { atlas_key: Arc::from("main"), region: Arc::from("redorb") },
+            Sprite::uninitialized(Arc::from("main"), Arc::from("redorb")),
             Aabb { half: Vec2::splat(0.3) },
             Mass(1.5),
             Velocity(Vec2::new(-0.1, 0.12)),

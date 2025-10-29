@@ -60,7 +60,7 @@ pub fn sys_update_emitters(
                 Velocity(velocity),
                 Force::default(),
                 Mass(0.2),
-                Sprite { atlas_key: Arc::from("main"), region: Arc::from("green") },
+                Sprite::uninitialized(Arc::from("main"), Arc::from("green")),
                 Tint(emitter.start_color),
                 Aabb { half: Vec2::splat((start_size * 0.5).max(0.01)) },
                 Particle { lifetime, max_lifetime: lifetime },

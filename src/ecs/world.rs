@@ -8,7 +8,7 @@ use crate::scene::{
     SceneDependencies, SceneEntity, SceneEntityId, SpriteAnimationData, SpriteData, Transform3DData,
     TransformData,
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use bevy_ecs::prelude::{Entity, Schedule, With, World};
 use glam::{EulerRot, Mat4, Quat, Vec2, Vec3, Vec4};
 use rand::Rng;
@@ -94,6 +94,20 @@ impl EcsWorld {
         self.emit(event);
     }
 
+    fn apply_sprite_snapshot(&mut self, entity: Entity, snapshot: Option<(Arc<str>, u16, [f32; 4])>) {
+        if let Some((region, region_id, uv)) = snapshot {
+            if let Some(mut sprite) = self.world.get_mut::<Sprite>(entity) {
+                sprite.region = region;
+                sprite.region_id = region_id;
+                sprite.uv = uv;
+            }
+        }
+    }
+
+    fn current_frame_snapshot(animation: &SpriteAnimation) -> Option<(Arc<str>, u16, [f32; 4])> {
+        animation.current_frame().map(|frame| (frame.region.clone(), frame.region_id, frame.uv))
+    }
+
     pub fn spawn_demo_scene(&mut self) -> Entity {
         let root = self
             .world
@@ -101,7 +115,7 @@ impl EcsWorld {
                 Transform { translation: Vec2::ZERO, rotation: 0.0, scale: Vec2::splat(0.8) },
                 WorldTransform::default(),
                 Spin { speed: 1.2 },
-                Sprite { atlas_key: Arc::from("main"), region: Arc::from("checker") },
+                Sprite::uninitialized(Arc::from("main"), Arc::from("checker")),
                 Tint(Vec4::new(1.0, 1.0, 1.0, 0.2)),
             ))
             .id();
@@ -130,7 +144,7 @@ impl EcsWorld {
             .spawn((
                 Transform { translation: translation_a, rotation: 0.0, scale: Vec2::splat(0.7) },
                 WorldTransform::default(),
-                Sprite { atlas_key: Arc::from("main"), region: Arc::from("checker") },
+                Sprite::uninitialized(Arc::from("main"), Arc::from("checker")),
                 Aabb { half: half_a },
                 Velocity(velocity_a),
                 Force::default(),
@@ -164,7 +178,7 @@ impl EcsWorld {
             .spawn((
                 Transform { translation: translation_b, rotation: 0.0, scale: Vec2::splat(0.6) },
                 WorldTransform::default(),
-                Sprite { atlas_key: Arc::from("main"), region: Arc::from("redorb") },
+                Sprite::uninitialized(Arc::from("main"), Arc::from("redorb")),
                 Aabb { half: half_b },
                 Velocity(velocity_b),
                 Force::default(),
@@ -198,7 +212,7 @@ impl EcsWorld {
             .spawn((
                 Transform { translation: translation_c, rotation: 0.0, scale: Vec2::splat(0.5) },
                 WorldTransform::default(),
-                Sprite { atlas_key: Arc::from("main"), region: Arc::from("bluebox") },
+                Sprite::uninitialized(Arc::from("main"), Arc::from("bluebox")),
                 Aabb { half: half_c },
                 Velocity(velocity_c),
                 Force::default(),
@@ -252,7 +266,7 @@ impl EcsWorld {
                 .spawn((
                     Transform { translation: pos, rotation: 0.0, scale: Vec2::splat(scale) },
                     WorldTransform::default(),
-                    Sprite { atlas_key: Arc::from("main"), region: Arc::from(rname) },
+                    Sprite::uninitialized(Arc::from("main"), Arc::from(rname)),
                     Aabb { half },
                     Velocity(vel),
                     Force::default(),
@@ -438,9 +452,9 @@ impl EcsWorld {
         if scale <= 0.0 {
             return Err(anyhow!("Scale must be positive"));
         }
-        if !assets.atlas_region_exists(atlas, region) {
+        let Some((region_name, info)) = assets.atlas_region_info(atlas, region) else {
             return Err(anyhow!("Region '{region}' not found in atlas '{atlas}'"));
-        }
+        };
         let half = Vec2::splat(scale * 0.5);
         let (body_handle, collider_handle) = {
             let mut rapier = self.world.resource_mut::<RapierState>();
@@ -451,7 +465,12 @@ impl EcsWorld {
             .spawn((
                 Transform { translation: position, rotation: 0.0, scale: Vec2::splat(scale) },
                 WorldTransform::default(),
-                Sprite { atlas_key: Arc::from(atlas.to_string()), region: Arc::from(region.to_string()) },
+                Sprite {
+                    atlas_key: Arc::from(atlas.to_string()),
+                    region: Arc::clone(region_name),
+                    region_id: info.id,
+                    uv: info.uv,
+                },
                 Aabb { half },
                 Velocity(velocity),
                 Force::default(),
@@ -465,7 +484,11 @@ impl EcsWorld {
             let mut rapier = self.world.resource_mut::<RapierState>();
             rapier.register_collider_entity(collider_handle, entity);
         }
-        self.emit(GameEvent::SpriteSpawned { entity, atlas: atlas.to_string(), region: region.to_string() });
+        self.emit(GameEvent::SpriteSpawned {
+            entity,
+            atlas: atlas.to_string(),
+            region: region_name.as_ref().to_string(),
+        });
         Ok(entity)
     }
 
@@ -601,11 +624,13 @@ impl EcsWorld {
     }
     pub fn set_sprite_region(&mut self, entity: Entity, assets: &AssetManager, region: &str) -> bool {
         if let Some(mut sprite) = self.world.get_mut::<Sprite>(entity) {
-            let atlas = sprite.atlas_key.to_string();
-            if !assets.atlas_region_exists(&atlas, region) {
+            let atlas_key = sprite.atlas_key.as_ref();
+            let Some((name, info)) = assets.atlas_region_info(atlas_key, region) else {
                 return false;
-            }
-            sprite.region = Arc::from(region.to_string());
+            };
+            sprite.region = Arc::clone(name);
+            sprite.region_id = info.id;
+            sprite.uv = info.uv;
             drop(sprite);
             self.world.entity_mut(entity).remove::<SpriteAnimation>();
             true
@@ -650,7 +675,7 @@ impl EcsWorld {
                     }
                 }
                 self.reset_sprite_animation(entity);
-                self.reinitialize_sprite_animation_phase(entity, None);
+                self.reinitialize_sprite_animation_phase(entity);
                 true
             }
             None => {
@@ -685,9 +710,8 @@ impl EcsWorld {
             return false;
         };
         animation.set_start_offset(offset);
-        let timeline_region = animation.current_region_name().map(|name| name.to_string());
         drop(animation);
-        self.reinitialize_sprite_animation_phase(entity, timeline_region);
+        self.reinitialize_sprite_animation_phase(entity);
         true
     }
 
@@ -696,9 +720,8 @@ impl EcsWorld {
             return false;
         };
         animation.set_random_start(random);
-        let timeline_region = animation.current_region_name().map(|name| name.to_string());
         drop(animation);
-        self.reinitialize_sprite_animation_phase(entity, timeline_region);
+        self.reinitialize_sprite_animation_phase(entity);
         true
     }
 
@@ -727,20 +750,14 @@ impl EcsWorld {
         self.world.resource_mut::<AnimationTime>().set_group_scale(group, scale);
     }
 
-    fn reinitialize_sprite_animation_phase(&mut self, entity: Entity, mut region_hint: Option<String>) {
-        if let Some(mut animation) = self.world.get_mut::<SpriteAnimation>(entity) {
-            let changed = initialize_animation_phase(&mut animation, entity);
-            if changed || region_hint.is_none() {
-                region_hint = animation.current_region_name().map(|name| name.to_string());
-            }
-        }
-        if let Some(region) = region_hint {
-            if let Some(mut sprite) = self.world.get_mut::<Sprite>(entity) {
-                if sprite.region.as_ref() != region {
-                    sprite.region = Arc::from(region);
-                }
-            }
-        }
+    fn reinitialize_sprite_animation_phase(&mut self, entity: Entity) {
+        let snapshot = if let Some(mut animation) = self.world.get_mut::<SpriteAnimation>(entity) {
+            initialize_animation_phase(&mut animation, entity);
+            Self::current_frame_snapshot(&animation)
+        } else {
+            None
+        };
+        self.apply_sprite_snapshot(entity, snapshot);
     }
 
     pub fn set_sprite_animation_looped(&mut self, entity: Entity, looped: bool) -> bool {
@@ -779,21 +796,15 @@ impl EcsWorld {
             return false;
         }
         let target = frame.min(animation.frames.len() - 1);
-        let region_name = if animation.frame_index != target || animation.elapsed_in_frame != 0.0 {
+        let snapshot = if animation.frame_index != target || animation.elapsed_in_frame != 0.0 {
             animation.frame_index = target;
             animation.elapsed_in_frame = 0.0;
-            animation.current_region_name().map(|name| name.to_string())
+            Self::current_frame_snapshot(&animation)
         } else {
             None
         };
         drop(animation);
-        if let Some(region) = region_name {
-            if let Some(mut sprite) = self.world.get_mut::<Sprite>(entity) {
-                if sprite.region.as_ref() != region.as_str() {
-                    sprite.region = Arc::from(region);
-                }
-            }
-        }
+        self.apply_sprite_snapshot(entity, snapshot);
         true
     }
 
@@ -818,8 +829,8 @@ impl EcsWorld {
                 );
                 continue;
             };
-            let prev_frames = animation.frames.clone();
-            let prev_region = animation.current_region_name().map(|name| name.to_string());
+            let prev_frames: Vec<SpriteAnimationFrame> = animation.frames.iter().cloned().collect();
+            let prev_region = animation.current_region_handle();
             let prev_index = animation.frame_index;
             let prev_elapsed = animation.elapsed_in_frame;
             let prev_playing = animation.playing;
@@ -843,12 +854,14 @@ impl EcsWorld {
             let mut target_index = prev_index.min(new_len - 1);
             let mut matched = false;
             if let Some(prev_frame) = prev_frames.get(prev_index) {
-                let target_region = &prev_frame.region;
-                let occurrence =
-                    prev_frames[..=prev_index].iter().filter(|frame| frame.region == *target_region).count();
+                let target_region = prev_frame.region.as_ref();
+                let occurrence = prev_frames[..=prev_index]
+                    .iter()
+                    .filter(|frame| frame.region.as_ref() == target_region)
+                    .count();
                 let mut seen = 0usize;
                 if let Some(found) = animation.frames.iter().position(|frame| {
-                    if frame.region == *target_region {
+                    if frame.region.as_ref() == target_region {
                         seen += 1;
                         if seen == occurrence {
                             return true;
@@ -865,7 +878,7 @@ impl EcsWorld {
                     if let Some(found) = animation
                         .frames
                         .iter()
-                        .position(|frame| frame.region.as_ref() == region_name.as_str())
+                        .position(|frame| frame.region.as_ref() == region_name.as_ref())
                     {
                         target_index = found;
                         matched = true;
@@ -876,22 +889,20 @@ impl EcsWorld {
                 target_index = new_len - 1;
             }
             animation.frame_index = target_index;
-            let new_duration = animation.frames[target_index].duration.max(std::f32::EPSILON);
+            let new_duration = animation.frames[target_index].duration;
             let prev_duration = prev_frames
                 .get(prev_index)
-                .map(|frame| frame.duration.max(std::f32::EPSILON))
-                .unwrap_or(std::f32::EPSILON);
-            let progress =
-                if prev_duration > 0.0 { (prev_elapsed / prev_duration).clamp(0.0, 1.0) } else { 0.0 };
+                .map(|frame| frame.duration)
+                .unwrap_or(std::f32::EPSILON)
+                .max(std::f32::EPSILON);
+            let progress = (prev_elapsed / prev_duration).clamp(0.0, 1.0);
             animation.elapsed_in_frame = (progress * new_duration).min(new_duration);
             animation.playing = prev_playing && !animation.frames.is_empty();
             animation.forward = prev_forward;
             animation.speed = prev_speed;
 
-            if let Some(region) = animation.current_region_name() {
-                if sprite.region.as_ref() != region {
-                    sprite.region = Arc::from(region);
-                }
+            if let Some(frame) = animation.current_frame() {
+                sprite.apply_frame(frame);
             }
 
             updated += 1;
@@ -908,13 +919,9 @@ impl EcsWorld {
             animation.elapsed_in_frame = 0.0;
             animation.playing = true;
             animation.forward = true;
-            let target_region = animation.current_region_name().map(|name| name.to_string());
+            let snapshot = Self::current_frame_snapshot(&animation);
             drop(animation);
-            if let Some(region) = target_region {
-                if let Some(mut sprite) = self.world.get_mut::<Sprite>(entity) {
-                    sprite.region = Arc::from(region);
-                }
-            }
+            self.apply_sprite_snapshot(entity, snapshot);
             true
         } else {
             false
@@ -922,12 +929,23 @@ impl EcsWorld {
     }
     pub fn collect_sprite_instances(&mut self, assets: &AssetManager) -> Result<Vec<SpriteInstance>> {
         let mut out = Vec::new();
-        let mut q = self.world.query::<(&WorldTransform, &Sprite, Option<&Tint>)>();
-        for (wt, sprite, tint) in q.iter(&self.world) {
-            let atlas_key = sprite.atlas_key.as_ref();
-            let uv_rect = assets.atlas_region_uv(atlas_key, sprite.region.as_ref()).with_context(|| {
-                format!("Collecting sprite instance for atlas '{}' region '{}'", atlas_key, sprite.region)
-            })?;
+        let mut q = self.world.query::<(&WorldTransform, &mut Sprite, Option<&Tint>)>();
+        for (wt, mut sprite, tint) in q.iter_mut(&mut self.world) {
+            let atlas_key = Arc::clone(&sprite.atlas_key);
+            let atlas_key_str = atlas_key.as_ref();
+            let uv_rect = if sprite.is_initialized() {
+                sprite.uv
+            } else {
+                if let Some((region, info)) = assets.atlas_region_info(atlas_key_str, sprite.region.as_ref())
+                {
+                    sprite.region = region.clone();
+                    sprite.region_id = info.id;
+                    sprite.uv = info.uv;
+                    info.uv
+                } else {
+                    sprite.uv
+                }
+            };
             let color = tint.map(|t| t.0.to_array()).unwrap_or([1.0, 1.0, 1.0, 1.0]);
             out.push(SpriteInstance {
                 atlas: atlas_key.to_string(),
@@ -1191,6 +1209,8 @@ impl EcsWorld {
             let animation = self.world.get::<SpriteAnimation>(entity).map(|anim| {
                 let frame = anim.frames.get(anim.frame_index);
                 let frame_region = frame.map(|frame| frame.region.as_ref().to_string());
+                let frame_region_id = frame.map(|frame| frame.region_id);
+                let frame_uv = frame.map(|frame| frame.uv);
                 let frame_duration = frame.map(|frame| frame.duration).unwrap_or(0.0);
                 let frame_events = frame
                     .map(|frame| frame.events.iter().map(|e| e.as_ref().to_string()).collect())
@@ -1206,6 +1226,8 @@ impl EcsWorld {
                     frame_elapsed: anim.elapsed_in_frame,
                     frame_duration,
                     frame_region,
+                    frame_region_id,
+                    frame_uv,
                     frame_events,
                     start_offset: anim.start_offset,
                     random_start: anim.random_start,
@@ -1665,16 +1687,18 @@ impl EcsWorld {
         }
 
         if let Some(sprite) = data.sprite.as_ref() {
-            if !assets.atlas_region_exists(&sprite.atlas, &sprite.region) {
+            let Some((region_name, info)) = assets.atlas_region_info(&sprite.atlas, &sprite.region) else {
                 return Err(anyhow!(
                     "Scene references unknown atlas region '{}:{}'",
                     sprite.atlas,
                     sprite.region
                 ));
-            }
+            };
             entity.insert(Sprite {
                 atlas_key: Arc::from(sprite.atlas.clone()),
-                region: Arc::from(sprite.region.clone()),
+                region: Arc::clone(region_name),
+                region_id: info.id,
+                uv: info.uv,
             });
         }
 

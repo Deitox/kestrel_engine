@@ -179,17 +179,23 @@ fn seed_sprite_animators(world: &mut EcsWorld, count: usize) {
     let frame_template: Arc<[SpriteAnimationFrame]> = Arc::from(vec![
         SpriteAnimationFrame {
             region: Arc::from("frame_a"),
+            region_id: 0,
             duration: 0.08,
+            uv: [0.0; 4],
             events: Arc::clone(&empty_events),
         },
         SpriteAnimationFrame {
             region: Arc::from("frame_b"),
+            region_id: 1,
             duration: 0.08,
+            uv: [0.0; 4],
             events: Arc::clone(&empty_events),
         },
         SpriteAnimationFrame {
             region: Arc::from("frame_c"),
+            region_id: 2,
             duration: 0.08,
+            uv: [0.0; 4],
             events: Arc::clone(&empty_events),
         },
     ]);
@@ -197,7 +203,12 @@ fn seed_sprite_animators(world: &mut EcsWorld, count: usize) {
 
     for _ in 0..count {
         world.world.spawn((
-            Sprite { atlas_key: Arc::from("bench"), region: Arc::from("frame_a") },
+            Sprite {
+                atlas_key: Arc::from("bench"),
+                region: Arc::from("frame_a"),
+                region_id: 0,
+                uv: [0.0; 4],
+            },
             SpriteAnimation::new(
                 Arc::clone(&timeline_name),
                 Arc::clone(&frame_template),

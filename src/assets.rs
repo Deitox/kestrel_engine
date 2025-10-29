@@ -20,8 +20,15 @@ pub struct TextureAtlas {
     pub image_key: String,
     pub width: u32,
     pub height: u32,
-    pub regions: HashMap<String, Rect>,
+    pub regions: HashMap<Arc<str>, AtlasRegion>,
     pub animations: HashMap<String, SpriteTimeline>,
+}
+
+#[derive(Clone)]
+pub struct AtlasRegion {
+    pub id: u16,
+    pub rect: Rect,
+    pub uv: [f32; 4],
 }
 
 #[derive(Clone)]
@@ -118,7 +125,19 @@ impl AssetManager {
     fn load_atlas_internal(&mut self, key: &str, json_path: &str) -> Result<()> {
         let bytes = fs::read(json_path)?;
         let af: AtlasFile = serde_json::from_slice(&bytes)?;
-        let regions = af.regions;
+        let mut regions = HashMap::new();
+        for (index, (name, rect)) in af.regions.into_iter().enumerate() {
+            let id =
+                u16::try_from(index).map_err(|_| anyhow!("Atlas '{key}' has more than 65535 regions"))?;
+            let name_arc: Arc<str> = Arc::from(name);
+            let uv = [
+                rect.x as f32 / af.width as f32,
+                rect.y as f32 / af.height as f32,
+                (rect.x + rect.w) as f32 / af.width as f32,
+                (rect.y + rect.h) as f32 / af.height as f32,
+            ];
+            regions.insert(Arc::clone(&name_arc), AtlasRegion { id, rect, uv });
+        }
         let animations = Self::parse_timelines(key, &regions, af.animations);
         let atlas = TextureAtlas {
             image_key: af.image.clone(),
@@ -134,7 +153,7 @@ impl AssetManager {
 
     fn parse_timelines(
         atlas_key: &str,
-        regions: &HashMap<String, Rect>,
+        regions: &HashMap<Arc<str>, AtlasRegion>,
         raw: HashMap<String, AtlasTimelineFile>,
     ) -> HashMap<String, SpriteTimeline> {
         let mut animations = HashMap::new();
@@ -145,21 +164,22 @@ impl AssetManager {
                 event_map.entry(event.frame).or_default().push(event.name);
             }
             for (frame_index, frame) in data.frames.into_iter().enumerate() {
-                if !regions.contains_key(&frame.region) {
+                let Some((region_key, region_info)) = regions.get_key_value(frame.region.as_str()) else {
                     eprintln!(
                         "[assets] atlas '{atlas_key}': timeline '{timeline_key}' references unknown region '{}', skipping frame.",
                         frame.region
                     );
                     continue;
-                }
+                };
                 let duration = (frame.duration_ms.max(1) as f32) / 1000.0;
-                let region_name = frame.region;
                 let event_names = event_map.remove(&frame_index).unwrap_or_default();
                 let events: Vec<Arc<str>> =
                     event_names.into_iter().map(|name| Arc::<str>::from(name)).collect();
                 frames.push(SpriteAnimationFrame {
-                    region: Arc::<str>::from(region_name),
+                    region: Arc::clone(region_key),
+                    region_id: region_info.id,
                     duration,
+                    uv: region_info.uv,
                     events: Arc::from(events),
                 });
             }
@@ -281,18 +301,17 @@ impl AssetManager {
     }
     pub fn atlas_region_uv(&self, atlas_key: &str, region: &str) -> Result<[f32; 4]> {
         let atlas = self.atlases.get(atlas_key).ok_or_else(|| anyhow!("atlas '{atlas_key}' not loaded"))?;
-        let r = atlas
+        let (_, info) = atlas
             .regions
-            .get(region)
+            .get_key_value(region)
             .ok_or_else(|| anyhow!("region '{region}' not found in atlas '{atlas_key}'"))?;
-        let u0 = r.x as f32 / atlas.width as f32;
-        let v0 = r.y as f32 / atlas.height as f32;
-        let u1 = (r.x + r.w) as f32 / atlas.width as f32;
-        let v1 = (r.y + r.h) as f32 / atlas.height as f32;
-        Ok([u0, v0, u1, v1])
+        Ok(info.uv)
     }
     pub fn atlas_region_exists(&self, atlas_key: &str, region: &str) -> bool {
         self.atlases.get(atlas_key).and_then(|atlas| atlas.regions.get(region)).is_some()
+    }
+    pub fn atlas_region_info(&self, atlas_key: &str, region: &str) -> Option<(&Arc<str>, &AtlasRegion)> {
+        self.atlases.get(atlas_key).and_then(|atlas| atlas.regions.get_key_value(region))
     }
     pub fn atlas_timeline(&self, atlas_key: &str, name: &str) -> Option<&SpriteTimeline> {
         self.atlases.get(atlas_key).and_then(|atlas| atlas.animations.get(name))

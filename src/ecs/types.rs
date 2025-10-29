@@ -42,6 +42,31 @@ pub struct Spin {
 pub struct Sprite {
     pub atlas_key: Arc<str>,
     pub region: Arc<str>,
+    pub region_id: u16,
+    pub uv: [f32; 4],
+}
+
+impl Sprite {
+    pub const UNINITIALIZED_REGION: u16 = u16::MAX;
+
+    pub fn uninitialized(atlas_key: Arc<str>, region: Arc<str>) -> Self {
+        Self { atlas_key, region, region_id: Self::UNINITIALIZED_REGION, uv: [0.0; 4] }
+    }
+
+    pub fn apply_frame(&mut self, frame: &SpriteAnimationFrame) {
+        if self.region_id != frame.region_id {
+            self.region = frame.region.clone();
+        }
+        self.region_id = frame.region_id;
+        self.uv = frame.uv;
+    }
+}
+
+impl Sprite {
+    #[inline]
+    pub fn is_initialized(&self) -> bool {
+        self.region_id != Self::UNINITIALIZED_REGION
+    }
 }
 
 #[derive(Component, Clone)]
@@ -115,6 +140,14 @@ impl SpriteAnimation {
         self.frames.get(self.frame_index).map(|frame| frame.region.clone())
     }
 
+    pub fn current_region_id(&self) -> Option<u16> {
+        self.frames.get(self.frame_index).map(|frame| frame.region_id)
+    }
+
+    pub fn current_frame(&self) -> Option<&SpriteAnimationFrame> {
+        self.frames.get(self.frame_index)
+    }
+
     pub fn frame_count(&self) -> usize {
         self.frames.len()
     }
@@ -127,7 +160,9 @@ impl SpriteAnimation {
 #[derive(Clone)]
 pub struct SpriteAnimationFrame {
     pub region: Arc<str>,
+    pub region_id: u16,
     pub duration: f32,
+    pub uv: [f32; 4],
     pub events: Arc<[Arc<str>]>,
 }
 
@@ -358,6 +393,8 @@ pub struct SpriteAnimationInfo {
     pub frame_elapsed: f32,
     pub frame_duration: f32,
     pub frame_region: Option<String>,
+    pub frame_region_id: Option<u16>,
+    pub frame_uv: Option<[f32; 4]>,
     pub frame_events: Vec<String>,
     pub start_offset: f32,
     pub random_start: bool,
