@@ -205,11 +205,14 @@ fn seed_sprite_animators(world: &mut EcsWorld, count: usize, randomize_phase: bo
     ]);
     let timeline_name = Arc::from("bench_cycle");
     let atlas_key = Arc::from("bench");
+    let frame_durations: Arc<[f32]> =
+        Arc::from(frame_template.iter().map(|frame| frame.duration).collect::<Vec<_>>());
 
     for index in 0..count {
         let mut animation = SpriteAnimation::new(
             Arc::clone(&timeline_name),
             Arc::clone(&frame_template),
+            Arc::clone(&frame_durations),
             SpriteAnimationLoopMode::Loop,
         );
 
@@ -245,6 +248,7 @@ fn apply_phase_offset(animation: &mut SpriteAnimation, mut offset: f32) {
         animation.frame_index = 0;
         animation.elapsed_in_frame = 0.0;
         animation.forward = true;
+        animation.refresh_current_duration();
         return;
     }
     let total = animation.total_duration().max(std::f32::EPSILON);
@@ -253,20 +257,23 @@ fn apply_phase_offset(animation: &mut SpriteAnimation, mut offset: f32) {
     animation.frame_index = 0;
     animation.elapsed_in_frame = 0.0;
     animation.forward = true;
+    animation.refresh_current_duration();
 
     let mut accumulated = 0.0;
-    for (index, frame) in animation.frames.iter().enumerate() {
-        let duration = frame.duration.max(std::f32::EPSILON);
+    for (index, duration) in animation.frame_durations.iter().copied().enumerate() {
+        let duration = duration.max(std::f32::EPSILON);
         if offset < accumulated + duration {
             animation.frame_index = index;
             animation.elapsed_in_frame = (offset - accumulated).clamp(0.0, duration);
+            animation.refresh_current_duration();
             return;
         }
         accumulated += duration;
     }
 
-    animation.frame_index = animation.frames.len().saturating_sub(1);
+    animation.frame_index = animation.frame_durations.len().saturating_sub(1);
     animation.elapsed_in_frame = 0.0;
+    animation.refresh_current_duration();
 }
 fn stable_phase_fraction(seed: u64, timeline: &str) -> f32 {
     let mut hasher = DefaultHasher::new();

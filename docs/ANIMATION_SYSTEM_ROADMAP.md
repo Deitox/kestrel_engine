@@ -47,7 +47,7 @@ Benchmarks emit CSV summaries for CI. Failing budgets block the milestone exit.
 - [x] **Hot-Reload:** Watch `atlas.json`; when timelines change, rebind by frame **name** (not index) and preserve `frame_index`/`elapsed_in_frame` when possible.
 - [x] **Time Controls:** Global `AnimationTime` resource (scale & pause) and optional per-group scalars; fixed-step evaluation toggle with remainder accumulation.
 - [x] **Inspector UX:** Add a timeline scrubber, left/right frame nudge buttons, frame duration display, and event preview toggle that logs fired events.
-- [ ] **Performance Polish:** Intern region names to IDs, store `u16` region indices, precompute UV rectangles, and only write to `Sprite` when frames change. Enforce zero allocations per frame. *(region IDs + cached UVs landed; runtime budget still over target at 0.348 ms for 10k animators)*
+- [ ] **Performance Polish:** Intern region names to IDs, store `u16` region indices, precompute UV rectangles, and only write to `Sprite` when frames change. Enforce zero allocations per frame. *(region IDs + cached UVs landed; latest bench at 0.251 ms for 10k animators — still above the 0.20 ms target)*
 
 ### Exit Criteria
 - [ ] `animation_bench` demonstrates <= 0.20 ms CPU for 10 000 animators (release build).

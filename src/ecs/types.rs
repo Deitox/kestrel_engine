@@ -73,6 +73,8 @@ impl Sprite {
 pub struct SpriteAnimation {
     pub timeline: Arc<str>,
     pub frames: Arc<[SpriteAnimationFrame]>,
+    pub frame_durations: Arc<[f32]>,
+    pub current_duration: f32,
     pub frame_index: usize,
     pub elapsed_in_frame: f32,
     pub playing: bool,
@@ -93,13 +95,17 @@ impl SpriteAnimation {
     pub fn new(
         timeline: Arc<str>,
         frames: Arc<[SpriteAnimationFrame]>,
+        frame_durations: Arc<[f32]>,
         mode: SpriteAnimationLoopMode,
     ) -> Self {
         let has_events = frames.iter().any(|frame| !frame.events.is_empty());
         let fast_loop = !has_events && matches!(mode, SpriteAnimationLoopMode::Loop);
+        let current_duration = frame_durations.first().copied().unwrap_or(0.0);
         Self {
             timeline,
             frames,
+            frame_durations,
+            current_duration,
             frame_index: 0,
             elapsed_in_frame: 0.0,
             playing: true,
@@ -162,7 +168,7 @@ impl SpriteAnimation {
     }
 
     pub fn total_duration(&self) -> f32 {
-        self.frames.iter().map(|frame| frame.duration).sum()
+        self.frame_durations.iter().copied().sum()
     }
 
     pub fn mark_playback_rate_dirty(&mut self) {
@@ -182,6 +188,11 @@ impl SpriteAnimation {
             self.playback_rate_dirty = false;
         }
         self.playback_rate
+    }
+
+    #[inline]
+    pub fn refresh_current_duration(&mut self) {
+        self.current_duration = self.frame_durations.get(self.frame_index).copied().unwrap_or(0.0);
     }
 }
 

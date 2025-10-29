@@ -1,115 +1,53 @@
 use super::{AnimationDelta, AnimationTime, TimeDelta};
 use crate::ecs::profiler::SystemProfiler;
-use crate::ecs::{Sprite, SpriteAnimation, SpriteAnimationLoopMode};
+use crate::ecs::{Sprite, SpriteAnimation, SpriteAnimationFrame, SpriteAnimationLoopMode};
 use crate::events::{EventBus, GameEvent};
-use bevy_ecs::prelude::{Entity, Query, Res, ResMut};
+use bevy_ecs::prelude::{Entity, Query, Res, ResMut, With};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::ptr::NonNull;
 
 pub fn sys_drive_sprite_animations(
     mut profiler: ResMut<SystemProfiler>,
     dt: Res<TimeDelta>,
     mut animation_time: ResMut<AnimationTime>,
     mut events: ResMut<EventBus>,
-    mut query: Query<(Entity, &mut Sprite, &mut SpriteAnimation)>,
+    mut animations: Query<(Entity, &mut SpriteAnimation), With<Sprite>>,
+    mut sprites: Query<&mut Sprite>,
 ) {
     let _span = profiler.scope("sys_drive_sprite_animations");
     let plan = animation_time.consume(dt.0);
-    let has_steps = plan.has_steps();
+    if !plan.has_steps() {
+        return;
+    }
     let has_group_scales = animation_time.has_group_scales();
-
-    for (entity, mut sprite, mut animation) in query.iter_mut() {
-        let frame_count = animation.frames.len();
-        if frame_count == 0 {
-            continue;
-        }
-        if animation.frame_index >= frame_count {
-            animation.frame_index = 0;
-            animation.elapsed_in_frame = 0.0;
-        }
-        if !animation.playing || !has_steps {
-            continue;
-        }
-
-        let playback_rate = if animation.playback_rate_dirty {
-            let group_scale =
-                if has_group_scales { animation_time.group_scale(animation.group.as_deref()) } else { 1.0 };
-            animation.ensure_playback_rate(group_scale)
-        } else {
-            animation.playback_rate
-        };
-
-        if playback_rate <= 0.0 {
-            continue;
-        }
-
-        let mut sprite_changed = false;
-        match plan {
-            AnimationDelta::None => {}
-            AnimationDelta::Single(delta) => {
-                let scaled = delta * playback_rate;
-                if scaled > 0.0 {
-                    if animation.fast_loop {
-                        let current_duration = animation.frames[animation.frame_index].duration;
-                        let time_left = current_duration - animation.elapsed_in_frame;
-                        if scaled <= time_left {
-                            animation.elapsed_in_frame += scaled;
-                        } else if advance_animation_loop_no_events(&mut animation, scaled) {
-                            sprite_changed = true;
-                        }
-                    } else if animation.has_events {
-                        let events_ref = &mut *events;
-                        if advance_animation(&mut animation, scaled, entity, Some(events_ref), true) {
-                            sprite_changed = true;
-                        }
-                    } else if advance_animation(&mut animation, scaled, entity, None, true) {
-                        sprite_changed = true;
-                    }
-                }
-            }
-            AnimationDelta::Fixed { step, steps } => {
-                if steps == 0 {
-                    continue;
-                }
-                let scaled_step = step * playback_rate;
-                if scaled_step <= 0.0 {
-                    continue;
-                }
-                if animation.fast_loop {
-                    let total = scaled_step * steps as f32;
-                    let current_duration = animation.frames[animation.frame_index].duration;
-                    let time_left = current_duration - animation.elapsed_in_frame;
-                    if total <= time_left {
-                        animation.elapsed_in_frame += total;
-                    } else if advance_animation_loop_no_events(&mut animation, total) {
-                        sprite_changed = true;
-                    }
-                } else if animation.has_events {
-                    let events_ref = &mut *events;
-                    for _ in 0..steps {
-                        if !animation.playing {
-                            break;
-                        }
-                        if advance_animation(&mut animation, scaled_step, entity, Some(events_ref), true) {
-                            sprite_changed = true;
-                        }
-                    }
-                } else {
-                    for _ in 0..steps {
-                        if !animation.playing {
-                            break;
-                        }
-                        if advance_animation(&mut animation, scaled_step, entity, None, true) {
-                            sprite_changed = true;
-                        }
-                    }
-                }
+    let animation_time_ref: &AnimationTime = &*animation_time;
+    match plan {
+        AnimationDelta::None => {}
+        AnimationDelta::Single(delta) => {
+            if delta > 0.0 {
+                drive_single(
+                    delta,
+                    has_group_scales,
+                    animation_time_ref,
+                    &mut events,
+                    &mut animations,
+                    &mut sprites,
+                );
             }
         }
-
-        if sprite_changed {
-            let frame = &animation.frames[animation.frame_index];
-            sprite.apply_frame(frame);
+        AnimationDelta::Fixed { step, steps } => {
+            if steps > 0 {
+                drive_fixed(
+                    step,
+                    steps,
+                    has_group_scales,
+                    animation_time_ref,
+                    &mut events,
+                    &mut animations,
+                    &mut sprites,
+                );
+            }
         }
     }
 }
@@ -120,6 +58,7 @@ pub(crate) fn initialize_animation_phase(animation: &mut SpriteAnimation, entity
     animation.frame_index = 0;
     animation.elapsed_in_frame = 0.0;
     animation.forward = true;
+    animation.refresh_current_duration();
 
     let mut offset = animation.start_offset.max(0.0);
     let total = animation.total_duration();
@@ -160,7 +99,7 @@ pub(crate) fn advance_animation(
     let len = frames.len();
     let mut frame_changed = false;
     while delta > 0.0 && animation.playing {
-        let frame_duration = unsafe { frames.get_unchecked(animation.frame_index).duration };
+        let frame_duration = unsafe { *animation.frame_durations.get_unchecked(animation.frame_index) };
         let time_left = frame_duration - animation.elapsed_in_frame;
         if delta < time_left {
             animation.elapsed_in_frame += delta;
@@ -175,11 +114,14 @@ pub(crate) fn advance_animation(
         match animation.mode {
             SpriteAnimationLoopMode::Loop => {
                 animation.frame_index = (animation.frame_index + 1) % len;
+                animation.current_duration =
+                    unsafe { *animation.frame_durations.get_unchecked(animation.frame_index) };
                 emit_frame_event = true;
                 frame_changed = true;
             }
             SpriteAnimationLoopMode::OnceStop => {
                 animation.frame_index = len.saturating_sub(1);
+                animation.current_duration = animation.frame_durations.last().copied().unwrap_or(0.0);
                 frame_changed = true;
                 if let Some(events) = events.as_deref_mut() {
                     emit_sprite_animation_events(entity, animation, events);
@@ -191,8 +133,9 @@ pub(crate) fn advance_animation(
             }
             SpriteAnimationLoopMode::OnceHold => {
                 animation.frame_index = len.saturating_sub(1);
-                if let Some(last) = frames.last() {
-                    animation.elapsed_in_frame = last.duration;
+                animation.current_duration = animation.frame_durations.last().copied().unwrap_or(0.0);
+                if let Some(last) = animation.frame_durations.last() {
+                    animation.elapsed_in_frame = *last;
                 }
                 frame_changed = true;
                 if let Some(events) = events.as_deref_mut() {
@@ -206,6 +149,7 @@ pub(crate) fn advance_animation(
             SpriteAnimationLoopMode::PingPong => {
                 if len <= 1 {
                     animation.forward = true;
+                    animation.current_duration = animation.frame_durations.first().copied().unwrap_or(0.0);
                 } else if animation.forward {
                     if animation.frame_index + 1 < len {
                         animation.frame_index += 1;
@@ -213,15 +157,21 @@ pub(crate) fn advance_animation(
                         animation.forward = false;
                         animation.frame_index = (len - 2).min(len - 1);
                     }
+                    animation.current_duration =
+                        unsafe { *animation.frame_durations.get_unchecked(animation.frame_index) };
                     frame_changed = true;
                     emit_frame_event = true;
                 } else if animation.frame_index > 0 {
                     animation.frame_index -= 1;
+                    animation.current_duration =
+                        unsafe { *animation.frame_durations.get_unchecked(animation.frame_index) };
                     frame_changed = true;
                     emit_frame_event = true;
                 } else {
                     animation.forward = true;
                     animation.frame_index = 1.min(len - 1);
+                    animation.current_duration =
+                        animation.frame_durations.get(animation.frame_index).copied().unwrap_or(0.0);
                     frame_changed = len > 1;
                     emit_frame_event = len > 1;
                 }
@@ -243,8 +193,7 @@ fn advance_animation_loop_no_events(animation: &mut SpriteAnimation, mut delta: 
     if delta <= 0.0 || !animation.playing {
         return false;
     }
-    let frames = animation.frames.as_ref();
-    let len = frames.len();
+    let len = animation.frame_durations.len();
     if len == 0 {
         return false;
     }
@@ -254,7 +203,7 @@ fn advance_animation_loop_no_events(animation: &mut SpriteAnimation, mut delta: 
     let mut frame_changed = false;
 
     while delta > 0.0 {
-        let frame_duration = unsafe { frames.get_unchecked(index).duration };
+        let frame_duration = unsafe { *animation.frame_durations.get_unchecked(index) };
         let time_left = frame_duration - elapsed;
         if delta <= time_left {
             elapsed += delta;
@@ -272,6 +221,7 @@ fn advance_animation_loop_no_events(animation: &mut SpriteAnimation, mut delta: 
 
     animation.frame_index = index;
     animation.elapsed_in_frame = elapsed;
+    animation.current_duration = animation.frame_durations.get(animation.frame_index).copied().unwrap_or(0.0);
     frame_changed
 }
 
@@ -294,4 +244,159 @@ fn stable_random_fraction(entity: Entity, timeline: &str) -> f32 {
     let bits = hasher.finish();
     const SCALE: f64 = 1.0 / (u64::MAX as f64 + 1.0);
     (bits as f64 * SCALE) as f32
+}
+fn drive_single(
+    delta: f32,
+    has_group_scales: bool,
+    animation_time: &AnimationTime,
+    events: &mut EventBus,
+    animations: &mut Query<(Entity, &mut SpriteAnimation), With<Sprite>>,
+    sprites: &mut Query<&mut Sprite>,
+) {
+    for (entity, mut animation) in animations.iter_mut() {
+        let frame_count = animation.frames.len();
+        if frame_count == 0 {
+            continue;
+        }
+        if animation.frame_index >= frame_count {
+            animation.frame_index = 0;
+            animation.elapsed_in_frame = 0.0;
+            animation.refresh_current_duration();
+        }
+        if !animation.playing {
+            continue;
+        }
+
+        let playback_rate = if animation.playback_rate_dirty {
+            let group_scale =
+                if has_group_scales { animation_time.group_scale(animation.group.as_deref()) } else { 1.0 };
+            animation.ensure_playback_rate(group_scale)
+        } else {
+            animation.playback_rate
+        };
+
+        if playback_rate <= 0.0 {
+            continue;
+        }
+
+        let scaled = delta * playback_rate;
+        if scaled <= 0.0 {
+            continue;
+        }
+
+        let mut sprite_changed = false;
+        if animation.fast_loop {
+            let current_duration = animation.current_duration;
+            let time_left = current_duration - animation.elapsed_in_frame;
+            if scaled <= time_left {
+                animation.elapsed_in_frame += scaled;
+            } else if advance_animation_loop_no_events(&mut animation, scaled) {
+                sprite_changed = true;
+            }
+        } else if animation.has_events {
+            let events_ref = &mut *events;
+            if advance_animation(&mut animation, scaled, entity, Some(events_ref), true) {
+                sprite_changed = true;
+            }
+        } else if advance_animation(&mut animation, scaled, entity, None, true) {
+            sprite_changed = true;
+        }
+
+        if sprite_changed {
+            let frame_ptr = NonNull::from(&animation.frames[animation.frame_index]);
+            drop(animation);
+            apply_sprite_frame(entity, frame_ptr, sprites);
+        }
+    }
+}
+
+fn drive_fixed(
+    step: f32,
+    steps: u32,
+    has_group_scales: bool,
+    animation_time: &AnimationTime,
+    events: &mut EventBus,
+    animations: &mut Query<(Entity, &mut SpriteAnimation), With<Sprite>>,
+    sprites: &mut Query<&mut Sprite>,
+) {
+    for (entity, mut animation) in animations.iter_mut() {
+        let frame_count = animation.frames.len();
+        if frame_count == 0 {
+            continue;
+        }
+        if animation.frame_index >= frame_count {
+            animation.frame_index = 0;
+            animation.elapsed_in_frame = 0.0;
+            animation.refresh_current_duration();
+        }
+        if !animation.playing {
+            continue;
+        }
+
+        let playback_rate = if animation.playback_rate_dirty {
+            let group_scale =
+                if has_group_scales { animation_time.group_scale(animation.group.as_deref()) } else { 1.0 };
+            animation.ensure_playback_rate(group_scale)
+        } else {
+            animation.playback_rate
+        };
+
+        if playback_rate <= 0.0 {
+            continue;
+        }
+
+        let scaled_step = step * playback_rate;
+        if scaled_step <= 0.0 {
+            continue;
+        }
+
+        let mut sprite_changed = false;
+        if animation.fast_loop {
+            let total = scaled_step * steps as f32;
+            let current_duration = animation.current_duration;
+            let time_left = current_duration - animation.elapsed_in_frame;
+            if total <= time_left {
+                animation.elapsed_in_frame += total;
+            } else if advance_animation_loop_no_events(&mut animation, total) {
+                sprite_changed = true;
+            }
+        } else if animation.has_events {
+            let events_ref = &mut *events;
+            for _ in 0..steps {
+                if !animation.playing {
+                    break;
+                }
+                if advance_animation(&mut animation, scaled_step, entity, Some(events_ref), true) {
+                    sprite_changed = true;
+                }
+            }
+        } else {
+            for _ in 0..steps {
+                if !animation.playing {
+                    break;
+                }
+                if advance_animation(&mut animation, scaled_step, entity, None, true) {
+                    sprite_changed = true;
+                }
+            }
+        }
+
+        if sprite_changed {
+            let frame_ptr = NonNull::from(&animation.frames[animation.frame_index]);
+            drop(animation);
+            apply_sprite_frame(entity, frame_ptr, sprites);
+        }
+    }
+}
+
+fn apply_sprite_frame(
+    entity: Entity,
+    frame_ptr: NonNull<SpriteAnimationFrame>,
+    sprites: &mut Query<&mut Sprite>,
+) {
+    if let Ok(mut sprite) = sprites.get_mut(entity) {
+        unsafe {
+            sprite.apply_frame(frame_ptr.as_ref());
+        }
+    }
 }

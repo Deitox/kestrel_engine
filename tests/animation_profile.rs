@@ -127,6 +127,7 @@ fn seed_sprite_animators(world: &mut EcsWorld, count: usize, frame_duration: f32
         },
     ]);
     let timeline_name = Arc::from("bench_cycle");
+    let frame_durations: Arc<[f32]> = Arc::from(vec![frame_duration; frame_template.len()]);
 
     for _ in 0..count {
         world.world.spawn((
@@ -139,6 +140,7 @@ fn seed_sprite_animators(world: &mut EcsWorld, count: usize, frame_duration: f32
             SpriteAnimation::new(
                 Arc::clone(&timeline_name),
                 Arc::clone(&frame_template),
+                Arc::clone(&frame_durations),
                 SpriteAnimationLoopMode::Loop,
             ),
         ));

@@ -37,6 +37,7 @@ pub struct SpriteTimeline {
     pub looped: bool,
     pub loop_mode: SpriteAnimationLoopMode,
     pub frames: Arc<[SpriteAnimationFrame]>,
+    pub durations: Arc<[f32]>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -159,6 +160,7 @@ impl AssetManager {
         let mut animations = HashMap::new();
         for (timeline_key, mut data) in raw {
             let mut frames = Vec::new();
+            let mut durations = Vec::new();
             let mut event_map: HashMap<usize, Vec<String>> = HashMap::new();
             for event in data.events.drain(..) {
                 event_map.entry(event.frame).or_default().push(event.name);
@@ -182,6 +184,7 @@ impl AssetManager {
                     uv: region_info.uv,
                     events: Arc::from(events),
                 });
+                durations.push(duration);
             }
             if frames.is_empty() {
                 eprintln!(
@@ -212,6 +215,7 @@ impl AssetManager {
                     looped,
                     loop_mode: mode_enum,
                     frames: Arc::from(frames),
+                    durations: Arc::from(durations),
                 },
             );
         }

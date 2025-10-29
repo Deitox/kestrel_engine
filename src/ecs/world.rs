@@ -664,8 +664,10 @@ impl EcsWorld {
                     return false;
                 }
                 let frames = Arc::clone(&definition.frames);
+                let durations = Arc::clone(&definition.durations);
                 let loop_mode = definition.loop_mode;
-                let component = SpriteAnimation::new(Arc::clone(&definition.name), frames, loop_mode);
+                let component =
+                    SpriteAnimation::new(Arc::clone(&definition.name), frames, durations, loop_mode);
                 self.world.entity_mut(entity).insert(component);
                 if let Some(mut animation) = self.world.get_mut::<SpriteAnimation>(entity) {
                     if let Some((offset, random, group)) = previous_config {
@@ -808,6 +810,7 @@ impl EcsWorld {
         let snapshot = if animation.frame_index != target || animation.elapsed_in_frame != 0.0 {
             animation.frame_index = target;
             animation.elapsed_in_frame = 0.0;
+            animation.refresh_current_duration();
             Self::current_frame_snapshot(&animation)
         } else {
             None
@@ -827,11 +830,14 @@ impl EcsWorld {
             let timeline_name = animation.timeline.clone();
             let Some(definition) = assets.atlas_timeline(atlas_key, timeline_name.as_ref()) else {
                 animation.frames = Arc::from(Vec::<SpriteAnimationFrame>::new());
+                animation.frame_durations = Arc::from(Vec::<f32>::new());
                 animation.has_events = false;
                 animation.fast_loop = false;
                 animation.frame_index = 0;
                 animation.elapsed_in_frame = 0.0;
+                animation.refresh_current_duration();
                 animation.playing = false;
+                animation.refresh_current_duration();
                 updated += 1;
                 eprintln!(
                     "[assets] Atlas '{atlas_key}' no longer defines timeline '{}' (entity {:?})",
@@ -848,6 +854,7 @@ impl EcsWorld {
             let prev_speed = animation.speed;
 
             animation.frames = Arc::clone(&definition.frames);
+            animation.frame_durations = Arc::clone(&definition.durations);
             animation.timeline = Arc::clone(&definition.name);
             animation.has_events = animation.frames.iter().any(|frame| !frame.events.is_empty());
             animation.fast_loop =
@@ -857,6 +864,7 @@ impl EcsWorld {
                 animation.frame_index = 0;
                 animation.elapsed_in_frame = 0.0;
                 animation.playing = false;
+                animation.refresh_current_duration();
                 updated += 1;
                 continue;
             }
@@ -901,7 +909,8 @@ impl EcsWorld {
                 target_index = new_len - 1;
             }
             animation.frame_index = target_index;
-            let new_duration = animation.frames[target_index].duration;
+            animation.refresh_current_duration();
+            let new_duration = animation.current_duration.max(std::f32::EPSILON);
             let prev_duration = prev_frames
                 .get(prev_index)
                 .map(|frame| frame.duration)
@@ -931,6 +940,7 @@ impl EcsWorld {
             animation.elapsed_in_frame = 0.0;
             animation.playing = true;
             animation.forward = true;
+            animation.refresh_current_duration();
             let snapshot = Self::current_frame_snapshot(&animation);
             drop(animation);
             self.apply_sprite_snapshot(entity, snapshot);
