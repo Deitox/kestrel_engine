@@ -6,7 +6,7 @@ use bevy_ecs::query::With;
 use bevy_ecs::system::{Commands, Res};
 use glam::Vec2;
 use rand::Rng;
-use std::borrow::Cow;
+use std::sync::Arc;
 
 pub fn sys_update_emitters(
     mut profiler: ResMut<SystemProfiler>,
@@ -60,7 +60,7 @@ pub fn sys_update_emitters(
                 Velocity(velocity),
                 Force::default(),
                 Mass(0.2),
-                Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("green") },
+                Sprite { atlas_key: Arc::from("main"), region: Arc::from("green") },
                 Tint(emitter.start_color),
                 Aabb { half: Vec2::splat((start_size * 0.5).max(0.01)) },
                 Particle { lifetime, max_lifetime: lifetime },

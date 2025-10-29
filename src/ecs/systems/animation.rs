@@ -3,7 +3,6 @@ use crate::ecs::profiler::SystemProfiler;
 use crate::ecs::{Sprite, SpriteAnimation, SpriteAnimationLoopMode};
 use crate::events::{EventBus, GameEvent};
 use bevy_ecs::prelude::{Entity, Query, Res, ResMut};
-use std::borrow::Cow;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
@@ -42,10 +41,15 @@ pub fn sys_drive_sprite_animations(
             AnimationDelta::None => {}
             AnimationDelta::Single(delta) => {
                 let scaled = delta * animation.speed.max(0.0) * group_scale;
-                if scaled > 0.0
-                    && advance_animation(&mut animation, scaled, entity, Some(&mut *events), true, true)
-                {
-                    sprite_changed = true;
+                if scaled > 0.0 {
+                    if animation.has_events {
+                        let events_ref = &mut *events;
+                        if advance_animation(&mut animation, scaled, entity, Some(events_ref), true) {
+                            sprite_changed = true;
+                        }
+                    } else if advance_animation(&mut animation, scaled, entity, None, true) {
+                        sprite_changed = true;
+                    }
                 }
             }
             AnimationDelta::Fixed { step, steps } => {
@@ -56,22 +60,33 @@ pub fn sys_drive_sprite_animations(
                 if scaled_step <= 0.0 {
                     continue;
                 }
-                for _ in 0..steps {
-                    if !animation.playing {
-                        break;
+                if animation.has_events {
+                    let events_ref = &mut *events;
+                    for _ in 0..steps {
+                        if !animation.playing {
+                            break;
+                        }
+                        if advance_animation(&mut animation, scaled_step, entity, Some(events_ref), true) {
+                            sprite_changed = true;
+                        }
                     }
-                    if advance_animation(&mut animation, scaled_step, entity, Some(&mut *events), true, true)
-                    {
-                        sprite_changed = true;
+                } else {
+                    for _ in 0..steps {
+                        if !animation.playing {
+                            break;
+                        }
+                        if advance_animation(&mut animation, scaled_step, entity, None, true) {
+                            sprite_changed = true;
+                        }
                     }
                 }
             }
         }
 
         if sprite_changed {
-            if let Some(region) = animation.current_region_name() {
-                if sprite.region.as_ref() != region {
-                    sprite.region = Cow::Owned(region.to_string());
+            if let Some(region) = animation.current_region_handle() {
+                if sprite.region.as_ref() != region.as_ref() {
+                    sprite.region = region;
                 }
             }
         }
@@ -89,7 +104,7 @@ pub(crate) fn initialize_animation_phase(animation: &mut SpriteAnimation, entity
     let mut offset = animation.start_offset.max(0.0);
     let total = animation.total_duration();
     if animation.random_start && total > 0.0 {
-        let random_fraction = stable_random_fraction(entity, &animation.timeline);
+        let random_fraction = stable_random_fraction(entity, animation.timeline.as_ref());
         offset = (offset + random_fraction * total).rem_euclid(total.max(std::f32::EPSILON));
     }
 
@@ -102,7 +117,7 @@ pub(crate) fn initialize_animation_phase(animation: &mut SpriteAnimation, entity
     }
 
     let was_playing = animation.playing;
-    let changed = advance_animation(animation, offset, entity, None, false, false);
+    let changed = advance_animation(animation, offset, entity, None, false);
     animation.playing = was_playing;
     changed
 }
@@ -112,7 +127,6 @@ pub(crate) fn advance_animation(
     mut delta: f32,
     entity: Entity,
     mut events: Option<&mut EventBus>,
-    emit_events: bool,
     respect_terminal_behavior: bool,
 ) -> bool {
     if delta <= 0.0 {
@@ -125,7 +139,7 @@ pub(crate) fn advance_animation(
     let len = animation.frames.len();
     let mut frame_changed = false;
     while delta > 0.0 && animation.playing {
-        let frame_duration = animation.frames[animation.frame_index].duration.max(std::f32::EPSILON);
+        let frame_duration = animation.frames[animation.frame_index].duration;
         let time_left = frame_duration - animation.elapsed_in_frame;
         if delta < time_left {
             animation.elapsed_in_frame += delta;
@@ -146,10 +160,8 @@ pub(crate) fn advance_animation(
             SpriteAnimationLoopMode::OnceStop => {
                 animation.frame_index = len.saturating_sub(1);
                 frame_changed = true;
-                if emit_events {
-                    if let Some(events) = events.as_deref_mut() {
-                        emit_sprite_animation_events(entity, animation, events);
-                    }
+                if let Some(events) = events.as_deref_mut() {
+                    emit_sprite_animation_events(entity, animation, events);
                 }
                 if respect_terminal_behavior {
                     animation.playing = false;
@@ -159,13 +171,11 @@ pub(crate) fn advance_animation(
             SpriteAnimationLoopMode::OnceHold => {
                 animation.frame_index = len.saturating_sub(1);
                 if let Some(last) = animation.frames.last() {
-                    animation.elapsed_in_frame = last.duration.max(std::f32::EPSILON);
+                    animation.elapsed_in_frame = last.duration;
                 }
                 frame_changed = true;
-                if emit_events {
-                    if let Some(events) = events.as_deref_mut() {
-                        emit_sprite_animation_events(entity, animation, events);
-                    }
+                if let Some(events) = events.as_deref_mut() {
+                    emit_sprite_animation_events(entity, animation, events);
                 }
                 if respect_terminal_behavior {
                     animation.playing = false;
@@ -197,7 +207,7 @@ pub(crate) fn advance_animation(
             }
         }
 
-        if emit_frame_event && emit_events {
+        if emit_frame_event {
             if let Some(events) = events.as_deref_mut() {
                 emit_sprite_animation_events(entity, animation, events);
             }
@@ -209,11 +219,11 @@ pub(crate) fn advance_animation(
 
 fn emit_sprite_animation_events(entity: Entity, animation: &SpriteAnimation, events: &mut EventBus) {
     if let Some(frame) = animation.frames.get(animation.frame_index) {
-        for name in &frame.events {
+        for name in frame.events.iter() {
             events.push(GameEvent::SpriteAnimationEvent {
                 entity,
-                timeline: animation.timeline.clone(),
-                event: name.clone(),
+                timeline: animation.timeline.as_ref().to_string(),
+                event: name.as_ref().to_string(),
             });
         }
     }

@@ -12,7 +12,7 @@ use kestrel_engine::scene::{
     EnvironmentDependency, Scene, SceneEntity, SceneEntityId, SceneEnvironment, SceneLightingData,
     SceneShadowData, TransformData, Vec3Data,
 };
-use std::borrow::Cow;
+use std::sync::Arc;
 use tempfile::NamedTempFile;
 
 #[test]
@@ -405,7 +405,7 @@ fn scene_roundtrip_preserves_scripted_spawns() {
     let mut query = new_world.world.query::<(&Transform, &Sprite, &Velocity, &Aabb, &Mass)>();
     let (transform, sprite, vel, collider_loaded, mass_loaded) = query
         .iter(&new_world.world)
-        .find(|(_, sprite, _, _, _)| sprite.region == "green")
+        .find(|(_, sprite, _, _, _)| sprite.region.as_ref() == "green")
         .expect("loaded world should contain scripted sprite");
 
     assert_eq!(sprite.region.as_ref(), "green");
@@ -545,7 +545,7 @@ fn scene_roundtrip_captures_hierarchy_dependencies_and_environment_metadata() {
         .spawn((
             Transform { translation: Vec2::new(-0.4, 0.25), rotation: 0.35, scale: Vec2::splat(1.15) },
             WorldTransform::default(),
-            Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("checker") },
+            Sprite { atlas_key: Arc::from("main"), region: Arc::from("checker") },
             Velocity(Vec2::new(0.05, 0.02)),
         ))
         .id();
@@ -556,7 +556,7 @@ fn scene_roundtrip_captures_hierarchy_dependencies_and_environment_metadata() {
         .spawn((
             Transform { translation: Vec2::new(0.5, -0.1), rotation: -0.45, scale: Vec2::splat(0.9) },
             WorldTransform::default(),
-            Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("redorb") },
+            Sprite { atlas_key: Arc::from("main"), region: Arc::from("redorb") },
             Aabb { half: Vec2::splat(0.3) },
             Mass(1.5),
             Velocity(Vec2::new(-0.1, 0.12)),

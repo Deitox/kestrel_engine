@@ -1,8 +1,9 @@
-use crate::ecs::SpriteAnimationLoopMode;
+use crate::ecs::{SpriteAnimationFrame, SpriteAnimationLoopMode};
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
+use std::sync::Arc;
 
 pub struct AssetManager {
     atlases: HashMap<String, TextureAtlas>,
@@ -23,19 +24,12 @@ pub struct TextureAtlas {
     pub animations: HashMap<String, SpriteTimeline>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct SpriteTimeline {
-    pub name: String,
+    pub name: Arc<str>,
     pub looped: bool,
-    pub loop_mode: String,
-    pub frames: Vec<SpriteTimelineFrame>,
-}
-
-#[derive(Clone, Debug)]
-pub struct SpriteTimelineFrame {
-    pub region: String,
-    pub duration: f32,
-    pub events: Vec<String>,
+    pub loop_mode: SpriteAnimationLoopMode,
+    pub frames: Arc<[SpriteAnimationFrame]>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -144,7 +138,7 @@ impl AssetManager {
         raw: HashMap<String, AtlasTimelineFile>,
     ) -> HashMap<String, SpriteTimeline> {
         let mut animations = HashMap::new();
-        for (timeline_name, mut data) in raw {
+        for (timeline_key, mut data) in raw {
             let mut frames = Vec::new();
             let mut event_map: HashMap<usize, Vec<String>> = HashMap::new();
             for event in data.events.drain(..) {
@@ -153,18 +147,25 @@ impl AssetManager {
             for (frame_index, frame) in data.frames.into_iter().enumerate() {
                 if !regions.contains_key(&frame.region) {
                     eprintln!(
-                        "[assets] atlas '{atlas_key}': timeline '{timeline_name}' references unknown region '{}', skipping frame.",
+                        "[assets] atlas '{atlas_key}': timeline '{timeline_key}' references unknown region '{}', skipping frame.",
                         frame.region
                     );
                     continue;
                 }
                 let duration = (frame.duration_ms.max(1) as f32) / 1000.0;
-                let events = event_map.remove(&frame_index).unwrap_or_default();
-                frames.push(SpriteTimelineFrame { region: frame.region, duration, events });
+                let region_name = frame.region;
+                let event_names = event_map.remove(&frame_index).unwrap_or_default();
+                let events: Vec<Arc<str>> =
+                    event_names.into_iter().map(|name| Arc::<str>::from(name)).collect();
+                frames.push(SpriteAnimationFrame {
+                    region: Arc::<str>::from(region_name),
+                    duration,
+                    events: Arc::from(events),
+                });
             }
             if frames.is_empty() {
                 eprintln!(
-                    "[assets] atlas '{atlas_key}': timeline '{timeline_name}' has no valid frames, ignoring."
+                    "[assets] atlas '{atlas_key}': timeline '{timeline_key}' has no valid frames, ignoring."
                 );
                 continue;
             }
@@ -176,17 +177,22 @@ impl AssetManager {
                 }
             });
             let mode_enum = SpriteAnimationLoopMode::from_str(&mode_str);
-            let normalized_mode = mode_enum.as_str().to_string();
             let looped = mode_enum.looped();
             for (frame, names) in event_map {
                 eprintln!(
-                    "[assets] atlas '{atlas_key}': timeline '{timeline_name}' has events {:?} referencing missing frame index {}.",
+                    "[assets] atlas '{atlas_key}': timeline '{timeline_key}' has events {:?} referencing missing frame index {}.",
                     names, frame
                 );
             }
+            let timeline_arc = Arc::<str>::from(timeline_key.clone());
             animations.insert(
-                timeline_name.clone(),
-                SpriteTimeline { name: timeline_name, looped, loop_mode: normalized_mode, frames },
+                timeline_key.clone(),
+                SpriteTimeline {
+                    name: timeline_arc,
+                    looped,
+                    loop_mode: mode_enum,
+                    frames: Arc::from(frames),
+                },
             );
         }
         animations

@@ -3,16 +3,13 @@
 //! Marked ignored so it only runs when explicitly requested:
 //! `cargo test --release animation_bench_run -- --ignored --nocapture`.
 
-use kestrel_engine::ecs::{
-    EcsWorld, Sprite, SpriteAnimation, SpriteAnimationFrame, SpriteAnimationLoopMode, Transform,
-    WorldTransform,
-};
-use std::borrow::Cow;
+use kestrel_engine::ecs::{EcsWorld, Sprite, SpriteAnimation, SpriteAnimationFrame, SpriteAnimationLoopMode};
 use std::env;
 use std::fs::{create_dir_all, File};
 use std::hint::black_box;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const DEFAULT_STEPS: u32 = 240; // ~4 seconds at 60 FPS
@@ -178,21 +175,32 @@ fn budget_for(animators: usize) -> Option<f64> {
 }
 
 fn seed_sprite_animators(world: &mut EcsWorld, count: usize) {
-    let frame_template = vec![
-        SpriteAnimationFrame { region: "frame_a".to_string(), duration: 0.08, events: Vec::new() },
-        SpriteAnimationFrame { region: "frame_b".to_string(), duration: 0.08, events: Vec::new() },
-        SpriteAnimationFrame { region: "frame_c".to_string(), duration: 0.08, events: Vec::new() },
-    ];
+    let empty_events: Arc<[Arc<str>]> = Arc::from(Vec::<Arc<str>>::new());
+    let frame_template: Arc<[SpriteAnimationFrame]> = Arc::from(vec![
+        SpriteAnimationFrame {
+            region: Arc::from("frame_a"),
+            duration: 0.08,
+            events: Arc::clone(&empty_events),
+        },
+        SpriteAnimationFrame {
+            region: Arc::from("frame_b"),
+            duration: 0.08,
+            events: Arc::clone(&empty_events),
+        },
+        SpriteAnimationFrame {
+            region: Arc::from("frame_c"),
+            duration: 0.08,
+            events: Arc::clone(&empty_events),
+        },
+    ]);
+    let timeline_name = Arc::from("bench_cycle");
 
     for _ in 0..count {
         world.world.spawn((
-            Transform::default(),
-            WorldTransform::default(),
-            Sprite { atlas_key: Cow::Borrowed("bench"), region: Cow::Borrowed("frame_a") },
+            Sprite { atlas_key: Arc::from("bench"), region: Arc::from("frame_a") },
             SpriteAnimation::new(
-                "bench_cycle".to_string(),
-                frame_template.clone(),
-                true,
+                Arc::clone(&timeline_name),
+                Arc::clone(&frame_template),
                 SpriteAnimationLoopMode::Loop,
             ),
         ));

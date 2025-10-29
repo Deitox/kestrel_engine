@@ -13,9 +13,9 @@ use bevy_ecs::prelude::{Entity, Schedule, With, World};
 use glam::{EulerRot, Mat4, Quat, Vec2, Vec3, Vec4};
 use rand::Rng;
 use rapier2d::prelude::{Rotation, Vector};
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 pub struct EmitterSnapshot {
     pub rate: f32,
@@ -101,7 +101,7 @@ impl EcsWorld {
                 Transform { translation: Vec2::ZERO, rotation: 0.0, scale: Vec2::splat(0.8) },
                 WorldTransform::default(),
                 Spin { speed: 1.2 },
-                Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("checker") },
+                Sprite { atlas_key: Arc::from("main"), region: Arc::from("checker") },
                 Tint(Vec4::new(1.0, 1.0, 1.0, 0.2)),
             ))
             .id();
@@ -130,7 +130,7 @@ impl EcsWorld {
             .spawn((
                 Transform { translation: translation_a, rotation: 0.0, scale: Vec2::splat(0.7) },
                 WorldTransform::default(),
-                Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("checker") },
+                Sprite { atlas_key: Arc::from("main"), region: Arc::from("checker") },
                 Aabb { half: half_a },
                 Velocity(velocity_a),
                 Force::default(),
@@ -164,7 +164,7 @@ impl EcsWorld {
             .spawn((
                 Transform { translation: translation_b, rotation: 0.0, scale: Vec2::splat(0.6) },
                 WorldTransform::default(),
-                Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("redorb") },
+                Sprite { atlas_key: Arc::from("main"), region: Arc::from("redorb") },
                 Aabb { half: half_b },
                 Velocity(velocity_b),
                 Force::default(),
@@ -198,7 +198,7 @@ impl EcsWorld {
             .spawn((
                 Transform { translation: translation_c, rotation: 0.0, scale: Vec2::splat(0.5) },
                 WorldTransform::default(),
-                Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("bluebox") },
+                Sprite { atlas_key: Arc::from("main"), region: Arc::from("bluebox") },
                 Aabb { half: half_c },
                 Velocity(velocity_c),
                 Force::default(),
@@ -252,7 +252,7 @@ impl EcsWorld {
                 .spawn((
                     Transform { translation: pos, rotation: 0.0, scale: Vec2::splat(scale) },
                     WorldTransform::default(),
-                    Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed(rname) },
+                    Sprite { atlas_key: Arc::from("main"), region: Arc::from(rname) },
                     Aabb { half },
                     Velocity(vel),
                     Force::default(),
@@ -451,7 +451,7 @@ impl EcsWorld {
             .spawn((
                 Transform { translation: position, rotation: 0.0, scale: Vec2::splat(scale) },
                 WorldTransform::default(),
-                Sprite { atlas_key: Cow::Owned(atlas.to_string()), region: Cow::Owned(region.to_string()) },
+                Sprite { atlas_key: Arc::from(atlas.to_string()), region: Arc::from(region.to_string()) },
                 Aabb { half },
                 Velocity(velocity),
                 Force::default(),
@@ -605,7 +605,7 @@ impl EcsWorld {
             if !assets.atlas_region_exists(&atlas, region) {
                 return false;
             }
-            sprite.region = Cow::Owned(region.to_string());
+            sprite.region = Arc::from(region.to_string());
             drop(sprite);
             self.world.entity_mut(entity).remove::<SpriteAnimation>();
             true
@@ -638,17 +638,9 @@ impl EcsWorld {
                 if definition.frames.is_empty() {
                     return false;
                 }
-                let frames: Vec<SpriteAnimationFrame> = definition
-                    .frames
-                    .iter()
-                    .map(|frame| SpriteAnimationFrame {
-                        region: frame.region.clone(),
-                        duration: frame.duration.max(std::f32::EPSILON),
-                        events: frame.events.clone(),
-                    })
-                    .collect();
-                let loop_mode = SpriteAnimationLoopMode::from_str(&definition.loop_mode);
-                let component = SpriteAnimation::new(name.to_string(), frames, loop_mode.looped(), loop_mode);
+                let frames = Arc::clone(&definition.frames);
+                let loop_mode = definition.loop_mode;
+                let component = SpriteAnimation::new(Arc::clone(&definition.name), frames, loop_mode);
                 self.world.entity_mut(entity).insert(component);
                 if let Some(mut animation) = self.world.get_mut::<SpriteAnimation>(entity) {
                     if let Some((offset, random, group)) = previous_config {
@@ -745,7 +737,7 @@ impl EcsWorld {
         if let Some(region) = region_hint {
             if let Some(mut sprite) = self.world.get_mut::<Sprite>(entity) {
                 if sprite.region.as_ref() != region {
-                    sprite.region = Cow::Owned(region);
+                    sprite.region = Arc::from(region);
                 }
             }
         }
@@ -798,7 +790,7 @@ impl EcsWorld {
         if let Some(region) = region_name {
             if let Some(mut sprite) = self.world.get_mut::<Sprite>(entity) {
                 if sprite.region.as_ref() != region.as_str() {
-                    sprite.region = Cow::Owned(region);
+                    sprite.region = Arc::from(region);
                 }
             }
         }
@@ -813,36 +805,30 @@ impl EcsWorld {
                 continue;
             }
             let timeline_name = animation.timeline.clone();
-            let Some(definition) = assets.atlas_timeline(atlas_key, &timeline_name) else {
-                animation.frames.clear();
+            let Some(definition) = assets.atlas_timeline(atlas_key, timeline_name.as_ref()) else {
+                animation.frames = Arc::from(Vec::<SpriteAnimationFrame>::new());
+                animation.has_events = false;
                 animation.frame_index = 0;
                 animation.elapsed_in_frame = 0.0;
                 animation.playing = false;
                 updated += 1;
                 eprintln!(
-                    "[assets] Atlas '{atlas_key}' no longer defines timeline '{timeline_name}' (entity {:?})",
-                    entity
+                    "[assets] Atlas '{atlas_key}' no longer defines timeline '{}' (entity {:?})",
+                    timeline_name, entity
                 );
                 continue;
             };
-            let prev_frames: Vec<SpriteAnimationFrame> = animation.frames.clone();
+            let prev_frames = animation.frames.clone();
             let prev_region = animation.current_region_name().map(|name| name.to_string());
             let prev_index = animation.frame_index;
             let prev_elapsed = animation.elapsed_in_frame;
             let prev_playing = animation.playing;
             let prev_forward = animation.forward;
             let prev_speed = animation.speed;
-            let loop_mode = SpriteAnimationLoopMode::from_str(&definition.loop_mode);
 
-            animation.frames = definition
-                .frames
-                .iter()
-                .map(|frame| SpriteAnimationFrame {
-                    region: frame.region.clone(),
-                    duration: frame.duration.max(std::f32::EPSILON),
-                    events: frame.events.clone(),
-                })
-                .collect();
+            animation.frames = Arc::clone(&definition.frames);
+            animation.timeline = Arc::clone(&definition.name);
+            animation.has_events = animation.frames.iter().any(|frame| !frame.events.is_empty());
 
             if animation.frames.is_empty() {
                 animation.frame_index = 0;
@@ -851,7 +837,7 @@ impl EcsWorld {
                 updated += 1;
                 continue;
             }
-            animation.set_mode(loop_mode);
+            animation.set_mode(definition.loop_mode);
 
             let new_len = animation.frames.len();
             let mut target_index = prev_index.min(new_len - 1);
@@ -876,8 +862,10 @@ impl EcsWorld {
             }
             if !matched {
                 if let Some(region_name) = prev_region.as_ref() {
-                    if let Some(found) =
-                        animation.frames.iter().position(|frame| frame.region == *region_name)
+                    if let Some(found) = animation
+                        .frames
+                        .iter()
+                        .position(|frame| frame.region.as_ref() == region_name.as_str())
                     {
                         target_index = found;
                         matched = true;
@@ -902,7 +890,7 @@ impl EcsWorld {
 
             if let Some(region) = animation.current_region_name() {
                 if sprite.region.as_ref() != region {
-                    sprite.region = Cow::Owned(region.to_string());
+                    sprite.region = Arc::from(region);
                 }
             }
 
@@ -924,7 +912,7 @@ impl EcsWorld {
             drop(animation);
             if let Some(region) = target_region {
                 if let Some(mut sprite) = self.world.get_mut::<Sprite>(entity) {
-                    sprite.region = Cow::Owned(region);
+                    sprite.region = Arc::from(region);
                 }
             }
             true
@@ -1202,11 +1190,13 @@ impl EcsWorld {
             let region = sprite.region.to_string();
             let animation = self.world.get::<SpriteAnimation>(entity).map(|anim| {
                 let frame = anim.frames.get(anim.frame_index);
-                let frame_region = frame.map(|frame| frame.region.clone());
+                let frame_region = frame.map(|frame| frame.region.as_ref().to_string());
                 let frame_duration = frame.map(|frame| frame.duration).unwrap_or(0.0);
-                let frame_events = frame.map(|frame| frame.events.clone()).unwrap_or_default();
+                let frame_events = frame
+                    .map(|frame| frame.events.iter().map(|e| e.as_ref().to_string()).collect())
+                    .unwrap_or_default();
                 SpriteAnimationInfo {
-                    timeline: anim.timeline.clone(),
+                    timeline: anim.timeline.as_ref().to_string(),
                     playing: anim.playing,
                     looped: anim.looped,
                     loop_mode: anim.mode.as_str().to_string(),
@@ -1683,8 +1673,8 @@ impl EcsWorld {
                 ));
             }
             entity.insert(Sprite {
-                atlas_key: Cow::Owned(sprite.atlas.clone()),
-                region: Cow::Owned(sprite.region.clone()),
+                atlas_key: Arc::from(sprite.atlas.clone()),
+                region: Arc::from(sprite.region.clone()),
             });
         }
 
@@ -1779,7 +1769,7 @@ impl EcsWorld {
                 .map(|(atlas, region)| {
                     let animation =
                         self.world.get::<SpriteAnimation>(entity).map(|anim| SpriteAnimationData {
-                            timeline: anim.timeline.clone(),
+                            timeline: anim.timeline.as_ref().to_string(),
                             speed: anim.speed,
                             looped: anim.looped,
                             playing: anim.playing,

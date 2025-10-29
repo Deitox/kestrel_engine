@@ -2,7 +2,7 @@ use crate::scene::{MeshLightingData, SceneEntityId};
 use bevy_ecs::prelude::*;
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use rapier2d::prelude::{ColliderHandle, RigidBodyHandle};
-use std::borrow::Cow;
+use std::sync::Arc;
 
 #[derive(Component, Clone, Copy)]
 pub struct Transform {
@@ -40,14 +40,14 @@ pub struct Spin {
 }
 #[derive(Component, Clone)]
 pub struct Sprite {
-    pub atlas_key: Cow<'static, str>,
-    pub region: Cow<'static, str>,
+    pub atlas_key: Arc<str>,
+    pub region: Arc<str>,
 }
 
 #[derive(Component, Clone)]
 pub struct SpriteAnimation {
-    pub timeline: String,
-    pub frames: Vec<SpriteAnimationFrame>,
+    pub timeline: Arc<str>,
+    pub frames: Arc<[SpriteAnimationFrame]>,
     pub frame_index: usize,
     pub elapsed_in_frame: f32,
     pub playing: bool,
@@ -58,28 +58,30 @@ pub struct SpriteAnimation {
     pub start_offset: f32,
     pub random_start: bool,
     pub group: Option<String>,
+    pub has_events: bool,
 }
 
 impl SpriteAnimation {
     pub fn new(
-        timeline: String,
-        frames: Vec<SpriteAnimationFrame>,
-        looped: bool,
+        timeline: Arc<str>,
+        frames: Arc<[SpriteAnimationFrame]>,
         mode: SpriteAnimationLoopMode,
     ) -> Self {
+        let has_events = frames.iter().any(|frame| !frame.events.is_empty());
         Self {
             timeline,
             frames,
             frame_index: 0,
             elapsed_in_frame: 0.0,
             playing: true,
-            looped,
+            looped: mode.looped(),
             forward: true,
             speed: 1.0,
             mode,
             start_offset: 0.0,
             random_start: false,
             group: None,
+            has_events,
         }
     }
 
@@ -106,7 +108,11 @@ impl SpriteAnimation {
     }
 
     pub fn current_region_name(&self) -> Option<&str> {
-        self.frames.get(self.frame_index).map(|frame| frame.region.as_str())
+        self.frames.get(self.frame_index).map(|frame| frame.region.as_ref())
+    }
+
+    pub fn current_region_handle(&self) -> Option<Arc<str>> {
+        self.frames.get(self.frame_index).map(|frame| frame.region.clone())
     }
 
     pub fn frame_count(&self) -> usize {
@@ -114,15 +120,15 @@ impl SpriteAnimation {
     }
 
     pub fn total_duration(&self) -> f32 {
-        self.frames.iter().map(|frame| frame.duration.max(std::f32::EPSILON)).sum()
+        self.frames.iter().map(|frame| frame.duration).sum()
     }
 }
 
 #[derive(Clone)]
 pub struct SpriteAnimationFrame {
-    pub region: String,
+    pub region: Arc<str>,
     pub duration: f32,
-    pub events: Vec<String>,
+    pub events: Arc<[Arc<str>]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
