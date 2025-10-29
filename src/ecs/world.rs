@@ -825,9 +825,12 @@ impl EcsWorld {
                 );
                 continue;
             };
+            let prev_frames: Vec<SpriteAnimationFrame> = animation.frames.clone();
             let prev_region = animation.current_region_name().map(|name| name.to_string());
+            let prev_index = animation.frame_index;
             let prev_elapsed = animation.elapsed_in_frame;
             let prev_playing = animation.playing;
+            let prev_forward = animation.forward;
             let prev_speed = animation.speed;
             let loop_mode = SpriteAnimationLoopMode::from_str(&definition.loop_mode);
 
@@ -850,16 +853,51 @@ impl EcsWorld {
             }
             animation.set_mode(loop_mode);
 
-            let mut target_index = animation.frame_index.min(animation.frames.len() - 1);
-            if let Some(region_name) = prev_region.as_ref() {
-                if let Some(found) = animation.frames.iter().position(|frame| frame.region == *region_name) {
+            let new_len = animation.frames.len();
+            let mut target_index = prev_index.min(new_len - 1);
+            let mut matched = false;
+            if let Some(prev_frame) = prev_frames.get(prev_index) {
+                let target_region = &prev_frame.region;
+                let occurrence =
+                    prev_frames[..=prev_index].iter().filter(|frame| frame.region == *target_region).count();
+                let mut seen = 0usize;
+                if let Some(found) = animation.frames.iter().position(|frame| {
+                    if frame.region == *target_region {
+                        seen += 1;
+                        if seen == occurrence {
+                            return true;
+                        }
+                    }
+                    false
+                }) {
                     target_index = found;
+                    matched = true;
                 }
             }
+            if !matched {
+                if let Some(region_name) = prev_region.as_ref() {
+                    if let Some(found) =
+                        animation.frames.iter().position(|frame| frame.region == *region_name)
+                    {
+                        target_index = found;
+                        matched = true;
+                    }
+                }
+            }
+            if !matched && prev_index >= new_len {
+                target_index = new_len - 1;
+            }
             animation.frame_index = target_index;
-            let current_duration = animation.frames[target_index].duration.max(std::f32::EPSILON);
-            animation.elapsed_in_frame = prev_elapsed.min(current_duration);
+            let new_duration = animation.frames[target_index].duration.max(std::f32::EPSILON);
+            let prev_duration = prev_frames
+                .get(prev_index)
+                .map(|frame| frame.duration.max(std::f32::EPSILON))
+                .unwrap_or(std::f32::EPSILON);
+            let progress =
+                if prev_duration > 0.0 { (prev_elapsed / prev_duration).clamp(0.0, 1.0) } else { 0.0 };
+            animation.elapsed_in_frame = (progress * new_duration).min(new_duration);
             animation.playing = prev_playing && !animation.frames.is_empty();
+            animation.forward = prev_forward;
             animation.speed = prev_speed;
 
             if let Some(region) = animation.current_region_name() {

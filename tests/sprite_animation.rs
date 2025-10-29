@@ -126,6 +126,12 @@ fn sprite_animation_hot_reload_preserves_frame() {
     ecs.update(0.2); // advance into middle frame
     assert_eq!(sprite_region(&ecs, entity), "bluebox");
 
+    let anim_before =
+        ecs.world.get::<kestrel_engine::ecs::SpriteAnimation>(entity).expect("animation component");
+    let prev_elapsed = anim_before.elapsed_in_frame;
+    let prev_duration = anim_before.frames[anim_before.frame_index].duration;
+    let prev_forward = anim_before.forward;
+
     let mut atlas_json: serde_json::Value = serde_json::from_slice(&source).expect("parse atlas");
     atlas_json["animations"]["demo_cycle"]["frames"] = json!([
         { "region": "green", "duration_ms": 90 },
@@ -143,6 +149,17 @@ fn sprite_animation_hot_reload_preserves_frame() {
     assert_eq!(anim.frames.len(), 3);
     assert_eq!(anim.current_region_name(), Some("bluebox"));
     assert_eq!(anim.frame_index, 2, "frame should track region by name");
+    let expected_elapsed = {
+        let prev_duration = prev_duration.max(std::f32::EPSILON);
+        let progress = (prev_elapsed / prev_duration).clamp(0.0, 1.0);
+        let new_duration = anim.frames[anim.frame_index].duration;
+        progress * new_duration
+    };
+    assert!(
+        (anim.elapsed_in_frame - expected_elapsed).abs() < 1e-6,
+        "elapsed time should scale with new frame duration"
+    );
+    assert_eq!(anim.forward, prev_forward, "playback direction should remain unchanged");
 
     let sprite = ecs.world.get::<Sprite>(entity).expect("sprite component");
     assert_eq!(sprite.region.as_ref(), "bluebox");
@@ -291,6 +308,75 @@ fn sprite_animation_info_reports_frame_metadata() {
         anim_info.frame_events.iter().any(|event| event == "footstep"),
         "frame metadata should surface declared events"
     );
+}
+
+#[test]
+fn sprite_animation_hot_reload_handles_duplicate_regions() {
+    let temp = NamedTempFile::new().expect("temp atlas");
+    let source = std::fs::read("assets/images/atlas.json").expect("read atlas");
+    let mut atlas_json: serde_json::Value = serde_json::from_slice(&source).expect("parse atlas");
+    atlas_json["animations"]["demo_cycle"]["frames"] = json!([
+        { "region": "redorb", "duration_ms": 100 },
+        { "region": "bluebox", "duration_ms": 100 },
+        { "region": "redorb", "duration_ms": 100 },
+        { "region": "green", "duration_ms": 100 }
+    ]);
+    std::fs::write(temp.path(), serde_json::to_vec_pretty(&atlas_json).expect("encode"))
+        .expect("write initial atlas");
+    let temp_path = temp.path().to_path_buf();
+
+    let mut assets = AssetManager::new();
+    assets.retain_atlas("main", temp_path.to_str()).expect("load atlas with duplicates");
+    let mut ecs = EcsWorld::new();
+    let entity = ecs
+        .world
+        .spawn((
+            Transform::default(),
+            WorldTransform::default(),
+            Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("redorb") },
+        ))
+        .id();
+    assert!(ecs.set_sprite_timeline(entity, &assets, Some("demo_cycle")));
+    assert!(ecs.seek_sprite_animation_frame(entity, 2)); // second occurrence of redorb
+    {
+        let mut anim =
+            ecs.world.get_mut::<kestrel_engine::ecs::SpriteAnimation>(entity).expect("animation component");
+        anim.forward = false;
+        anim.elapsed_in_frame = 0.05;
+    }
+
+    let mut atlas_json = serde_json::from_slice::<serde_json::Value>(&source).expect("parse atlas");
+    atlas_json["animations"]["demo_cycle"]["frames"] = json!([
+        { "region": "redorb", "duration_ms": 80 },
+        { "region": "green", "duration_ms": 90 },
+        { "region": "redorb", "duration_ms": 120 },
+        { "region": "bluebox", "duration_ms": 70 },
+        { "region": "redorb", "duration_ms": 150 }
+    ]);
+    std::fs::write(&temp_path, serde_json::to_vec_pretty(&atlas_json).expect("encode"))
+        .expect("write modified atlas");
+
+    assets.reload_atlas("main").expect("reload atlas");
+    let refreshed = ecs.refresh_sprite_animations_for_atlas("main", &assets);
+    assert_eq!(refreshed, 1);
+
+    let anim = ecs.world.get::<kestrel_engine::ecs::SpriteAnimation>(entity).expect("animation component");
+    assert_eq!(anim.frames.len(), 5);
+    assert_eq!(anim.current_region_name(), Some("redorb"));
+    assert_eq!(anim.frame_index, 2, "should remain on the matching occurrence");
+    let expected_elapsed = {
+        let progress = (0.05f32 / 0.1f32).clamp(0.0, 1.0);
+        let new_duration = anim.frames[anim.frame_index].duration;
+        progress * new_duration
+    };
+    assert!(
+        (anim.elapsed_in_frame - expected_elapsed).abs() < 1e-6,
+        "elapsed time should scale with new duration"
+    );
+    assert!(!anim.forward, "playback direction should persist");
+
+    let sprite = ecs.world.get::<Sprite>(entity).expect("sprite component");
+    assert_eq!(sprite.region.as_ref(), "redorb");
 }
 
 #[test]
