@@ -4,7 +4,9 @@ use super::{
 };
 use crate::audio::{AudioHealthSnapshot, AudioPlugin};
 use crate::camera3d::Camera3D;
-use crate::ecs::{EntityInfo, ParticleBudgetMetrics, SpatialMetrics, SpatialMode, SystemTimingSummary};
+use crate::ecs::{
+    AnimationTime, EntityInfo, ParticleBudgetMetrics, SpatialMetrics, SpatialMode, SystemTimingSummary,
+};
 use crate::events::GameEvent;
 use crate::gizmo::{
     Axis2, GizmoInteraction, GizmoMode, ScaleHandleKind, GIZMO_ROTATE_INNER_RADIUS_PX,
@@ -16,10 +18,10 @@ use crate::plugins::PluginState;
 use crate::prefab::{PrefabFormat, PrefabStatusKind, PrefabStatusMessage};
 
 use bevy_ecs::prelude::Entity;
-use egui::{DragAndDrop, Key};
+use egui::{DragAndDrop, Key, SliderClamping};
 use egui_plot as eplot;
 use glam::{Vec2, Vec3};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use winit::dpi::PhysicalSize;
 
 mod entity_inspector;
@@ -498,6 +500,16 @@ impl App {
         let mut left_panel_width_px = 0.0;
         let mut right_panel_width_px = 0.0;
 
+        let animation_snapshot = self.ecs.world.resource::<AnimationTime>().clone();
+        let mut animation_scale = animation_snapshot.scale;
+        let mut animation_paused = animation_snapshot.paused;
+        let mut animation_fixed_enabled = animation_snapshot.fixed_step.is_some();
+        let mut animation_fixed_step = animation_snapshot.fixed_step.unwrap_or(1.0 / 60.0);
+        let animation_remainder = animation_snapshot.remainder;
+        let mut animation_group_entries: Vec<(String, f32)> =
+            animation_snapshot.group_scales.iter().map(|(name, value)| (name.clone(), *value)).collect();
+        animation_group_entries.sort_by(|a, b| a.0.cmp(&b.0));
+
         let mut ui_pixels_per_point = self.egui_ctx.pixels_per_point();
         if let Some(screen) = self.egui_screen.as_mut() {
             screen.pixels_per_point = ui_pixels_per_point;
@@ -601,6 +613,94 @@ impl App {
                         if ui.button("Find entity by ID...").clicked() {
                             id_lookup_active = true;
                         }
+                        ui.separator();
+                        egui::CollapsingHeader::new("Animation Time").default_open(false).show(ui, |ui| {
+                            ui.checkbox(&mut animation_paused, "Pause playback");
+                            ui.add(egui::Slider::new(&mut animation_scale, 0.0..=4.0).text("Global scale"));
+                            ui.horizontal(|ui| {
+                                let mut enabled = animation_fixed_enabled;
+                                if ui.checkbox(&mut enabled, "Fixed step (s)").changed() {
+                                    animation_fixed_enabled = enabled;
+                                }
+                                let response = ui.add_enabled(
+                                    animation_fixed_enabled,
+                                    egui::DragValue::new(&mut animation_fixed_step)
+                                        .speed(0.001)
+                                        .range(0.001..=0.5)
+                                        .suffix(" s"),
+                                );
+                                if response.changed() {
+                                    animation_fixed_step = animation_fixed_step.max(0.0);
+                                }
+                            });
+                            ui.label(format!("Accumulated remainder: {:.4} s", animation_remainder));
+                            ui.separator();
+                            if animation_group_entries.is_empty() {
+                                ui.small("No group overrides active.");
+                            } else {
+                                ui.label("Group overrides");
+                                let mut remove_indices = Vec::new();
+                                for (index, entry) in animation_group_entries.iter_mut().enumerate() {
+                                    let (group_name, value) = entry;
+                                    let mut remove_flag = false;
+                                    ui.horizontal(|ui| {
+                                        ui.label(group_name.as_str());
+                                        if ui
+                                            .add(
+                                                egui::Slider::new(value, 0.0..=4.0)
+                                                    .clamping(SliderClamping::Always)
+                                                    .text("Scale"),
+                                            )
+                                            .changed()
+                                        {
+                                            *value = value.max(0.0);
+                                        }
+                                        if ui.button("Remove").clicked() {
+                                            remove_flag = true;
+                                        }
+                                    });
+                                    if remove_flag {
+                                        remove_indices.push(index);
+                                    }
+                                }
+                                for index in remove_indices.into_iter().rev() {
+                                    animation_group_entries.remove(index);
+                                }
+                                ui.small("Setting a group to 1.0 clears the override on apply.");
+                            }
+                            ui.separator();
+                            ui.label("Add / update group override");
+                            ui.horizontal(|ui| {
+                                ui.label("Group");
+                                ui.text_edit_singleline(&mut self.animation_group_input);
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Scale");
+                                ui.add(
+                                    egui::Slider::new(&mut self.animation_group_scale_input, 0.0..=4.0)
+                                        .clamping(SliderClamping::Always)
+                                        .text("x"),
+                                );
+                                if ui.button("Apply").clicked() {
+                                    let name = self.animation_group_input.trim();
+                                    if !name.is_empty() {
+                                        let value = self.animation_group_scale_input.max(0.0);
+                                        if let Some(entry) = animation_group_entries
+                                            .iter_mut()
+                                            .find(|(existing, _)| existing == name)
+                                        {
+                                            entry.1 = value;
+                                        } else {
+                                            animation_group_entries.push((name.to_string(), value));
+                                            animation_group_entries.sort_by(|a, b| a.0.cmp(&b.0));
+                                        }
+                                        self.animation_group_input.clear();
+                                        self.animation_group_scale_input = 1.0;
+                                    }
+                                }
+                            });
+                            ui.small("Group overrides drive per-tag multipliers for sprite animations.");
+                        });
                         egui::CollapsingHeader::new("Profiler").default_open(false).show(ui, |ui| {
                             ui.monospace(frame_summary_text(frame_timings.last()));
                             if system_timings.is_empty() {
@@ -2145,6 +2245,36 @@ impl App {
                 Err(err) => {
                     self.gpu_metrics_status = Some(format!("GPU timing export failed: {err}"));
                 }
+            }
+        }
+
+        let approx_eq = |a: f32, b: f32| (a - b).abs() <= 1e-4;
+        if !approx_eq(animation_scale, animation_snapshot.scale) {
+            self.ecs.set_animation_time_scale(animation_scale);
+        }
+        if animation_paused != animation_snapshot.paused {
+            self.ecs.set_animation_time_paused(animation_paused);
+        }
+        let desired_fixed_step =
+            if animation_fixed_enabled { Some(animation_fixed_step.max(std::f32::EPSILON)) } else { None };
+        let fixed_changed = match (animation_snapshot.fixed_step, desired_fixed_step) {
+            (Some(prev), Some(next)) => !approx_eq(prev, next),
+            (None, Some(_)) | (Some(_), None) => true,
+            (None, None) => false,
+        };
+        if fixed_changed {
+            self.ecs.set_animation_time_fixed_step(desired_fixed_step);
+        }
+        let final_group_map: HashMap<String, f32> = animation_group_entries.into_iter().collect();
+        for (name, value) in &final_group_map {
+            match animation_snapshot.group_scales.get(name) {
+                Some(prev) if approx_eq(*prev, *value) => {}
+                _ => self.ecs.set_animation_group_scale(name, *value),
+            }
+        }
+        for name in animation_snapshot.group_scales.keys() {
+            if !final_group_map.contains_key(name) {
+                self.ecs.set_animation_group_scale(name, 1.0);
             }
         }
 
