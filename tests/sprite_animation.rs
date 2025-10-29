@@ -250,3 +250,114 @@ fn sprite_animation_events_emit_on_frame_entry() {
         "animation should emit declared events when entering the frame"
     );
 }
+
+#[test]
+fn sprite_animation_respects_start_offset() {
+    let mut assets = AssetManager::new();
+    assets.retain_atlas("main", Some("assets/images/atlas.json")).expect("load main atlas");
+    let mut ecs = EcsWorld::new();
+    let entity = ecs
+        .world
+        .spawn((
+            Transform::default(),
+            WorldTransform::default(),
+            Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("redorb") },
+        ))
+        .id();
+    assert!(ecs.set_sprite_timeline(entity, &assets, Some("demo_cycle")));
+    assert!(ecs.set_sprite_animation_start_offset(entity, 0.24));
+    let region = sprite_region(&ecs, entity);
+    assert_eq!(region, "green", "start_offset should pre-advance the animation before playback begins");
+}
+
+#[test]
+fn sprite_animation_random_start_is_stable() {
+    let mut assets = AssetManager::new();
+    assets.retain_atlas("main", Some("assets/images/atlas.json")).expect("load main atlas");
+
+    let mut world_a = EcsWorld::new();
+    let entity_a = world_a
+        .world
+        .spawn((
+            Transform::default(),
+            WorldTransform::default(),
+            Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("redorb") },
+        ))
+        .id();
+    assert!(world_a.set_sprite_timeline(entity_a, &assets, Some("demo_cycle")));
+    assert!(world_a.set_sprite_animation_random_start(entity_a, true));
+    let region_a = sprite_region(&world_a, entity_a);
+
+    let mut world_b = EcsWorld::new();
+    let entity_b = world_b
+        .world
+        .spawn((
+            Transform::default(),
+            WorldTransform::default(),
+            Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("redorb") },
+        ))
+        .id();
+    assert!(world_b.set_sprite_timeline(entity_b, &assets, Some("demo_cycle")));
+    assert!(world_b.set_sprite_animation_random_start(entity_b, true));
+    let region_b = sprite_region(&world_b, entity_b);
+
+    assert_eq!(
+        region_a, region_b,
+        "deterministic random_start should produce repeatable phase offsets for identical entities"
+    );
+}
+
+#[test]
+fn animation_time_scales_and_gates_playback() {
+    let mut assets = AssetManager::new();
+    assets.retain_atlas("main", Some("assets/images/atlas.json")).expect("load main atlas");
+    let mut ecs = EcsWorld::new();
+    let entity = ecs
+        .world
+        .spawn((
+            Transform::default(),
+            WorldTransform::default(),
+            Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("redorb") },
+        ))
+        .id();
+    assert!(ecs.set_sprite_timeline(entity, &assets, Some("demo_cycle")));
+
+    {
+        let mut anim_time = ecs.world.resource_mut::<kestrel_engine::ecs::AnimationTime>();
+        anim_time.scale = 0.5;
+    }
+    ecs.update(0.24);
+    let region_scaled = sprite_region(&ecs, entity);
+    assert_eq!(
+        region_scaled, "bluebox",
+        "half-speed playback should advance as though delta time were halved"
+    );
+
+    {
+        let mut anim_time = ecs.world.resource_mut::<kestrel_engine::ecs::AnimationTime>();
+        anim_time.paused = true;
+    }
+    ecs.update(1.0);
+    let region_paused = sprite_region(&ecs, entity);
+    assert_eq!(region_paused, "bluebox", "paused animation time should prevent frame advancement");
+
+    {
+        let mut anim_time = ecs.world.resource_mut::<kestrel_engine::ecs::AnimationTime>();
+        anim_time.paused = false;
+        anim_time.scale = 1.0;
+        anim_time.set_fixed_step(Some(0.12));
+    }
+    ecs.update(0.06);
+    let interim = sprite_region(&ecs, entity);
+    assert_eq!(
+        interim, "bluebox",
+        "fixed-step playback should avoid advancing until the step threshold is reached"
+    );
+    ecs.update(0.06);
+    let stepped = sprite_region(&ecs, entity);
+    assert_ne!(stepped, "bluebox", "fixed-step playback should advance once the accumulated step is met");
+    {
+        let mut anim_time = ecs.world.resource_mut::<kestrel_engine::ecs::AnimationTime>();
+        anim_time.set_fixed_step(None);
+    }
+}

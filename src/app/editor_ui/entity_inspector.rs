@@ -275,6 +275,44 @@ pub(super) fn show_entity_inspector(
                                 inspector_refresh = true;
                             }
                         }
+                        let mut start_offset = anim.start_offset;
+                        ui.horizontal(|ui| {
+                            ui.label("Start Offset");
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut start_offset)
+                                        .speed(0.01)
+                                        .range(0.0..=10_000.0)
+                                        .suffix(" s"),
+                                )
+                                .changed()
+                            {
+                                if app.ecs.set_sprite_animation_start_offset(entity, start_offset) {
+                                    inspector_refresh = true;
+                                }
+                            }
+                        });
+                        let mut random_start = anim.random_start;
+                        if ui.checkbox(&mut random_start, "Randomize Start").changed() {
+                            if app.ecs.set_sprite_animation_random_start(entity, random_start) {
+                                inspector_refresh = true;
+                            }
+                        }
+                        let mut group_label = anim.group.clone().unwrap_or_default();
+                        ui.horizontal(|ui| {
+                            ui.label("Group");
+                            if ui.text_edit_singleline(&mut group_label).changed() {
+                                let trimmed = group_label.trim();
+                                let success = if trimmed.is_empty() {
+                                    app.ecs.set_sprite_animation_group(entity, None)
+                                } else {
+                                    app.ecs.set_sprite_animation_group(entity, Some(trimmed))
+                                };
+                                if success {
+                                    inspector_refresh = true;
+                                }
+                            }
+                        });
                         let frame_count = anim.frame_count.max(1);
                         ui.label(format!(
                             "Frame {}/{}",

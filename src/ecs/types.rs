@@ -55,6 +55,9 @@ pub struct SpriteAnimation {
     pub mode: SpriteAnimationLoopMode,
     pub forward: bool,
     pub speed: f32,
+    pub start_offset: f32,
+    pub random_start: bool,
+    pub group: Option<String>,
 }
 
 impl SpriteAnimation {
@@ -74,6 +77,9 @@ impl SpriteAnimation {
             forward: true,
             speed: 1.0,
             mode,
+            start_offset: 0.0,
+            random_start: false,
+            group: None,
         }
     }
 
@@ -83,12 +89,32 @@ impl SpriteAnimation {
         self.forward = true;
     }
 
+    pub fn set_start_offset(&mut self, offset: f32) {
+        self.start_offset = offset.max(0.0);
+    }
+
+    pub fn set_random_start(&mut self, random: bool) {
+        self.random_start = random;
+    }
+
+    pub fn set_group<S: Into<Option<String>>>(&mut self, group: S) {
+        self.group = group.into();
+    }
+
+    pub fn group(&self) -> Option<&str> {
+        self.group.as_deref()
+    }
+
     pub fn current_region_name(&self) -> Option<&str> {
         self.frames.get(self.frame_index).map(|frame| frame.region.as_str())
     }
 
     pub fn frame_count(&self) -> usize {
         self.frames.len()
+    }
+
+    pub fn total_duration(&self) -> f32 {
+        self.frames.iter().map(|frame| frame.duration.max(std::f32::EPSILON)).sum()
     }
 }
 
@@ -323,6 +349,9 @@ pub struct SpriteAnimationInfo {
     pub speed: f32,
     pub frame_index: usize,
     pub frame_count: usize,
+    pub start_offset: f32,
+    pub random_start: bool,
+    pub group: Option<String>,
 }
 
 #[derive(Clone)]

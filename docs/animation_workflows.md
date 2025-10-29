@@ -1,4 +1,4 @@
-# Animation Workflows
+﻿# Animation Workflows
 
 ## Purpose
 - Document the end-to-end steps for authoring animation content.
@@ -13,19 +13,20 @@
   - Use loop-mode flags to map Aseprite tag directions to engine loop semantics (e.g., `--default-loop-mode once_hold` for UI bursts, `--reverse-loop-mode once_stop` for exit animations).
   - Attach per-frame events with `--events-file events.json`, where the JSON maps timeline names to `{ "frame": <0-based index>, "name": "event" }` entries; these emit `SpriteAnimationEvent` records when frames become active.
 - **Hot-reload verification:** place the generated JSON alongside project content, launch the editor, and modify the source file—look for `Hot reloaded atlas '<key>'` in the console while entities keep their current frame.
+- **Phase controls:** Configure per-entity `Start Offset`, toggle `Randomize Start` to deterministically de-sync large crowds, and assign an optional `Group` tag in the Entity Inspector; group tags feed the global `AnimationTime` resource for per-collection speed scaling.
 - **Troubleshooting:**
   - Duplicate frame names surface descriptive errors; rename frames in Aseprite or adjust export settings.
   - Invalid tag ranges log the offending indices; confirm tag start/end frames in the tag dialog.
   - If hot reload does not trigger, ensure the atlas is retained in-scene (`Scene > Atlas refs`) and the watcher path matches the edited file.
 
 ## Transform & Property Clips
-- _Stub section — fill in once Milestone 2 clip format lands._
+- _Stub section - fill in once Milestone 2 clip format lands._
 
 ## Skeletal Animation Pipeline
-- _Stub section — detail GLTF requirements, importer CLI, and validation steps in Milestone 3._
+- _Stub section - detail GLTF requirements, importer CLI, and validation steps in Milestone 3._
 
 ## Animation Graph Authoring
-- _Stub section — document state machine graphs, parameter wiring, and scripting hooks when available._
+- _Stub section - document state machine graphs, parameter wiring, and scripting hooks when available._
 
 ## Testing Checklist
 - Hot-reload sanity steps.
@@ -34,3 +35,4 @@
 
 ## Change Log
 - 2025-10-28: Added Aseprite importer workflow and CLI usage.
+- 2025-11-02: Documented animation phase controls and AnimationTime integration.

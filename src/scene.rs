@@ -976,6 +976,12 @@ pub struct SpriteAnimationData {
     pub playing: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loop_mode: Option<String>,
+    #[serde(default)]
+    pub start_offset: f32,
+    #[serde(default)]
+    pub random_start: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

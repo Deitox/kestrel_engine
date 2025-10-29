@@ -1,5 +1,6 @@
 use super::*;
 use crate::assets::AssetManager;
+use crate::ecs::systems::{initialize_animation_phase, AnimationTime, TimeDelta};
 use crate::events::{EventBus, GameEvent};
 use crate::mesh_registry::MeshRegistry;
 use crate::scene::{
@@ -38,6 +39,7 @@ impl EcsWorld {
     pub fn new() -> Self {
         let mut world = World::new();
         world.insert_resource(TimeDelta(0.0));
+        world.insert_resource(AnimationTime::default());
         world.insert_resource(SpatialHash::new(0.25));
         world.insert_resource(SpatialQuadtree::new(6, 8));
         world.insert_resource(SpatialIndexConfig::default());
@@ -620,6 +622,10 @@ impl EcsWorld {
     ) -> bool {
         match timeline {
             Some(name) => {
+                let previous_config = self
+                    .world
+                    .get::<SpriteAnimation>(entity)
+                    .map(|anim| (anim.start_offset, anim.random_start, anim.group.clone()));
                 let atlas = if let Some(sprite) = self.world.get::<Sprite>(entity) {
                     sprite.atlas_key.to_string()
                 } else {
@@ -644,7 +650,15 @@ impl EcsWorld {
                 let loop_mode = SpriteAnimationLoopMode::from_str(&definition.loop_mode);
                 let component = SpriteAnimation::new(name.to_string(), frames, loop_mode.looped(), loop_mode);
                 self.world.entity_mut(entity).insert(component);
+                if let Some(mut animation) = self.world.get_mut::<SpriteAnimation>(entity) {
+                    if let Some((offset, random, group)) = previous_config {
+                        animation.start_offset = offset;
+                        animation.random_start = random;
+                        animation.group = group;
+                    }
+                }
                 self.reset_sprite_animation(entity);
+                self.reinitialize_sprite_animation_phase(entity, None);
                 true
             }
             None => {
@@ -671,6 +685,69 @@ impl EcsWorld {
             true
         } else {
             false
+        }
+    }
+
+    pub fn set_sprite_animation_start_offset(&mut self, entity: Entity, offset: f32) -> bool {
+        let Some(mut animation) = self.world.get_mut::<SpriteAnimation>(entity) else {
+            return false;
+        };
+        animation.set_start_offset(offset);
+        let timeline_region = animation.current_region_name().map(|name| name.to_string());
+        drop(animation);
+        self.reinitialize_sprite_animation_phase(entity, timeline_region);
+        true
+    }
+
+    pub fn set_sprite_animation_random_start(&mut self, entity: Entity, random: bool) -> bool {
+        let Some(mut animation) = self.world.get_mut::<SpriteAnimation>(entity) else {
+            return false;
+        };
+        animation.set_random_start(random);
+        let timeline_region = animation.current_region_name().map(|name| name.to_string());
+        drop(animation);
+        self.reinitialize_sprite_animation_phase(entity, timeline_region);
+        true
+    }
+
+    pub fn set_sprite_animation_group(&mut self, entity: Entity, group: Option<&str>) -> bool {
+        if let Some(mut animation) = self.world.get_mut::<SpriteAnimation>(entity) {
+            animation.set_group(group.map(|value| value.to_string()));
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_animation_time_scale(&mut self, scale: f32) {
+        self.world.resource_mut::<AnimationTime>().scale = scale.max(0.0);
+    }
+
+    pub fn set_animation_time_paused(&mut self, paused: bool) {
+        self.world.resource_mut::<AnimationTime>().paused = paused;
+    }
+
+    pub fn set_animation_time_fixed_step(&mut self, step: Option<f32>) {
+        self.world.resource_mut::<AnimationTime>().set_fixed_step(step);
+    }
+
+    pub fn set_animation_group_scale(&mut self, group: &str, scale: f32) {
+        self.world.resource_mut::<AnimationTime>().set_group_scale(group, scale);
+    }
+
+    fn reinitialize_sprite_animation_phase(&mut self, entity: Entity, mut region_hint: Option<String>) {
+        if let Some(mut animation) = self.world.get_mut::<SpriteAnimation>(entity) {
+            let changed = initialize_animation_phase(&mut animation, entity);
+            if changed || region_hint.is_none() {
+                region_hint = animation.current_region_name().map(|name| name.to_string());
+            }
+        }
+        if let Some(region) = region_hint {
+            if let Some(mut sprite) = self.world.get_mut::<Sprite>(entity) {
+                if sprite.region.as_ref() != region {
+                    sprite.region = Cow::Owned(region);
+                }
+            }
         }
     }
 
@@ -1093,6 +1170,9 @@ impl EcsWorld {
                 speed: anim.speed,
                 frame_index: anim.frame_index,
                 frame_count: anim.frame_count(),
+                start_offset: anim.start_offset,
+                random_start: anim.random_start,
+                group: anim.group.clone(),
             });
             Some(SpriteInfo { atlas, region, animation })
         } else {
@@ -1593,6 +1673,9 @@ impl EcsWorld {
                 );
             } else {
                 self.set_sprite_animation_speed(entity_id, sprite.speed);
+                self.set_sprite_animation_start_offset(entity_id, sprite.start_offset);
+                self.set_sprite_animation_random_start(entity_id, sprite.random_start);
+                self.set_sprite_animation_group(entity_id, sprite.group.as_deref());
                 if let Some(mode_str) = sprite.loop_mode.as_ref() {
                     let mode = SpriteAnimationLoopMode::from_str(mode_str);
                     self.set_sprite_animation_loop_mode(entity_id, mode);
@@ -1653,6 +1736,9 @@ impl EcsWorld {
                             looped: anim.looped,
                             playing: anim.playing,
                             loop_mode: Some(anim.mode.as_str().to_string()),
+                            start_offset: anim.start_offset,
+                            random_start: anim.random_start,
+                            group: anim.group.clone(),
                         });
                     SpriteData { atlas, region, animation }
                 }),
