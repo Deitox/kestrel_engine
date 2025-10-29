@@ -40,20 +40,20 @@ Benchmarks emit CSV summaries for CI. Failing budgets block the milestone exit.
 **Objective:** Turn the existing sprite animation into a hot-reloadable, ergonomic, performant system ready for shipped games.
 
 ### Scope
-- **Importer MVP:** CLI tool to convert **Aseprite JSON** exports into atlas timelines; document end-to-end workflow in `docs/animation_workflows.md` (5-minute author path).
-- **Loop Modes:** Support `OnceStop` (existing), `OnceHold`, `Loop`, and `PingPong` (ensure edge-frame correctness).
-- **Events:** Optional per-frame events referencing frame indices (no payloads yet) that dispatch via `EventBus`.
-- **Phase Controls:** `start_offset` per instance plus `random_start` toggle to de-sync crowds.
-- **Hot-Reload:** Watch `atlas.json`; when timelines change, rebind by frame **name** (not index) and preserve `frame_index`/`elapsed_in_frame` when possible.
-- **Time Controls:** Global `AnimationTime` resource (scale & pause) and optional per-group scalars; fixed-step evaluation toggle with remainder accumulation.
-- **Inspector UX:** Add a timeline scrubber, left/right frame nudge buttons, frame duration display, and event preview toggle that logs fired events.
-- **Performance Polish:** Intern region names to IDs, store `u16` region indices, precompute UV rectangles, and only write to `Sprite` when frames change. Enforce zero allocations per frame.
+- [x] **Importer MVP:** CLI tool to convert **Aseprite JSON** exports into atlas timelines; document end-to-end workflow in `docs/animation_workflows.md` (5-minute author path).
+- [x] **Loop Modes:** Support `OnceStop` (existing), `OnceHold`, `Loop`, and `PingPong` (ensure edge-frame correctness).
+- [x] **Events:** Optional per-frame events referencing frame indices (no payloads yet) that dispatch via `EventBus`.
+- [x] **Phase Controls:** `start_offset` per instance plus `random_start` toggle to de-sync crowds.
+- [x] **Hot-Reload:** Watch `atlas.json`; when timelines change, rebind by frame **name** (not index) and preserve `frame_index`/`elapsed_in_frame` when possible.
+- [x] **Time Controls:** Global `AnimationTime` resource (scale & pause) and optional per-group scalars; fixed-step evaluation toggle with remainder accumulation.
+- [x] **Inspector UX:** Add a timeline scrubber, left/right frame nudge buttons, frame duration display, and event preview toggle that logs fired events.
+- [ ] **Performance Polish:** Intern region names to IDs, store `u16` region indices, precompute UV rectangles, and only write to `Sprite` when frames change. Enforce zero allocations per frame.
 
 ### Exit Criteria
-- `animation_bench` demonstrates <= 0.20 ms CPU for 10 000 animators (release build).
-- Golden playback tests cover all loop modes, phase offsets, ping-pong edge frames, and event dispatch.
-- Hot-reload regression test confirms frame continuity when names persist.
-- Authoring doc published; importer validated via automated test using a fixture Aseprite export.
+- [ ] `animation_bench` demonstrates <= 0.20 ms CPU for 10 000 animators (release build).
+- [x] Golden playback tests cover all loop modes, phase offsets, ping-pong edge frames, and event dispatch.
+- [x] Hot-reload regression test confirms frame continuity when names persist.
+- [x] Authoring doc published; importer validated via automated test using a fixture Aseprite export.
 
 ---
 
