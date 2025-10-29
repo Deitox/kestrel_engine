@@ -54,6 +54,11 @@
 cargo run
 `
 
+## Benchmarks
+- `pwsh scripts/ci/run_animation_bench.ps1 [-OutputDirectory artifacts]` runs the sprite timeline sweep in release mode, prints pass/fail against budget targets, and leaves a CSV in `target/benchmarks/animation_sprite_timelines.csv` (copied to `artifacts` when provided).
+- The harness accepts overrides such as `ANIMATION_BENCH_SWEEP=200,500,2000` or `ANIMATION_BENCH_SAMPLES=10` for CI-specific sweeps.
+- Run locally with `cargo test --release animation_bench_run -- --ignored --exact --nocapture` to mirror CI output.
+
 ## Plugins
 - `pwsh scripts/build_plugins.ps1 [-Release]` builds every enabled entry from `config/plugins.json` by inferring the crate root from each artifact path.
 - After rebuilding a plugin, open the Plugins panel in-app and click “Reload plugins” to rescan the manifest without restarting.

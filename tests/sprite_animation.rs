@@ -1,7 +1,10 @@
 use bevy_ecs::prelude::Entity;
 use kestrel_engine::assets::AssetManager;
-use kestrel_engine::ecs::{EcsWorld, Sprite, SpriteAnimationLoopMode, Transform, WorldTransform};
+use kestrel_engine::ecs::{
+    EcsWorld, SceneEntityTag, Sprite, SpriteAnimationLoopMode, Transform, WorldTransform,
+};
 use kestrel_engine::events::GameEvent;
+use kestrel_engine::scene::SceneEntityId;
 use serde_json::json;
 use std::borrow::Cow;
 use tempfile::NamedTempFile;
@@ -248,6 +251,45 @@ fn sprite_animation_events_emit_on_frame_entry() {
             |event| matches!(event, GameEvent::SpriteAnimationEvent { event, .. } if event == "footstep")
         ),
         "animation should emit declared events when entering the frame"
+    );
+}
+
+#[test]
+fn sprite_animation_info_reports_frame_metadata() {
+    let temp = NamedTempFile::new().expect("temp atlas");
+    let source = std::fs::read("assets/images/atlas.json").expect("read atlas");
+    let mut atlas_json: serde_json::Value = serde_json::from_slice(&source).expect("parse atlas");
+    atlas_json["animations"]["demo_cycle"]["events"] = json!([{ "frame": 1, "name": "footstep" }]);
+    std::fs::write(&temp, serde_json::to_vec_pretty(&atlas_json).expect("encode"))
+        .expect("write modified atlas");
+    let temp_path = temp.path().to_path_buf();
+
+    let mut assets = AssetManager::new();
+    assets.retain_atlas("main", temp_path.to_str()).expect("load atlas with metadata");
+    let mut ecs = EcsWorld::new();
+    let entity = ecs
+        .world
+        .spawn((
+            Transform::default(),
+            WorldTransform::default(),
+            Sprite { atlas_key: Cow::Borrowed("main"), region: Cow::Borrowed("redorb") },
+            SceneEntityTag::new(SceneEntityId::new()),
+        ))
+        .id();
+    assert!(ecs.set_sprite_timeline(entity, &assets, Some("demo_cycle")));
+    assert!(ecs.seek_sprite_animation_frame(entity, 1));
+
+    let info = ecs.entity_info(entity).expect("entity info available");
+    let sprite_info = info.sprite.expect("sprite info");
+    let anim_info = sprite_info.animation.expect("animation info");
+
+    assert_eq!(anim_info.frame_index, 1);
+    assert_eq!(anim_info.frame_region.as_deref(), Some("bluebox"));
+    assert!((anim_info.frame_duration - 0.12).abs() < f32::EPSILON);
+    assert!(anim_info.frame_elapsed.abs() < f32::EPSILON);
+    assert!(
+        anim_info.frame_events.iter().any(|event| event == "footstep"),
+        "frame metadata should surface declared events"
     );
 }
 

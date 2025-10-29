@@ -1,0 +1,40 @@
+name: Animation Bench
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  bench:
+    name: Sprite Timeline Benchmark
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Configure Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run animation benchmark
+        shell: pwsh
+        run: |
+          ./scripts/ci/run_animation_bench.ps1 -OutputDirectory artifacts
+
+      - name: Upload benchmark CSV
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: animation-bench
+          path: artifacts/animation_sprite_timelines.csv

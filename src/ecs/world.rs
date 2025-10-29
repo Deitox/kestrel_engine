@@ -1162,17 +1162,27 @@ impl EcsWorld {
         let sprite = if let Some(sprite) = self.world.get::<Sprite>(entity) {
             let atlas = sprite.atlas_key.to_string();
             let region = sprite.region.to_string();
-            let animation = self.world.get::<SpriteAnimation>(entity).map(|anim| SpriteAnimationInfo {
-                timeline: anim.timeline.clone(),
-                playing: anim.playing,
-                looped: anim.looped,
-                loop_mode: anim.mode.as_str().to_string(),
-                speed: anim.speed,
-                frame_index: anim.frame_index,
-                frame_count: anim.frame_count(),
-                start_offset: anim.start_offset,
-                random_start: anim.random_start,
-                group: anim.group.clone(),
+            let animation = self.world.get::<SpriteAnimation>(entity).map(|anim| {
+                let frame = anim.frames.get(anim.frame_index);
+                let frame_region = frame.map(|frame| frame.region.clone());
+                let frame_duration = frame.map(|frame| frame.duration).unwrap_or(0.0);
+                let frame_events = frame.map(|frame| frame.events.clone()).unwrap_or_default();
+                SpriteAnimationInfo {
+                    timeline: anim.timeline.clone(),
+                    playing: anim.playing,
+                    looped: anim.looped,
+                    loop_mode: anim.mode.as_str().to_string(),
+                    speed: anim.speed,
+                    frame_index: anim.frame_index,
+                    frame_count: anim.frame_count(),
+                    frame_elapsed: anim.elapsed_in_frame,
+                    frame_duration,
+                    frame_region,
+                    frame_events,
+                    start_offset: anim.start_offset,
+                    random_start: anim.random_start,
+                    group: anim.group.clone(),
+                }
             });
             Some(SpriteInfo { atlas, region, animation })
         } else {

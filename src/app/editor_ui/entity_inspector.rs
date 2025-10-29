@@ -313,39 +313,102 @@ pub(super) fn show_entity_inspector(
                                 }
                             }
                         });
-                        let frame_count = anim.frame_count.max(1);
-                        ui.label(format!(
-                            "Frame {}/{}",
-                            (anim.frame_index + 1).min(frame_count),
-                            frame_count
-                        ));
                         if anim.frame_count > 0 {
+                            let frame_count = anim.frame_count;
+                            let frame_index = anim.frame_index.min(frame_count - 1);
+                            let region_label = anim.frame_region.as_deref().unwrap_or("n/a");
+                            let duration_ms = (anim.frame_duration.max(0.0) * 1_000.0).clamp(0.0, f32::MAX);
+                            let elapsed_ms = (anim.frame_elapsed.max(0.0) * 1_000.0).clamp(0.0, f32::MAX);
+                            ui.label(format!(
+                                "Frame {}/{} - duration: {:.0} ms - elapsed: {:.0} ms - region: {}",
+                                frame_index + 1,
+                                frame_count,
+                                duration_ms,
+                                elapsed_ms,
+                                region_label
+                            ));
+                            if anim.frame_events.is_empty() {
+                                ui.label("Events: none");
+                            } else {
+                                let joined = anim.frame_events.join(", ");
+                                ui.colored_label(egui::Color32::LIGHT_YELLOW, format!("Events: {}", joined));
+                            }
+
+                            let preview_toggle_id = egui::Id::new(("sprite_event_preview", entity.index()));
+                            let mut preview_events_enabled = ui
+                                .ctx()
+                                .data_mut(|d| d.get_persisted::<bool>(preview_toggle_id).unwrap_or(false));
+                            let preview_toggle_response =
+                                ui.checkbox(&mut preview_events_enabled, "Preview events").on_hover_text(
+                                    "When enabled, scrubbing logs frame events to the inspector log",
+                                );
+                            if preview_toggle_response.changed() {
+                                ui.ctx().data_mut(|d| {
+                                    if preview_events_enabled {
+                                        d.insert_persisted(preview_toggle_id, preview_events_enabled);
+                                    } else {
+                                        d.remove::<bool>(preview_toggle_id);
+                                    }
+                                });
+                            }
+                            let preview_events_enabled = preview_events_enabled;
+
                             ui.separator();
-                            let max_index = (anim.frame_count - 1) as i32;
-                            let mut preview_frame = anim.frame_index as i32;
+                            let max_index = (frame_count - 1) as i32;
+                            let mut preview_frame = frame_index as i32;
                             let slider = egui::Slider::new(&mut preview_frame, 0..=max_index).text("Scrub");
                             if ui.add(slider).changed() {
                                 let target = preview_frame.clamp(0, max_index) as usize;
                                 if app.ecs.seek_sprite_animation_frame(entity, target) {
                                     inspector_refresh = true;
-                                    *app.inspector_status = None;
-                                }
-                            }
-                            ui.horizontal(|ui| {
-                                let has_prev = anim.frame_index > 0;
-                                let has_next = anim.frame_index + 1 < anim.frame_count;
-                                if ui.add_enabled(has_prev, egui::Button::new("<")).clicked() {
-                                    let target = anim.frame_index.saturating_sub(1);
-                                    if app.ecs.seek_sprite_animation_frame(entity, target) {
-                                        inspector_refresh = true;
+                                    if preview_events_enabled {
+                                        preview_sprite_events(
+                                            app.assets,
+                                            app.inspector_status,
+                                            &sprite.atlas,
+                                            &anim.timeline,
+                                            target,
+                                        );
+                                    } else {
                                         *app.inspector_status = None;
                                     }
                                 }
-                                if ui.add_enabled(has_next, egui::Button::new(">")).clicked() {
-                                    let target = (anim.frame_index + 1).min(anim.frame_count - 1);
+                            }
+                            ui.horizontal(|ui| {
+                                let has_prev = frame_index > 0;
+                                let has_next = frame_index + 1 < frame_count;
+                                if ui.add_enabled(has_prev, egui::Button::new("<")).clicked() {
+                                    let target = frame_index.saturating_sub(1);
                                     if app.ecs.seek_sprite_animation_frame(entity, target) {
                                         inspector_refresh = true;
-                                        *app.inspector_status = None;
+                                        if preview_events_enabled {
+                                            preview_sprite_events(
+                                                app.assets,
+                                                app.inspector_status,
+                                                &sprite.atlas,
+                                                &anim.timeline,
+                                                target,
+                                            );
+                                        } else {
+                                            *app.inspector_status = None;
+                                        }
+                                    }
+                                }
+                                if ui.add_enabled(has_next, egui::Button::new(">")).clicked() {
+                                    let target = (frame_index + 1).min(frame_count - 1);
+                                    if app.ecs.seek_sprite_animation_frame(entity, target) {
+                                        inspector_refresh = true;
+                                        if preview_events_enabled {
+                                            preview_sprite_events(
+                                                app.assets,
+                                                app.inspector_status,
+                                                &sprite.atlas,
+                                                &anim.timeline,
+                                                target,
+                                            );
+                                        } else {
+                                            *app.inspector_status = None;
+                                        }
                                     }
                                 }
                             });
@@ -661,4 +724,33 @@ pub(super) fn show_entity_inspector(
 
     *selected_entity = selected_entity_value;
     *selection_details = selection_details_value;
+}
+
+fn preview_sprite_events(
+    assets: &AssetManager,
+    inspector_status: &mut Option<String>,
+    atlas: &str,
+    timeline: &str,
+    frame_index: usize,
+) {
+    if let Some(timeline_data) = assets.atlas_timeline(atlas, timeline) {
+        if let Some(frame) = timeline_data.frames.get(frame_index) {
+            if frame.events.is_empty() {
+                *inspector_status = Some(format!("Preview events: none (frame {})", frame_index + 1));
+            } else {
+                let joined = frame.events.join(", ");
+                println!(
+                    "[animation] Preview events for {}::{} frame {} => {}",
+                    atlas, timeline, frame_index, joined
+                );
+                *inspector_status = Some(format!("Preview events: {}", joined));
+            }
+        } else {
+            *inspector_status =
+                Some(format!("Preview events unavailable: frame {} out of range", frame_index + 1));
+        }
+    } else {
+        *inspector_status =
+            Some(format!("Preview events unavailable: timeline '{}' not found in atlas {}", timeline, atlas));
+    }
 }
