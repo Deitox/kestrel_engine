@@ -27,7 +27,59 @@
   - If hot reload does not trigger, ensure the atlas is retained in-scene (`Scene > Atlas refs`) and the watcher path matches the edited file.
 
 ## Transform & Property Clips
-- _Stub section - fill in once Milestone 2 clip format lands._
+- **Milestone status:** The `AnimationClip` loader and fixtures are live on `main`; playback systems, inspector controls, and ECS glue land across Milestone 2. Build clips now so content is ready as the runtime merges.
+- **Authoring prerequisites:** Keep source files under `assets/animation_clips/` (any path is valid as long as you pass it to `AssetManager::retain_clip`); use schema `version >= 1`; express keyframe times in seconds and rotations in radians; values must be finite or the loader rejects the clip.
+- **Clip schema overview:** Each track (`translation`, `rotation`, `scale`, `tint`) is optional. `interpolation` accepts `linear` or `step` (defaults to `linear`). Duplicate timestamps collapse to the last keyframe. Translation/scale use `[x, y]`, tint uses `[r, g, b, a]`, and all channels clamp to author-supplied ranges at runtime.
+- **Template:** Reference `fixtures/animation_clips/slime_bob.json` for a working example:
+
+```json
+{
+  "version": 1,
+  "name": "slime_bob",
+  "looped": true,
+  "tracks": {
+    "translation": {
+      "interpolation": "linear",
+      "keyframes": [
+        { "time": 0.0, "value": [0.0, 0.0] },
+        { "time": 0.25, "value": [0.0, 4.0] },
+        { "time": 0.5, "value": [0.0, 0.0] }
+      ]
+    },
+    "rotation": {
+      "interpolation": "linear",
+      "keyframes": [
+        { "time": 0.0, "value": 0.0 },
+        { "time": 0.5, "value": 6.2831855 }
+      ]
+    },
+    "scale": {
+      "interpolation": "step",
+      "keyframes": [
+        { "time": 0.0, "value": [1.0, 1.0] },
+        { "time": 0.5, "value": [1.2, 0.8] }
+      ]
+    },
+    "tint": {
+      "interpolation": "linear",
+      "keyframes": [
+        { "time": 0.0, "value": [1.0, 1.0, 1.0, 1.0] },
+        { "time": 0.5, "value": [0.6, 0.9, 1.0, 1.0] }
+      ]
+    }
+  }
+}
+```
+- **Create & iterate:**
+  1. Copy the template (or use your DCC exporter) into `assets/animation_clips/<name>.json` and bump the `name`/`looped` fields.
+  2. Author keyframes per track, keeping the last keyframe time equal to the intended clip length; insert exact duplicates when you need step changes.
+  3. In the editor build that includes Milestone 2, assign the clip key (e.g., `slime_bob`) in the Transform/Property Clip inspector panel; this wires the entity's `ClipInstance` to `TransformTrackPlayer`/`PropertyTrackPlayer`.
+  4. Use the scrubber to confirm interpolation, playback speed, and looping. Inspector track badges surface which channels are present.
+- **Validation & troubleshooting:**
+  - Run `cargo test animation_clip` after editing clips; it exercises loader invariants against `fixtures/animation_clips` and catches ordering/finite-value issues.
+  - Loader errors such as `Clip keyframe time cannot be negative` or `Clip keyframe contains non-finite rotation value` point directly at the offending keyframe index.
+  - If a clip fails to appear in the inspector list, confirm the asset was retained (`AssetManager::retain_clip`) and that the scene/prefab dependency points at the JSON path.
+  - Performance budget for this milestone is <= 0.40 ms CPU for 2 000 active clips; once the transform track benchmark lands, trigger it from the `animation_bench` suite to track regressions.
 
 ## Skeletal Animation Pipeline
 - _Stub section - detail GLTF requirements, importer CLI, and validation steps in Milestone 3._

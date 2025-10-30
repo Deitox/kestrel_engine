@@ -68,6 +68,9 @@ Benchmarks emit CSV summaries for CI. Failing budgets block the milestone exit.
 - Inspector: clip assignment widget, play/pause, speed, scrubber (read-only keyframe markers), and per-entity track status.
 - Serialization updates for scenes/prefabs with versioned migrations.
 
+### Progress
+- [x] Transform/property clip authoring workflow documented in `docs/animation_workflows.md` (schema overview, template fixture, validation steps).
+
 ### Exit Criteria
 - Benchmarks show <= 0.40 ms CPU for 2 000 active clips (release).
 - Golden tests validate interpolation correctness and final poses after deterministic playback.
@@ -138,9 +141,9 @@ Benchmarks emit CSV summaries for CI. Failing budgets block the milestone exit.
 - **Risk Watch:** Ping-pong edge duplication, event flood at high FPS, skinning buffer exhaustion, and graph oscillation loops - each gets targeted tests before milestone close.
 
 ## Immediate Next Actions
-- [x] Implement `tests/animation_bench.rs` with entity-count sweeps and CSV output; wire into CI.
-- [x] Add inspector scrubber + frame nudge controls to the existing sprite UI.
-- [x] Introduce hot-reload-by-name logic for atlas timelines, preserving frame continuity.
-- [x] Land Aseprite timeline importer (CLI) with sample fixtures (`fixtures/aseprite/`).
+- [ ] Implement `ClipInstance` playback path (`sys_drive_transform_tracks`, property writers) with zero-allocation updates.
+- [ ] Expose transform/property clip controls in the inspector (assignment widget, scrubber, per-track status).
+- [ ] Add golden tests covering linear/step interpolation and final pose verification for transform clips.
+- [ ] Extend `animation_bench` to include the 2 000 clip performance sweep and CSV reporting for Milestone 2.
 
 This roadmap supersedes earlier drafts and reflects the final agreed-upon plan for animation system development. Further adjustments will follow formal change control once milestones begin execution.
