@@ -175,10 +175,8 @@ impl AssetManager {
                     );
                     continue;
                 };
-                let frame_name_arc = frame
-                    .name
-                    .map(Arc::<str>::from)
-                    .unwrap_or_else(|| Arc::clone(region_key));
+                let frame_name_arc =
+                    frame.name.map(Arc::<str>::from).unwrap_or_else(|| Arc::clone(region_key));
                 let duration = (frame.duration_ms.max(1) as f32) / 1000.0;
                 let event_names = event_map.remove(&frame_index).unwrap_or_default();
                 let events: Vec<Arc<str>> =
@@ -247,6 +245,11 @@ impl AssetManager {
         self.atlas_sources.insert(key.to_string(), path_owned);
         self.atlas_refs.insert(key.to_string(), 1);
         Ok(())
+    }
+    pub fn atlas_keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self.atlases.keys().cloned().collect();
+        keys.sort();
+        keys
     }
     pub fn release_atlas(&mut self, key: &str) -> bool {
         if let Some(count) = self.atlas_refs.get_mut(key) {
@@ -323,6 +326,17 @@ impl AssetManager {
     }
     pub fn atlas_region_info(&self, atlas_key: &str, region: &str) -> Option<(&Arc<str>, &AtlasRegion)> {
         self.atlases.get(atlas_key).and_then(|atlas| atlas.regions.get_key_value(region))
+    }
+    pub fn atlas_region_names(&self, atlas_key: &str) -> Vec<String> {
+        self.atlases
+            .get(atlas_key)
+            .map(|atlas| {
+                let mut names: Vec<String> =
+                    atlas.regions.keys().map(|name| name.as_ref().to_string()).collect();
+                names.sort();
+                names
+            })
+            .unwrap_or_default()
     }
     pub fn atlas_timeline(&self, atlas_key: &str, name: &str) -> Option<&SpriteTimeline> {
         self.atlases.get(atlas_key).and_then(|atlas| atlas.animations.get(name))

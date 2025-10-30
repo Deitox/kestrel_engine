@@ -4,7 +4,7 @@ use crate::audio::{AudioHealthSnapshot, AudioPlugin};
 use crate::camera::Camera2D;
 use crate::camera3d::Camera3D;
 use crate::config::{AppConfig, AppConfigOverrides};
-use crate::ecs::{EcsWorld, InstanceData, MeshLightingInfo, ParticleCaps};
+use crate::ecs::{EcsWorld, InstanceData, MeshLightingInfo, ParticleCaps, SpriteAnimation};
 use crate::environment::EnvironmentRegistry;
 use crate::events::GameEvent;
 use crate::gizmo::{GizmoInteraction, GizmoMode};
@@ -2619,6 +2619,42 @@ impl ApplicationHandler for App {
                 Err(err) => {
                     self.ui_scene_status = Some(format!("Atlas retain failed: {err}"));
                 }
+            }
+        }
+        for request in actions.sprite_atlas_requests {
+            let entity = request.entity;
+            let atlas = request.atlas;
+            let path = request.path;
+            if let Some(path) = path.as_deref() {
+                if !self.assets.has_atlas(&atlas) {
+                    match self.assets.retain_atlas(&atlas, Some(path)) {
+                        Ok(()) => {
+                            self.scene_atlas_refs.insert(atlas.clone());
+                            self.invalidate_atlas_view(&atlas);
+                        }
+                        Err(err) => {
+                            self.inspector_status = Some(format!("Failed to load atlas '{}': {err}", atlas));
+                            continue;
+                        }
+                    }
+                }
+            }
+            if self.assets.has_atlas(&atlas) {
+                let had_animation = self.ecs.world.get::<SpriteAnimation>(entity).is_some();
+                if self.ecs.set_sprite_atlas(entity, &self.assets, &atlas) {
+                    let status = if had_animation {
+                        format!("Sprite atlas set to {} (timeline cleared)", atlas)
+                    } else {
+                        format!("Sprite atlas set to {}", atlas)
+                    };
+                    self.inspector_status = Some(status);
+                    self.scene_atlas_refs.insert(atlas.clone());
+                    self.invalidate_atlas_view(&atlas);
+                } else {
+                    self.inspector_status = Some(format!("Failed to assign atlas '{}' to sprite", atlas));
+                }
+            } else {
+                self.inspector_status = Some(format!("Atlas '{}' not loaded; unable to assign", atlas));
             }
         }
         for (key, path) in actions.retain_meshes {

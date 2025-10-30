@@ -622,6 +622,34 @@ impl EcsWorld {
             }
         }
     }
+    pub fn set_sprite_atlas(&mut self, entity: Entity, assets: &AssetManager, atlas_key: &str) -> bool {
+        if !assets.has_atlas(atlas_key) {
+            return false;
+        }
+        {
+            let Some(mut sprite) = self.world.get_mut::<Sprite>(entity) else {
+                return false;
+            };
+            let mut desired_region = sprite.region.as_ref().to_string();
+            if !assets.atlas_region_exists(atlas_key, &desired_region) {
+                let region_names = assets.atlas_region_names(atlas_key);
+                desired_region = match region_names.into_iter().next() {
+                    Some(name) => name,
+                    None => return false,
+                };
+            }
+            let Some((region_name, region_info)) = assets.atlas_region_info(atlas_key, &desired_region)
+            else {
+                return false;
+            };
+            sprite.atlas_key = Arc::from(atlas_key.to_string());
+            sprite.region = Arc::clone(region_name);
+            sprite.region_id = region_info.id;
+            sprite.uv = region_info.uv;
+        }
+        self.world.entity_mut(entity).remove::<SpriteAnimation>();
+        true
+    }
     pub fn set_sprite_region(&mut self, entity: Entity, assets: &AssetManager, region: &str) -> bool {
         if let Some(mut sprite) = self.world.get_mut::<Sprite>(entity) {
             let atlas_key = sprite.atlas_key.as_ref();

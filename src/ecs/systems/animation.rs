@@ -25,25 +25,12 @@ pub fn sys_drive_sprite_animations(
         AnimationDelta::None => {}
         AnimationDelta::Single(delta) => {
             if delta > 0.0 {
-                drive_single(
-                    delta,
-                    has_group_scales,
-                    animation_time_ref,
-                    &mut events,
-                    &mut animations,
-                );
+                drive_single(delta, has_group_scales, animation_time_ref, &mut events, &mut animations);
             }
         }
         AnimationDelta::Fixed { step, steps } => {
             if steps > 0 {
-                drive_fixed(
-                    step,
-                    steps,
-                    has_group_scales,
-                    animation_time_ref,
-                    &mut events,
-                    &mut animations,
-                );
+                drive_fixed(step, steps, has_group_scales, animation_time_ref, &mut events, &mut animations);
             }
         }
     }

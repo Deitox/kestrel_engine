@@ -1,4 +1,4 @@
-use super::{PrefabDragPayload, UiActions};
+use super::{PrefabDragPayload, SpriteAtlasRequest, UiActions};
 use crate::assets::AssetManager;
 use crate::ecs::{EcsWorld, EntityInfo, SpriteInfo};
 use crate::gizmo::{GizmoInteraction, GizmoMode, ScaleHandle};
@@ -195,225 +195,344 @@ pub(super) fn show_entity_inspector(
                 ui.label("Velocity: n/a");
             }
 
-            if let Some(sprite) = info.sprite.clone() {
+            if let Some(mut sprite) = info.sprite.clone() {
                 ui.separator();
-                ui.label(format!("Atlas: {}", sprite.atlas));
-                let mut region = sprite.region.clone();
-                if ui.text_edit_singleline(&mut region).changed() {
-                    if app.ecs.set_sprite_region(entity, &app.assets, &region) {
-                        info.sprite = Some(SpriteInfo {
-                            atlas: sprite.atlas.clone(),
-                            region: region.clone(),
-                            animation: None,
+                let mut skip_sprite_controls = false;
+                let mut atlas_selection = sprite.atlas.clone();
+                let mut atlas_keys = app.assets.atlas_keys();
+                if !atlas_keys.contains(&atlas_selection) {
+                    atlas_keys.push(atlas_selection.clone());
+                    atlas_keys.sort();
+                }
+                ui.horizontal(|ui| {
+                    ui.label("Atlas");
+                    egui::ComboBox::from_id_salt(("sprite_atlas_combo", entity.index()))
+                        .selected_text(atlas_selection.clone())
+                        .show_ui(ui, |ui| {
+                            for key in &atlas_keys {
+                                ui.selectable_value(&mut atlas_selection, key.clone(), key);
+                            }
                         });
+                });
+                if atlas_selection != sprite.atlas {
+                    let had_animation = sprite.animation.is_some();
+                    if app.ecs.set_sprite_atlas(entity, &app.assets, &atlas_selection) {
+                        if let Some(updated) = app.ecs.entity_info(entity).and_then(|data| data.sprite) {
+                            sprite = updated.clone();
+                            info.sprite = Some(updated);
+                        } else {
+                            info.sprite = None;
+                        }
                         inspector_refresh = true;
-                        *app.inspector_status = Some(format!("Sprite region set to {}", region));
+                        let status = if had_animation {
+                            format!("Sprite atlas set to {} (timeline cleared)", atlas_selection)
+                        } else {
+                            format!("Sprite atlas set to {}", atlas_selection)
+                        };
+                        *app.inspector_status = Some(status);
+                        skip_sprite_controls = true;
                     } else {
-                        *app.inspector_status =
-                            Some(format!("Region '{}' not found in atlas {}", region, sprite.atlas));
+                        *app.inspector_status = Some(format!("Atlas '{}' not available", atlas_selection));
                     }
                 }
-                let mut timeline_names = app.assets.atlas_timeline_names(&sprite.atlas);
-                timeline_names.sort();
-                timeline_names.dedup();
-                if timeline_names.is_empty() {
-                    ui.label("Timelines: none defined for atlas");
+                if let Some(source) = app.assets.atlas_source(&sprite.atlas) {
+                    ui.small(format!("Source: {}", source));
                 } else {
-                    let mut desired_timeline = sprite.animation.as_ref().map(|anim| anim.timeline.clone());
-                    let original_timeline = desired_timeline.clone();
-                    ui.horizontal(|ui| {
-                        ui.label("Timeline");
-                        let combo_id = ("sprite_timeline_combo", entity.index());
-                        egui::ComboBox::from_id_salt(combo_id)
-                            .selected_text(desired_timeline.as_deref().unwrap_or("None").to_string())
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut desired_timeline, None, "None");
-                                for name in &timeline_names {
-                                    ui.selectable_value(&mut desired_timeline, Some(name.clone()), name);
-                                }
-                            });
-                    });
-                    if desired_timeline != original_timeline {
-                        let success =
-                            app.ecs.set_sprite_timeline(entity, &app.assets, desired_timeline.as_deref());
-                        if success {
-                            inspector_refresh = true;
-                            *app.inspector_status = desired_timeline
-                                .as_ref()
-                                .map(|name| format!("Sprite timeline set to {name}"))
-                                .or_else(|| Some("Sprite timeline disabled".to_string()));
-                        } else if let Some(name) = desired_timeline {
-                            *app.inspector_status = Some(format!("Timeline '{name}' unavailable"));
+                    ui.small("Source: n/a");
+                }
+                let key_buffer_id = egui::Id::new(("sprite_atlas_new_key", entity.index()));
+                let mut atlas_key_input = ui
+                    .ctx()
+                    .data_mut(|d| d.get_persisted::<String>(key_buffer_id))
+                    .unwrap_or_else(|| sprite.atlas.clone());
+                let path_buffer_id = egui::Id::new(("sprite_atlas_path", entity.index()));
+                let default_source = app.assets.atlas_source(&sprite.atlas).unwrap_or_default().to_string();
+                let mut atlas_path_input = ui
+                    .ctx()
+                    .data_mut(|d| d.get_persisted::<String>(path_buffer_id))
+                    .unwrap_or_else(|| default_source.clone());
+                ui.horizontal(|ui| {
+                    ui.label("Load atlas");
+                    if ui
+                        .add(egui::TextEdit::singleline(&mut atlas_key_input).hint_text("atlas key"))
+                        .changed()
+                    {
+                        ui.ctx().data_mut(|d| {
+                            if atlas_key_input.trim().is_empty() {
+                                d.remove::<String>(key_buffer_id);
+                            } else {
+                                d.insert_persisted(key_buffer_id, atlas_key_input.clone());
+                            }
+                        });
+                    }
+                    if ui
+                        .add(
+                            egui::TextEdit::singleline(&mut atlas_path_input).hint_text("path/to/atlas.json"),
+                        )
+                        .changed()
+                    {
+                        ui.ctx().data_mut(|d| {
+                            if atlas_path_input.trim().is_empty() {
+                                d.remove::<String>(path_buffer_id);
+                            } else {
+                                d.insert_persisted(path_buffer_id, atlas_path_input.clone());
+                            }
+                        });
+                    }
+                    if ui.button("Load & Assign").clicked() {
+                        let key_trimmed = atlas_key_input.trim();
+                        let path_trimmed = atlas_path_input.trim();
+                        if key_trimmed.is_empty() || path_trimmed.is_empty() {
+                            *app.inspector_status = Some("Atlas key and path required".to_string());
                         } else {
-                            *app.inspector_status = Some("Failed to change sprite timeline".to_string());
+                            actions.sprite_atlas_requests.push(SpriteAtlasRequest {
+                                entity,
+                                atlas: key_trimmed.to_string(),
+                                path: Some(path_trimmed.to_string()),
+                            });
+                            ui.ctx().data_mut(|d| {
+                                d.insert_persisted(key_buffer_id, key_trimmed.to_string());
+                                d.insert_persisted(path_buffer_id, path_trimmed.to_string());
+                            });
+                            *app.inspector_status =
+                                Some(format!("Loading atlas '{}' from {}", key_trimmed, path_trimmed));
+                            skip_sprite_controls = true;
                         }
                     }
-                    if let Some(anim) = sprite.animation.as_ref() {
-                        ui.label(format!("Loop Mode: {}", anim.loop_mode));
-                        ui.horizontal(|ui| {
-                            let play_label = if anim.playing { "Pause" } else { "Play" };
-                            if ui.button(play_label).clicked() {
-                                if app.ecs.set_sprite_animation_playing(entity, !anim.playing) {
-                                    inspector_refresh = true;
-                                }
-                            }
-                            if ui.button("Reset").clicked() {
-                                if app.ecs.reset_sprite_animation(entity) {
-                                    inspector_refresh = true;
-                                }
-                            }
-                            let mut looped = anim.looped;
-                            if ui.checkbox(&mut looped, "Loop").changed() {
-                                if app.ecs.set_sprite_animation_looped(entity, looped) {
-                                    inspector_refresh = true;
-                                }
-                            }
-                        });
-                        let mut speed = anim.speed;
-                        if ui.add(egui::Slider::new(&mut speed, 0.0..=5.0).text("Speed")).changed() {
-                            if app.ecs.set_sprite_animation_speed(entity, speed) {
-                                inspector_refresh = true;
-                            }
+                });
+                if !skip_sprite_controls {
+                    let mut region = sprite.region.clone();
+                    if ui.text_edit_singleline(&mut region).changed() {
+                        if app.ecs.set_sprite_region(entity, &app.assets, &region) {
+                            let updated_sprite = SpriteInfo {
+                                atlas: sprite.atlas.clone(),
+                                region: region.clone(),
+                                animation: None,
+                            };
+                            info.sprite = Some(updated_sprite.clone());
+                            sprite = updated_sprite;
+                            inspector_refresh = true;
+                            *app.inspector_status = Some(format!("Sprite region set to {}", region));
+                        } else {
+                            *app.inspector_status =
+                                Some(format!("Region '{}' not found in atlas {}", region, sprite.atlas));
                         }
-                        let mut start_offset = anim.start_offset;
+                    }
+                    let mut timeline_names = app.assets.atlas_timeline_names(&sprite.atlas);
+                    timeline_names.sort();
+                    timeline_names.dedup();
+                    if timeline_names.is_empty() {
+                        ui.label("Timelines: none defined for atlas");
+                    } else {
+                        let mut desired_timeline =
+                            sprite.animation.as_ref().map(|anim| anim.timeline.clone());
+                        let original_timeline = desired_timeline.clone();
                         ui.horizontal(|ui| {
-                            ui.label("Start Offset");
-                            if ui
-                                .add(
-                                    egui::DragValue::new(&mut start_offset)
-                                        .speed(0.01)
-                                        .range(0.0..=10_000.0)
-                                        .suffix(" s"),
-                                )
-                                .changed()
-                            {
-                                if app.ecs.set_sprite_animation_start_offset(entity, start_offset) {
-                                    inspector_refresh = true;
-                                }
-                            }
-                        });
-                        let mut random_start = anim.random_start;
-                        if ui.checkbox(&mut random_start, "Randomize Start").changed() {
-                            if app.ecs.set_sprite_animation_random_start(entity, random_start) {
-                                inspector_refresh = true;
-                            }
-                        }
-                        let mut group_label = anim.group.clone().unwrap_or_default();
-                        ui.horizontal(|ui| {
-                            ui.label("Group");
-                            if ui.text_edit_singleline(&mut group_label).changed() {
-                                let trimmed = group_label.trim();
-                                let success = if trimmed.is_empty() {
-                                    app.ecs.set_sprite_animation_group(entity, None)
-                                } else {
-                                    app.ecs.set_sprite_animation_group(entity, Some(trimmed))
-                                };
-                                if success {
-                                    inspector_refresh = true;
-                                }
-                            }
-                        });
-                        if anim.frame_count > 0 {
-                            let frame_count = anim.frame_count;
-                            let frame_index = anim.frame_index.min(frame_count - 1);
-                            let region_label = anim.frame_region.as_deref().unwrap_or("n/a");
-                            let duration_ms = (anim.frame_duration.max(0.0) * 1_000.0).clamp(0.0, f32::MAX);
-                            let elapsed_ms = (anim.frame_elapsed.max(0.0) * 1_000.0).clamp(0.0, f32::MAX);
-                            ui.label(format!(
-                                "Frame {}/{} - duration: {:.0} ms - elapsed: {:.0} ms - region: {}",
-                                frame_index + 1,
-                                frame_count,
-                                duration_ms,
-                                elapsed_ms,
-                                region_label
-                            ));
-                            if anim.frame_events.is_empty() {
-                                ui.label("Events: none");
-                            } else {
-                                let joined = anim.frame_events.join(", ");
-                                ui.colored_label(egui::Color32::LIGHT_YELLOW, format!("Events: {}", joined));
-                            }
-
-                            let preview_toggle_id = egui::Id::new(("sprite_event_preview", entity.index()));
-                            let mut preview_events_enabled = ui
-                                .ctx()
-                                .data_mut(|d| d.get_persisted::<bool>(preview_toggle_id).unwrap_or(false));
-                            let preview_toggle_response =
-                                ui.checkbox(&mut preview_events_enabled, "Preview events").on_hover_text(
-                                    "When enabled, scrubbing logs frame events to the inspector log",
-                                );
-                            if preview_toggle_response.changed() {
-                                ui.ctx().data_mut(|d| {
-                                    if preview_events_enabled {
-                                        d.insert_persisted(preview_toggle_id, preview_events_enabled);
-                                    } else {
-                                        d.remove::<bool>(preview_toggle_id);
+                            ui.label("Timeline");
+                            let combo_id = ("sprite_timeline_combo", entity.index());
+                            egui::ComboBox::from_id_salt(combo_id)
+                                .selected_text(desired_timeline.as_deref().unwrap_or("None").to_string())
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut desired_timeline, None, "None");
+                                    for name in &timeline_names {
+                                        ui.selectable_value(&mut desired_timeline, Some(name.clone()), name);
                                     }
                                 });
-                            }
-                            let preview_events_enabled = preview_events_enabled;
-
-                            ui.separator();
-                            let max_index = (frame_count - 1) as i32;
-                            let mut preview_frame = frame_index as i32;
-                            let slider = egui::Slider::new(&mut preview_frame, 0..=max_index).text("Scrub");
-                            if ui.add(slider).changed() {
-                                let target = preview_frame.clamp(0, max_index) as usize;
-                                if app.ecs.seek_sprite_animation_frame(entity, target) {
-                                    inspector_refresh = true;
-                                    if preview_events_enabled {
-                                        preview_sprite_events(
-                                            app.assets,
-                                            app.inspector_status,
-                                            &sprite.atlas,
-                                            &anim.timeline,
-                                            target,
-                                        );
-                                    } else {
-                                        *app.inspector_status = None;
-                                    }
+                        });
+                        if desired_timeline != original_timeline {
+                            let success =
+                                app.ecs.set_sprite_timeline(entity, &app.assets, desired_timeline.as_deref());
+                            if success {
+                                inspector_refresh = true;
+                                *app.inspector_status = desired_timeline
+                                    .as_ref()
+                                    .map(|name| format!("Sprite timeline set to {name}"))
+                                    .or_else(|| Some("Sprite timeline disabled".to_string()));
+                                if let Some(updated) =
+                                    app.ecs.entity_info(entity).and_then(|data| data.sprite)
+                                {
+                                    sprite = updated.clone();
+                                    info.sprite = Some(updated);
                                 }
+                            } else if let Some(name) = desired_timeline {
+                                *app.inspector_status = Some(format!("Timeline '{name}' unavailable"));
+                            } else {
+                                *app.inspector_status = Some("Failed to change sprite timeline".to_string());
                             }
+                        }
+                        if let Some(anim) = sprite.animation.as_ref() {
+                            ui.label(format!("Loop Mode: {}", anim.loop_mode));
                             ui.horizontal(|ui| {
-                                let has_prev = frame_index > 0;
-                                let has_next = frame_index + 1 < frame_count;
-                                if ui.add_enabled(has_prev, egui::Button::new("<")).clicked() {
-                                    let target = frame_index.saturating_sub(1);
-                                    if app.ecs.seek_sprite_animation_frame(entity, target) {
+                                let play_label = if anim.playing { "Pause" } else { "Play" };
+                                if ui.button(play_label).clicked() {
+                                    if app.ecs.set_sprite_animation_playing(entity, !anim.playing) {
                                         inspector_refresh = true;
-                                        if preview_events_enabled {
-                                            preview_sprite_events(
-                                                app.assets,
-                                                app.inspector_status,
-                                                &sprite.atlas,
-                                                &anim.timeline,
-                                                target,
-                                            );
-                                        } else {
-                                            *app.inspector_status = None;
-                                        }
                                     }
                                 }
-                                if ui.add_enabled(has_next, egui::Button::new(">")).clicked() {
-                                    let target = (frame_index + 1).min(frame_count - 1);
-                                    if app.ecs.seek_sprite_animation_frame(entity, target) {
+                                if ui.button("Reset").clicked() {
+                                    if app.ecs.reset_sprite_animation(entity) {
                                         inspector_refresh = true;
-                                        if preview_events_enabled {
-                                            preview_sprite_events(
-                                                app.assets,
-                                                app.inspector_status,
-                                                &sprite.atlas,
-                                                &anim.timeline,
-                                                target,
-                                            );
-                                        } else {
-                                            *app.inspector_status = None;
-                                        }
+                                    }
+                                }
+                                let mut looped = anim.looped;
+                                if ui.checkbox(&mut looped, "Loop").changed() {
+                                    if app.ecs.set_sprite_animation_looped(entity, looped) {
+                                        inspector_refresh = true;
                                     }
                                 }
                             });
-                        } else {
-                            ui.colored_label(egui::Color32::YELLOW, "Timeline has no frames to preview.");
+                            let mut speed = anim.speed;
+                            if ui.add(egui::Slider::new(&mut speed, 0.0..=5.0).text("Speed")).changed() {
+                                if app.ecs.set_sprite_animation_speed(entity, speed) {
+                                    inspector_refresh = true;
+                                }
+                            }
+                            let mut start_offset = anim.start_offset;
+                            ui.horizontal(|ui| {
+                                ui.label("Start Offset");
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut start_offset)
+                                            .speed(0.01)
+                                            .range(0.0..=10_000.0)
+                                            .suffix(" s"),
+                                    )
+                                    .changed()
+                                {
+                                    if app.ecs.set_sprite_animation_start_offset(entity, start_offset) {
+                                        inspector_refresh = true;
+                                    }
+                                }
+                            });
+                            let mut random_start = anim.random_start;
+                            if ui.checkbox(&mut random_start, "Randomize Start").changed() {
+                                if app.ecs.set_sprite_animation_random_start(entity, random_start) {
+                                    inspector_refresh = true;
+                                }
+                            }
+                            let mut group_label = anim.group.clone().unwrap_or_default();
+                            ui.horizontal(|ui| {
+                                ui.label("Group");
+                                if ui.text_edit_singleline(&mut group_label).changed() {
+                                    let trimmed = group_label.trim();
+                                    let success = if trimmed.is_empty() {
+                                        app.ecs.set_sprite_animation_group(entity, None)
+                                    } else {
+                                        app.ecs.set_sprite_animation_group(entity, Some(trimmed))
+                                    };
+                                    if success {
+                                        inspector_refresh = true;
+                                    }
+                                }
+                            });
+                            if anim.frame_count > 0 {
+                                let frame_count = anim.frame_count;
+                                let frame_index = anim.frame_index.min(frame_count - 1);
+                                let region_label = anim.frame_region.as_deref().unwrap_or("n/a");
+                                let duration_ms =
+                                    (anim.frame_duration.max(0.0) * 1_000.0).clamp(0.0, f32::MAX);
+                                let elapsed_ms = (anim.frame_elapsed.max(0.0) * 1_000.0).clamp(0.0, f32::MAX);
+                                ui.label(format!(
+                                    "Frame {}/{} - duration: {:.0} ms - elapsed: {:.0} ms - region: {}",
+                                    frame_index + 1,
+                                    frame_count,
+                                    duration_ms,
+                                    elapsed_ms,
+                                    region_label
+                                ));
+                                if anim.frame_events.is_empty() {
+                                    ui.label("Events: none");
+                                } else {
+                                    let joined = anim.frame_events.join(", ");
+                                    ui.colored_label(
+                                        egui::Color32::LIGHT_YELLOW,
+                                        format!("Events: {}", joined),
+                                    );
+                                }
+
+                                let preview_toggle_id =
+                                    egui::Id::new(("sprite_event_preview", entity.index()));
+                                let mut preview_events_enabled = ui.ctx().data_mut(|d| {
+                                    d.get_persisted::<bool>(preview_toggle_id).unwrap_or(false)
+                                });
+                                let preview_toggle_response =
+                                    ui.checkbox(&mut preview_events_enabled, "Preview events").on_hover_text(
+                                        "When enabled, scrubbing logs frame events to the inspector log",
+                                    );
+                                if preview_toggle_response.changed() {
+                                    ui.ctx().data_mut(|d| {
+                                        if preview_events_enabled {
+                                            d.insert_persisted(preview_toggle_id, preview_events_enabled);
+                                        } else {
+                                            d.remove::<bool>(preview_toggle_id);
+                                        }
+                                    });
+                                }
+                                let preview_events_enabled = preview_events_enabled;
+
+                                ui.separator();
+                                let max_index = (frame_count - 1) as i32;
+                                let mut preview_frame = frame_index as i32;
+                                let slider =
+                                    egui::Slider::new(&mut preview_frame, 0..=max_index).text("Scrub");
+                                if ui.add(slider).changed() {
+                                    let target = preview_frame.clamp(0, max_index) as usize;
+                                    if app.ecs.seek_sprite_animation_frame(entity, target) {
+                                        inspector_refresh = true;
+                                        if preview_events_enabled {
+                                            preview_sprite_events(
+                                                app.assets,
+                                                app.inspector_status,
+                                                &sprite.atlas,
+                                                &anim.timeline,
+                                                target,
+                                            );
+                                        } else {
+                                            *app.inspector_status = None;
+                                        }
+                                    }
+                                }
+                                ui.horizontal(|ui| {
+                                    let has_prev = frame_index > 0;
+                                    let has_next = frame_index + 1 < frame_count;
+                                    if ui.add_enabled(has_prev, egui::Button::new("<")).clicked() {
+                                        let target = frame_index.saturating_sub(1);
+                                        if app.ecs.seek_sprite_animation_frame(entity, target) {
+                                            inspector_refresh = true;
+                                            if preview_events_enabled {
+                                                preview_sprite_events(
+                                                    app.assets,
+                                                    app.inspector_status,
+                                                    &sprite.atlas,
+                                                    &anim.timeline,
+                                                    target,
+                                                );
+                                            } else {
+                                                *app.inspector_status = None;
+                                            }
+                                        }
+                                    }
+                                    if ui.add_enabled(has_next, egui::Button::new(">")).clicked() {
+                                        let target = (frame_index + 1).min(frame_count - 1);
+                                        if app.ecs.seek_sprite_animation_frame(entity, target) {
+                                            inspector_refresh = true;
+                                            if preview_events_enabled {
+                                                preview_sprite_events(
+                                                    app.assets,
+                                                    app.inspector_status,
+                                                    &sprite.atlas,
+                                                    &anim.timeline,
+                                                    target,
+                                                );
+                                            } else {
+                                                *app.inspector_status = None;
+                                            }
+                                        }
+                                    }
+                                });
+                            } else {
+                                ui.colored_label(egui::Color32::YELLOW, "Timeline has no frames to preview.");
+                            }
                         }
                     }
                 }

@@ -218,9 +218,16 @@ pub(super) struct UiActions {
     pub retain_atlases: Vec<(String, Option<String>)>,
     pub retain_meshes: Vec<(String, Option<String>)>,
     pub retain_environments: Vec<(String, Option<String>)>,
+    pub sprite_atlas_requests: Vec<SpriteAtlasRequest>,
     pub reload_plugins: bool,
     pub save_prefab: Option<PrefabSaveRequest>,
     pub instantiate_prefab: Option<PrefabInstantiateRequest>,
+}
+
+pub(super) struct SpriteAtlasRequest {
+    pub entity: Entity,
+    pub atlas: String,
+    pub path: Option<String>,
 }
 
 pub(super) struct SelectionResult {

@@ -151,14 +151,8 @@ fn aseprite_to_atlas_processes_fixture_exports() {
     assert!(status.success(), "aseprite_to_atlas did not exit successfully for fixture");
 
     let generated = fs::read_to_string(&output_path).expect("read generated atlas json");
-    assert!(
-        generated.contains("\"attack\""),
-        "fixture atlas should include the attack timeline"
-    );
-    assert!(
-        generated.contains("\"windup\""),
-        "fixture atlas should retain event names from the events file"
-    );
+    assert!(generated.contains("\"attack\""), "fixture atlas should include the attack timeline");
+    assert!(generated.contains("\"windup\""), "fixture atlas should retain event names from the events file");
     assert!(
         generated.contains("\"image\": \"slime.png\""),
         "fixture atlas should propagate sprite sheet metadata"
