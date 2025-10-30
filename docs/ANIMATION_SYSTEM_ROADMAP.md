@@ -141,6 +141,6 @@ Benchmarks emit CSV summaries for CI. Failing budgets block the milestone exit.
 - [x] Implement `tests/animation_bench.rs` with entity-count sweeps and CSV output; wire into CI.
 - [x] Add inspector scrubber + frame nudge controls to the existing sprite UI.
 - [x] Introduce hot-reload-by-name logic for atlas timelines, preserving frame continuity.
-- [ ] Land Aseprite timeline importer (CLI) with sample fixtures.
+- [x] Land Aseprite timeline importer (CLI) with sample fixtures (`fixtures/aseprite/`).
 
 This roadmap supersedes earlier drafts and reflects the final agreed-upon plan for animation system development. Further adjustments will follow formal change control once milestones begin execution.

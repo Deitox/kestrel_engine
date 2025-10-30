@@ -1,0 +1,9 @@
+{
+  "attack": [
+    { "frame": 1, "name": "windup" },
+    { "frame": 2, "name": "impact" }
+  ],
+  "hit": [
+    { "frame": 0, "name": "stun" }
+  ]
+}

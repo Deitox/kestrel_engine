@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[test]
@@ -132,6 +132,37 @@ fn aseprite_to_atlas_applies_events_file() {
     let generated = fs::read_to_string(&output_path).expect("read generated atlas json");
     assert!(generated.contains("\"events\""), "atlas output should include events array");
     assert!(generated.contains("footstep"), "atlas output should include the specified event name");
+}
+
+#[test]
+fn aseprite_to_atlas_processes_fixture_exports() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let output_path = temp_dir.path().join("output.json");
+
+    let exe = locate_binary("aseprite_to_atlas");
+    let status = Command::new(exe)
+        .arg(Path::new("fixtures/aseprite/slime_idle.json"))
+        .arg(&output_path)
+        .arg("--events-file")
+        .arg(Path::new("fixtures/aseprite/slime_idle_events.json"))
+        .status()
+        .expect("run aseprite_to_atlas with fixture input");
+
+    assert!(status.success(), "aseprite_to_atlas did not exit successfully for fixture");
+
+    let generated = fs::read_to_string(&output_path).expect("read generated atlas json");
+    assert!(
+        generated.contains("\"attack\""),
+        "fixture atlas should include the attack timeline"
+    );
+    assert!(
+        generated.contains("\"windup\""),
+        "fixture atlas should retain event names from the events file"
+    );
+    assert!(
+        generated.contains("\"image\": \"slime.png\""),
+        "fixture atlas should propagate sprite sheet metadata"
+    );
 }
 
 fn locate_binary(name: &str) -> PathBuf {
