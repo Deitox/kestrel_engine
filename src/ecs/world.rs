@@ -846,8 +846,8 @@ impl EcsWorld {
                 continue;
             };
             let prev_frames: Vec<SpriteAnimationFrame> = animation.frames.iter().cloned().collect();
-            let prev_region = animation.current_region_handle();
             let prev_index = animation.frame_index;
+            let prev_frame = prev_frames.get(prev_index).cloned();
             let prev_elapsed = animation.elapsed_in_frame;
             let prev_playing = animation.playing;
             let prev_forward = animation.forward;
@@ -873,15 +873,15 @@ impl EcsWorld {
             let new_len = animation.frames.len();
             let mut target_index = prev_index.min(new_len - 1);
             let mut matched = false;
-            if let Some(prev_frame) = prev_frames.get(prev_index) {
-                let target_region = prev_frame.region.as_ref();
+            if let Some(prev_frame) = prev_frame.as_ref() {
+                let target_name = prev_frame.name.as_ref();
                 let occurrence = prev_frames[..=prev_index]
                     .iter()
-                    .filter(|frame| frame.region.as_ref() == target_region)
+                    .filter(|frame| frame.name.as_ref() == target_name)
                     .count();
                 let mut seen = 0usize;
                 if let Some(found) = animation.frames.iter().position(|frame| {
-                    if frame.region.as_ref() == target_region {
+                    if frame.name.as_ref() == target_name {
                         seen += 1;
                         if seen == occurrence {
                             return true;
@@ -894,11 +894,43 @@ impl EcsWorld {
                 }
             }
             if !matched {
-                if let Some(region_name) = prev_region.as_ref() {
-                    if let Some(found) = animation
-                        .frames
+                if let Some(prev_frame) = prev_frame.as_ref() {
+                    let target_name = prev_frame.name.as_ref();
+                    if let Some(found) =
+                        animation.frames.iter().position(|frame| frame.name.as_ref() == target_name)
+                    {
+                        target_index = found;
+                        matched = true;
+                    }
+                }
+            }
+            if !matched {
+                if let Some(prev_frame) = prev_frame.as_ref() {
+                    let target_region = prev_frame.region.as_ref();
+                    let occurrence = prev_frames[..=prev_index]
                         .iter()
-                        .position(|frame| frame.region.as_ref() == region_name.as_ref())
+                        .filter(|frame| frame.region.as_ref() == target_region)
+                        .count();
+                    let mut seen = 0usize;
+                    if let Some(found) = animation.frames.iter().position(|frame| {
+                        if frame.region.as_ref() == target_region {
+                            seen += 1;
+                            if seen == occurrence {
+                                return true;
+                            }
+                        }
+                        false
+                    }) {
+                        target_index = found;
+                        matched = true;
+                    }
+                }
+            }
+            if !matched {
+                if let Some(prev_frame) = prev_frame.as_ref() {
+                    let target_region = prev_frame.region.as_ref();
+                    if let Some(found) =
+                        animation.frames.iter().position(|frame| frame.region.as_ref() == target_region)
                     {
                         target_index = found;
                         matched = true;

@@ -54,7 +54,7 @@ impl Sprite {
     }
 
     pub fn apply_frame(&mut self, frame: &SpriteAnimationFrame) {
-        if self.region_id != frame.region_id {
+        if self.region_id != frame.region_id || self.region.as_ref() != frame.region.as_ref() {
             self.region = frame.region.clone();
         }
         self.region_id = frame.region_id;
@@ -198,6 +198,7 @@ impl SpriteAnimation {
 
 #[derive(Clone)]
 pub struct SpriteAnimationFrame {
+    pub name: Arc<str>,
     pub region: Arc<str>,
     pub region_id: u16,
     pub duration: f32,

@@ -380,6 +380,75 @@ fn sprite_animation_hot_reload_handles_duplicate_regions() {
 }
 
 #[test]
+fn sprite_animation_hot_reload_prefers_frame_names() {
+    let temp = NamedTempFile::new().expect("temp atlas");
+    let source = std::fs::read("assets/images/atlas.json").expect("read atlas");
+    let mut atlas_json: serde_json::Value = serde_json::from_slice(&source).expect("parse atlas");
+    atlas_json["animations"]["demo_cycle"]["frames"] = json!([
+        { "name": "idle_a", "region": "redorb", "duration_ms": 160 },
+        { "name": "idle_b", "region": "bluebox", "duration_ms": 180 },
+        { "name": "idle_c", "region": "green", "duration_ms": 140 }
+    ]);
+    std::fs::write(temp.path(), serde_json::to_vec_pretty(&atlas_json).expect("encode"))
+        .expect("write initial atlas");
+    let temp_path = temp.path().to_path_buf();
+
+    let mut assets = AssetManager::new();
+    assets.retain_atlas("main", temp_path.to_str()).expect("load atlas with names");
+    let mut ecs = EcsWorld::new();
+    let entity = ecs
+        .world
+        .spawn((
+            Transform::default(),
+            WorldTransform::default(),
+            Sprite::uninitialized(Arc::from("main"), Arc::from("redorb")),
+        ))
+        .id();
+    assert!(ecs.set_sprite_timeline(entity, &assets, Some("demo_cycle")));
+    assert!(ecs.seek_sprite_animation_frame(entity, 1));
+    {
+        let mut anim =
+            ecs.world.get_mut::<kestrel_engine::ecs::SpriteAnimation>(entity).expect("animation component");
+        anim.forward = false;
+        anim.elapsed_in_frame = 0.09;
+    }
+
+    let mut modified = atlas_json.clone();
+    modified["animations"]["demo_cycle"]["frames"] = json!([
+        { "name": "idle_c", "region": "green", "duration_ms": 140 },
+        { "name": "idle_b", "region": "checker", "duration_ms": 150 },
+        { "name": "idle_a", "region": "redorb", "duration_ms": 160 },
+        { "name": "idle_d", "region": "bluebox", "duration_ms": 110 }
+    ]);
+    std::fs::write(&temp_path, serde_json::to_vec_pretty(&modified).expect("encode"))
+        .expect("write modified atlas");
+
+    assets.reload_atlas("main").expect("reload atlas");
+    let refreshed = ecs.refresh_sprite_animations_for_atlas("main", &assets);
+    assert_eq!(refreshed, 1);
+
+    let anim = ecs.world.get::<kestrel_engine::ecs::SpriteAnimation>(entity).expect("animation component");
+    assert_eq!(anim.frames.len(), 4);
+    assert_eq!(anim.frame_index, 1, "should stay aligned with the frame name");
+    assert_eq!(anim.frames[anim.frame_index].name.as_ref(), "idle_b");
+    assert_eq!(anim.current_region_name(), Some("checker"));
+    let expected_elapsed = {
+        let prev_duration = 0.18_f32;
+        let progress = (0.09_f32 / prev_duration).clamp(0.0, 1.0);
+        let new_duration = anim.frames[anim.frame_index].duration;
+        progress * new_duration
+    };
+    assert!(
+        (anim.elapsed_in_frame - expected_elapsed).abs() < 1e-6,
+        "elapsed time should scale with new duration"
+    );
+    assert!(!anim.forward, "playback direction should persist");
+
+    let sprite = ecs.world.get::<Sprite>(entity).expect("sprite component");
+    assert_eq!(sprite.region.as_ref(), "checker");
+}
+
+#[test]
 fn sprite_animation_respects_start_offset() {
     let mut assets = AssetManager::new();
     assets.retain_atlas("main", Some("assets/images/atlas.json")).expect("load main atlas");

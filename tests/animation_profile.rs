@@ -105,6 +105,7 @@ fn seed_sprite_animators(world: &mut EcsWorld, count: usize, frame_duration: f32
     let empty_events: Arc<[Arc<str>]> = Arc::from(Vec::<Arc<str>>::new());
     let frame_template: Arc<[SpriteAnimationFrame]> = Arc::from(vec![
         SpriteAnimationFrame {
+            name: Arc::from("frame_a"),
             region: Arc::from("frame_a"),
             region_id: 0,
             duration: frame_duration,
@@ -112,6 +113,7 @@ fn seed_sprite_animators(world: &mut EcsWorld, count: usize, frame_duration: f32
             events: Arc::clone(&empty_events),
         },
         SpriteAnimationFrame {
+            name: Arc::from("frame_b"),
             region: Arc::from("frame_b"),
             region_id: 1,
             duration: frame_duration,
@@ -119,6 +121,7 @@ fn seed_sprite_animators(world: &mut EcsWorld, count: usize, frame_duration: f32
             events: Arc::clone(&empty_events),
         },
         SpriteAnimationFrame {
+            name: Arc::from("frame_c"),
             region: Arc::from("frame_c"),
             region_id: 2,
             duration: frame_duration,

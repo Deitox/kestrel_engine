@@ -71,6 +71,8 @@ struct AtlasTimelineFile {
 
 #[derive(Debug, Deserialize)]
 struct AtlasTimelineFrameFile {
+    #[serde(default)]
+    name: Option<String>,
     region: String,
     #[serde(default = "default_frame_duration_ms")]
     duration_ms: u32,
@@ -173,11 +175,16 @@ impl AssetManager {
                     );
                     continue;
                 };
+                let frame_name_arc = frame
+                    .name
+                    .map(Arc::<str>::from)
+                    .unwrap_or_else(|| Arc::clone(region_key));
                 let duration = (frame.duration_ms.max(1) as f32) / 1000.0;
                 let event_names = event_map.remove(&frame_index).unwrap_or_default();
                 let events: Vec<Arc<str>> =
                     event_names.into_iter().map(|name| Arc::<str>::from(name)).collect();
                 frames.push(SpriteAnimationFrame {
+                    name: frame_name_arc,
                     region: Arc::clone(region_key),
                     region_id: region_info.id,
                     duration,
