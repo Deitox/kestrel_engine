@@ -1,8 +1,8 @@
 use super::{AnimationDelta, AnimationTime, TimeDelta};
 use crate::ecs::profiler::SystemProfiler;
-use crate::ecs::{Sprite, SpriteAnimation, SpriteAnimationFrame, SpriteAnimationLoopMode};
+use crate::ecs::{Sprite, SpriteAnimation, SpriteAnimationLoopMode};
 use crate::events::{EventBus, GameEvent};
-use bevy_ecs::prelude::{Entity, Query, Res, ResMut, With};
+use bevy_ecs::prelude::{Entity, Query, Res, ResMut};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::ptr::NonNull;
@@ -12,8 +12,7 @@ pub fn sys_drive_sprite_animations(
     dt: Res<TimeDelta>,
     mut animation_time: ResMut<AnimationTime>,
     mut events: ResMut<EventBus>,
-    mut animations: Query<(Entity, &mut SpriteAnimation), With<Sprite>>,
-    mut sprites: Query<&mut Sprite>,
+    mut animations: Query<(Entity, &mut SpriteAnimation, &mut Sprite)>,
 ) {
     let _span = profiler.scope("sys_drive_sprite_animations");
     let plan = animation_time.consume(dt.0);
@@ -32,7 +31,6 @@ pub fn sys_drive_sprite_animations(
                     animation_time_ref,
                     &mut events,
                     &mut animations,
-                    &mut sprites,
                 );
             }
         }
@@ -45,7 +43,6 @@ pub fn sys_drive_sprite_animations(
                     animation_time_ref,
                     &mut events,
                     &mut animations,
-                    &mut sprites,
                 );
             }
         }
@@ -188,6 +185,26 @@ pub(crate) fn advance_animation(
     frame_changed
 }
 
+fn emit_sprite_animation_events(entity: Entity, animation: &SpriteAnimation, events: &mut EventBus) {
+    if let Some(frame) = animation.frames.get(animation.frame_index) {
+        for name in frame.events.iter() {
+            events.push(GameEvent::SpriteAnimationEvent {
+                entity,
+                timeline: animation.timeline.as_ref().to_string(),
+                event: name.as_ref().to_string(),
+            });
+        }
+    }
+}
+
+fn stable_random_fraction(entity: Entity, timeline: &str) -> f32 {
+    let mut hasher = DefaultHasher::new();
+    entity.hash(&mut hasher);
+    timeline.hash(&mut hasher);
+    let bits = hasher.finish();
+    const SCALE: f64 = 1.0 / (u64::MAX as f64 + 1.0);
+    (bits as f64 * SCALE) as f32
+}
 #[inline(always)]
 fn advance_animation_loop_no_events(animation: &mut SpriteAnimation, mut delta: f32) -> bool {
     if delta <= 0.0 || !animation.playing {
@@ -224,36 +241,14 @@ fn advance_animation_loop_no_events(animation: &mut SpriteAnimation, mut delta: 
     animation.current_duration = animation.frame_durations.get(animation.frame_index).copied().unwrap_or(0.0);
     frame_changed
 }
-
-fn emit_sprite_animation_events(entity: Entity, animation: &SpriteAnimation, events: &mut EventBus) {
-    if let Some(frame) = animation.frames.get(animation.frame_index) {
-        for name in frame.events.iter() {
-            events.push(GameEvent::SpriteAnimationEvent {
-                entity,
-                timeline: animation.timeline.as_ref().to_string(),
-                event: name.as_ref().to_string(),
-            });
-        }
-    }
-}
-
-fn stable_random_fraction(entity: Entity, timeline: &str) -> f32 {
-    let mut hasher = DefaultHasher::new();
-    entity.hash(&mut hasher);
-    timeline.hash(&mut hasher);
-    let bits = hasher.finish();
-    const SCALE: f64 = 1.0 / (u64::MAX as f64 + 1.0);
-    (bits as f64 * SCALE) as f32
-}
 fn drive_single(
     delta: f32,
     has_group_scales: bool,
     animation_time: &AnimationTime,
     events: &mut EventBus,
-    animations: &mut Query<(Entity, &mut SpriteAnimation), With<Sprite>>,
-    sprites: &mut Query<&mut Sprite>,
+    animations: &mut Query<(Entity, &mut SpriteAnimation, &mut Sprite)>,
 ) {
-    for (entity, mut animation) in animations.iter_mut() {
+    for (entity, mut animation, mut sprite) in animations.iter_mut() {
         let frame_count = animation.frames.len();
         if frame_count == 0 {
             continue;
@@ -287,9 +282,9 @@ fn drive_single(
         let mut sprite_changed = false;
         if animation.fast_loop {
             let current_duration = animation.current_duration;
-            let time_left = current_duration - animation.elapsed_in_frame;
-            if scaled <= time_left {
-                animation.elapsed_in_frame += scaled;
+            let new_elapsed = animation.elapsed_in_frame + scaled;
+            if new_elapsed <= current_duration {
+                animation.elapsed_in_frame = new_elapsed;
             } else if advance_animation_loop_no_events(&mut animation, scaled) {
                 sprite_changed = true;
             }
@@ -305,7 +300,10 @@ fn drive_single(
         if sprite_changed {
             let frame_ptr = NonNull::from(&animation.frames[animation.frame_index]);
             drop(animation);
-            apply_sprite_frame(entity, frame_ptr, sprites);
+            unsafe {
+                sprite.apply_frame(frame_ptr.as_ref());
+            }
+            continue;
         }
     }
 }
@@ -316,10 +314,9 @@ fn drive_fixed(
     has_group_scales: bool,
     animation_time: &AnimationTime,
     events: &mut EventBus,
-    animations: &mut Query<(Entity, &mut SpriteAnimation), With<Sprite>>,
-    sprites: &mut Query<&mut Sprite>,
+    animations: &mut Query<(Entity, &mut SpriteAnimation, &mut Sprite)>,
 ) {
-    for (entity, mut animation) in animations.iter_mut() {
+    for (entity, mut animation, mut sprite) in animations.iter_mut() {
         let frame_count = animation.frames.len();
         if frame_count == 0 {
             continue;
@@ -354,9 +351,9 @@ fn drive_fixed(
         if animation.fast_loop {
             let total = scaled_step * steps as f32;
             let current_duration = animation.current_duration;
-            let time_left = current_duration - animation.elapsed_in_frame;
-            if total <= time_left {
-                animation.elapsed_in_frame += total;
+            let new_elapsed = animation.elapsed_in_frame + total;
+            if new_elapsed <= current_duration {
+                animation.elapsed_in_frame = new_elapsed;
             } else if advance_animation_loop_no_events(&mut animation, total) {
                 sprite_changed = true;
             }
@@ -384,19 +381,10 @@ fn drive_fixed(
         if sprite_changed {
             let frame_ptr = NonNull::from(&animation.frames[animation.frame_index]);
             drop(animation);
-            apply_sprite_frame(entity, frame_ptr, sprites);
-        }
-    }
-}
-
-fn apply_sprite_frame(
-    entity: Entity,
-    frame_ptr: NonNull<SpriteAnimationFrame>,
-    sprites: &mut Query<&mut Sprite>,
-) {
-    if let Ok(mut sprite) = sprites.get_mut(entity) {
-        unsafe {
-            sprite.apply_frame(frame_ptr.as_ref());
+            unsafe {
+                sprite.apply_frame(frame_ptr.as_ref());
+            }
+            continue;
         }
     }
 }
