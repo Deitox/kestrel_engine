@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "name": "slime_bob",
+  "looped": true,
+  "tracks": {
+    "translation": {
+      "interpolation": "linear",
+      "keyframes": [
+        { "time": 0.0, "value": [0.0, 0.0] },
+        { "time": 0.25, "value": [0.0, 4.0] },
+        { "time": 0.5, "value": [0.0, 0.0] }
+      ]
+    },
+    "rotation": {
+      "interpolation": "linear",
+      "keyframes": [
+        { "time": 0.0, "value": 0.0 },
+        { "time": 0.5, "value": 6.2831855 }
+      ]
+    },
+    "scale": {
+      "interpolation": "step",
+      "keyframes": [
+        { "time": 0.0, "value": [1.0, 1.0] },
+        { "time": 0.5, "value": [1.2, 0.8] }
+      ]
+    },
+    "tint": {
+      "interpolation": "linear",
+      "keyframes": [
+        { "time": 0.0, "value": [1.0, 1.0, 1.0, 1.0] },
+        { "time": 0.5, "value": [0.6, 0.9, 1.0, 1.0] }
+      ]
+    }
+  }
+}

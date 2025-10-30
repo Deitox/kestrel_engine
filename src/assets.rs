@@ -1,18 +1,113 @@
 use crate::ecs::{SpriteAnimationFrame, SpriteAnimationLoopMode};
 use anyhow::{anyhow, Result};
+use glam::{Vec2, Vec4};
 use serde::Deserialize;
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs;
 use std::sync::Arc;
 
 pub struct AssetManager {
     atlases: HashMap<String, TextureAtlas>,
+    clips: HashMap<String, AnimationClip>,
     sampler: Option<wgpu::Sampler>,
     device: Option<wgpu::Device>,
     queue: Option<wgpu::Queue>,
     texture_cache: HashMap<String, (wgpu::TextureView, (u32, u32))>,
     atlas_sources: HashMap<String, String>,
     atlas_refs: HashMap<String, usize>,
+    clip_sources: HashMap<String, String>,
+    clip_refs: HashMap<String, usize>,
+}
+
+fn build_vec2_track(raw: ClipVec2TrackFile) -> Result<(ClipVec2Track, f32)> {
+    if raw.keyframes.is_empty() {
+        return Err(anyhow!("Clip vec2 track must contain at least one keyframe"));
+    }
+    let interpolation = convert_interpolation(raw.interpolation);
+    let (keyframes, duration) = build_keyframes(raw.keyframes, |kf| {
+        let value = Vec2::new(kf.value[0], kf.value[1]);
+        if !value.is_finite() {
+            return Err(anyhow!("Clip keyframe contains non-finite translation/scale value"));
+        }
+        Ok(ClipKeyframe { time: kf.time, value })
+    })?;
+    Ok((ClipVec2Track { interpolation, keyframes }, duration))
+}
+
+fn build_scalar_track(raw: ClipScalarTrackFile) -> Result<(ClipScalarTrack, f32)> {
+    if raw.keyframes.is_empty() {
+        return Err(anyhow!("Clip scalar track must contain at least one keyframe"));
+    }
+    let interpolation = convert_interpolation(raw.interpolation);
+    let (keyframes, duration) = build_keyframes(raw.keyframes, |kf| {
+        if !kf.value.is_finite() {
+            return Err(anyhow!("Clip keyframe contains non-finite rotation value"));
+        }
+        Ok(ClipKeyframe { time: kf.time, value: kf.value })
+    })?;
+    Ok((ClipScalarTrack { interpolation, keyframes }, duration))
+}
+
+fn build_vec4_track(raw: ClipVec4TrackFile) -> Result<(ClipVec4Track, f32)> {
+    if raw.keyframes.is_empty() {
+        return Err(anyhow!("Clip vec4 track must contain at least one keyframe"));
+    }
+    let interpolation = convert_interpolation(raw.interpolation);
+    let (keyframes, duration) = build_keyframes(raw.keyframes, |kf| {
+        let value = Vec4::new(kf.value[0], kf.value[1], kf.value[2], kf.value[3]);
+        if !value.is_finite() {
+            return Err(anyhow!("Clip keyframe contains non-finite tint value"));
+        }
+        Ok(ClipKeyframe { time: kf.time, value })
+    })?;
+    Ok((ClipVec4Track { interpolation, keyframes }, duration))
+}
+
+fn build_keyframes<T, F, R>(raw_frames: Vec<R>, mut convert: F) -> Result<(Arc<[ClipKeyframe<T>]>, f32)>
+where
+    T: Clone,
+    F: FnMut(R) -> Result<ClipKeyframe<T>>,
+{
+    let mut frames: Vec<(usize, ClipKeyframe<T>)> = Vec::new();
+    for (index, raw) in raw_frames.into_iter().enumerate() {
+        let frame = convert(raw)?;
+        if !frame.time.is_finite() {
+            return Err(anyhow!("Clip keyframe time must be finite"));
+        }
+        if frame.time < 0.0 {
+            return Err(anyhow!("Clip keyframe time cannot be negative"));
+        }
+        frames.push((index, frame));
+    }
+    frames.sort_by(|a, b| {
+        let time_order = a.1.time.partial_cmp(&b.1.time).unwrap_or(Ordering::Equal);
+        if time_order == Ordering::Equal {
+            a.0.cmp(&b.0)
+        } else {
+            time_order
+        }
+    });
+    let mut deduped: Vec<ClipKeyframe<T>> = Vec::with_capacity(frames.len());
+    for (_, frame) in frames {
+        if let Some(last) = deduped.last_mut() {
+            if (frame.time - last.time).abs() <= f32::EPSILON {
+                *last = frame;
+                continue;
+            }
+        }
+        deduped.push(frame);
+    }
+    let duration = deduped.last().map(|kf| kf.time).unwrap_or(0.0);
+    let arc = Arc::<[ClipKeyframe<T>]>::from(deduped.into_boxed_slice());
+    Ok((arc, duration))
+}
+
+fn convert_interpolation(file: ClipInterpolationFile) -> ClipInterpolation {
+    match file {
+        ClipInterpolationFile::Linear => ClipInterpolation::Linear,
+        ClipInterpolationFile::Step => ClipInterpolation::Step,
+    }
 }
 
 #[derive(Clone)]
@@ -38,6 +133,48 @@ pub struct SpriteTimeline {
     pub loop_mode: SpriteAnimationLoopMode,
     pub frames: Arc<[SpriteAnimationFrame]>,
     pub durations: Arc<[f32]>,
+}
+
+#[derive(Clone)]
+pub struct AnimationClip {
+    pub name: Arc<str>,
+    pub duration: f32,
+    pub translation: Option<ClipVec2Track>,
+    pub rotation: Option<ClipScalarTrack>,
+    pub scale: Option<ClipVec2Track>,
+    pub tint: Option<ClipVec4Track>,
+    pub looped: bool,
+    pub version: u32,
+}
+
+#[derive(Clone)]
+pub struct ClipVec2Track {
+    pub interpolation: ClipInterpolation,
+    pub keyframes: Arc<[ClipKeyframe<Vec2>]>,
+}
+
+#[derive(Clone)]
+pub struct ClipScalarTrack {
+    pub interpolation: ClipInterpolation,
+    pub keyframes: Arc<[ClipKeyframe<f32>]>,
+}
+
+#[derive(Clone)]
+pub struct ClipVec4Track {
+    pub interpolation: ClipInterpolation,
+    pub keyframes: Arc<[ClipKeyframe<Vec4>]>,
+}
+
+#[derive(Clone)]
+pub struct ClipKeyframe<T> {
+    pub time: f32,
+    pub value: T,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ClipInterpolation {
+    Step,
+    Linear,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -84,6 +221,75 @@ struct AtlasTimelineEventFile {
     name: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct ClipFile {
+    version: u32,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    looped: bool,
+    #[serde(default)]
+    tracks: ClipTracksFile,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ClipTracksFile {
+    #[serde(default)]
+    translation: Option<ClipVec2TrackFile>,
+    #[serde(default)]
+    rotation: Option<ClipScalarTrackFile>,
+    #[serde(default)]
+    scale: Option<ClipVec2TrackFile>,
+    #[serde(default)]
+    tint: Option<ClipVec4TrackFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClipVec2TrackFile {
+    #[serde(default = "default_clip_interpolation")]
+    interpolation: ClipInterpolationFile,
+    keyframes: Vec<ClipVec2KeyframeFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClipScalarTrackFile {
+    #[serde(default = "default_clip_interpolation")]
+    interpolation: ClipInterpolationFile,
+    keyframes: Vec<ClipScalarKeyframeFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClipVec4TrackFile {
+    #[serde(default = "default_clip_interpolation")]
+    interpolation: ClipInterpolationFile,
+    keyframes: Vec<ClipVec4KeyframeFile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ClipInterpolationFile {
+    Linear,
+    Step,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClipVec2KeyframeFile {
+    time: f32,
+    value: [f32; 2],
+}
+
+#[derive(Debug, Deserialize)]
+struct ClipScalarKeyframeFile {
+    time: f32,
+    value: f32,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClipVec4KeyframeFile {
+    time: f32,
+    value: [f32; 4],
+}
+
 const fn default_timeline_loop() -> bool {
     true
 }
@@ -92,16 +298,23 @@ const fn default_frame_duration_ms() -> u32 {
     100
 }
 
+fn default_clip_interpolation() -> ClipInterpolationFile {
+    ClipInterpolationFile::Linear
+}
+
 impl AssetManager {
     pub fn new() -> Self {
         Self {
             atlases: HashMap::new(),
+            clips: HashMap::new(),
             sampler: None,
             device: None,
             queue: None,
             texture_cache: HashMap::new(),
             atlas_sources: HashMap::new(),
             atlas_refs: HashMap::new(),
+            clip_sources: HashMap::new(),
+            clip_refs: HashMap::new(),
         }
     }
     pub fn set_device(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
@@ -226,6 +439,68 @@ impl AssetManager {
         }
         animations
     }
+    pub fn load_clip(&mut self, key: &str, json_path: &str) -> Result<()> {
+        self.load_clip_internal(key, json_path)
+    }
+
+    fn load_clip_internal(&mut self, key: &str, json_path: &str) -> Result<()> {
+        let bytes = fs::read(json_path)?;
+        let clip_file: ClipFile = serde_json::from_slice(&bytes)?;
+        if clip_file.version == 0 {
+            return Err(anyhow!("Clip '{key}' has unsupported version 0 (expected >= 1) in {}", json_path));
+        }
+        let interpolation_translation = clip_file.tracks.translation;
+        let interpolation_rotation = clip_file.tracks.rotation;
+        let interpolation_scale = clip_file.tracks.scale;
+        let interpolation_tint = clip_file.tracks.tint;
+
+        let mut duration = 0.0_f32;
+
+        let translation = if let Some(track) = interpolation_translation {
+            let (parsed, track_duration) = build_vec2_track(track)?;
+            duration = duration.max(track_duration);
+            Some(parsed)
+        } else {
+            None
+        };
+        let rotation = if let Some(track) = interpolation_rotation {
+            let (parsed, track_duration) = build_scalar_track(track)?;
+            duration = duration.max(track_duration);
+            Some(parsed)
+        } else {
+            None
+        };
+        let scale = if let Some(track) = interpolation_scale {
+            let (parsed, track_duration) = build_vec2_track(track)?;
+            duration = duration.max(track_duration);
+            Some(parsed)
+        } else {
+            None
+        };
+        let tint = if let Some(track) = interpolation_tint {
+            let (parsed, track_duration) = build_vec4_track(track)?;
+            duration = duration.max(track_duration);
+            Some(parsed)
+        } else {
+            None
+        };
+
+        let duration = if duration <= 0.0 { 0.0 } else { duration };
+        let name = clip_file.name.unwrap_or_else(|| key.to_string());
+        let clip = AnimationClip {
+            name: Arc::from(name),
+            duration,
+            translation,
+            rotation,
+            scale,
+            tint,
+            looped: clip_file.looped,
+            version: clip_file.version,
+        };
+        self.clips.insert(key.to_string(), clip);
+        self.clip_sources.insert(key.to_string(), json_path.to_string());
+        Ok(())
+    }
     pub fn retain_atlas(&mut self, key: &str, json_path: Option<&str>) -> Result<()> {
         if self.atlases.contains_key(key) {
             *self.atlas_refs.entry(key.to_string()).or_insert(0) += 1;
@@ -250,6 +525,51 @@ impl AssetManager {
         let mut keys: Vec<String> = self.atlases.keys().cloned().collect();
         keys.sort();
         keys
+    }
+    pub fn retain_clip(&mut self, key: &str, json_path: Option<&str>) -> Result<()> {
+        if self.clips.contains_key(key) {
+            *self.clip_refs.entry(key.to_string()).or_insert(0) += 1;
+            if let Some(path) = json_path {
+                self.clip_sources.insert(key.to_string(), path.to_string());
+            }
+            return Ok(());
+        }
+        let path_owned = if let Some(path) = json_path {
+            path.to_string()
+        } else if let Some(stored) = self.clip_sources.get(key) {
+            stored.clone()
+        } else {
+            return Err(anyhow!("Clip '{key}' is not loaded and no JSON path provided to retain it."));
+        };
+        self.load_clip_internal(key, &path_owned)?;
+        self.clip_sources.insert(key.to_string(), path_owned);
+        self.clip_refs.insert(key.to_string(), 1);
+        Ok(())
+    }
+    pub fn release_clip(&mut self, key: &str) -> bool {
+        if let Some(count) = self.clip_refs.get_mut(key) {
+            if *count > 0 {
+                *count -= 1;
+                if *count == 0 {
+                    self.clip_refs.remove(key);
+                    self.clips.remove(key);
+                    self.clip_sources.remove(key);
+                }
+                return true;
+            }
+        }
+        false
+    }
+    pub fn clip_keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self.clips.keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+    pub fn clip(&self, key: &str) -> Option<&AnimationClip> {
+        self.clips.get(key)
+    }
+    pub fn clip_source(&self, key: &str) -> Option<&str> {
+        self.clip_sources.get(key).map(|s| s.as_str())
     }
     pub fn release_atlas(&mut self, key: &str) -> bool {
         if let Some(count) = self.atlas_refs.get_mut(key) {
