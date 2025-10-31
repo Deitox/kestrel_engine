@@ -747,7 +747,8 @@ impl EcsWorld {
                 instance.reset_to_rest_pose();
                 instance.clear_dirty();
             } else {
-                let mut instance = SkeletonInstance::new(Arc::clone(&skeleton_key_arc), Arc::clone(&skeleton));
+                let mut instance =
+                    SkeletonInstance::new(Arc::clone(&skeleton_key_arc), Arc::clone(&skeleton));
                 instance.reset_to_rest_pose();
                 self.world.entity_mut(entity).insert(instance);
             }
@@ -777,7 +778,10 @@ impl EcsWorld {
             let Some(mut instance) = self.world.get_mut::<SkeletonInstance>(entity) else {
                 return false;
             };
-            if clip.skeleton.as_ref() != instance.skeleton_key.as_ref() {
+            let skeleton_name = instance.skeleton.name.as_ref();
+            let key_name = instance.skeleton_key.as_ref();
+            let clip_skeleton = clip.skeleton.as_ref();
+            if clip_skeleton != skeleton_name && clip_skeleton != key_name {
                 return false;
             }
             instance.set_active_clip(Some(Arc::clone(&clip)));

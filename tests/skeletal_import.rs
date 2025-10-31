@@ -2,7 +2,8 @@ use anyhow::{anyhow, Context, Result};
 use glam::{Quat, Vec3};
 use kestrel_engine::assets::skeletal::{self, SkeletonImport};
 use kestrel_engine::assets::AssetManager;
-use kestrel_engine::ecs::{BoneTransforms, EcsWorld};
+use kestrel_engine::ecs::{BoneTransforms, EcsWorld, SceneEntityTag, Transform, WorldTransform};
+use kestrel_engine::scene::SceneEntityId;
 use std::path::Path;
 
 #[test]
@@ -84,7 +85,10 @@ fn ecs_world_skeleton_helpers_manage_instances() -> Result<()> {
         .context("retain slime skeleton")?;
 
     let mut ecs = EcsWorld::new();
-    let entity = ecs.world.spawn_empty().id();
+    let entity = ecs
+        .world
+        .spawn((Transform::default(), WorldTransform::default(), SceneEntityTag::new(SceneEntityId::new())))
+        .id();
 
     assert!(ecs.set_skeleton(entity, &assets, "slime"), "attach skeleton");
     assert!(
@@ -98,9 +102,8 @@ fn ecs_world_skeleton_helpers_manage_instances() -> Result<()> {
     assert!(skeleton.has_bone_transforms);
     assert_eq!(skeleton.joint_count, skeleton.palette_joint_count);
 
-    let clip_keys = assets
-        .skeletal_clip_keys_for("slime")
-        .ok_or_else(|| anyhow!("clip keys missing for slime"))?;
+    let clip_keys =
+        assets.skeletal_clip_keys_for("slime").ok_or_else(|| anyhow!("clip keys missing for slime"))?;
     let clip_key = clip_keys.first().ok_or_else(|| anyhow!("no clip entries for slime"))?.clone();
     assert!(ecs.set_skeleton_clip(entity, &assets, &clip_key), "assign skeletal clip");
 
@@ -109,21 +112,13 @@ fn ecs_world_skeleton_helpers_manage_instances() -> Result<()> {
     let skeleton = info.skeleton.ok_or_else(|| anyhow!("skeleton info missing after seek"))?;
     let clip = skeleton.clip.ok_or_else(|| anyhow!("clip info missing after seek"))?;
     assert_eq!(clip.clip_key, clip_key);
-    assert!(
-        (clip.time - 0.5).abs() < 1e-3,
-        "expected clip time near 0.5, got {}",
-        clip.time
-    );
+    assert!((clip.time - 0.5).abs() < 1e-3, "expected clip time near 0.5, got {}", clip.time);
 
     assert!(ecs.reset_skeleton_pose(entity), "reset skeletal pose");
     let reset = ecs.entity_info(entity).ok_or_else(|| anyhow!("entity info missing after reset"))?;
     let reset_clip =
         reset.skeleton.and_then(|s| s.clip).ok_or_else(|| anyhow!("clip info missing after reset"))?;
-    assert!(
-        reset_clip.time.abs() < 1e-4,
-        "expected clip time near 0 after reset, got {}",
-        reset_clip.time
-    );
+    assert!(reset_clip.time.abs() < 1e-4, "expected clip time near 0 after reset, got {}", reset_clip.time);
 
     assert!(ecs.clear_skeleton(entity), "clear skeleton components");
     assert!(

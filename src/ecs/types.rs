@@ -658,9 +658,7 @@ impl SkeletonInstance {
     }
 
     pub fn active_clip_key(&self) -> Option<String> {
-        self.active_clip
-            .as_ref()
-            .map(|clip| format!("{}::{}", self.skeleton_key, clip.name.as_ref()))
+        self.active_clip.as_ref().map(|clip| format!("{}::{}", self.skeleton_key, clip.name.as_ref()))
     }
 
     pub fn has_clip(&self) -> bool {

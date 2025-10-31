@@ -496,8 +496,10 @@ pub(super) fn show_entity_inspector(
                 }
                 ui.horizontal(|ui| {
                     ui.label(format!("Bones: {}", skeleton_info.joint_count));
-                    let palette_text =
-                        format!("Palette: {}/{}", skeleton_info.palette_joint_count, skeleton_info.joint_count);
+                    let palette_text = format!(
+                        "Palette: {}/{}",
+                        skeleton_info.palette_joint_count, skeleton_info.joint_count
+                    );
                     if !skeleton_info.has_bone_transforms {
                         ui.colored_label(egui::Color32::YELLOW, "Bone transforms missing");
                     } else if skeleton_info.palette_joint_count >= skeleton_info.joint_count {
@@ -554,8 +556,7 @@ pub(super) fn show_entity_inspector(
                         *app.inspector_status = Some(format!("Skeletal clip set to {}", clip_combo));
                         skeleton_info_opt = app.ecs.entity_info(entity).and_then(|data| data.skeleton);
                     } else {
-                        *app.inspector_status =
-                            Some(format!("Skeletal clip '{}' not available", clip_combo));
+                        *app.inspector_status = Some(format!("Skeletal clip '{}' not available", clip_combo));
                     }
                 }
                 if let Some(mut clip_info) = skeleton_info_opt.as_ref().and_then(|info| info.clip.clone()) {
@@ -573,8 +574,7 @@ pub(super) fn show_entity_inspector(
                                 inspector_refresh = true;
                                 *app.inspector_status = Some("Skeletal pose reset".to_string());
                             } else {
-                                *app.inspector_status =
-                                    Some("Failed to reset skeletal pose".to_string());
+                                *app.inspector_status = Some("Failed to reset skeletal pose".to_string());
                             }
                         }
                     });
@@ -595,8 +595,8 @@ pub(super) fn show_entity_inspector(
                     ui.horizontal(|ui| {
                         ui.label("Group");
                         let mut group_value = clip_info.group.clone().unwrap_or_default();
-                        let response =
-                            ui.add(egui::TextEdit::singleline(&mut group_value).hint_text("optional group id"));
+                        let response = ui
+                            .add(egui::TextEdit::singleline(&mut group_value).hint_text("optional group id"));
                         if response.changed() {
                             let trimmed = group_value.trim();
                             let result = if trimmed.is_empty() {
