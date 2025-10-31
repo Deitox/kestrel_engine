@@ -75,9 +75,9 @@ Benchmarks emit CSV summaries for CI. Failing budgets block the milestone exit.
 - [x] `animation_bench` extended with transform clip sweep (2 000 clips) and CSV reporting, with CI script enforcement.
 
 ### Exit Criteria
-- Benchmarks show <= 0.40 ms CPU for 2 000 active clips (release).
-- Golden tests validate interpolation correctness and final poses after deterministic playback.
-- Scene/prefab round-trip tests verify clip bindings remain intact.
+- [ ] Benchmarks show <= 0.40 ms CPU for 2 000 active clips (release).
+- [x] Golden tests validate interpolation correctness and final poses after deterministic playback.
+- [x] Scene/prefab round-trip tests verify clip bindings remain intact.
 
 ---
 

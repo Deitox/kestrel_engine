@@ -81,11 +81,13 @@
   3. Drag the scrubber or tap the `<`/`>` nudge buttons to inspect specific keyframes. Track badges highlight which channels (translation, rotation, scale, tint) carry authored keys.
   4. Watch the per-track value previews update while the clip plays. If nothing changes, verify the entity owns the expected `TransformTrackPlayer` or `PropertyTrackPlayer` components.
   5. Edit and save the source JSON to trigger hot reload. The inspector preserves the current normalized time and immediately reflects the new keyframe data for comparison.
-- **Validation & troubleshooting:**
-  - Run `cargo test animation_clip` after editing clips; it exercises loader invariants against `fixtures/animation_clips` and catches ordering/finite-value issues.
-  - Loader errors such as `Clip keyframe time cannot be negative` or `Clip keyframe contains non-finite rotation value` point directly at the offending keyframe index.
-  - If a clip fails to appear in the inspector list, confirm the asset was retained (`AssetManager::retain_clip`) and that the scene/prefab dependency points at the JSON path.
-  - Performance budget for this milestone is <= 0.40 ms CPU for 2 000 active clips; once the transform track benchmark lands, trigger it from the `animation_bench` suite to track regressions.
+  - **Validation & troubleshooting:**
+    - Run `cargo test animation_clip` after editing clips; it exercises loader invariants against `fixtures/animation_clips` and catches ordering/finite-value issues.
+    - Run `cargo test transform_clip` to execute the golden interpolation suite and determinism checks across playback scenarios.
+    - Loader errors such as `Clip keyframe time cannot be negative` or `Clip keyframe contains non-finite rotation value` point directly at the offending keyframe index.
+    - If a clip fails to appear in the inspector list, confirm the asset was retained (`AssetManager::retain_clip`) and that the scene/prefab dependency points at the JSON path.
+    - Scene and prefab exports automatically record transform clip dependencies; when moving clip JSON files, update the retained path so round-trip loads can resolve them without manual fixes.
+    - Performance budget for this milestone is <= 0.40 ms CPU for 2 000 active clips; once the transform track benchmark lands, trigger it from the `animation_bench` suite to track regressions.
 
 ## Skeletal Animation Pipeline
 - **Authoring prerequisites**
