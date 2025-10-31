@@ -1,8 +1,12 @@
 use super::{AnimationDelta, AnimationTime, TimeDelta};
 use crate::ecs::profiler::SystemProfiler;
-use crate::ecs::{Sprite, SpriteAnimation, SpriteAnimationLoopMode};
+use crate::ecs::{
+    ClipInstance, ClipSample, PropertyTrackPlayer, Sprite, SpriteAnimation, SpriteAnimationLoopMode, Tint,
+    Transform, TransformTrackPlayer,
+};
 use crate::events::{EventBus, GameEvent};
-use bevy_ecs::prelude::{Entity, Query, Res, ResMut};
+use bevy_ecs::prelude::{Entity, Mut, Query, Res, ResMut};
+use glam::{Vec2, Vec4};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::ptr::NonNull;
@@ -35,6 +39,182 @@ pub fn sys_drive_sprite_animations(
         }
     }
 }
+
+pub fn sys_drive_transform_clips(
+    mut profiler: ResMut<SystemProfiler>,
+    dt: Res<TimeDelta>,
+    mut animation_time: ResMut<AnimationTime>,
+    mut clips: Query<(
+        Entity,
+        &mut ClipInstance,
+        Option<&TransformTrackPlayer>,
+        Option<&PropertyTrackPlayer>,
+        Option<Mut<Transform>>,
+        Option<Mut<Tint>>,
+    )>,
+) {
+    let _span = profiler.scope("sys_drive_transform_clips");
+    let plan = animation_time.consume(dt.0);
+    if !plan.has_steps() {
+        return;
+    }
+    let has_group_scales = animation_time.has_group_scales();
+    let animation_time_ref: &AnimationTime = &*animation_time;
+    let delta = match plan {
+        AnimationDelta::None => return,
+        AnimationDelta::Single(amount) => amount,
+        AnimationDelta::Fixed { step, steps } => step * steps as f32,
+    };
+    if delta <= 0.0 {
+        return;
+    }
+    drive_transform_clips(delta, has_group_scales, animation_time_ref, &mut clips);
+}
+
+fn drive_transform_clips(
+    delta: f32,
+    has_group_scales: bool,
+    animation_time: &AnimationTime,
+    clips: &mut Query<(
+        Entity,
+        &mut ClipInstance,
+        Option<&TransformTrackPlayer>,
+        Option<&PropertyTrackPlayer>,
+        Option<Mut<Transform>>,
+        Option<Mut<Tint>>,
+    )>,
+) {
+    for (
+        _entity,
+        mut instance,
+        transform_player,
+        property_player,
+        transform,
+        tint,
+    ) in clips.iter_mut()
+    {
+        if !instance.playing && instance.looped {
+            // Looping clips resume automatically; keep advancing even if flagged not playing.
+        } else if !instance.playing {
+            continue;
+        }
+
+        let group_scale = if has_group_scales {
+            animation_time.group_scale(instance.group.as_deref())
+        } else {
+            1.0
+        };
+        let playback_rate = if instance.playback_rate_dirty {
+            instance.ensure_playback_rate(group_scale)
+        } else {
+            instance.playback_rate
+        };
+        if playback_rate <= 0.0 {
+            continue;
+        }
+
+        let scaled = delta * playback_rate;
+        if scaled <= 0.0 {
+            continue;
+        }
+
+        let duration = instance.duration();
+        if duration <= 0.0 {
+            instance.time = 0.0;
+            continue;
+        }
+
+        let previous_time = instance.time;
+        let mut new_time = previous_time + scaled;
+        if instance.looped {
+            new_time = new_time.rem_euclid(duration.max(std::f32::EPSILON));
+        } else if new_time >= duration {
+            new_time = duration;
+            instance.playing = false;
+        }
+        instance.time = new_time;
+        let sample = instance.sample();
+        apply_clip_sample(
+            &mut instance,
+            transform_player,
+            property_player,
+            transform,
+            tint,
+            sample,
+        );
+    }
+}
+
+fn apply_clip_sample(
+    instance: &mut ClipInstance,
+    transform_player: Option<&TransformTrackPlayer>,
+    property_player: Option<&PropertyTrackPlayer>,
+    transform: Option<Mut<Transform>>,
+    tint: Option<Mut<Tint>>,
+    sample: ClipSample,
+) {
+    if let Some(mut transform) = transform {
+        let mask = transform_player.copied().unwrap_or_default();
+        if mask.apply_translation {
+            if let Some(value) = sample.translation {
+                let changed =
+                    instance.last_translation.map_or(true, |prev| !approx_eq_vec2(prev, value));
+                if changed {
+                    transform.translation = value;
+                }
+            }
+        }
+        if mask.apply_rotation {
+            if let Some(value) = sample.rotation {
+                let changed =
+                    instance.last_rotation.map_or(true, |prev| !approx_eq_scalar(prev, value));
+                if changed {
+                    transform.rotation = value;
+                }
+            }
+        }
+        if mask.apply_scale {
+            if let Some(value) = sample.scale {
+                let changed =
+                    instance.last_scale.map_or(true, |prev| !approx_eq_vec2(prev, value));
+                if changed {
+                    transform.scale = value;
+                }
+            }
+        }
+    }
+
+    if let Some(mut tint_component) = tint {
+        let mask = property_player.copied().unwrap_or_default();
+        if mask.apply_tint {
+            if let Some(value) = sample.tint {
+                let changed =
+                    instance.last_tint.map_or(true, |prev| !approx_eq_vec4(prev, value));
+                if changed {
+                    tint_component.0 = value;
+                }
+            }
+        }
+    }
+
+    instance.last_translation = sample.translation;
+    instance.last_rotation = sample.rotation;
+    instance.last_scale = sample.scale;
+    instance.last_tint = sample.tint;
+}
+
+fn approx_eq_scalar(a: f32, b: f32) -> bool {
+    (a - b).abs() <= 1e-5
+}
+
+fn approx_eq_vec2(a: Vec2, b: Vec2) -> bool {
+    (a - b).length_squared() <= 1e-8
+}
+
+fn approx_eq_vec4(a: Vec4, b: Vec4) -> bool {
+    (a - b).length_squared() <= 1e-6
+}
+
 pub(crate) fn initialize_animation_phase(animation: &mut SpriteAnimation, entity: Entity) -> bool {
     if animation.frames.is_empty() {
         return false;

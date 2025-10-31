@@ -70,6 +70,7 @@ Benchmarks emit CSV summaries for CI. Failing budgets block the milestone exit.
 
 ### Progress
 - [x] Transform/property clip authoring workflow documented in `docs/animation_workflows.md` (schema overview, template fixture, validation steps).
+- [x] `ClipInstance` runtime introduced with transform/tint application and unit coverage (`tests/transform_clips.rs`).
 
 ### Exit Criteria
 - Benchmarks show <= 0.40 ms CPU for 2 000 active clips (release).
@@ -141,7 +142,7 @@ Benchmarks emit CSV summaries for CI. Failing budgets block the milestone exit.
 - **Risk Watch:** Ping-pong edge duplication, event flood at high FPS, skinning buffer exhaustion, and graph oscillation loops - each gets targeted tests before milestone close.
 
 ## Immediate Next Actions
-- [ ] Implement `ClipInstance` playback path (`sys_drive_transform_tracks`, property writers) with zero-allocation updates.
+- [x] Implement `ClipInstance` playback path (`sys_drive_transform_tracks`, property writers) with zero-allocation updates.
 - [ ] Expose transform/property clip controls in the inspector (assignment widget, scrubber, per-track status).
 - [ ] Add golden tests covering linear/step interpolation and final pose verification for transform clips.
 - [ ] Extend `animation_bench` to include the 2 000 clip performance sweep and CSV reporting for Milestone 2.

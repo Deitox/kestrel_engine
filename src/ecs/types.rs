@@ -1,4 +1,5 @@
 use crate::scene::{MeshLightingData, SceneEntityId};
+use crate::assets::{AnimationClip, ClipInterpolation, ClipScalarTrack, ClipVec2Track, ClipVec4Track};
 use bevy_ecs::prelude::*;
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use rapier2d::prelude::{ColliderHandle, RigidBodyHandle};
@@ -204,6 +205,262 @@ pub struct SpriteAnimationFrame {
     pub duration: f32,
     pub uv: [f32; 4],
     pub events: Arc<[Arc<str>]>,
+}
+
+#[derive(Clone, Default)]
+pub struct ClipSample {
+    pub translation: Option<Vec2>,
+    pub rotation: Option<f32>,
+    pub scale: Option<Vec2>,
+    pub tint: Option<Vec4>,
+}
+
+#[derive(Component, Clone)]
+pub struct ClipInstance {
+    pub clip_key: Arc<str>,
+    pub clip: Arc<AnimationClip>,
+    pub clip_version: u32,
+    pub time: f32,
+    pub playing: bool,
+    pub looped: bool,
+    pub speed: f32,
+    pub group: Option<String>,
+    pub playback_rate: f32,
+    pub playback_rate_dirty: bool,
+    pub last_translation: Option<Vec2>,
+    pub last_rotation: Option<f32>,
+    pub last_scale: Option<Vec2>,
+    pub last_tint: Option<Vec4>,
+}
+
+impl ClipInstance {
+    pub fn new(clip_key: Arc<str>, clip: Arc<AnimationClip>) -> Self {
+        let version = clip.version;
+        let looped = clip.looped;
+        Self {
+            clip_key,
+            clip,
+            clip_version: version,
+            time: 0.0,
+            playing: true,
+            looped,
+            speed: 1.0,
+            group: None,
+            playback_rate: 0.0,
+            playback_rate_dirty: true,
+            last_translation: None,
+            last_rotation: None,
+            last_scale: None,
+            last_tint: None,
+        }
+    }
+
+    pub fn replace_clip(&mut self, clip_key: Arc<str>, clip: Arc<AnimationClip>) {
+        let previous_speed = self.speed;
+        let previous_group = self.group.clone();
+        self.clip_key = clip_key;
+        self.clip = clip;
+        self.clip_version = self.clip.version;
+        self.looped = self.clip.looped;
+        self.time = 0.0;
+        self.playing = true;
+        self.speed = previous_speed;
+        self.group = previous_group;
+        self.playback_rate = 0.0;
+        self.playback_rate_dirty = true;
+        self.last_translation = None;
+        self.last_rotation = None;
+        self.last_scale = None;
+        self.last_tint = None;
+    }
+
+    pub fn set_playing(&mut self, playing: bool) {
+        self.playing = playing;
+    }
+
+    pub fn reset(&mut self) {
+        self.time = 0.0;
+        self.playing = true;
+        self.last_translation = None;
+        self.last_rotation = None;
+        self.last_scale = None;
+        self.last_tint = None;
+    }
+
+    pub fn set_speed(&mut self, speed: f32) {
+        self.speed = speed.max(0.0);
+        self.mark_playback_rate_dirty();
+    }
+
+    pub fn set_group(&mut self, group: Option<&str>) {
+        self.group = group.map(|g| g.to_string());
+        self.mark_playback_rate_dirty();
+    }
+
+    pub fn mark_playback_rate_dirty(&mut self) {
+        self.playback_rate_dirty = true;
+    }
+
+    pub fn ensure_playback_rate(&mut self, group_scale: f32) -> f32 {
+        if self.playback_rate_dirty {
+            let clamped_group = group_scale.max(0.0);
+            let base_speed = self.speed.max(0.0);
+            self.playback_rate = (base_speed * clamped_group).max(0.0);
+            self.playback_rate_dirty = false;
+        }
+        self.playback_rate
+    }
+
+    pub fn duration(&self) -> f32 {
+        self.clip.duration.max(0.0)
+    }
+
+    pub fn set_time(&mut self, time: f32) {
+        let duration = self.duration();
+        if duration > 0.0 {
+            if self.looped {
+                if time >= duration && (time - duration).abs() <= CLIP_TIME_EPSILON {
+                    self.time = duration;
+                } else {
+                    let wrapped = time.rem_euclid(duration.max(std::f32::EPSILON));
+                    self.time = wrapped;
+                }
+            } else {
+                self.time = time.clamp(0.0, duration);
+            }
+        } else {
+            self.time = 0.0;
+        }
+    }
+
+    pub fn sample(&self) -> ClipSample {
+        self.sample_at(self.time)
+    }
+
+    pub fn sample_at(&self, time: f32) -> ClipSample {
+        let translation =
+            self.clip.translation.as_ref().and_then(|track| sample_vec2_track(track, time, self.looped));
+        let rotation =
+            self.clip.rotation.as_ref().and_then(|track| sample_scalar_track(track, time, self.looped));
+        let scale =
+            self.clip.scale.as_ref().and_then(|track| sample_vec2_track(track, time, self.looped));
+        let tint = self
+            .clip
+            .tint
+            .as_ref()
+            .and_then(|track| sample_vec4_track(track, time, self.looped));
+        ClipSample { translation, rotation, scale, tint }
+    }
+}
+
+#[derive(Component, Clone, Copy)]
+pub struct TransformTrackPlayer {
+    pub apply_translation: bool,
+    pub apply_rotation: bool,
+    pub apply_scale: bool,
+}
+
+impl Default for TransformTrackPlayer {
+    fn default() -> Self {
+        Self { apply_translation: true, apply_rotation: true, apply_scale: true }
+    }
+}
+
+#[derive(Component, Clone, Copy)]
+pub struct PropertyTrackPlayer {
+    pub apply_tint: bool,
+}
+
+impl Default for PropertyTrackPlayer {
+    fn default() -> Self {
+        Self { apply_tint: true }
+    }
+}
+
+impl PropertyTrackPlayer {
+    pub fn new(apply_tint: bool) -> Self {
+        Self { apply_tint }
+    }
+}
+
+fn sample_vec2_track(track: &ClipVec2Track, time: f32, looped: bool) -> Option<Vec2> {
+    let frames = track.keyframes.as_ref();
+    if frames.is_empty() {
+        return None;
+    }
+    let duration = frames.last().map(|kf| kf.time).unwrap_or(0.0);
+    let sample_time = normalize_time(time, duration, looped);
+    Some(sample_keyframes(frames, track.interpolation, sample_time, |a, b, t| a + (b - a) * t))
+}
+
+fn sample_scalar_track(track: &ClipScalarTrack, time: f32, looped: bool) -> Option<f32> {
+    let frames = track.keyframes.as_ref();
+    if frames.is_empty() {
+        return None;
+    }
+    let duration = frames.last().map(|kf| kf.time).unwrap_or(0.0);
+    let sample_time = normalize_time(time, duration, looped);
+    Some(sample_keyframes(frames, track.interpolation, sample_time, |a, b, t| a + (b - a) * t))
+}
+
+fn sample_vec4_track(track: &ClipVec4Track, time: f32, looped: bool) -> Option<Vec4> {
+    let frames = track.keyframes.as_ref();
+    if frames.is_empty() {
+        return None;
+    }
+    let duration = frames.last().map(|kf| kf.time).unwrap_or(0.0);
+    let sample_time = normalize_time(time, duration, looped);
+    Some(sample_keyframes(frames, track.interpolation, sample_time, |a, b, t| a + (b - a) * t))
+}
+
+const CLIP_TIME_EPSILON: f32 = 1e-5;
+
+fn normalize_time(time: f32, duration: f32, looped: bool) -> f32 {
+    if duration <= 0.0 {
+        return 0.0;
+    }
+    if looped {
+        if time >= duration && (time - duration).abs() <= CLIP_TIME_EPSILON {
+            duration
+        } else {
+            let wrapped = time.rem_euclid(duration.max(std::f32::EPSILON));
+            if wrapped <= CLIP_TIME_EPSILON && time > 0.0 && (time - duration).abs() <= CLIP_TIME_EPSILON {
+                duration
+            } else {
+                wrapped
+            }
+        }
+    } else {
+        time.clamp(0.0, duration)
+    }
+}
+
+fn sample_keyframes<T, L>(frames: &[crate::assets::ClipKeyframe<T>], mode: ClipInterpolation, time: f32, lerp: L) -> T
+where
+    T: Copy,
+    L: Fn(T, T, f32) -> T,
+{
+    if frames.len() == 1 || time <= frames[0].time {
+        return frames[0].value;
+    }
+    if matches!(mode, ClipInterpolation::Step) {
+        for window in frames.windows(2) {
+            if time < window[1].time {
+                return window[0].value;
+            }
+        }
+        return frames.last().unwrap().value;
+    }
+    for window in frames.windows(2) {
+        let start = &window[0];
+        let end = &window[1];
+        if time <= end.time {
+            let span = (end.time - start.time).max(std::f32::EPSILON);
+            let alpha = ((time - start.time) / span).clamp(0.0, 1.0);
+            return lerp(start.value, end.value, alpha);
+        }
+    }
+    frames.last().unwrap().value
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

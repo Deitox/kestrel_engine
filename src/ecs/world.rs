@@ -64,6 +64,7 @@ impl EcsWorld {
             sys_sync_world3d,
             sys_update_emitters,
             sys_update_particles,
+            sys_drive_transform_clips,
             sys_drive_sprite_animations,
         ));
 
@@ -622,6 +623,151 @@ impl EcsWorld {
             }
         }
     }
+
+    pub fn set_transform_clip(
+        &mut self,
+        entity: Entity,
+        assets: &AssetManager,
+        clip_key: &str,
+    ) -> bool {
+        let clip_data = match assets.clip(clip_key) {
+            Some(clip) => clip.clone(),
+            None => return false,
+        };
+        let clip_arc = Arc::new(clip_data);
+        let clip_name: Arc<str> = Arc::from(clip_key.to_string());
+        let sample = {
+            if let Some(mut instance) = self.world.get_mut::<ClipInstance>(entity) {
+                instance.replace_clip(Arc::clone(&clip_name), Arc::clone(&clip_arc));
+                let sample = instance.sample();
+                instance.last_translation = sample.translation;
+                instance.last_rotation = sample.rotation;
+                instance.last_scale = sample.scale;
+                instance.last_tint = sample.tint;
+                sample
+            } else {
+                let mut entity_mut = self.world.entity_mut(entity);
+                let mut instance = ClipInstance::new(Arc::clone(&clip_name), Arc::clone(&clip_arc));
+                let sample = instance.sample();
+                instance.last_translation = sample.translation;
+                instance.last_rotation = sample.rotation;
+                instance.last_scale = sample.scale;
+                instance.last_tint = sample.tint;
+                if !entity_mut.contains::<TransformTrackPlayer>() {
+                    entity_mut.insert(TransformTrackPlayer::default());
+                }
+                if instance.clip.tint.is_some() && !entity_mut.contains::<PropertyTrackPlayer>() {
+                    entity_mut.insert(PropertyTrackPlayer::default());
+                }
+                entity_mut.insert(instance);
+                sample
+            }
+        };
+        self.apply_clip_sample_immediate(entity, sample);
+        true
+    }
+
+    pub fn clear_transform_clip(&mut self, entity: Entity) -> bool {
+        if self.world.get::<ClipInstance>(entity).is_some() {
+            self.world.entity_mut(entity).remove::<ClipInstance>();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_transform_clip_playing(&mut self, entity: Entity, playing: bool) -> bool {
+        if let Some(mut instance) = self.world.get_mut::<ClipInstance>(entity) {
+            instance.set_playing(playing);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_transform_clip_speed(&mut self, entity: Entity, speed: f32) -> bool {
+        if let Some(mut instance) = self.world.get_mut::<ClipInstance>(entity) {
+            if speed.is_finite() {
+                instance.set_speed(speed);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_transform_clip_group(&mut self, entity: Entity, group: Option<&str>) -> bool {
+        if let Some(mut instance) = self.world.get_mut::<ClipInstance>(entity) {
+            instance.set_group(group);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_transform_clip_time(&mut self, entity: Entity, time: f32) -> bool {
+        if let Some(mut instance) = self.world.get_mut::<ClipInstance>(entity) {
+            instance.set_time(time);
+            let sample = instance.sample();
+            instance.last_translation = sample.translation;
+            instance.last_rotation = sample.rotation;
+            instance.last_scale = sample.scale;
+            instance.last_tint = sample.tint;
+            drop(instance);
+            self.apply_clip_sample_immediate(entity, sample);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn reset_transform_clip(&mut self, entity: Entity) -> bool {
+        if let Some(mut instance) = self.world.get_mut::<ClipInstance>(entity) {
+            instance.reset();
+            let sample = instance.sample();
+            instance.last_translation = sample.translation;
+            instance.last_rotation = sample.rotation;
+            instance.last_scale = sample.scale;
+            instance.last_tint = sample.tint;
+            drop(instance);
+            self.apply_clip_sample_immediate(entity, sample);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn apply_clip_sample_immediate(&mut self, entity: Entity, sample: ClipSample) {
+        let transform_mask =
+            self.world.get::<TransformTrackPlayer>(entity).copied().unwrap_or_default();
+        if let Some(mut transform) = self.world.get_mut::<Transform>(entity) {
+            if transform_mask.apply_translation {
+                if let Some(value) = sample.translation {
+                    transform.translation = value;
+                }
+            }
+            if transform_mask.apply_rotation {
+                if let Some(value) = sample.rotation {
+                    transform.rotation = value;
+                }
+            }
+            if transform_mask.apply_scale {
+                if let Some(value) = sample.scale {
+                    transform.scale = value;
+                }
+            }
+        }
+        let property_mask =
+            self.world.get::<PropertyTrackPlayer>(entity).copied().unwrap_or_default();
+        if let Some(mut tint) = self.world.get_mut::<Tint>(entity) {
+            if property_mask.apply_tint {
+                if let Some(value) = sample.tint {
+                    tint.0 = value;
+                }
+            }
+        }
+    }
+
     pub fn set_sprite_atlas(&mut self, entity: Entity, assets: &AssetManager, atlas_key: &str) -> bool {
         if !assets.has_atlas(atlas_key) {
             return false;
