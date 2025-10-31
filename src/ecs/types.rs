@@ -659,12 +659,34 @@ pub struct SpriteInstance {
 }
 
 #[derive(Clone)]
+pub struct TransformClipInfo {
+    pub clip_key: String,
+    pub playing: bool,
+    pub looped: bool,
+    pub speed: f32,
+    pub time: f32,
+    pub duration: f32,
+    pub group: Option<String>,
+    pub has_translation: bool,
+    pub has_rotation: bool,
+    pub has_scale: bool,
+    pub has_tint: bool,
+    pub sample_translation: Option<Vec2>,
+    pub sample_rotation: Option<f32>,
+    pub sample_scale: Option<Vec2>,
+    pub sample_tint: Option<Vec4>,
+}
+
+#[derive(Clone)]
 pub struct EntityInfo {
     pub scene_id: SceneEntityId,
     pub translation: Vec2,
     pub rotation: f32,
     pub scale: Vec2,
     pub velocity: Option<Vec2>,
+    pub transform_clip: Option<TransformClipInfo>,
+    pub transform_tracks: Option<TransformTrackPlayer>,
+    pub property_tracks: Option<PropertyTrackPlayer>,
     pub sprite: Option<SpriteInfo>,
     pub mesh: Option<MeshInfo>,
     pub mesh_transform: Option<Transform3DInfo>,

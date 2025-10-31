@@ -737,6 +737,27 @@ impl EcsWorld {
         }
     }
 
+    pub fn set_transform_track_mask(&mut self, entity: Entity, mask: TransformTrackPlayer) -> bool {
+        if self.world.get_entity(entity).is_err() {
+            return false;
+        }
+        self.world.entity_mut(entity).insert(mask);
+        true
+    }
+
+    pub fn set_property_track_mask(&mut self, entity: Entity, mask: PropertyTrackPlayer) -> bool {
+        if self.world.get_entity(entity).is_err() {
+            return false;
+        }
+        if mask.apply_tint {
+            if self.world.get::<Tint>(entity).is_none() {
+                self.world.entity_mut(entity).insert(Tint(Vec4::ONE));
+            }
+        }
+        self.world.entity_mut(entity).insert(mask);
+        true
+    }
+
     fn apply_clip_sample_immediate(&mut self, entity: Entity, sample: ClipSample) {
         let transform_mask =
             self.world.get::<TransformTrackPlayer>(entity).copied().unwrap_or_default();
@@ -1431,6 +1452,29 @@ impl EcsWorld {
         let translation = Vec2::new(world_transform.0.w_axis.x, world_transform.0.w_axis.y);
         let scene_id = self.world.get::<SceneEntityTag>(entity)?.id.clone();
         let velocity = self.world.get::<Velocity>(entity).map(|v| v.0);
+        let transform_tracks = self.world.get::<TransformTrackPlayer>(entity).copied();
+        let property_tracks = self.world.get::<PropertyTrackPlayer>(entity).copied();
+        let transform_clip = self.world.get::<ClipInstance>(entity).map(|instance| {
+            let clip = Arc::clone(&instance.clip);
+            let sample = instance.sample();
+            TransformClipInfo {
+                clip_key: instance.clip_key.as_ref().to_string(),
+                playing: instance.playing,
+                looped: instance.looped,
+                speed: instance.speed,
+                time: instance.time,
+                duration: instance.duration(),
+                group: instance.group.clone(),
+                has_translation: clip.translation.is_some(),
+                has_rotation: clip.rotation.is_some(),
+                has_scale: clip.scale.is_some(),
+                has_tint: clip.tint.is_some(),
+                sample_translation: sample.translation,
+                sample_rotation: sample.rotation,
+                sample_scale: sample.scale,
+                sample_tint: sample.tint,
+            }
+        });
         let sprite = if let Some(sprite) = self.world.get::<Sprite>(entity) {
             let atlas = sprite.atlas_key.to_string();
             let region = sprite.region.to_string();
@@ -1485,6 +1529,9 @@ impl EcsWorld {
             rotation: transform.rotation,
             scale: transform.scale,
             velocity,
+            transform_clip,
+            transform_tracks,
+            property_tracks,
             sprite,
             mesh,
             mesh_transform,

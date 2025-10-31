@@ -1,6 +1,6 @@
 use super::{PrefabDragPayload, SpriteAtlasRequest, UiActions};
 use crate::assets::AssetManager;
-use crate::ecs::{EcsWorld, EntityInfo, SpriteInfo};
+use crate::ecs::{EcsWorld, EntityInfo, PropertyTrackPlayer, SpriteInfo, TransformClipInfo, TransformTrackPlayer};
 use crate::gizmo::{GizmoInteraction, GizmoMode, ScaleHandle};
 use crate::input::Input;
 use crate::material_registry::MaterialRegistry;
@@ -8,7 +8,7 @@ use crate::mesh_registry::MeshRegistry;
 use bevy_ecs::prelude::Entity;
 use egui::Ui;
 use glam::{EulerRot, Quat, Vec2, Vec3, Vec4};
-use std::collections::HashSet;
+use std::{cmp::Ordering, collections::HashSet};
 
 pub(super) struct InspectorAppContext<'a> {
     pub ecs: &'a mut EcsWorld,
@@ -194,6 +194,247 @@ pub(super) fn show_entity_inspector(
             } else {
                 ui.label("Velocity: n/a");
             }
+
+            ui.separator();
+            let mut clip_info_opt: Option<TransformClipInfo> = info.transform_clip.clone();
+            let mut transform_mask_opt: Option<TransformTrackPlayer> = info.transform_tracks;
+            let mut property_mask_opt: Option<PropertyTrackPlayer> = info.property_tracks;
+            let mut clip_keys = app.assets.clip_keys();
+            clip_keys.sort();
+            if let Some(ref clip_info) = clip_info_opt {
+                if !clip_keys.iter().any(|key| key == &clip_info.clip_key) {
+                    clip_keys.push(clip_info.clip_key.clone());
+                    clip_keys.sort();
+                }
+            }
+            let mut clip_combo = clip_info_opt
+                .as_ref()
+                .map(|clip| clip.clip_key.clone())
+                .unwrap_or_else(|| "<None>".to_string());
+            let mut combo_items = clip_keys.clone();
+            combo_items.insert(0, "<None>".to_string());
+            ui.horizontal(|ui| {
+                ui.label("Transform Clip");
+                egui::ComboBox::from_id_salt(("transform_clip_selector", entity.index()))
+                    .selected_text(clip_combo.clone())
+                    .show_ui(ui, |ui| {
+                        for key in &combo_items {
+                            ui.selectable_value(&mut clip_combo, key.clone(), key);
+                        }
+                    });
+            });
+            if clip_combo == "<None>" {
+                if clip_info_opt.is_some() {
+                    if app.ecs.clear_transform_clip(entity) {
+                        clip_info_opt = None;
+                        inspector_refresh = true;
+                        *app.inspector_status = Some("Transform clip cleared".to_string());
+                    } else {
+                        *app.inspector_status = Some("Failed to clear transform clip".to_string());
+                    }
+                }
+            } else if clip_info_opt
+                .as_ref()
+                .map(|clip| clip.clip_key.as_str() != clip_combo.as_str())
+                .unwrap_or(true)
+            {
+                if app.ecs.set_transform_clip(entity, &app.assets, &clip_combo) {
+                    inspector_refresh = true;
+                    *app.inspector_status = Some(format!("Transform clip set to {}", clip_combo));
+                } else {
+                    *app.inspector_status = Some(format!("Transform clip '{}' not available", clip_combo));
+                }
+            }
+
+            if let Some(mut clip_info) = clip_info_opt.clone() {
+                if let Some(source) = app.assets.clip_source(&clip_info.clip_key) {
+                    ui.small(format!("Source: {}", source));
+                } else {
+                    ui.small("Source: n/a");
+                }
+                ui.horizontal(|ui| {
+                    let mut playing = clip_info.playing;
+                    if ui.checkbox(&mut playing, "Playing").changed() {
+                        if app.ecs.set_transform_clip_playing(entity, playing) {
+                            clip_info.playing = playing;
+                            inspector_refresh = true;
+                            *app.inspector_status = None;
+                        }
+                    }
+                    if ui.button("Reset").clicked() {
+                        if app.ecs.reset_transform_clip(entity) {
+                            inspector_refresh = true;
+                            *app.inspector_status = Some("Transform clip reset".to_string());
+                        } else {
+                            *app.inspector_status = Some("Failed to reset transform clip".to_string());
+                        }
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Speed");
+                    let mut speed = clip_info.speed;
+                    if ui
+                        .add(egui::DragValue::new(&mut speed).speed(0.05).range(0.0..=8.0).suffix("x"))
+                        .changed()
+                    {
+                        if app.ecs.set_transform_clip_speed(entity, speed) {
+                            clip_info.speed = speed;
+                            inspector_refresh = true;
+                            *app.inspector_status = None;
+                        }
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Group");
+                    let mut group_value = clip_info.group.clone().unwrap_or_default();
+                    let response = ui
+                        .add(egui::TextEdit::singleline(&mut group_value).hint_text("optional group id"));
+                    if response.changed() {
+                        let trimmed = group_value.trim();
+                        let result = if trimmed.is_empty() {
+                            app.ecs.set_transform_clip_group(entity, None)
+                        } else {
+                            app.ecs.set_transform_clip_group(entity, Some(trimmed))
+                        };
+                        if result {
+                            clip_info.group = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
+                            inspector_refresh = true;
+                        }
+                    }
+                });
+                let duration = clip_info.duration.max(0.0);
+                let mut clip_time = clip_info.time.clamp(0.0, duration);
+                let slider_response = ui.add_enabled(
+                    duration > 0.0,
+                    egui::Slider::new(&mut clip_time, 0.0..=duration)
+                        .text("Time (s)")
+                        .smart_aim(false),
+                );
+                if slider_response.changed() {
+                    if app.ecs.set_transform_clip_time(entity, clip_time) {
+                        clip_info.time = clip_time;
+                        inspector_refresh = true;
+                    }
+                }
+                if duration <= 0.0 {
+                    ui.label("Duration: 0 (static clip)");
+                } else {
+                    ui.label(format!("Duration: {:.3} s", duration));
+                }
+                if let Some(asset_clip) = app.assets.clip(&clip_info.clip_key) {
+                    let mut markers: Vec<f32> = Vec::new();
+                    if let Some(track) = asset_clip.translation.as_ref() {
+                        markers.extend(track.keyframes.iter().map(|kf| kf.time));
+                    }
+                    if let Some(track) = asset_clip.rotation.as_ref() {
+                        markers.extend(track.keyframes.iter().map(|kf| kf.time));
+                    }
+                    if let Some(track) = asset_clip.scale.as_ref() {
+                        markers.extend(track.keyframes.iter().map(|kf| kf.time));
+                    }
+                    if let Some(track) = asset_clip.tint.as_ref() {
+                        markers.extend(track.keyframes.iter().map(|kf| kf.time));
+                    }
+                    markers.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+                    markers.dedup_by(|a, b| (*a - *b).abs() <= 1e-4);
+                    if !markers.is_empty() {
+                        let formatted = markers
+                            .iter()
+                            .map(|t| format!("{:.3}", t))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        ui.small(format!("Keyframes: {}", formatted));
+                    }
+                }
+
+                let mut transform_mask = transform_mask_opt.unwrap_or_default();
+                ui.horizontal(|ui| {
+                    ui.label("Apply Transform");
+                    let mut apply_translation = transform_mask.apply_translation;
+                    if ui.checkbox(&mut apply_translation, "Translation").changed() {
+                        transform_mask.apply_translation = apply_translation;
+                        if app.ecs.set_transform_track_mask(entity, transform_mask) {
+                            transform_mask_opt = Some(transform_mask);
+                            inspector_refresh = true;
+                        }
+                    }
+                    let mut apply_rotation = transform_mask.apply_rotation;
+                    if ui.checkbox(&mut apply_rotation, "Rotation").changed() {
+                        transform_mask.apply_rotation = apply_rotation;
+                        if app.ecs.set_transform_track_mask(entity, transform_mask) {
+                            transform_mask_opt = Some(transform_mask);
+                            inspector_refresh = true;
+                        }
+                    }
+                    let mut apply_scale = transform_mask.apply_scale;
+                    if ui.checkbox(&mut apply_scale, "Scale").changed() {
+                        transform_mask.apply_scale = apply_scale;
+                        if app.ecs.set_transform_track_mask(entity, transform_mask) {
+                            transform_mask_opt = Some(transform_mask);
+                            inspector_refresh = true;
+                        }
+                    }
+                });
+
+                let mut property_mask = property_mask_opt.unwrap_or_default();
+                ui.horizontal(|ui| {
+                    ui.label("Apply Properties");
+                    let mut apply_tint = property_mask.apply_tint;
+                    if ui.checkbox(&mut apply_tint, "Tint").changed() {
+                        property_mask.apply_tint = apply_tint;
+                        if app.ecs.set_property_track_mask(entity, property_mask) {
+                            property_mask_opt = Some(property_mask);
+                            inspector_refresh = true;
+                        }
+                    }
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("Tracks");
+                    track_badge(ui, "Translation", clip_info.has_translation, transform_mask_opt
+                        .map(|mask| mask.apply_translation)
+                        .unwrap_or(false));
+                    track_badge(
+                        ui,
+                        "Rotation",
+                        clip_info.has_rotation,
+                        transform_mask_opt.map(|mask| mask.apply_rotation).unwrap_or(false),
+                    );
+                    track_badge(
+                        ui,
+                        "Scale",
+                        clip_info.has_scale,
+                        transform_mask_opt.map(|mask| mask.apply_scale).unwrap_or(false),
+                    );
+                    track_badge(
+                        ui,
+                        "Tint",
+                        clip_info.has_tint,
+                        property_mask_opt.map(|mask| mask.apply_tint).unwrap_or(false),
+                    );
+                });
+
+                if let Some(value) = clip_info.sample_translation {
+                    ui.label(format!("Current translation: {}", format_vec2(value)));
+                }
+                if let Some(value) = clip_info.sample_rotation {
+                    ui.label(format!("Current rotation: {:.3} rad", value));
+                }
+                if let Some(value) = clip_info.sample_scale {
+                    ui.label(format!("Current scale: {}", format_vec2(value)));
+                }
+                if let Some(value) = clip_info.sample_tint {
+                    ui.label(format!("Current tint: {}", format_vec4(value)));
+                }
+
+                clip_info_opt = Some(clip_info);
+            } else if clip_keys.is_empty() {
+                ui.label("Transform Clip: n/a");
+            }
+
+            info.transform_clip = clip_info_opt;
+            info.transform_tracks = transform_mask_opt;
+            info.property_tracks = property_mask_opt;
 
             if let Some(mut sprite) = info.sprite.clone() {
                 ui.separator();
@@ -843,6 +1084,25 @@ pub(super) fn show_entity_inspector(
 
     *selected_entity = selected_entity_value;
     *selection_details = selection_details_value;
+}
+
+fn track_badge(ui: &mut egui::Ui, label: &str, available: bool, enabled: bool) {
+    let (color, text) = if !available {
+        (egui::Color32::DARK_GRAY, format!("{label}: n/a"))
+    } else if enabled {
+        (egui::Color32::LIGHT_GREEN, format!("{label}: on"))
+    } else {
+        (egui::Color32::LIGHT_GRAY, format!("{label}: off"))
+    };
+    ui.colored_label(color, text);
+}
+
+fn format_vec2(value: Vec2) -> String {
+    format!("({:.3}, {:.3})", value.x, value.y)
+}
+
+fn format_vec4(value: Vec4) -> String {
+    format!("({:.3}, {:.3}, {:.3}, {:.3})", value.x, value.y, value.z, value.w)
 }
 
 fn preview_sprite_events(

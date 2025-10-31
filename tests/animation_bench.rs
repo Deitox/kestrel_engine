@@ -3,7 +3,14 @@
 //! Marked ignored so it only runs when explicitly requested:
 //! `cargo test --release animation_bench_run -- --ignored --nocapture`.
 
-use kestrel_engine::ecs::{EcsWorld, Sprite, SpriteAnimation, SpriteAnimationFrame, SpriteAnimationLoopMode};
+use glam::{Vec2, Vec4};
+use kestrel_engine::assets::{
+    AnimationClip, ClipInterpolation, ClipKeyframe, ClipScalarTrack, ClipVec2Track, ClipVec4Track,
+};
+use kestrel_engine::ecs::{
+    ClipInstance, EcsWorld, PropertyTrackPlayer, Sprite, SpriteAnimation, SpriteAnimationFrame,
+    SpriteAnimationLoopMode, Tint, Transform, TransformTrackPlayer, WorldTransform,
+};
 use std::collections::hash_map::DefaultHasher;
 use std::env;
 use std::fs::{create_dir_all, File};
@@ -21,6 +28,9 @@ const DEFAULT_SAMPLES: usize = 5;
 const DEFAULT_ANIMATOR_SWEEP: &[usize] = &[100, 1_000, 5_000, 10_000];
 const CSV_RELATIVE_PATH: &str = "benchmarks/animation_sprite_timelines.csv";
 const BUDGETS_MS: &[(usize, f64)] = &[(10_000, 0.20)];
+const DEFAULT_TRANSFORM_SWEEP: &[usize] = &[2_000];
+const TRANSFORM_CSV_RELATIVE_PATH: &str = "benchmarks/animation_transform_clips.csv";
+const TRANSFORM_BUDGETS_MS: &[(usize, f64)] = &[(2_000, 0.40)];
 
 struct BenchConfig {
     steps: u32,
@@ -28,6 +38,7 @@ struct BenchConfig {
     warmup_steps: u32,
     samples: usize,
     sweep: Vec<usize>,
+    transform_sweep: Vec<usize>,
     randomize_phase: bool,
 }
 
@@ -68,10 +79,45 @@ fn animation_bench_run() {
         config.steps, config.warmup_steps, config.samples, config.dt, config.randomize_phase
     );
 
-    let mut results = Vec::with_capacity(config.sweep.len());
-    for &count in &config.sweep {
-        let result = run_bench_case(count, &config);
-        let budget = budget_for(count);
+    run_bench_suite(
+        "sprite_timelines",
+        &config.sweep,
+        &config,
+        BUDGETS_MS,
+        CSV_RELATIVE_PATH,
+        seed_sprite_animators,
+    );
+
+    run_bench_suite(
+        "transform_clips",
+        &config.transform_sweep,
+        &config,
+        TRANSFORM_BUDGETS_MS,
+        TRANSFORM_CSV_RELATIVE_PATH,
+        seed_transform_clips,
+    );
+}
+
+fn run_bench_suite<F>(
+    label: &str,
+    counts: &[usize],
+    config: &BenchConfig,
+    budgets: &[(usize, f64)],
+    csv_path: &str,
+    mut seed_fn: F,
+) -> Vec<BenchResult>
+where
+    F: FnMut(&mut EcsWorld, usize, bool),
+{
+    if counts.is_empty() {
+        println!("[animation_bench][{label}] sweep is empty, skipping");
+        return Vec::new();
+    }
+
+    let mut results = Vec::with_capacity(counts.len());
+    for &count in counts {
+        let result = run_bench_case(count, config, &mut seed_fn);
+        let budget = budget_for(count, budgets);
         let summary = &result.summary;
         let meets_budget = budget.map(|limit| summary.mean_step_ms <= limit);
         let status = match meets_budget {
@@ -81,7 +127,7 @@ fn animation_bench_run() {
         };
         let budget_msg = budget.map_or("-".to_string(), |limit| format!("{:.3} ms", limit));
         println!(
-            "[animation_bench] {:<4} | animators: {:>5} | mean: {:>7.3} ms | min: {:>7.3} ms | \
+            "[animation_bench][{label}] {:<4} | animators: {:>5} | mean: {:>7.3} ms | min: {:>7.3} ms | \
              max: {:>7.3} ms | mean/anim: {:>7.1} ns | budget: {}",
             status,
             result.animators,
@@ -94,17 +140,22 @@ fn animation_bench_run() {
         results.push(result);
     }
 
-    if let Err(err) = write_csv(&results) {
-        eprintln!("[animation_bench] Failed to write CSV: {err}");
+    if let Err(err) = write_csv(&results, csv_path, budgets) {
+        eprintln!("[animation_bench][{label}] Failed to write CSV: {err}");
     }
+
+    results
 }
 
-fn run_bench_case(animator_count: usize, config: &BenchConfig) -> BenchResult {
+fn run_bench_case<F>(animator_count: usize, config: &BenchConfig, seed_fn: &mut F) -> BenchResult
+where
+    F: FnMut(&mut EcsWorld, usize, bool),
+{
     let mut sample_elapsed = Vec::with_capacity(config.samples);
 
     for _ in 0..config.samples {
         let mut world = EcsWorld::new();
-        seed_sprite_animators(&mut world, animator_count, config.randomize_phase);
+        seed_fn(&mut world, animator_count, config.randomize_phase);
 
         for _ in 0..config.warmup_steps {
             world.update(config.dt);
@@ -169,13 +220,15 @@ fn bench_config() -> BenchConfig {
     let dt = parse_env::<f32>("ANIMATION_BENCH_DT").unwrap_or(DEFAULT_DT);
     let samples = parse_env::<usize>("ANIMATION_BENCH_SAMPLES").unwrap_or(DEFAULT_SAMPLES).max(1);
     let sweep = parse_sweep("ANIMATION_BENCH_SWEEP").unwrap_or_else(|| DEFAULT_ANIMATOR_SWEEP.to_vec());
+    let transform_sweep =
+        parse_sweep("ANIMATION_BENCH_TRANSFORM_SWEEP").unwrap_or_else(|| DEFAULT_TRANSFORM_SWEEP.to_vec());
     let randomize_phase = parse_env_bool("ANIMATION_BENCH_RANDOMIZE_PHASES").unwrap_or(true);
 
-    BenchConfig { steps, dt, warmup_steps, samples, sweep, randomize_phase }
+    BenchConfig { steps, dt, warmup_steps, samples, sweep, transform_sweep, randomize_phase }
 }
 
-fn budget_for(animators: usize) -> Option<f64> {
-    BUDGETS_MS.iter().find_map(|(count, budget)| (*count == animators).then_some(*budget))
+fn budget_for(animators: usize, budgets: &[(usize, f64)]) -> Option<f64> {
+    budgets.iter().find_map(|(count, budget)| (*count == animators).then_some(*budget))
 }
 
 fn seed_sprite_animators(world: &mut EcsWorld, count: usize, randomize_phase: bool) {
@@ -278,6 +331,84 @@ fn apply_phase_offset(animation: &mut SpriteAnimation, mut offset: f32) {
     animation.elapsed_in_frame = 0.0;
     animation.refresh_current_duration();
 }
+
+fn seed_transform_clips(world: &mut EcsWorld, count: usize, randomize_phase: bool) {
+    let clip = bench_transform_clip();
+    let clip_key: Arc<str> = Arc::from("bench_transform");
+
+    for index in 0..count {
+        let mut instance = ClipInstance::new(Arc::clone(&clip_key), Arc::clone(&clip));
+        let duration = instance.duration();
+        if randomize_phase && duration > 0.0 {
+            let fraction = stable_phase_fraction(index as u64, clip_key.as_ref());
+            instance.set_time(fraction * duration);
+        }
+        let sample = instance.sample();
+        instance.last_translation = sample.translation;
+        instance.last_rotation = sample.rotation;
+        instance.last_scale = sample.scale;
+        instance.last_tint = sample.tint;
+
+        let transform = Transform {
+            translation: sample.translation.unwrap_or(Vec2::ZERO),
+            rotation: sample.rotation.unwrap_or(0.0),
+            scale: sample.scale.unwrap_or(Vec2::splat(1.0)),
+        };
+        let tint = Tint(sample.tint.unwrap_or(Vec4::ONE));
+
+        world.world.spawn((
+            transform,
+            WorldTransform::default(),
+            instance,
+            TransformTrackPlayer::default(),
+            PropertyTrackPlayer::default(),
+            tint,
+        ));
+    }
+}
+
+fn bench_transform_clip() -> Arc<AnimationClip> {
+    let translation_keys = Arc::from(
+        vec![
+            ClipKeyframe { time: 0.0, value: Vec2::ZERO },
+            ClipKeyframe { time: 0.25, value: Vec2::new(0.0, 4.0) },
+            ClipKeyframe { time: 0.5, value: Vec2::ZERO },
+        ]
+        .into_boxed_slice(),
+    );
+    let rotation_keys = Arc::from(
+        vec![
+            ClipKeyframe { time: 0.0, value: 0.0 },
+            ClipKeyframe { time: 0.5, value: std::f32::consts::TAU },
+        ]
+        .into_boxed_slice(),
+    );
+    let scale_keys = Arc::from(
+        vec![
+            ClipKeyframe { time: 0.0, value: Vec2::splat(1.0) },
+            ClipKeyframe { time: 0.5, value: Vec2::new(1.2, 0.8) },
+        ]
+        .into_boxed_slice(),
+    );
+    let tint_keys = Arc::from(
+        vec![
+            ClipKeyframe { time: 0.0, value: Vec4::ONE },
+            ClipKeyframe { time: 0.5, value: Vec4::new(0.6, 0.9, 1.0, 1.0) },
+        ]
+        .into_boxed_slice(),
+    );
+
+    Arc::new(AnimationClip {
+        name: Arc::from("bench_transform"),
+        duration: 0.5,
+        translation: Some(ClipVec2Track { interpolation: ClipInterpolation::Linear, keyframes: translation_keys }),
+        rotation: Some(ClipScalarTrack { interpolation: ClipInterpolation::Linear, keyframes: rotation_keys }),
+        scale: Some(ClipVec2Track { interpolation: ClipInterpolation::Step, keyframes: scale_keys }),
+        tint: Some(ClipVec4Track { interpolation: ClipInterpolation::Linear, keyframes: tint_keys }),
+        looped: true,
+        version: 1,
+    })
+}
 fn stable_phase_fraction(seed: u64, timeline: &str) -> f32 {
     let mut hasher = DefaultHasher::new();
     seed.hash(&mut hasher);
@@ -286,13 +417,13 @@ fn stable_phase_fraction(seed: u64, timeline: &str) -> f32 {
     (hasher.finish() as f64 * SCALE) as f32
 }
 
-fn write_csv(results: &[BenchResult]) -> std::io::Result<()> {
+fn write_csv(results: &[BenchResult], csv_relative_path: &str, budgets: &[(usize, f64)]) -> std::io::Result<()> {
     if results.is_empty() {
         return Ok(());
     }
 
     let mut path = target_dir();
-    path.push(CSV_RELATIVE_PATH);
+    path.push(csv_relative_path);
     if let Some(parent) = path.parent() {
         create_dir_all(parent)?;
     }
@@ -304,7 +435,7 @@ fn write_csv(results: &[BenchResult]) -> std::io::Result<()> {
     )?;
     for result in results {
         let summary = &result.summary;
-        let budget = budget_for(result.animators);
+        let budget = budget_for(result.animators, budgets);
         let meets_budget = budget.map(|limit| summary.mean_step_ms <= limit);
         writeln!(
             file,

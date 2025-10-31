@@ -25,12 +25,28 @@ if (-not (Test-Path $targetDir)) {
     throw "Cargo target directory '$targetDir' not found after benchmark run."
 }
 
-$csvSource = Join-Path $targetDir "benchmarks/animation_sprite_timelines.csv"
-if (-not (Test-Path $csvSource)) {
-    throw "Expected benchmark CSV at '$csvSource' but the file was not generated."
+$csvArtifacts = @(
+    @{
+        Path = Join-Path $targetDir "benchmarks/animation_sprite_timelines.csv"
+        Name = "animation_sprite_timelines.csv"
+        Label = "Sprite timeline"
+    },
+    @{
+        Path = Join-Path $targetDir "benchmarks/animation_transform_clips.csv"
+        Name = "animation_transform_clips.csv"
+        Label = "Transform clip"
+    }
+)
+
+foreach ($artifact in $csvArtifacts) {
+    if (-not (Test-Path $artifact.Path)) {
+        throw "Expected benchmark CSV at '$($artifact.Path)' for $($artifact.Label) results but the file was not generated."
+    }
 }
 
-Write-Host "Animation benchmark CSV available at '$csvSource'."
+foreach ($artifact in $csvArtifacts) {
+    Write-Host ("{0} benchmark CSV available at '{1}'." -f $artifact.Label, $artifact.Path)
+}
 
 if ($PSBoundParameters.ContainsKey('OutputDirectory') -and $OutputDirectory) {
     $destinationRoot = Resolve-Path $OutputDirectory -ErrorAction SilentlyContinue
@@ -41,25 +57,40 @@ if ($PSBoundParameters.ContainsKey('OutputDirectory') -and $OutputDirectory) {
         $destinationRoot = $destinationRoot.Path
     }
 
-    $destinationCsv = Join-Path $destinationRoot "animation_sprite_timelines.csv"
-    Copy-Item -Path $csvSource -Destination $destinationCsv -Force
-    Write-Host "Copied benchmark CSV to '$destinationCsv'."
-}
-
-$csv = Import-Csv -Path $csvSource
-$failedRows = @()
-foreach ($row in $csv) {
-    if ($row.meets_budget -and $row.meets_budget.Trim().ToLowerInvariant() -eq "fail") {
-        $failedRows += $row
+    foreach ($artifact in $csvArtifacts) {
+        $destinationCsv = Join-Path $destinationRoot $artifact.Name
+        Copy-Item -Path $artifact.Path -Destination $destinationCsv -Force
+        Write-Host ("Copied {0} CSV to '{1}'." -f $artifact.Label, $destinationCsv)
     }
 }
 
-if ($failedRows.Count -gt 0) {
-    Write-Host "Budget violations detected in animation benchmark:" -ForegroundColor Red
-    foreach ($row in $failedRows) {
-        Write-Host ("  animators={0} mean_step_ms={1} budget_ms={2}" -f $row.animators, $row.mean_step_ms, $row.budget_ms)
+function Test-CsvBudget {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$Label
+    )
+
+    $csv = Import-Csv -Path $Path
+    $failedRows = @()
+    foreach ($row in $csv) {
+        if ($row.meets_budget -and $row.meets_budget.Trim().ToLowerInvariant() -eq "fail") {
+            $failedRows += $row
+        }
     }
-    throw "Animation benchmark exceeded configured budgets."
+
+    if ($failedRows.Count -gt 0) {
+        Write-Host ("Budget violations detected in {0} benchmark:" -f $Label) -ForegroundColor Red
+        foreach ($row in $failedRows) {
+            Write-Host ("  animators={0} mean_step_ms={1} budget_ms={2}" -f $row.animators, $row.mean_step_ms, $row.budget_ms)
+        }
+        throw ("{0} benchmark exceeded configured budgets." -f $Label)
+    }
+
+    Write-Host ("{0} benchmark completed within configured budgets." -f $Label) -ForegroundColor Green
 }
 
-Write-Host "Animation benchmark completed within configured budgets." -ForegroundColor Green
+foreach ($artifact in $csvArtifacts) {
+    Test-CsvBudget -Path $artifact.Path -Label $artifact.Label
+}
