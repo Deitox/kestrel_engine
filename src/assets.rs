@@ -12,8 +12,8 @@ pub mod skeletal;
 pub struct AssetManager {
     atlases: HashMap<String, TextureAtlas>,
     clips: HashMap<String, AnimationClip>,
-    skeletons: HashMap<String, skeletal::SkeletonAsset>,
-    skeletal_clips: HashMap<String, skeletal::SkeletalClip>,
+    skeletons: HashMap<String, Arc<skeletal::SkeletonAsset>>,
+    skeletal_clips: HashMap<String, Arc<skeletal::SkeletalClip>>,
     sampler: Option<wgpu::Sampler>,
     device: Option<wgpu::Device>,
     queue: Option<wgpu::Queue>,
@@ -586,8 +586,8 @@ impl AssetManager {
         self.clip_sources.get(key).map(|s| s.as_str())
     }
     fn load_skeleton_internal(&mut self, key: &str, gltf_path: &str) -> Result<()> {
-        let import = skeletal::load_skeleton_from_gltf(gltf_path)?;
-        self.skeletons.insert(key.to_string(), import.skeleton);
+        let skeletal::SkeletonImport { skeleton, clips } = skeletal::load_skeleton_from_gltf(gltf_path)?;
+        self.skeletons.insert(key.to_string(), Arc::new(skeleton));
         if let Some(existing) = self.skeleton_clip_index.remove(key) {
             for clip_key in existing {
                 self.skeletal_clips.remove(&clip_key);
@@ -595,10 +595,10 @@ impl AssetManager {
             }
         }
         let mut clip_keys: Vec<String> = Vec::new();
-        for clip in import.clips {
+        for clip in clips {
             let clip_key = format!("{key}::{}", clip.name.as_ref());
             self.skeletal_clip_sources.insert(clip_key.clone(), gltf_path.to_string());
-            self.skeletal_clips.insert(clip_key.clone(), clip);
+            self.skeletal_clips.insert(clip_key.clone(), Arc::new(clip));
             clip_keys.push(clip_key);
         }
         self.skeleton_clip_index.insert(key.to_string(), clip_keys);
@@ -644,8 +644,8 @@ impl AssetManager {
         }
         false
     }
-    pub fn skeleton(&self, key: &str) -> Option<&skeletal::SkeletonAsset> {
-        self.skeletons.get(key)
+    pub fn skeleton(&self, key: &str) -> Option<Arc<skeletal::SkeletonAsset>> {
+        self.skeletons.get(key).cloned()
     }
     pub fn skeleton_keys(&self) -> Vec<String> {
         let mut keys: Vec<String> = self.skeletons.keys().cloned().collect();
@@ -655,8 +655,8 @@ impl AssetManager {
     pub fn skeleton_source(&self, key: &str) -> Option<&str> {
         self.skeleton_sources.get(key).map(|s| s.as_str())
     }
-    pub fn skeletal_clip(&self, key: &str) -> Option<&skeletal::SkeletalClip> {
-        self.skeletal_clips.get(key)
+    pub fn skeletal_clip(&self, key: &str) -> Option<Arc<skeletal::SkeletalClip>> {
+        self.skeletal_clips.get(key).cloned()
     }
     pub fn skeletal_clip_keys(&self) -> Vec<String> {
         let mut keys: Vec<String> = self.skeletal_clips.keys().cloned().collect();

@@ -1,4 +1,7 @@
-use crate::assets::{AnimationClip, ClipInterpolation, ClipScalarTrack, ClipVec2Track, ClipVec4Track};
+use crate::assets::{
+    skeletal::{SkeletalClip, SkeletonAsset},
+    AnimationClip, ClipInterpolation, ClipScalarTrack, ClipVec2Track, ClipVec4Track,
+};
 use crate::scene::{MeshLightingData, SceneEntityId};
 use bevy_ecs::prelude::*;
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
@@ -538,6 +541,120 @@ pub struct Transform3D {
 impl Default for Transform3D {
     fn default() -> Self {
         Self { translation: Vec3::ZERO, rotation: Quat::IDENTITY, scale: Vec3::ONE }
+    }
+}
+
+#[derive(Component, Clone)]
+pub struct SkeletonInstance {
+    pub skeleton_key: Arc<str>,
+    pub skeleton: Arc<SkeletonAsset>,
+    pub active_clip: Option<Arc<SkeletalClip>>,
+    pub local_poses: Vec<Mat4>,
+    pub model_poses: Vec<Mat4>,
+    pub palette: Vec<Mat4>,
+    pub dirty: bool,
+}
+
+impl SkeletonInstance {
+    pub fn new(skeleton_key: Arc<str>, skeleton: Arc<SkeletonAsset>) -> Self {
+        let joint_count = skeleton.joints.len();
+        let mut local_poses = Vec::with_capacity(joint_count);
+        let mut model_poses = Vec::with_capacity(joint_count);
+        let mut palette = Vec::with_capacity(joint_count);
+        for joint in skeleton.joints.iter() {
+            local_poses.push(joint.rest_local);
+            model_poses.push(joint.rest_world);
+            palette.push(joint.rest_world * joint.inverse_bind);
+        }
+        Self { skeleton_key, skeleton, active_clip: None, local_poses, model_poses, palette, dirty: false }
+    }
+
+    #[inline]
+    pub fn joint_count(&self) -> usize {
+        self.skeleton.joints.len()
+    }
+
+    pub fn set_active_clip(&mut self, clip: Option<Arc<SkeletalClip>>) {
+        self.active_clip = clip;
+        self.dirty = true;
+    }
+
+    #[inline]
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    #[inline]
+    pub fn clear_dirty(&mut self) {
+        self.dirty = false;
+    }
+
+    pub fn ensure_capacity(&mut self) {
+        let joint_count = self.joint_count();
+        if self.local_poses.len() != joint_count {
+            self.local_poses.resize(joint_count, Mat4::IDENTITY);
+        }
+        if self.model_poses.len() != joint_count {
+            self.model_poses.resize(joint_count, Mat4::IDENTITY);
+        }
+        if self.palette.len() != joint_count {
+            self.palette.resize(joint_count, Mat4::IDENTITY);
+        }
+    }
+}
+
+#[derive(Component, Clone)]
+pub struct BoneTransforms {
+    pub model: Vec<Mat4>,
+    pub palette: Vec<Mat4>,
+}
+
+impl BoneTransforms {
+    pub fn new(joint_count: usize) -> Self {
+        Self { model: vec![Mat4::IDENTITY; joint_count], palette: vec![Mat4::IDENTITY; joint_count] }
+    }
+
+    pub fn ensure_joint_count(&mut self, joint_count: usize) {
+        if self.model.len() != joint_count {
+            self.model.resize(joint_count, Mat4::IDENTITY);
+        }
+        if self.palette.len() != joint_count {
+            self.palette.resize(joint_count, Mat4::IDENTITY);
+        }
+    }
+}
+
+#[derive(Component, Clone)]
+pub struct SkinMesh {
+    pub skeleton_entity: Option<Entity>,
+    pub mesh_key: Option<Arc<str>>,
+    pub joint_count: u32,
+}
+
+impl SkinMesh {
+    pub fn new(joint_count: usize) -> Self {
+        Self { skeleton_entity: None, mesh_key: None, joint_count: joint_count as u32 }
+    }
+
+    pub fn set_skeleton(&mut self, skeleton: Entity) {
+        self.skeleton_entity = Some(skeleton);
+    }
+
+    pub fn clear_skeleton(&mut self) {
+        self.skeleton_entity = None;
+    }
+
+    pub fn set_mesh_key(&mut self, key: Arc<str>) {
+        self.mesh_key = Some(key);
+    }
+
+    pub fn clear_mesh_key(&mut self) {
+        self.mesh_key = None;
+    }
+
+    #[inline]
+    pub fn joints(&self) -> usize {
+        self.joint_count as usize
     }
 }
 #[derive(Component, Clone, Copy)]
