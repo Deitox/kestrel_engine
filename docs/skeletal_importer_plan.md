@@ -61,7 +61,7 @@
 - [x] Implement importer module (`src/assets/skeletal.rs`) with pure-data structs and loader entry points.
 - [x] Wire into `AssetManager` (retain/load functions, hot-reload).
 - [x] Author fixture GLTF + tests. *(fixtures/gltf/skeletons/slime_rig.gltf plus regression check now validate importer output.)*
-- [x] Proceed with ECS component scaffolding (`SkeletonInstance`, etc.). *(Pose playback system drives `SkeletonInstance` + `BoneTransforms`; renderer upload still TODO.)*
+- [x] Proceed with ECS component scaffolding (`SkeletonInstance`, etc.). *(Pose playback system drives `SkeletonInstance` + `BoneTransforms`; renderer now pools joint palettes for mesh and shadow passes.)*
 - [x] Land golden pose tests for the slime rig fixture. *(`ecs::systems::animation` unit tests verify keyframes and loop wrapping.)*
 
 

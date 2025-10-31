@@ -64,11 +64,7 @@ mod tests {
             let import = load_skeleton_from_gltf(path)?;
             let skeleton = Arc::new(import.skeleton);
             let clip = Arc::new(
-                import
-                    .clips
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("Fixture clip missing"))?,
+                import.clips.into_iter().next().ok_or_else(|| anyhow::anyhow!("Fixture clip missing"))?,
             );
             Ok(Self { skeleton, clip })
         }
@@ -90,36 +86,12 @@ mod tests {
         let expected_root_start = Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0));
         let expected_child_local_start = Mat4::from_translation(Vec3::new(0.0, 2.0, 0.0));
         let expected_child_model_start = expected_root_start * expected_child_local_start;
-        assert_mat4_approx(
-            at_start.local_poses[0],
-            expected_root_start,
-            "root local @ t=0",
-        );
-        assert_mat4_approx(
-            at_start.model_poses[0],
-            expected_root_start,
-            "root model @ t=0",
-        );
-        assert_mat4_approx(
-            at_start.palette[0],
-            expected_root_start,
-            "root palette @ t=0",
-        );
-        assert_mat4_approx(
-            at_start.local_poses[1],
-            expected_child_local_start,
-            "child local @ t=0",
-        );
-        assert_mat4_approx(
-            at_start.model_poses[1],
-            expected_child_model_start,
-            "child model @ t=0",
-        );
-        assert_mat4_approx(
-            at_start.palette[1],
-            expected_child_model_start,
-            "child palette @ t=0",
-        );
+        assert_mat4_approx(at_start.local_poses[0], expected_root_start, "root local @ t=0");
+        assert_mat4_approx(at_start.model_poses[0], expected_root_start, "root model @ t=0");
+        assert_mat4_approx(at_start.palette[0], expected_root_start, "root palette @ t=0");
+        assert_mat4_approx(at_start.local_poses[1], expected_child_local_start, "child local @ t=0");
+        assert_mat4_approx(at_start.model_poses[1], expected_child_model_start, "child model @ t=0");
+        assert_mat4_approx(at_start.palette[1], expected_child_model_start, "child palette @ t=0");
 
         let at_mid = fixture.sample(0.5);
         let expected_root_mid = Mat4::from_translation(Vec3::new(0.0, 1.05, 0.0));
@@ -129,36 +101,12 @@ mod tests {
             Vec3::new(0.0, 2.1, 0.0),
         );
         let expected_child_model_mid = expected_root_mid * expected_child_local_mid;
-        assert_mat4_approx(
-            at_mid.local_poses[0],
-            expected_root_mid,
-            "root local @ t=0.5",
-        );
-        assert_mat4_approx(
-            at_mid.model_poses[0],
-            expected_root_mid,
-            "root model @ t=0.5",
-        );
-        assert_mat4_approx(
-            at_mid.palette[0],
-            expected_root_mid,
-            "root palette @ t=0.5",
-        );
-        assert_mat4_approx(
-            at_mid.local_poses[1],
-            expected_child_local_mid,
-            "child local @ t=0.5",
-        );
-        assert_mat4_approx(
-            at_mid.model_poses[1],
-            expected_child_model_mid,
-            "child model @ t=0.5",
-        );
-        assert_mat4_approx(
-            at_mid.palette[1],
-            expected_child_model_mid,
-            "child palette @ t=0.5",
-        );
+        assert_mat4_approx(at_mid.local_poses[0], expected_root_mid, "root local @ t=0.5");
+        assert_mat4_approx(at_mid.model_poses[0], expected_root_mid, "root model @ t=0.5");
+        assert_mat4_approx(at_mid.palette[0], expected_root_mid, "root palette @ t=0.5");
+        assert_mat4_approx(at_mid.local_poses[1], expected_child_local_mid, "child local @ t=0.5");
+        assert_mat4_approx(at_mid.model_poses[1], expected_child_model_mid, "child model @ t=0.5");
+        assert_mat4_approx(at_mid.palette[1], expected_child_model_mid, "child palette @ t=0.5");
 
         let at_end = fixture.sample(1.0);
         let expected_root_end = Mat4::from_translation(Vec3::new(0.0, 1.1, 0.0));
@@ -168,36 +116,12 @@ mod tests {
             Vec3::new(0.0, 2.2, 0.0),
         );
         let expected_child_model_end = expected_root_end * expected_child_local_end;
-        assert_mat4_approx(
-            at_end.local_poses[0],
-            expected_root_end,
-            "root local @ t=1.0",
-        );
-        assert_mat4_approx(
-            at_end.model_poses[0],
-            expected_root_end,
-            "root model @ t=1.0",
-        );
-        assert_mat4_approx(
-            at_end.palette[0],
-            expected_root_end,
-            "root palette @ t=1.0",
-        );
-        assert_mat4_approx(
-            at_end.local_poses[1],
-            expected_child_local_end,
-            "child local @ t=1.0",
-        );
-        assert_mat4_approx(
-            at_end.model_poses[1],
-            expected_child_model_end,
-            "child model @ t=1.0",
-        );
-        assert_mat4_approx(
-            at_end.palette[1],
-            expected_child_model_end,
-            "child palette @ t=1.0",
-        );
+        assert_mat4_approx(at_end.local_poses[0], expected_root_end, "root local @ t=1.0");
+        assert_mat4_approx(at_end.model_poses[0], expected_root_end, "root model @ t=1.0");
+        assert_mat4_approx(at_end.palette[0], expected_root_end, "root palette @ t=1.0");
+        assert_mat4_approx(at_end.local_poses[1], expected_child_local_end, "child local @ t=1.0");
+        assert_mat4_approx(at_end.model_poses[1], expected_child_model_end, "child model @ t=1.0");
+        assert_mat4_approx(at_end.palette[1], expected_child_model_end, "child palette @ t=1.0");
 
         Ok(())
     }
@@ -208,26 +132,10 @@ mod tests {
         let early = fixture.sample(0.25);
         let late = fixture.sample(1.25);
 
-        assert_mat4_approx(
-            early.model_poses[0],
-            late.model_poses[0],
-            "root model wrap",
-        );
-        assert_mat4_approx(
-            early.palette[0],
-            late.palette[0],
-            "root palette wrap",
-        );
-        assert_mat4_approx(
-            early.model_poses[1],
-            late.model_poses[1],
-            "child model wrap",
-        );
-        assert_mat4_approx(
-            early.palette[1],
-            late.palette[1],
-            "child palette wrap",
-        );
+        assert_mat4_approx(early.model_poses[0], late.model_poses[0], "root model wrap");
+        assert_mat4_approx(early.palette[0], late.palette[0], "root palette wrap");
+        assert_mat4_approx(early.model_poses[1], late.model_poses[1], "child model wrap");
+        assert_mat4_approx(early.palette[1], late.palette[1], "child palette wrap");
 
         Ok(())
     }

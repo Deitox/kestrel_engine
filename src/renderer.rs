@@ -6,7 +6,7 @@ use crate::material_registry::MaterialGpu;
 use crate::mesh::{Mesh, MeshVertex};
 use anyhow::{anyhow, Context, Result};
 use glam::{Mat4, Vec3};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
@@ -360,6 +360,10 @@ struct MeshPass {
     draw_bind_group: Option<wgpu::BindGroup>,
     skinning_identity_buffer: Option<wgpu::Buffer>,
     skinning_identity_bind_group: Option<wgpu::BindGroup>,
+    skinning_palette_buffers: Vec<wgpu::Buffer>,
+    skinning_palette_bind_groups: Vec<wgpu::BindGroup>,
+    palette_staging: Vec<[f32; 16]>,
+    skinning_cursor: usize,
 }
 
 struct RendererEnvironmentState {
@@ -381,6 +385,10 @@ struct ShadowPass {
     draw_bind_group: Option<wgpu::BindGroup>,
     skinning_identity_buffer: Option<wgpu::Buffer>,
     skinning_identity_bind_group: Option<wgpu::BindGroup>,
+    skinning_palette_buffers: Vec<wgpu::Buffer>,
+    skinning_palette_bind_groups: Vec<wgpu::BindGroup>,
+    palette_staging: Vec<[f32; 16]>,
+    skinning_cursor: usize,
     map_texture: Option<wgpu::Texture>,
     map_view: Option<wgpu::TextureView>,
     sampler: Option<wgpu::Sampler>,
@@ -400,6 +408,10 @@ impl Default for ShadowPass {
             draw_bind_group: None,
             skinning_identity_buffer: None,
             skinning_identity_bind_group: None,
+            skinning_palette_buffers: Vec::new(),
+            skinning_palette_bind_groups: Vec::new(),
+            palette_staging: Vec::new(),
+            skinning_cursor: 0,
             map_texture: None,
             map_view: None,
             sampler: None,
@@ -472,6 +484,7 @@ pub struct Renderer {
     sprite_bind_cache: HashMap<String, SpriteBindCacheEntry>,
     present_modes: Vec<wgpu::PresentMode>,
     gpu_timer: GpuTimer,
+    skinning_limit_warnings: HashSet<usize>,
     #[cfg(test)]
     resize_invocations: usize,
     #[cfg(test)]
@@ -521,6 +534,7 @@ impl Renderer {
             sprite_bind_cache: HashMap::new(),
             present_modes: Vec::new(),
             gpu_timer: GpuTimer::default(),
+            skinning_limit_warnings: HashSet::new(),
             #[cfg(test)]
             resize_invocations: 0,
             #[cfg(test)]
@@ -1361,17 +1375,25 @@ impl Renderer {
         pass.set_bind_group(4, shadow_bind_group, &[]);
         pass.set_bind_group(5, environment_bind_group, &[]);
 
-        let mut skinning_buffers: Vec<wgpu::Buffer> = Vec::new();
-        let mut skinning_bind_groups: Vec<wgpu::BindGroup> = Vec::new();
+        self.mesh_pass.skinning_cursor = 0;
         let identity_cols = Mat4::IDENTITY.to_cols_array();
-
+        if self.mesh_pass.palette_staging.len() != MAX_SKIN_JOINTS {
+            self.mesh_pass.palette_staging.clear();
+            self.mesh_pass.palette_staging.resize(MAX_SKIN_JOINTS, identity_cols);
+        }
         for draw in draws {
             let base_color = draw.lighting.base_color;
             let emissive = draw.lighting.emissive.unwrap_or(Vec3::ZERO);
             let metallic = draw.lighting.metallic.clamp(0.0, 1.0);
             let roughness = draw.lighting.roughness.clamp(0.04, 1.0);
-            let mut joint_count = draw.skin_palette.as_ref().map(|palette| palette.len()).unwrap_or(0);
-            joint_count = joint_count.min(MAX_SKIN_JOINTS);
+            let palette_len = draw.skin_palette.as_ref().map(|palette| palette.len()).unwrap_or(0);
+            if palette_len > MAX_SKIN_JOINTS && self.skinning_limit_warnings.insert(palette_len) {
+                eprintln!(
+                    "[renderer] Skin palette has {} joints; only the first {} will be uploaded.",
+                    palette_len, MAX_SKIN_JOINTS
+                );
+            }
+            let joint_count = palette_len.min(MAX_SKIN_JOINTS);
             let draw_data = MeshDrawData {
                 model: draw.model.to_cols_array_2d(),
                 base_color: [base_color.x, base_color.y, base_color.z, 1.0],
@@ -1386,26 +1408,38 @@ impl Renderer {
             queue.write_buffer(&draw_buffer, 0, bytemuck::bytes_of(&draw_data));
             pass.set_bind_group(1, draw_bind_group, &[]);
             if joint_count > 0 {
-                let mut palette_floats = vec![identity_cols; MAX_SKIN_JOINTS];
-                if let Some(palette) = draw.skin_palette.as_ref() {
-                    for i in 0..joint_count {
-                        palette_floats[i] = palette[i].to_cols_array();
+                {
+                    let staging = &mut self.mesh_pass.palette_staging;
+                    for slot in staging.iter_mut() {
+                        *slot = identity_cols;
+                    }
+                    if let Some(palette) = draw.skin_palette.as_ref() {
+                        for (dst, mat) in staging.iter_mut().zip(palette.iter()).take(joint_count) {
+                            *dst = mat.to_cols_array();
+                        }
                     }
                 }
-                let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Mesh Skinning Palette Buffer"),
-                    contents: bytemuck::cast_slice(&palette_floats),
-                    usage: wgpu::BufferUsages::UNIFORM,
-                });
-                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("Mesh Skinning Palette BG"),
-                    layout: mesh_resources.skinning_bgl.as_ref(),
-                    entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
-                });
-                skinning_buffers.push(buffer);
-                skinning_bind_groups.push(bind_group);
-                let bind_group_ref = skinning_bind_groups.last().expect("skin bind group");
-                pass.set_bind_group(2, bind_group_ref, &[]);
+                let slot = self.mesh_pass.skinning_cursor;
+                self.mesh_pass.skinning_cursor += 1;
+                while self.mesh_pass.skinning_palette_buffers.len() <= slot {
+                    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("Mesh Skinning Palette Buffer"),
+                        size: (MAX_SKIN_JOINTS * std::mem::size_of::<[f32; 16]>()) as u64,
+                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    });
+                    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("Mesh Skinning Palette BG"),
+                        layout: mesh_resources.skinning_bgl.as_ref(),
+                        entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
+                    });
+                    self.mesh_pass.skinning_palette_buffers.push(buffer);
+                    self.mesh_pass.skinning_palette_bind_groups.push(bind_group);
+                }
+                let buffer = &self.mesh_pass.skinning_palette_buffers[slot];
+                queue.write_buffer(buffer, 0, bytemuck::cast_slice(&self.mesh_pass.palette_staging));
+                let bind_group = &self.mesh_pass.skinning_palette_bind_groups[slot];
+                pass.set_bind_group(2, bind_group, &[]);
             } else {
                 pass.set_bind_group(2, skinning_identity_bind_group, &[]);
             }
@@ -1759,8 +1793,12 @@ impl Renderer {
             .context("Shadow skinning identity bind group missing")?;
 
         let resolution = self.shadow_pass.resolution.max(1);
-        let mut skinning_buffers: Vec<wgpu::Buffer> = Vec::new();
-        let mut skinning_bind_groups: Vec<wgpu::BindGroup> = Vec::new();
+        self.shadow_pass.skinning_cursor = 0;
+        let identity_cols = Mat4::IDENTITY.to_cols_array();
+        if self.shadow_pass.palette_staging.len() != MAX_SKIN_JOINTS {
+            self.shadow_pass.palette_staging.clear();
+            self.shadow_pass.palette_staging.resize(MAX_SKIN_JOINTS, identity_cols);
+        }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Shadow Pass"),
@@ -1783,8 +1821,14 @@ impl Renderer {
             pass.set_bind_group(0, frame_bg, &[]);
 
             for draw in casters {
-                let mut joint_count = draw.skin_palette.as_ref().map(|palette| palette.len()).unwrap_or(0);
-                joint_count = joint_count.min(MAX_SKIN_JOINTS);
+                let palette_len = draw.skin_palette.as_ref().map(|palette| palette.len()).unwrap_or(0);
+                if palette_len > MAX_SKIN_JOINTS && self.skinning_limit_warnings.insert(palette_len) {
+                    eprintln!(
+                        "[renderer] Skin palette has {} joints; only the first {} will be uploaded.",
+                        palette_len, MAX_SKIN_JOINTS
+                    );
+                }
+                let joint_count = palette_len.min(MAX_SKIN_JOINTS);
                 let draw_uniform = ShadowDrawUniform {
                     model: draw.model.to_cols_array_2d(),
                     joint_count: joint_count as u32,
@@ -1793,27 +1837,41 @@ impl Renderer {
                 queue.write_buffer(draw_buffer, 0, bytemuck::bytes_of(&draw_uniform));
                 pass.set_bind_group(1, draw_bg, &[]);
                 if joint_count > 0 {
-                    let identity_cols = Mat4::IDENTITY.to_cols_array();
-                    let mut palette_floats = vec![identity_cols; MAX_SKIN_JOINTS];
-                    if let Some(palette) = draw.skin_palette.as_ref() {
-                        for i in 0..joint_count {
-                            palette_floats[i] = palette[i].to_cols_array();
+                    {
+                        let staging = &mut self.shadow_pass.palette_staging;
+                        for slot in staging.iter_mut() {
+                            *slot = identity_cols;
+                        }
+                        if let Some(palette) = draw.skin_palette.as_ref() {
+                            for (dst, mat) in staging.iter_mut().zip(palette.iter()).take(joint_count) {
+                                *dst = mat.to_cols_array();
+                            }
                         }
                     }
-                    let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("Shadow Skinning Palette Buffer"),
-                        contents: bytemuck::cast_slice(&palette_floats),
-                        usage: wgpu::BufferUsages::UNIFORM,
-                    });
-                    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("Shadow Skinning Palette BG"),
-                        layout: resources.skinning_bgl.as_ref(),
-                        entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
-                    });
-                    skinning_buffers.push(buffer);
-                    skinning_bind_groups.push(bind_group);
-                    let bind_group_ref = skinning_bind_groups.last().expect("shadow skin bind group");
-                    pass.set_bind_group(2, bind_group_ref, &[]);
+                    let slot = self.shadow_pass.skinning_cursor;
+                    self.shadow_pass.skinning_cursor += 1;
+                    while self.shadow_pass.skinning_palette_buffers.len() <= slot {
+                        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                            label: Some("Shadow Skinning Palette Buffer"),
+                            size: (MAX_SKIN_JOINTS * std::mem::size_of::<[f32; 16]>()) as u64,
+                            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                            mapped_at_creation: false,
+                        });
+                        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("Shadow Skinning Palette BG"),
+                            layout: resources.skinning_bgl.as_ref(),
+                            entries: &[wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: buffer.as_entire_binding(),
+                            }],
+                        });
+                        self.shadow_pass.skinning_palette_buffers.push(buffer);
+                        self.shadow_pass.skinning_palette_bind_groups.push(bind_group);
+                    }
+                    let buffer = &self.shadow_pass.skinning_palette_buffers[slot];
+                    queue.write_buffer(buffer, 0, bytemuck::cast_slice(&self.shadow_pass.palette_staging));
+                    let bind_group = &self.shadow_pass.skinning_palette_bind_groups[slot];
+                    pass.set_bind_group(2, bind_group, &[]);
                 } else {
                     pass.set_bind_group(2, shadow_skinning_identity, &[]);
                 }
