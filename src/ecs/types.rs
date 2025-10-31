@@ -549,6 +549,13 @@ pub struct SkeletonInstance {
     pub skeleton_key: Arc<str>,
     pub skeleton: Arc<SkeletonAsset>,
     pub active_clip: Option<Arc<SkeletalClip>>,
+    pub time: f32,
+    pub playing: bool,
+    pub looped: bool,
+    pub speed: f32,
+    pub group: Option<String>,
+    pub playback_rate: f32,
+    pub playback_rate_dirty: bool,
     pub local_poses: Vec<Mat4>,
     pub model_poses: Vec<Mat4>,
     pub palette: Vec<Mat4>,
@@ -566,7 +573,22 @@ impl SkeletonInstance {
             model_poses.push(joint.rest_world);
             palette.push(joint.rest_world * joint.inverse_bind);
         }
-        Self { skeleton_key, skeleton, active_clip: None, local_poses, model_poses, palette, dirty: false }
+        Self {
+            skeleton_key,
+            skeleton,
+            active_clip: None,
+            time: 0.0,
+            playing: true,
+            looped: true,
+            speed: 1.0,
+            group: None,
+            playback_rate: 0.0,
+            playback_rate_dirty: true,
+            local_poses,
+            model_poses,
+            palette,
+            dirty: false,
+        }
     }
 
     #[inline]
@@ -575,8 +597,47 @@ impl SkeletonInstance {
     }
 
     pub fn set_active_clip(&mut self, clip: Option<Arc<SkeletalClip>>) {
+        if let Some(ref clip) = clip {
+            self.looped = clip.looped;
+        }
         self.active_clip = clip;
+        self.time = 0.0;
+        self.playing = true;
+        self.playback_rate = 0.0;
+        self.playback_rate_dirty = true;
         self.dirty = true;
+    }
+
+    pub fn set_playing(&mut self, playing: bool) {
+        self.playing = playing;
+    }
+
+    pub fn set_speed(&mut self, speed: f32) {
+        self.speed = speed.max(0.0);
+        self.playback_rate_dirty = true;
+    }
+
+    pub fn set_group<S: Into<Option<String>>>(&mut self, group: S) {
+        self.group = group.into();
+        self.playback_rate_dirty = true;
+    }
+
+    pub fn ensure_playback_rate(&mut self, group_scale: f32) -> f32 {
+        if self.playback_rate_dirty {
+            let clamped_group = group_scale.max(0.0);
+            let base_speed = self.speed.max(0.0);
+            self.playback_rate = (base_speed * clamped_group).max(0.0);
+            self.playback_rate_dirty = false;
+        }
+        self.playback_rate
+    }
+
+    pub fn clip_duration(&self) -> f32 {
+        self.active_clip.as_ref().map(|clip| clip.duration.max(0.0)).unwrap_or(0.0)
+    }
+
+    pub fn has_clip(&self) -> bool {
+        self.active_clip.is_some()
     }
 
     #[inline]
@@ -600,6 +661,15 @@ impl SkeletonInstance {
         if self.palette.len() != joint_count {
             self.palette.resize(joint_count, Mat4::IDENTITY);
         }
+    }
+
+    pub fn reset_to_rest_pose(&mut self) {
+        for (index, joint) in self.skeleton.joints.iter().enumerate() {
+            self.local_poses[index] = joint.rest_local;
+            self.model_poses[index] = joint.rest_world;
+            self.palette[index] = joint.rest_world * joint.inverse_bind;
+        }
+        self.dirty = false;
     }
 }
 

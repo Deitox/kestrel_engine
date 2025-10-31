@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use glam::Vec3;
+use glam::{Quat, Vec3};
 use kestrel_engine::assets::skeletal::{self, SkeletonImport};
 use std::path::Path;
 
@@ -51,12 +51,25 @@ fn import_slime_rig_fixture() -> Result<()> {
     assert_eq!(keys1.len(), 2);
     approx_vec3(keys1[0].value, Vec3::new(0.0, 2.0, 0.0));
     approx_vec3(keys1[1].value, Vec3::new(0.0, 2.2, 0.0));
-    assert!(curve1.rotation.is_none());
-    assert!(curve1.scale.is_none());
+    let rot_track = curve1.rotation.as_ref().expect("joint 1 rotation track");
+    let rot_keys = rot_track.keyframes.as_ref();
+    assert_eq!(rot_keys.len(), 2);
+    approx_quat(rot_keys[0].value, Quat::IDENTITY);
+    approx_quat(rot_keys[1].value, Quat::from_axis_angle(Vec3::Z, std::f32::consts::FRAC_PI_2));
+    let scale_track = curve1.scale.as_ref().expect("joint 1 scale track");
+    let scale_keys = scale_track.keyframes.as_ref();
+    assert_eq!(scale_keys.len(), 2);
+    approx_vec3(scale_keys[0].value, Vec3::new(1.0, 1.0, 1.0));
+    approx_vec3(scale_keys[1].value, Vec3::new(1.1, 0.9, 1.0));
 
     Ok(())
 }
 
 fn approx_vec3(actual: Vec3, expected: Vec3) {
     assert!((actual - expected).length() < 1e-4, "expected {expected:?}, got {actual:?}");
+}
+
+fn approx_quat(actual: Quat, expected: Quat) {
+    let dot = actual.normalize().dot(expected.normalize()).abs();
+    assert!(dot > 1.0 - 1e-4, "expected {expected:?}, got {actual:?}");
 }

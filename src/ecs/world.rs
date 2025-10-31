@@ -65,6 +65,7 @@ impl EcsWorld {
             sys_update_emitters,
             sys_update_particles,
             sys_drive_transform_clips,
+            sys_drive_skeletal_clips,
             sys_drive_sprite_animations,
         ));
 

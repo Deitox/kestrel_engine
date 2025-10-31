@@ -13,6 +13,9 @@ pub struct SkeletonJoint {
     pub parent: Option<u32>,
     pub rest_local: Mat4,
     pub rest_world: Mat4,
+    pub rest_translation: Vec3,
+    pub rest_rotation: Quat,
+    pub rest_scale: Vec3,
     pub inverse_bind: Mat4,
 }
 
@@ -90,10 +93,16 @@ pub fn load_skeleton_from_gltf(path: impl AsRef<Path>) -> Result<SkeletonImport>
         joint_nodes.iter().enumerate().map(|(idx, node)| (node.index(), idx as u32)).collect();
 
     let mut node_local: HashMap<usize, Mat4> = HashMap::new();
+    let mut node_trs: HashMap<usize, (Vec3, Quat, Vec3)> = HashMap::new();
     let mut parent_of_node: HashMap<usize, usize> = HashMap::new();
     for node in document.nodes() {
         let node_index = node.index();
         node_local.insert(node_index, mat4_from_gltf(node.transform().matrix()));
+        let (t, r, s) = node.transform().decomposed();
+        let translation = Vec3::from_array(t);
+        let rotation = Quat::from_xyzw(r[0], r[1], r[2], r[3]).normalize();
+        let scale = Vec3::from_array(s);
+        node_trs.insert(node_index, (translation, rotation, scale));
         for child in node.children() {
             parent_of_node.insert(child.index(), node_index);
         }
@@ -131,11 +140,16 @@ pub fn load_skeleton_from_gltf(path: impl AsRef<Path>) -> Result<SkeletonImport>
         let rest_local = *node_local.get(&node_index).unwrap_or(&Mat4::IDENTITY);
         let rest_world = compute_world_matrix(node_index, &node_local, &parent_of_node, &mut world_cache);
         let joint_name = node.name().map(|n| n.to_string()).unwrap_or_else(|| format!("joint_{index}"));
+        let (rest_translation, rest_rotation, rest_scale) =
+            node_trs.get(&node_index).cloned().unwrap_or((Vec3::ZERO, Quat::IDENTITY, Vec3::ONE));
         joints.push(SkeletonJoint {
             name: Arc::<str>::from(joint_name),
             parent: parent_joint,
             rest_local,
             rest_world,
+            rest_translation,
+            rest_rotation,
+            rest_scale,
             inverse_bind: inverse_bind[index],
         });
     }

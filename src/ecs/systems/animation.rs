@@ -1,15 +1,19 @@
 use super::{AnimationDelta, AnimationTime, TimeDelta};
+use crate::assets::skeletal::{JointCurve, JointQuatTrack, JointVec3Track, SkeletalClip};
+use crate::assets::{ClipInterpolation, ClipKeyframe};
 use crate::ecs::profiler::SystemProfiler;
 use crate::ecs::{
-    ClipInstance, ClipSample, PropertyTrackPlayer, Sprite, SpriteAnimation, SpriteAnimationLoopMode, Tint,
-    Transform, TransformTrackPlayer,
+    BoneTransforms, ClipInstance, ClipSample, PropertyTrackPlayer, SkeletonInstance, Sprite, SpriteAnimation,
+    SpriteAnimationLoopMode, Tint, Transform, TransformTrackPlayer,
 };
 use crate::events::{EventBus, GameEvent};
 use bevy_ecs::prelude::{Entity, Mut, Query, Res, ResMut};
-use glam::{Vec2, Vec4};
+use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::ptr::NonNull;
+
+const CLIP_TIME_EPSILON: f32 = 1e-5;
 
 pub fn sys_drive_sprite_animations(
     mut profiler: ResMut<SystemProfiler>,
@@ -69,6 +73,245 @@ pub fn sys_drive_transform_clips(
         return;
     }
     drive_transform_clips(delta, has_group_scales, animation_time_ref, &mut clips);
+}
+
+pub fn sys_drive_skeletal_clips(
+    mut profiler: ResMut<SystemProfiler>,
+    dt: Res<TimeDelta>,
+    mut animation_time: ResMut<AnimationTime>,
+    mut skeletons: Query<(Entity, &mut SkeletonInstance, Option<Mut<BoneTransforms>>)>,
+) {
+    let _span = profiler.scope("sys_drive_skeletal_clips");
+    let plan = animation_time.consume(dt.0);
+    if !plan.has_steps() {
+        return;
+    }
+    let has_group_scales = animation_time.has_group_scales();
+    let animation_time_ref: &AnimationTime = &*animation_time;
+    let delta = match plan {
+        AnimationDelta::None => return,
+        AnimationDelta::Single(amount) => amount,
+        AnimationDelta::Fixed { step, steps } => step * steps as f32,
+    };
+    if delta <= 0.0 {
+        return;
+    }
+    drive_skeletal_clips(delta, has_group_scales, animation_time_ref, &mut skeletons);
+}
+
+fn drive_skeletal_clips(
+    delta: f32,
+    has_group_scales: bool,
+    animation_time: &AnimationTime,
+    skeletons: &mut Query<(Entity, &mut SkeletonInstance, Option<Mut<BoneTransforms>>)>,
+) {
+    for (_entity, mut instance, bone_transforms) in skeletons.iter_mut() {
+        instance.ensure_capacity();
+        let clip = match instance.active_clip.clone() {
+            Some(clip) => clip,
+            None => {
+                instance.reset_to_rest_pose();
+                if let Some(mut bones) = bone_transforms {
+                    bones.ensure_joint_count(instance.joint_count());
+                    bones.model.copy_from_slice(&instance.model_poses);
+                    bones.palette.copy_from_slice(&instance.palette);
+                }
+                continue;
+            }
+        };
+
+        let group_scale =
+            if has_group_scales { animation_time.group_scale(instance.group.as_deref()) } else { 1.0 };
+        let playback_rate = if instance.playback_rate_dirty {
+            instance.ensure_playback_rate(group_scale)
+        } else {
+            instance.playback_rate
+        };
+        if playback_rate <= 0.0 {
+            continue;
+        }
+
+        let scaled = delta * playback_rate;
+        if scaled <= 0.0 {
+            continue;
+        }
+
+        if instance.playing {
+            let mut next_time = instance.time + scaled;
+            let duration = clip.duration.max(0.0);
+            if duration > 0.0 {
+                if instance.looped {
+                    if next_time >= duration && (next_time - duration).abs() <= CLIP_TIME_EPSILON {
+                        next_time = duration;
+                    } else {
+                        next_time = next_time.rem_euclid(duration.max(std::f32::EPSILON));
+                    }
+                } else if next_time >= duration {
+                    next_time = duration;
+                    instance.playing = false;
+                }
+            } else {
+                next_time = 0.0;
+            }
+            instance.time = next_time;
+        }
+
+        let pose_time = instance.time;
+        evaluate_skeleton_pose(&mut instance, &clip, pose_time);
+
+        if let Some(mut bones) = bone_transforms {
+            bones.ensure_joint_count(instance.joint_count());
+            bones.model.copy_from_slice(&instance.model_poses);
+            bones.palette.copy_from_slice(&instance.palette);
+        }
+    }
+}
+
+fn evaluate_skeleton_pose(instance: &mut SkeletonInstance, clip: &SkeletalClip, time: f32) {
+    let joint_count = instance.joint_count();
+    if joint_count == 0 {
+        return;
+    }
+
+    let mut curve_map: Vec<Option<&JointCurve>> = vec![None; joint_count];
+    for curve in clip.channels.iter() {
+        let index = curve.joint_index as usize;
+        if index < curve_map.len() {
+            curve_map[index] = Some(curve);
+        }
+    }
+
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); joint_count];
+    for (index, joint) in instance.skeleton.joints.iter().enumerate() {
+        if let Some(parent) = joint.parent {
+            if let Some(list) = children.get_mut(parent as usize) {
+                list.push(index);
+            }
+        }
+    }
+
+    for (index, joint) in instance.skeleton.joints.iter().enumerate() {
+        let mut translation = joint.rest_translation;
+        let mut rotation = joint.rest_rotation;
+        let mut scale = joint.rest_scale;
+        if let Some(curve) = curve_map[index] {
+            if let Some(track) = &curve.translation {
+                translation = sample_vec3_track(track, time, clip.looped);
+            }
+            if let Some(track) = &curve.rotation {
+                rotation = sample_quat_track(track, time, clip.looped);
+            }
+            if let Some(track) = &curve.scale {
+                scale = sample_vec3_track(track, time, clip.looped);
+            }
+        }
+        instance.local_poses[index] = Mat4::from_scale_rotation_translation(scale, rotation, translation);
+    }
+
+    let mut visited = vec![false; joint_count];
+
+    let root_indices: Vec<usize> = instance
+        .skeleton
+        .roots
+        .iter()
+        .map(|&root| root as usize)
+        .filter(|&index| index < joint_count)
+        .collect();
+
+    for root_index in root_indices {
+        propagate_joint(root_index, Mat4::IDENTITY, instance, &children, &mut visited);
+    }
+
+    for index in 0..joint_count {
+        if !visited[index] {
+            propagate_joint(index, Mat4::IDENTITY, instance, &children, &mut visited);
+        }
+    }
+}
+
+fn propagate_joint(
+    joint_index: usize,
+    parent_model: Mat4,
+    instance: &mut SkeletonInstance,
+    children: &[Vec<usize>],
+    visited: &mut [bool],
+) {
+    let model = parent_model * instance.local_poses[joint_index];
+    instance.model_poses[joint_index] = model;
+    let joint = &instance.skeleton.joints[joint_index];
+    instance.palette[joint_index] = model * joint.inverse_bind;
+    visited[joint_index] = true;
+    for &child in &children[joint_index] {
+        propagate_joint(child, model, instance, children, visited);
+    }
+}
+
+fn sample_vec3_track(track: &JointVec3Track, time: f32, looped: bool) -> Vec3 {
+    let frames = track.keyframes.as_ref();
+    if frames.is_empty() {
+        return Vec3::ZERO;
+    }
+    let duration = frames.last().map(|kf| kf.time).unwrap_or(0.0);
+    let sample_time = normalize_time(time, duration, looped);
+    sample_frames(frames, track.interpolation, sample_time, |a, b, t| a + (b - a) * t)
+}
+
+fn sample_quat_track(track: &JointQuatTrack, time: f32, looped: bool) -> Quat {
+    let frames = track.keyframes.as_ref();
+    if frames.is_empty() {
+        return Quat::IDENTITY;
+    }
+    let duration = frames.last().map(|kf| kf.time).unwrap_or(0.0);
+    let sample_time = normalize_time(time, duration, looped);
+    sample_frames(frames, track.interpolation, sample_time, |a, b, t| a.slerp(b, t)).normalize()
+}
+
+fn sample_frames<T, L>(frames: &[ClipKeyframe<T>], mode: ClipInterpolation, time: f32, lerp: L) -> T
+where
+    T: Copy,
+    L: Fn(T, T, f32) -> T,
+{
+    if frames.len() == 1 || time <= frames[0].time {
+        return frames[0].value;
+    }
+    if matches!(mode, ClipInterpolation::Step) {
+        for window in frames.windows(2) {
+            if time < window[1].time {
+                return window[0].value;
+            }
+        }
+        return frames.last().unwrap().value;
+    }
+    for window in frames.windows(2) {
+        let start = &window[0];
+        let end = &window[1];
+        if time <= end.time {
+            let span = (end.time - start.time).max(std::f32::EPSILON);
+            let alpha = ((time - start.time) / span).clamp(0.0, 1.0);
+            return lerp(start.value, end.value, alpha);
+        }
+    }
+    frames.last().unwrap().value
+}
+
+fn normalize_time(time: f32, duration: f32, looped: bool) -> f32 {
+    if duration <= 0.0 {
+        return 0.0;
+    }
+    if looped {
+        if time >= duration && (time - duration).abs() <= CLIP_TIME_EPSILON {
+            duration
+        } else {
+            let wrapped = time.rem_euclid(duration.max(std::f32::EPSILON));
+            if wrapped <= CLIP_TIME_EPSILON && time > 0.0 && (time - duration).abs() <= CLIP_TIME_EPSILON {
+                duration
+            } else {
+                wrapped
+            }
+        }
+    } else {
+        time.clamp(0.0, duration)
+    }
 }
 
 fn drive_transform_clips(

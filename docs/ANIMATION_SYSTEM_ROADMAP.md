@@ -145,10 +145,11 @@ Benchmarks emit CSV summaries for CI. Failing budgets block the milestone exit.
 
 ## Immediate Next Actions
 - [x] Land GLTF skeleton importer and fixture assets (sample rig + clip extraction into `AssetManager`). *(Importer module + AssetManager retention APIs merged; minimal slime rig fixture + regression test now in place.)*
-- [ ] Introduce ECS skeleton components (`SkeletonInstance`, `SkinMesh`, `BoneTransforms`) and hook them into transform propagation. *(Component scaffolding now exists; transform graph + propagation wiring still TODO.)*
+- [x] Introduce ECS skeleton components (`SkeletonInstance`, `SkinMesh`, `BoneTransforms`) and hook them into transform propagation. *(Component scaffolding + pose system now live; BoneTransforms updated each frame.)*
 - [ ] Implement CPU pose evaluator with golden pose tests using the fixture clip.
 - [ ] Extend renderer skinning to upload joint palettes, split batches when limits hit, and record GPU timing.
 - [ ] Add skeletal evaluation coverage to `animation_bench` capturing the 1 000-bone CPU budget.
 - [ ] Expand `docs/animation_workflows.md` skeletal section with authoring steps and inspector expectations.
 
 This roadmap supersedes earlier drafts and reflects the final agreed-upon plan for animation system development. Further adjustments will follow formal change control once milestones begin execution.
+

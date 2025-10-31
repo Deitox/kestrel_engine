@@ -44,6 +44,16 @@
           "input": 0,
           "output": 2,
           "interpolation": "LINEAR"
+        },
+        {
+          "input": 0,
+          "output": 3,
+          "interpolation": "LINEAR"
+        },
+        {
+          "input": 0,
+          "output": 4,
+          "interpolation": "LINEAR"
         }
       ],
       "channels": [
@@ -60,14 +70,28 @@
             "node": 2,
             "path": "translation"
           }
+        },
+        {
+          "sampler": 2,
+          "target": {
+            "node": 2,
+            "path": "rotation"
+          }
+        },
+        {
+          "sampler": 3,
+          "target": {
+            "node": 2,
+            "path": "scale"
+          }
         }
       ]
     }
   ],
   "buffers": [
     {
-      "uri": "data:application/octet-stream;base64,AAAAAAAAgD8AAAAAAACAPwAAAAAAAAAAzcyMPwAAAAAAAAAAAAAAQAAAAAAAAAAAzcwMQAAAAAA=",
-      "byteLength": 56
+      "uri": "data:application/octet-stream;base64,AAAAAAAAgD8AAAAAAACAPwAAAAAAAAAAzcyMPwAAAAAAAAAAAAAAQAAAAAAAAAAAzcwMQAAAAAAAAAAAAAAAAAAAAAAAAIA/AAAAAAAAAADzBDU/8wQ1PwAAgD8AAIA/AACAP83MjD9mZmY/AACAPw==",
+      "byteLength": 112
     }
   ],
   "bufferViews": [
@@ -84,6 +108,16 @@
     {
       "buffer": 0,
       "byteOffset": 32,
+      "byteLength": 24
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 56,
+      "byteLength": 32
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 88,
       "byteLength": 24
     }
   ],
@@ -104,6 +138,18 @@
     },
     {
       "bufferView": 2,
+      "componentType": 5126,
+      "count": 2,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 3,
+      "componentType": 5126,
+      "count": 2,
+      "type": "VEC4"
+    },
+    {
+      "bufferView": 4,
       "componentType": 5126,
       "count": 2,
       "type": "VEC3"
