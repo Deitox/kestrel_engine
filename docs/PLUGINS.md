@@ -59,6 +59,13 @@ cargo build --manifest-path plugins/example_dynamic/Cargo.toml --release
 
 On Windows this produces `plugins/example_dynamic/target/release/example_dynamic.dll`. Update `config/plugins.json` with the correct (platform-specific) path, then toggle `enabled` to `true`.
 
+### Debug vs. Release builds
+
+- **Debug (`scripts/build_plugins.ps1`)** – Uses Cargo’s default profile for fast compiles and richer debug info. Artifacts land in `target\debug\` and are best for rapid iteration.
+- **Release (`scripts/build_plugins.ps1 -Release`)** – Switches to `cargo build --release`, enabling `opt-level = 3` optimisations defined in `Cargo.toml`. The resulting DLLs (under `target\release\`) are smaller and markedly faster, which is what you’ll ship or benchmark.
+
+Both commands update every enabled entry listed in `config/plugins.json`. If you only care about a single plugin you can still invoke `cargo build --manifest-path plugins/example_dynamic/Cargo.toml [--release]`, but the helper script keeps the manifest and binaries in sync automatically.
+
 The skeleton looks like this:
 
 ```rust
