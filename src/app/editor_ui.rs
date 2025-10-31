@@ -14,7 +14,7 @@ use crate::gizmo::{
     GIZMO_SCALE_HANDLE_SIZE_PX, GIZMO_SCALE_INNER_RADIUS_PX, GIZMO_SCALE_OUTER_RADIUS_PX,
 };
 use crate::mesh_preview::{GIZMO_3D_AXIS_LENGTH_SCALE, GIZMO_3D_AXIS_MAX, GIZMO_3D_AXIS_MIN};
-use crate::plugins::PluginState;
+use crate::plugins::{PluginState, PluginStatus};
 use crate::prefab::{PrefabFormat, PrefabStatusKind, PrefabStatusMessage};
 
 use bevy_ecs::prelude::Entity;
@@ -64,6 +64,13 @@ pub(super) struct PrefabInstantiateRequest {
     pub drop_target: Option<PrefabDropTarget>,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct PluginToggleRequest {
+    pub name: String,
+    pub prev_enabled: bool,
+    pub new_enabled: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum AudioTriggerKind {
     Spawn,
@@ -109,6 +116,18 @@ fn summarize_game_event(event: &GameEvent) -> (String, egui::Color32) {
         ),
         GameEvent::ScriptMessage { message } => {
             (format!("Script: {message}"), egui::Color32::from_rgb(170, 170, 170))
+        }
+    }
+}
+
+fn plugin_status_summary(status: &PluginStatus) -> (egui::Color32, String) {
+    match &status.state {
+        PluginState::Loaded => (egui::Color32::LIGHT_GREEN, "Loaded".to_string()),
+        PluginState::Disabled(reason) => {
+            (egui::Color32::from_rgb(220, 180, 80), format!("Disabled: {reason}"))
+        }
+        PluginState::Failed(reason) => {
+            (egui::Color32::from_rgb(220, 120, 120), format!("Failed: {reason}"))
         }
     }
 }
@@ -219,6 +238,7 @@ pub(super) struct UiActions {
     pub retain_meshes: Vec<(String, Option<String>)>,
     pub retain_environments: Vec<(String, Option<String>)>,
     pub sprite_atlas_requests: Vec<SpriteAtlasRequest>,
+    pub plugin_toggles: Vec<PluginToggleRequest>,
     pub reload_plugins: bool,
     pub save_prefab: Option<PrefabSaveRequest>,
     pub instantiate_prefab: Option<PrefabInstantiateRequest>,
@@ -1616,34 +1636,95 @@ impl App {
                         actions.reload_plugins = true;
                     }
                     ui.small("Rebuild plugin cdylibs, then click reload to rescan manifest entries.");
-                    let statuses = self.plugins.statuses();
-                    if statuses.is_empty() {
-                        ui.label("No plugins reported");
-                    } else {
-                        for status in statuses {
-                            let label = format!(
-                                "{} v{} ({})",
-                                status.name,
-                                status.version.as_deref().unwrap_or("n/a"),
-                                if status.dynamic { "dynamic" } else { "built-in" }
-                            );
-                            match &status.state {
-                                PluginState::Loaded => {
-                                    ui.colored_label(egui::Color32::LIGHT_GREEN, label);
+                    ui.small("Toggle entries below to update config/plugins.json without leaving the editor.");
+                    let status_snapshot = self.plugins.statuses().to_vec();
+                    let mut dynamic_statuses: BTreeMap<String, PluginStatus> = BTreeMap::new();
+                    let mut builtin_statuses = Vec::new();
+                    for status in status_snapshot {
+                        if status.dynamic {
+                            dynamic_statuses.insert(status.name.clone(), status);
+                        } else {
+                            builtin_statuses.push(status);
+                        }
+                    }
+                    builtin_statuses.sort_by(|a, b| a.name.cmp(&b.name));
+                    if let Some(manifest) = self.plugin_manifest.as_mut() {
+                        if let Some(path) = manifest.path() {
+                            ui.small(format!("Manifest: {}", path.display()));
+                        }
+                        if manifest.entries().is_empty() {
+                            ui.label("No dynamic plugins listed in manifest.");
+                        } else {
+                            for entry in manifest.entries_mut() {
+                                let plugin_name = entry.name.clone();
+                                let prev_enabled = entry.enabled;
+                                let mut enabled_flag = entry.enabled;
+                                let mut toggled = false;
+                                let status = dynamic_statuses.remove(&plugin_name);
+                                ui.group(|ui| {
+                                    ui.horizontal(|ui| {
+                                        if ui.checkbox(&mut enabled_flag, &plugin_name).changed() {
+                                            toggled = true;
+                                        }
+                                        if let Some(status) = status.as_ref() {
+                                            let (color, summary) = plugin_status_summary(status);
+                                            ui.colored_label(color, summary);
+                                            if let Some(version) =
+                                                status.version.as_deref().or(entry.version.as_deref())
+                                            {
+                                                ui.small(format!("v{}", version));
+                                            }
+                                        } else if let Some(version) = entry.version.as_deref() {
+                                            ui.small(format!("v{} (manifest)", version));
+                                        } else {
+                                            ui.small("not loaded");
+                                        }
+                                    });
+                                    if !entry.path.trim().is_empty() {
+                                        ui.small(format!("Path: {}", entry.path));
+                                    }
+                                    if let Some(status) = status.as_ref() {
+                                        if !status.depends_on.is_empty() {
+                                            ui.small(format!("Depends on: {}", status.depends_on.join(", ")));
+                                        }
+                                        if !status.provides.is_empty() {
+                                            ui.small(format!("Provides: {}", status.provides.join(", ")));
+                                        }
+                                    }
+                                    if !entry.requires_features.is_empty() {
+                                        ui.small(format!(
+                                            "Requires (manifest): {}",
+                                            entry.requires_features.join(", ")
+                                        ));
+                                    }
+                                    if !entry.provides_features.is_empty() {
+                                        ui.small(format!(
+                                            "Provides (manifest): {}",
+                                            entry.provides_features.join(", ")
+                                        ));
+                                    }
+                                });
+                                if toggled {
+                                    actions.plugin_toggles.push(PluginToggleRequest {
+                                        name: plugin_name,
+                                        prev_enabled,
+                                        new_enabled: enabled_flag,
+                                    });
                                 }
-                                PluginState::Disabled(reason) => {
-                                    ui.colored_label(
-                                        egui::Color32::from_rgb(220, 180, 80),
-                                        format!("{label} - disabled: {reason}"),
-                                    );
-                                }
-                                PluginState::Failed(reason) => {
-                                    ui.colored_label(
-                                        egui::Color32::from_rgb(220, 120, 120),
-                                        format!("{label} - failed: {reason}"),
-                                    );
-                                }
+                                entry.enabled = enabled_flag;
                             }
+                        }
+                    } else {
+                        ui.label("No plugin manifest loaded.");
+                    }
+                    if !dynamic_statuses.is_empty() {
+                        ui.separator();
+                        ui.small("Dynamic plugins without manifest entries:");
+                        for status in dynamic_statuses.values() {
+                            let (color, summary) = plugin_status_summary(status);
+                            let label =
+                                format!("{} v{}", status.name, status.version.as_deref().unwrap_or("n/a"));
+                            ui.colored_label(color, format!("{label} - {summary}"));
                             if !status.depends_on.is_empty() {
                                 ui.small(format!("Depends on: {}", status.depends_on.join(", ")));
                             }
@@ -1651,6 +1732,25 @@ impl App {
                                 ui.small(format!("Provides: {}", status.provides.join(", ")));
                             }
                         }
+                    }
+                    if !builtin_statuses.is_empty() {
+                        if !dynamic_statuses.is_empty() {
+                            ui.separator();
+                        }
+                        for status in builtin_statuses {
+                            let (color, summary) = plugin_status_summary(&status);
+                            let label =
+                                format!("{} v{} (built-in)", status.name, status.version.as_deref().unwrap_or("n/a"));
+                            ui.colored_label(color, format!("{label} - {summary}"));
+                            if !status.depends_on.is_empty() {
+                                ui.small(format!("Depends on: {}", status.depends_on.join(", ")));
+                            }
+                            if !status.provides.is_empty() {
+                                ui.small(format!("Provides: {}", status.provides.join(", ")));
+                            }
+                        }
+                    } else if self.plugin_manifest.is_none() && dynamic_statuses.is_empty() {
+                        ui.label("No plugins reported");
                     }
 
                     ui.separator();

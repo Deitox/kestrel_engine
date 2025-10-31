@@ -10,7 +10,7 @@ use crate::time::Time;
 use anyhow::{anyhow, bail, Context, Result};
 use bevy_ecs::prelude::Entity;
 use libloading::Library;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::cell::{Ref, RefCell, RefMut};
 use std::collections::{BTreeSet, HashSet};
@@ -588,7 +588,7 @@ impl Drop for PluginManager {
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PluginManifest {
     #[serde(default)]
     disable_builtins: Vec<String>,
@@ -620,12 +620,36 @@ impl PluginManifest {
         &self.plugins
     }
 
+    pub fn entries_mut(&mut self) -> &mut [PluginManifestEntry] {
+        &mut self.plugins
+    }
+
+    pub fn entry_mut(&mut self, name: &str) -> Option<&mut PluginManifestEntry> {
+        self.plugins.iter_mut().find(|entry| entry.name == name)
+    }
+
     fn path_parent(&self) -> Option<&Path> {
         self.source_path.as_deref().and_then(|p| p.parent())
     }
+
+    pub fn path(&self) -> Option<&Path> {
+        self.source_path.as_deref()
+    }
+
+    pub fn save(&self) -> Result<()> {
+        let path = self
+            .source_path
+            .as_ref()
+            .ok_or_else(|| anyhow!("plugin manifest path unavailable"))?;
+        let json = serde_json::to_string_pretty(self)
+            .context(format!("serializing plugin manifest '{}'", path.display()))?;
+        fs::write(path, format!("{json}\n"))
+            .with_context(|| format!("writing plugin manifest '{}'", path.display()))?;
+        Ok(())
+    }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PluginManifestEntry {
     pub name: String,
     pub path: String,
