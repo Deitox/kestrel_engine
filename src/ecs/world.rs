@@ -624,12 +624,7 @@ impl EcsWorld {
         }
     }
 
-    pub fn set_transform_clip(
-        &mut self,
-        entity: Entity,
-        assets: &AssetManager,
-        clip_key: &str,
-    ) -> bool {
+    pub fn set_transform_clip(&mut self, entity: Entity, assets: &AssetManager, clip_key: &str) -> bool {
         let clip_data = match assets.clip(clip_key) {
             Some(clip) => clip.clone(),
             None => return false,
@@ -759,8 +754,7 @@ impl EcsWorld {
     }
 
     fn apply_clip_sample_immediate(&mut self, entity: Entity, sample: ClipSample) {
-        let transform_mask =
-            self.world.get::<TransformTrackPlayer>(entity).copied().unwrap_or_default();
+        let transform_mask = self.world.get::<TransformTrackPlayer>(entity).copied().unwrap_or_default();
         if let Some(mut transform) = self.world.get_mut::<Transform>(entity) {
             if transform_mask.apply_translation {
                 if let Some(value) = sample.translation {
@@ -778,8 +772,7 @@ impl EcsWorld {
                 }
             }
         }
-        let property_mask =
-            self.world.get::<PropertyTrackPlayer>(entity).copied().unwrap_or_default();
+        let property_mask = self.world.get::<PropertyTrackPlayer>(entity).copied().unwrap_or_default();
         if let Some(mut tint) = self.world.get_mut::<Tint>(entity) {
             if property_mask.apply_tint {
                 if let Some(value) = sample.tint {

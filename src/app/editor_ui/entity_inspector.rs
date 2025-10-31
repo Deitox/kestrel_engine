@@ -1,6 +1,8 @@
 use super::{PrefabDragPayload, SpriteAtlasRequest, UiActions};
 use crate::assets::AssetManager;
-use crate::ecs::{EcsWorld, EntityInfo, PropertyTrackPlayer, SpriteInfo, TransformClipInfo, TransformTrackPlayer};
+use crate::ecs::{
+    EcsWorld, EntityInfo, PropertyTrackPlayer, SpriteInfo, TransformClipInfo, TransformTrackPlayer,
+};
 use crate::gizmo::{GizmoInteraction, GizmoMode, ScaleHandle};
 use crate::input::Input;
 use crate::material_registry::MaterialRegistry;
@@ -287,8 +289,8 @@ pub(super) fn show_entity_inspector(
                 ui.horizontal(|ui| {
                     ui.label("Group");
                     let mut group_value = clip_info.group.clone().unwrap_or_default();
-                    let response = ui
-                        .add(egui::TextEdit::singleline(&mut group_value).hint_text("optional group id"));
+                    let response =
+                        ui.add(egui::TextEdit::singleline(&mut group_value).hint_text("optional group id"));
                     if response.changed() {
                         let trimmed = group_value.trim();
                         let result = if trimmed.is_empty() {
@@ -297,7 +299,8 @@ pub(super) fn show_entity_inspector(
                             app.ecs.set_transform_clip_group(entity, Some(trimmed))
                         };
                         if result {
-                            clip_info.group = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
+                            clip_info.group =
+                                if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
                             inspector_refresh = true;
                         }
                     }
@@ -306,9 +309,7 @@ pub(super) fn show_entity_inspector(
                 let mut clip_time = clip_info.time.clamp(0.0, duration);
                 let slider_response = ui.add_enabled(
                     duration > 0.0,
-                    egui::Slider::new(&mut clip_time, 0.0..=duration)
-                        .text("Time (s)")
-                        .smart_aim(false),
+                    egui::Slider::new(&mut clip_time, 0.0..=duration).text("Time (s)").smart_aim(false),
                 );
                 if slider_response.changed() {
                     if app.ecs.set_transform_clip_time(entity, clip_time) {
@@ -338,11 +339,8 @@ pub(super) fn show_entity_inspector(
                     markers.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
                     markers.dedup_by(|a, b| (*a - *b).abs() <= 1e-4);
                     if !markers.is_empty() {
-                        let formatted = markers
-                            .iter()
-                            .map(|t| format!("{:.3}", t))
-                            .collect::<Vec<_>>()
-                            .join(", ");
+                        let formatted =
+                            markers.iter().map(|t| format!("{:.3}", t)).collect::<Vec<_>>().join(", ");
                         ui.small(format!("Keyframes: {}", formatted));
                     }
                 }
@@ -391,9 +389,12 @@ pub(super) fn show_entity_inspector(
 
                 ui.horizontal(|ui| {
                     ui.label("Tracks");
-                    track_badge(ui, "Translation", clip_info.has_translation, transform_mask_opt
-                        .map(|mask| mask.apply_translation)
-                        .unwrap_or(false));
+                    track_badge(
+                        ui,
+                        "Translation",
+                        clip_info.has_translation,
+                        transform_mask_opt.map(|mask| mask.apply_translation).unwrap_or(false),
+                    );
                     track_badge(
                         ui,
                         "Rotation",

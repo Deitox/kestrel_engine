@@ -144,11 +144,11 @@ Benchmarks emit CSV summaries for CI. Failing budgets block the milestone exit.
 - **Risk Watch:** Ping-pong edge duplication, event flood at high FPS, skinning buffer exhaustion, and graph oscillation loops - each gets targeted tests before milestone close.
 
 ## Immediate Next Actions
-- [x] Implement `ClipInstance` playback path (`sys_drive_transform_tracks`, property writers) with zero-allocation updates.
-- [x] Expose transform/property clip controls in the inspector (assignment widget, scrubber, per-track status).
-- [x] Add golden tests covering linear/step interpolation and final pose verification for transform clips.
-- [x] Extend `animation_bench` to include the 2 000 clip performance sweep and CSV reporting for Milestone 2.
-- [x] Capture inspector walkthrough for transform/property clips and publish alongside workflow docs.
-- [x] Track transform clip perf budget in CI dashboards using new CSV output.
+- [ ] Land GLTF skeleton importer and fixture assets (sample rig + clip extraction into `AssetManager`). *(Importer module + AssetManager retention APIs merged; fixture GLTF + regression coverage still pending.)*
+- [ ] Introduce ECS skeleton components (`SkeletonInstance`, `SkinMesh`, `BoneTransforms`) and hook them into transform propagation.
+- [ ] Implement CPU pose evaluator with golden pose tests using the fixture clip.
+- [ ] Extend renderer skinning to upload joint palettes, split batches when limits hit, and record GPU timing.
+- [ ] Add skeletal evaluation coverage to `animation_bench` capturing the 1 000-bone CPU budget.
+- [ ] Expand `docs/animation_workflows.md` skeletal section with authoring steps and inspector expectations.
 
 This roadmap supersedes earlier drafts and reflects the final agreed-upon plan for animation system development. Further adjustments will follow formal change control once milestones begin execution.

@@ -401,8 +401,14 @@ fn bench_transform_clip() -> Arc<AnimationClip> {
     Arc::new(AnimationClip {
         name: Arc::from("bench_transform"),
         duration: 0.5,
-        translation: Some(ClipVec2Track { interpolation: ClipInterpolation::Linear, keyframes: translation_keys }),
-        rotation: Some(ClipScalarTrack { interpolation: ClipInterpolation::Linear, keyframes: rotation_keys }),
+        translation: Some(ClipVec2Track {
+            interpolation: ClipInterpolation::Linear,
+            keyframes: translation_keys,
+        }),
+        rotation: Some(ClipScalarTrack {
+            interpolation: ClipInterpolation::Linear,
+            keyframes: rotation_keys,
+        }),
         scale: Some(ClipVec2Track { interpolation: ClipInterpolation::Step, keyframes: scale_keys }),
         tint: Some(ClipVec4Track { interpolation: ClipInterpolation::Linear, keyframes: tint_keys }),
         looped: true,
@@ -417,7 +423,11 @@ fn stable_phase_fraction(seed: u64, timeline: &str) -> f32 {
     (hasher.finish() as f64 * SCALE) as f32
 }
 
-fn write_csv(results: &[BenchResult], csv_relative_path: &str, budgets: &[(usize, f64)]) -> std::io::Result<()> {
+fn write_csv(
+    results: &[BenchResult],
+    csv_relative_path: &str,
+    budgets: &[(usize, f64)],
+) -> std::io::Result<()> {
     if results.is_empty() {
         return Ok(());
     }

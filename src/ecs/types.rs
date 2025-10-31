@@ -1,5 +1,5 @@
-use crate::scene::{MeshLightingData, SceneEntityId};
 use crate::assets::{AnimationClip, ClipInterpolation, ClipScalarTrack, ClipVec2Track, ClipVec4Track};
+use crate::scene::{MeshLightingData, SceneEntityId};
 use bevy_ecs::prelude::*;
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use rapier2d::prelude::{ColliderHandle, RigidBodyHandle};
@@ -342,13 +342,8 @@ impl ClipInstance {
             self.clip.translation.as_ref().and_then(|track| sample_vec2_track(track, time, self.looped));
         let rotation =
             self.clip.rotation.as_ref().and_then(|track| sample_scalar_track(track, time, self.looped));
-        let scale =
-            self.clip.scale.as_ref().and_then(|track| sample_vec2_track(track, time, self.looped));
-        let tint = self
-            .clip
-            .tint
-            .as_ref()
-            .and_then(|track| sample_vec4_track(track, time, self.looped));
+        let scale = self.clip.scale.as_ref().and_then(|track| sample_vec2_track(track, time, self.looped));
+        let tint = self.clip.tint.as_ref().and_then(|track| sample_vec4_track(track, time, self.looped));
         ClipSample { translation, rotation, scale, tint }
     }
 }
@@ -435,7 +430,12 @@ fn normalize_time(time: f32, duration: f32, looped: bool) -> f32 {
     }
 }
 
-fn sample_keyframes<T, L>(frames: &[crate::assets::ClipKeyframe<T>], mode: ClipInterpolation, time: f32, lerp: L) -> T
+fn sample_keyframes<T, L>(
+    frames: &[crate::assets::ClipKeyframe<T>],
+    mode: ClipInterpolation,
+    time: f32,
+    lerp: L,
+) -> T
 where
     T: Copy,
     L: Fn(T, T, f32) -> T,

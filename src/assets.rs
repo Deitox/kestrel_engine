@@ -7,9 +7,13 @@ use std::collections::HashMap;
 use std::fs;
 use std::sync::Arc;
 
+pub mod skeletal;
+
 pub struct AssetManager {
     atlases: HashMap<String, TextureAtlas>,
     clips: HashMap<String, AnimationClip>,
+    skeletons: HashMap<String, skeletal::SkeletonAsset>,
+    skeletal_clips: HashMap<String, skeletal::SkeletalClip>,
     sampler: Option<wgpu::Sampler>,
     device: Option<wgpu::Device>,
     queue: Option<wgpu::Queue>,
@@ -18,6 +22,10 @@ pub struct AssetManager {
     atlas_refs: HashMap<String, usize>,
     clip_sources: HashMap<String, String>,
     clip_refs: HashMap<String, usize>,
+    skeleton_sources: HashMap<String, String>,
+    skeleton_refs: HashMap<String, usize>,
+    skeletal_clip_sources: HashMap<String, String>,
+    skeleton_clip_index: HashMap<String, Vec<String>>,
 }
 
 fn build_vec2_track(raw: ClipVec2TrackFile) -> Result<(ClipVec2Track, f32)> {
@@ -307,6 +315,8 @@ impl AssetManager {
         Self {
             atlases: HashMap::new(),
             clips: HashMap::new(),
+            skeletons: HashMap::new(),
+            skeletal_clips: HashMap::new(),
             sampler: None,
             device: None,
             queue: None,
@@ -315,6 +325,10 @@ impl AssetManager {
             atlas_refs: HashMap::new(),
             clip_sources: HashMap::new(),
             clip_refs: HashMap::new(),
+            skeleton_sources: HashMap::new(),
+            skeleton_refs: HashMap::new(),
+            skeletal_clip_sources: HashMap::new(),
+            skeleton_clip_index: HashMap::new(),
         }
     }
     pub fn set_device(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
@@ -570,6 +584,87 @@ impl AssetManager {
     }
     pub fn clip_source(&self, key: &str) -> Option<&str> {
         self.clip_sources.get(key).map(|s| s.as_str())
+    }
+    fn load_skeleton_internal(&mut self, key: &str, gltf_path: &str) -> Result<()> {
+        let import = skeletal::load_skeleton_from_gltf(gltf_path)?;
+        self.skeletons.insert(key.to_string(), import.skeleton);
+        if let Some(existing) = self.skeleton_clip_index.remove(key) {
+            for clip_key in existing {
+                self.skeletal_clips.remove(&clip_key);
+                self.skeletal_clip_sources.remove(&clip_key);
+            }
+        }
+        let mut clip_keys: Vec<String> = Vec::new();
+        for clip in import.clips {
+            let clip_key = format!("{key}::{}", clip.name.as_ref());
+            self.skeletal_clip_sources.insert(clip_key.clone(), gltf_path.to_string());
+            self.skeletal_clips.insert(clip_key.clone(), clip);
+            clip_keys.push(clip_key);
+        }
+        self.skeleton_clip_index.insert(key.to_string(), clip_keys);
+        Ok(())
+    }
+    pub fn retain_skeleton(&mut self, key: &str, gltf_path: Option<&str>) -> Result<()> {
+        if self.skeletons.contains_key(key) {
+            *self.skeleton_refs.entry(key.to_string()).or_insert(0) += 1;
+            if let Some(path) = gltf_path {
+                self.skeleton_sources.insert(key.to_string(), path.to_string());
+            }
+            return Ok(());
+        }
+        let path_owned = if let Some(path) = gltf_path {
+            path.to_string()
+        } else if let Some(stored) = self.skeleton_sources.get(key) {
+            stored.clone()
+        } else {
+            return Err(anyhow!("Skeleton '{key}' is not loaded and no GLTF path provided to retain it."));
+        };
+        self.load_skeleton_internal(key, &path_owned)?;
+        self.skeleton_sources.insert(key.to_string(), path_owned);
+        self.skeleton_refs.insert(key.to_string(), 1);
+        Ok(())
+    }
+    pub fn release_skeleton(&mut self, key: &str) -> bool {
+        if let Some(count) = self.skeleton_refs.get_mut(key) {
+            if *count > 0 {
+                *count -= 1;
+                if *count == 0 {
+                    self.skeleton_refs.remove(key);
+                    self.skeletons.remove(key);
+                    self.skeleton_sources.remove(key);
+                    if let Some(clip_keys) = self.skeleton_clip_index.remove(key) {
+                        for clip_key in clip_keys {
+                            self.skeletal_clips.remove(&clip_key);
+                            self.skeletal_clip_sources.remove(&clip_key);
+                        }
+                    }
+                }
+                return true;
+            }
+        }
+        false
+    }
+    pub fn skeleton(&self, key: &str) -> Option<&skeletal::SkeletonAsset> {
+        self.skeletons.get(key)
+    }
+    pub fn skeleton_keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self.skeletons.keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+    pub fn skeleton_source(&self, key: &str) -> Option<&str> {
+        self.skeleton_sources.get(key).map(|s| s.as_str())
+    }
+    pub fn skeletal_clip(&self, key: &str) -> Option<&skeletal::SkeletalClip> {
+        self.skeletal_clips.get(key)
+    }
+    pub fn skeletal_clip_keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self.skeletal_clips.keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+    pub fn skeletal_clip_keys_for(&self, skeleton_key: &str) -> Option<&[String]> {
+        self.skeleton_clip_index.get(skeleton_key).map(|vec| vec.as_slice())
     }
     pub fn release_atlas(&mut self, key: &str) -> bool {
         if let Some(count) = self.atlas_refs.get_mut(key) {

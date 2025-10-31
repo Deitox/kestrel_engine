@@ -84,26 +84,15 @@ fn drive_transform_clips(
         Option<Mut<Tint>>,
     )>,
 ) {
-    for (
-        _entity,
-        mut instance,
-        transform_player,
-        property_player,
-        transform,
-        tint,
-    ) in clips.iter_mut()
-    {
+    for (_entity, mut instance, transform_player, property_player, transform, tint) in clips.iter_mut() {
         if !instance.playing && instance.looped {
             // Looping clips resume automatically; keep advancing even if flagged not playing.
         } else if !instance.playing {
             continue;
         }
 
-        let group_scale = if has_group_scales {
-            animation_time.group_scale(instance.group.as_deref())
-        } else {
-            1.0
-        };
+        let group_scale =
+            if has_group_scales { animation_time.group_scale(instance.group.as_deref()) } else { 1.0 };
         let playback_rate = if instance.playback_rate_dirty {
             instance.ensure_playback_rate(group_scale)
         } else {
@@ -134,14 +123,7 @@ fn drive_transform_clips(
         }
         instance.time = new_time;
         let sample = instance.sample();
-        apply_clip_sample(
-            &mut instance,
-            transform_player,
-            property_player,
-            transform,
-            tint,
-            sample,
-        );
+        apply_clip_sample(&mut instance, transform_player, property_player, transform, tint, sample);
     }
 }
 
@@ -157,8 +139,7 @@ fn apply_clip_sample(
         let mask = transform_player.copied().unwrap_or_default();
         if mask.apply_translation {
             if let Some(value) = sample.translation {
-                let changed =
-                    instance.last_translation.map_or(true, |prev| !approx_eq_vec2(prev, value));
+                let changed = instance.last_translation.map_or(true, |prev| !approx_eq_vec2(prev, value));
                 if changed {
                     transform.translation = value;
                 }
@@ -166,8 +147,7 @@ fn apply_clip_sample(
         }
         if mask.apply_rotation {
             if let Some(value) = sample.rotation {
-                let changed =
-                    instance.last_rotation.map_or(true, |prev| !approx_eq_scalar(prev, value));
+                let changed = instance.last_rotation.map_or(true, |prev| !approx_eq_scalar(prev, value));
                 if changed {
                     transform.rotation = value;
                 }
@@ -175,8 +155,7 @@ fn apply_clip_sample(
         }
         if mask.apply_scale {
             if let Some(value) = sample.scale {
-                let changed =
-                    instance.last_scale.map_or(true, |prev| !approx_eq_vec2(prev, value));
+                let changed = instance.last_scale.map_or(true, |prev| !approx_eq_vec2(prev, value));
                 if changed {
                     transform.scale = value;
                 }
@@ -188,8 +167,7 @@ fn apply_clip_sample(
         let mask = property_player.copied().unwrap_or_default();
         if mask.apply_tint {
             if let Some(value) = sample.tint {
-                let changed =
-                    instance.last_tint.map_or(true, |prev| !approx_eq_vec4(prev, value));
+                let changed = instance.last_tint.map_or(true, |prev| !approx_eq_vec4(prev, value));
                 if changed {
                     tint_component.0 = value;
                 }
