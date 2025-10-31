@@ -1711,7 +1711,6 @@ impl App {
                                         new_enabled: enabled_flag,
                                     });
                                 }
-                                entry.enabled = enabled_flag;
                             }
                         }
                     } else {

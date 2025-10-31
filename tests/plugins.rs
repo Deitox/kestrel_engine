@@ -7,11 +7,15 @@ use kestrel_engine::events::GameEvent;
 use kestrel_engine::input::Input;
 use kestrel_engine::material_registry::MaterialRegistry;
 use kestrel_engine::mesh_registry::MeshRegistry;
-use kestrel_engine::plugins::{EnginePlugin, PluginContext, PluginManager};
+use kestrel_engine::plugins::{
+    apply_manifest_toggles, EnginePlugin, ManifestToggle, PluginContext, PluginManager,
+};
 use kestrel_engine::renderer::Renderer;
 use kestrel_engine::time::Time;
 use pollster::block_on;
 use std::any::Any;
+use std::fs;
+use tempfile::tempdir;
 
 fn push_event_bridge(ecs: &mut EcsWorld, event: GameEvent) {
     ecs.push_event(event);
@@ -239,4 +243,84 @@ fn plugins_can_publish_features() {
         features.iter().any(|feature| feature == "test.feature"),
         "feature registry tracks plugin-provided capabilities"
     );
+}
+
+#[test]
+fn manifest_toggle_updates_and_persists() {
+    let dir = tempdir().expect("temp dir created");
+    let manifest_path = dir.path().join("plugins.json");
+    let manifest_json = r#"
+{
+  "disable_builtins": [],
+  "plugins": [
+    { "name": "alpha", "path": "alpha.dll", "enabled": true },
+    { "name": "beta", "path": "beta.dll", "enabled": false }
+  ]
+}
+"#;
+    fs::write(&manifest_path, manifest_json).expect("manifest written");
+
+    let mut manifest = PluginManager::load_manifest(&manifest_path)
+        .expect("manifest read")
+        .expect("manifest present");
+    let toggles = vec![
+        ManifestToggle { name: "alpha".to_string(), prev_enabled: true, new_enabled: false },
+        ManifestToggle { name: "beta".to_string(), prev_enabled: false, new_enabled: true },
+        ManifestToggle { name: "beta".to_string(), prev_enabled: false, new_enabled: true },
+    ];
+
+    let outcome = apply_manifest_toggles(&mut manifest, &toggles);
+    assert!(outcome.changed, "changes are detected");
+    assert_eq!(outcome.enabled, vec!["beta".to_string()], "beta enabled list");
+    assert_eq!(outcome.disabled, vec!["alpha".to_string()], "alpha disabled list");
+    assert!(outcome.missing.is_empty(), "no missing entries reported");
+
+    let states: Vec<(String, bool)> =
+        manifest.entries().iter().map(|entry| (entry.name.clone(), entry.enabled)).collect();
+    assert_eq!(
+        states,
+        vec![("alpha".to_string(), false), ("beta".to_string(), true)],
+        "manifest entries updated in-memory"
+    );
+
+    manifest.save().expect("manifest saved");
+    let reloaded = PluginManager::load_manifest(&manifest_path)
+        .expect("reload ok")
+        .expect("manifest still present");
+    let persisted: Vec<(String, bool)> =
+        reloaded.entries().iter().map(|entry| (entry.name.clone(), entry.enabled)).collect();
+    assert_eq!(
+        persisted,
+        vec![("alpha".to_string(), false), ("beta".to_string(), true)],
+        "manifest persisted new states"
+    );
+}
+
+#[test]
+fn manifest_toggle_reports_missing_entries() {
+    let dir = tempdir().expect("temp dir created");
+    let manifest_path = dir.path().join("plugins.json");
+    let manifest_json = r#"
+{
+  "disable_builtins": [],
+  "plugins": [
+    { "name": "alpha", "path": "alpha.dll", "enabled": true }
+  ]
+}
+"#;
+    fs::write(&manifest_path, manifest_json).expect("manifest written");
+
+    let mut manifest = PluginManager::load_manifest(&manifest_path)
+        .expect("manifest read")
+        .expect("manifest present");
+    let toggles = vec![ManifestToggle {
+        name: "ghost".to_string(),
+        prev_enabled: false,
+        new_enabled: true,
+    }];
+    let outcome = apply_manifest_toggles(&mut manifest, &toggles);
+    assert!(!outcome.changed, "no changes applied");
+    assert_eq!(outcome.enabled, Vec::<String>::new(), "no enabled entries reported");
+    assert_eq!(outcome.disabled, Vec::<String>::new(), "no disabled entries reported");
+    assert_eq!(outcome.missing, vec!["ghost".to_string()], "missing entry is reported");
 }

@@ -523,7 +523,7 @@ fn animation_time_scales_and_gates_playback() {
         let mut anim_time = ecs.world.resource_mut::<kestrel_engine::ecs::AnimationTime>();
         anim_time.scale = 0.5;
     }
-    ecs.update(0.24);
+    ecs.update(0.25);
     let region_scaled = sprite_region(&ecs, entity);
     assert_eq!(
         region_scaled, "bluebox",

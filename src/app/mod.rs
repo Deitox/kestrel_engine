@@ -12,7 +12,10 @@ use crate::input::{Input, InputEvent};
 use crate::material_registry::{MaterialGpu, MaterialRegistry};
 use crate::mesh_preview::{MeshControlMode, MeshPreviewPlugin};
 use crate::mesh_registry::MeshRegistry;
-use crate::plugins::{FeatureRegistryHandle, PluginContext, PluginManager, PluginManifest};
+use crate::plugins::{
+    apply_manifest_toggles, FeatureRegistryHandle, ManifestToggle, PluginContext, PluginManager,
+    PluginManifest,
+};
 use crate::prefab::{PrefabFormat, PrefabLibrary, PrefabStatusKind, PrefabStatusMessage};
 use crate::renderer::{GpuPassTiming, MeshDraw, RenderViewport, Renderer, SpriteBatch};
 use crate::scene::{
@@ -634,46 +637,23 @@ impl App {
             self.ui_scene_status = Some("Plugin manifest not found.".to_string());
             return;
         };
-        let mut dedup: BTreeMap<String, (bool, bool)> = BTreeMap::new();
-        for toggle in toggles {
-            dedup
-                .entry(toggle.name.clone())
-                .and_modify(|entry| entry.1 = toggle.new_enabled)
-                .or_insert((toggle.prev_enabled, toggle.new_enabled));
-        }
-        if dedup.is_empty() {
-            return;
-        }
-        let mut enabled = Vec::new();
-        let mut disabled = Vec::new();
-        let mut missing = Vec::new();
-        let mut apply_changes = false;
-        for (name, (prev_state, new_state)) in &dedup {
-            match manifest.entry_mut(name) {
-                Some(entry) => {
-                    if entry.enabled != *new_state {
-                        entry.enabled = *new_state;
-                    }
-                    if prev_state != new_state {
-                        apply_changes = true;
-                        if *new_state {
-                            enabled.push(name.clone());
-                        } else {
-                            disabled.push(name.clone());
-                        }
-                    }
-                }
-                None => missing.push(name.clone()),
-            }
-        }
-        if !apply_changes {
-            if missing.is_empty() {
+        let requests: Vec<ManifestToggle> = toggles
+            .iter()
+            .map(|toggle| ManifestToggle {
+                name: toggle.name.clone(),
+                prev_enabled: toggle.prev_enabled,
+                new_enabled: toggle.new_enabled,
+            })
+            .collect();
+        let outcome = apply_manifest_toggles(manifest, &requests);
+        if !outcome.changed {
+            if outcome.missing.is_empty() {
                 self.ui_scene_status = Some("Plugin manifest unchanged.".to_string());
             } else {
                 self.ui_scene_status = Some(format!(
                     "Plugin toggle skipped; missing manifest entr{} {}",
-                    if missing.len() == 1 { "y:" } else { "ies:" },
-                    missing.join(", ")
+                    if outcome.missing.len() == 1 { "y:" } else { "ies:" },
+                    outcome.missing.join(", ")
                 ));
                 if let Ok(fresh) = PluginManager::load_manifest(PLUGIN_MANIFEST_PATH) {
                     self.plugin_manifest = fresh;
@@ -690,17 +670,17 @@ impl App {
         }
         self.reload_dynamic_plugins();
         let mut parts = Vec::new();
-        if !enabled.is_empty() {
-            parts.push(format!("enabled {}", enabled.join(", ")));
+        if !outcome.enabled.is_empty() {
+            parts.push(format!("enabled {}", outcome.enabled.join(", ")));
         }
-        if !disabled.is_empty() {
-            parts.push(format!("disabled {}", disabled.join(", ")));
+        if !outcome.disabled.is_empty() {
+            parts.push(format!("disabled {}", outcome.disabled.join(", ")));
         }
-        if !missing.is_empty() {
+        if !outcome.missing.is_empty() {
             parts.push(format!(
                 "skipped unknown entr{} {}",
-                if missing.len() == 1 { "y" } else { "ies" },
-                missing.join(", ")
+                if outcome.missing.len() == 1 { "y" } else { "ies" },
+                outcome.missing.join(", ")
             ));
         }
         if parts.is_empty() {

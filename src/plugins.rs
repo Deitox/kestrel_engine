@@ -13,7 +13,7 @@ use libloading::Library;
 use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::cell::{Ref, RefCell, RefMut};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::io;
 use std::mem;
@@ -667,4 +667,50 @@ pub struct PluginManifestEntry {
 
 fn default_enabled() -> bool {
     true
+}
+
+#[derive(Debug, Clone)]
+pub struct ManifestToggle {
+    pub name: String,
+    pub prev_enabled: bool,
+    pub new_enabled: bool,
+}
+
+#[derive(Debug, Default)]
+pub struct ManifestToggleOutcome {
+    pub enabled: Vec<String>,
+    pub disabled: Vec<String>,
+    pub missing: Vec<String>,
+    pub changed: bool,
+}
+
+pub fn apply_manifest_toggles(manifest: &mut PluginManifest, toggles: &[ManifestToggle]) -> ManifestToggleOutcome {
+    let mut outcome = ManifestToggleOutcome::default();
+    if toggles.is_empty() {
+        return outcome;
+    }
+    let mut dedup: BTreeMap<&str, &ManifestToggle> = BTreeMap::new();
+    for toggle in toggles {
+        dedup.insert(toggle.name.as_str(), toggle);
+    }
+    for toggle in dedup.values() {
+        match manifest.entry_mut(&toggle.name) {
+            Some(entry) => {
+                if entry.enabled != toggle.new_enabled {
+                    entry.enabled = toggle.new_enabled;
+                    outcome.changed = true;
+                    if toggle.new_enabled {
+                        outcome.enabled.push(toggle.name.clone());
+                    } else {
+                        outcome.disabled.push(toggle.name.clone());
+                    }
+                }
+            }
+            None => outcome.missing.push(toggle.name.clone()),
+        }
+    }
+    outcome.enabled.sort();
+    outcome.disabled.sort();
+    outcome.missing.sort();
+    outcome
 }
