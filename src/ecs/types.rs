@@ -910,6 +910,14 @@ pub struct SkeletonInfo {
 }
 
 #[derive(Clone)]
+pub struct SkinMeshInfo {
+    pub joint_count: usize,
+    pub skeleton_entity: Option<Entity>,
+    pub skeleton_scene_id: Option<SceneEntityId>,
+    pub mesh_key: Option<String>,
+}
+
+#[derive(Clone)]
 pub struct EntityInfo {
     pub scene_id: SceneEntityId,
     pub translation: Vec2,
@@ -924,6 +932,7 @@ pub struct EntityInfo {
     pub mesh_transform: Option<Transform3DInfo>,
     pub tint: Option<Vec4>,
     pub skeleton: Option<SkeletonInfo>,
+    pub skin_mesh: Option<SkinMeshInfo>,
 }
 
 #[derive(Clone)]

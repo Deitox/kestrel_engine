@@ -109,7 +109,8 @@
   4. **Animation control:** Drive clips via the existing animation commands (`play_clip`, `set_group`, etc.). The unit tests in `src/ecs/systems/animation.rs` (`cargo test slime_rig_pose`) provide a golden reference for pose evaluation and loop wrapping.
 - **Inspector expectations**
   - The **Skeleton** panel lists skeleton key, joint count, active clip, normalized time, and playback state. Expect an inline warning if the rig exceeds 256 joints or when clips lack authored channels.
-  - Clip selectors surface every retained `<skeleton>::<clip>` combo and update the pose view immediately while scrubbing; palette lengths reflect the active clip’s joint coverage.
+  - Clip selectors surface every retained `<skeleton>::<clip>` combo and update the pose view immediately while scrubbing; palette lengths reflect the active clip's joint coverage.
+  - The **Skinning** panel manages `SkinMesh` bindings: add/remove the component, assign a skeleton by `SceneEntityId`, sync joint counts from the target rig, and manually override joint budgets when debugging stray meshes.
   - Mesh inspector entries show whether a `SkinMesh` resolved a palette; the renderer truncates excess joints but keeps the entity visible so you can spot mismatches quickly.
 - **Benchmarks & validation**
   - `cargo test --release animation_bench_run -- --ignored --nocapture` generates `benchmarks/animation_skeletal_clips.csv`, tracking the <= 1.20 ms CPU budget for 1 000 bones.

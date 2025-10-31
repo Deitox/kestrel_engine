@@ -857,6 +857,54 @@ impl EcsWorld {
         self.refresh_skeleton_pose(entity)
     }
 
+    pub fn attach_skin_mesh(&mut self, entity: Entity, joint_count: usize) -> bool {
+        if self.world.get_entity(entity).is_err() {
+            return false;
+        }
+        if let Some(mut skin) = self.world.get_mut::<SkinMesh>(entity) {
+            skin.joint_count = joint_count as u32;
+            true
+        } else {
+            let skin = SkinMesh::new(joint_count);
+            self.world.entity_mut(entity).insert(skin);
+            true
+        }
+    }
+
+    pub fn detach_skin_mesh(&mut self, entity: Entity) -> bool {
+        if self.world.get::<SkinMesh>(entity).is_some() {
+            self.world.entity_mut(entity).remove::<SkinMesh>();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_skin_mesh_skeleton(&mut self, entity: Entity, skeleton_entity: Option<Entity>) -> bool {
+        let joints_from_skeleton = if let Some(skel_entity) = skeleton_entity {
+            self.world.get::<SkeletonInstance>(skel_entity).map(|skeleton| skeleton.joint_count())
+        } else {
+            None
+        };
+        let Some(mut skin) = self.world.get_mut::<SkinMesh>(entity) else {
+            return false;
+        };
+        skin.skeleton_entity = skeleton_entity;
+        if let Some(count) = joints_from_skeleton {
+            skin.joint_count = count as u32;
+        }
+        true
+    }
+
+    pub fn set_skin_mesh_joint_count(&mut self, entity: Entity, joint_count: usize) -> bool {
+        if let Some(mut skin) = self.world.get_mut::<SkinMesh>(entity) {
+            skin.joint_count = joint_count as u32;
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn set_transform_track_mask(&mut self, entity: Entity, mask: TransformTrackPlayer) -> bool {
         if self.world.get_entity(entity).is_err() {
             return false;
@@ -1503,6 +1551,17 @@ impl EcsWorld {
         self.world.resource_mut::<SystemProfiler>().begin_frame();
     }
 
+    pub fn skeleton_entities(&mut self) -> Vec<(Entity, SceneEntityId)> {
+        let mut out = Vec::new();
+        let mut query = self.world.query::<(Entity, &SkeletonInstance, Option<&SceneEntityTag>)>();
+        for (entity, _instance, tag) in query.iter(&self.world) {
+            if let Some(tag) = tag {
+                out.push((entity, tag.id.clone()));
+            }
+        }
+        out
+    }
+
     pub fn system_timings(&self) -> Vec<SystemTimingSummary> {
         self.world.resource::<SystemProfiler>().summaries()
     }
@@ -1712,6 +1771,14 @@ impl EcsWorld {
                 clip: clip_info,
             }
         });
+        let skin_mesh = self.world.get::<SkinMesh>(entity).map(|skin| {
+            (skin.joints(), skin.skeleton_entity, skin.mesh_key.as_ref().map(|key| key.as_ref().to_string()))
+        });
+        let skin_mesh = skin_mesh.map(|(joint_count, skeleton_entity, mesh_key)| {
+            let skeleton_scene_id = skeleton_entity
+                .and_then(|skel| self.world.get::<SceneEntityTag>(skel).map(|tag| tag.id.clone()));
+            SkinMeshInfo { joint_count, skeleton_entity, skeleton_scene_id, mesh_key }
+        });
         Some(EntityInfo {
             scene_id,
             translation,
@@ -1726,6 +1793,7 @@ impl EcsWorld {
             mesh_transform,
             tint,
             skeleton,
+            skin_mesh,
         })
     }
     pub fn entity_exists(&self, entity: Entity) -> bool {

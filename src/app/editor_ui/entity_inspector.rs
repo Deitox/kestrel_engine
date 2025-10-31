@@ -1217,6 +1217,132 @@ pub(super) fn show_entity_inspector(
                 }
             }
 
+            let skeleton_entities = app.ecs.skeleton_entities();
+            if let Some(mut skin_mesh) = info.skin_mesh.clone() {
+                ui.separator();
+                ui.label("Skinning");
+                if let Some(ref mesh_key) = skin_mesh.mesh_key {
+                    ui.small(format!("Mesh key: {}", mesh_key));
+                }
+                let mut joint_count = skin_mesh.joint_count as u32;
+                ui.horizontal(|ui| {
+                    ui.label("Joint Count");
+                    if ui.add(egui::DragValue::new(&mut joint_count).speed(1.0).range(0..=4096)).changed() {
+                        if app.ecs.set_skin_mesh_joint_count(entity, joint_count as usize) {
+                            skin_mesh.joint_count = joint_count as usize;
+                            inspector_refresh = true;
+                            *app.inspector_status = None;
+                        } else {
+                            *app.inspector_status = Some("Failed to update joint count".to_string());
+                        }
+                    }
+                });
+                let mut desired_skeleton = skin_mesh.skeleton_entity;
+                let mut options: Vec<(Option<Entity>, String)> =
+                    Vec::with_capacity(skeleton_entities.len() + 1);
+                options.push((None, "<None>".to_string()));
+                for (skel_entity, scene_id) in &skeleton_entities {
+                    let label = format!("{} (#{} )", scene_id.as_str(), skel_entity.index());
+                    options.push((Some(*skel_entity), label));
+                }
+                if let Some(current) = skin_mesh.skeleton_entity {
+                    if !options.iter().any(|(entity_opt, _)| *entity_opt == Some(current)) {
+                        let label = skin_mesh
+                            .skeleton_scene_id
+                            .as_ref()
+                            .map(|id| format!("{} (#{} )", id.as_str(), current.index()))
+                            .unwrap_or_else(|| format!("Entity #{}", current.index()));
+                        options.push((Some(current), label));
+                    }
+                }
+                ui.horizontal(|ui| {
+                    ui.label("Skeleton");
+                    egui::ComboBox::from_id_salt(("skin_mesh_skeleton", entity.index()))
+                        .selected_text(match desired_skeleton {
+                            Some(current) => skin_mesh
+                                .skeleton_scene_id
+                                .as_ref()
+                                .map(|id| format!("{} (#{} )", id.as_str(), current.index()))
+                                .unwrap_or_else(|| format!("Entity #{}", current.index())),
+                            None => "<None>".to_string(),
+                        })
+                        .show_ui(ui, |ui| {
+                            for (value, label) in &options {
+                                ui.selectable_value(&mut desired_skeleton, *value, label);
+                            }
+                        });
+                });
+                if desired_skeleton != skin_mesh.skeleton_entity {
+                    if app.ecs.set_skin_mesh_skeleton(entity, desired_skeleton) {
+                        inspector_refresh = true;
+                        *app.inspector_status = match desired_skeleton {
+                            Some(skel) => Some(format!("Skin mesh bound to skeleton #{:04}", skel.index())),
+                            None => Some("Skin mesh skeleton cleared".to_string()),
+                        };
+                        skin_mesh.skeleton_entity = desired_skeleton;
+                        skin_mesh.skeleton_scene_id = desired_skeleton
+                            .and_then(|skel| app.ecs.entity_info(skel).map(|info| info.scene_id));
+                    } else {
+                        *app.inspector_status = Some("Failed to update skin mesh skeleton".to_string());
+                    }
+                }
+                let mut skin_mesh_removed = false;
+                ui.horizontal(|ui| {
+                    if ui.button("Reset Joint Count from Skeleton").clicked() {
+                        if let Some(skel) = skin_mesh.skeleton_entity {
+                            if let Some(skeleton_info) =
+                                app.ecs.entity_info(skel).and_then(|info| info.skeleton)
+                            {
+                                if app.ecs.set_skin_mesh_joint_count(entity, skeleton_info.joint_count) {
+                                    skin_mesh.joint_count = skeleton_info.joint_count;
+                                    inspector_refresh = true;
+                                    *app.inspector_status = Some(format!(
+                                        "Skin mesh joints set to {}",
+                                        skeleton_info.joint_count
+                                    ));
+                                } else {
+                                    *app.inspector_status =
+                                        Some("Failed to sync joint count from skeleton".to_string());
+                                }
+                            } else {
+                                *app.inspector_status =
+                                    Some("Selected skeleton is missing SkeletonInstance".to_string());
+                            }
+                        } else {
+                            *app.inspector_status =
+                                Some("Assign a skeleton before syncing joints".to_string());
+                        }
+                    }
+                    if ui.button("Remove Skin Mesh").clicked() {
+                        if app.ecs.detach_skin_mesh(entity) {
+                            inspector_refresh = true;
+                            info.skin_mesh = None;
+                            skin_mesh_removed = true;
+                            *app.inspector_status = Some("Skin mesh component removed".to_string());
+                        } else {
+                            *app.inspector_status = Some("Failed to remove skin mesh".to_string());
+                        }
+                    }
+                });
+                if !skin_mesh_removed {
+                    info.skin_mesh = Some(skin_mesh);
+                }
+            } else {
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("Skinning: n/a");
+                    if ui.button("Add Skin Mesh").clicked() {
+                        if app.ecs.attach_skin_mesh(entity, 0) {
+                            inspector_refresh = true;
+                            info.skin_mesh = app.ecs.entity_info(entity).and_then(|data| data.skin_mesh);
+                            *app.inspector_status = Some("Skin mesh component added".to_string());
+                        } else {
+                            *app.inspector_status = Some("Failed to add skin mesh component".to_string());
+                        }
+                    }
+                });
+            }
+
             ui.separator();
             let mut tinted = info.tint.is_some();
             if ui.checkbox(&mut tinted, "Tint override").changed() {
