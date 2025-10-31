@@ -942,6 +942,12 @@ pub struct MeshInstance {
     pub model: Mat4,
     pub material: Option<String>,
     pub lighting: MeshLightingInfo,
+    pub skin: Option<MeshSkinInstance>,
+}
+
+#[derive(Clone)]
+pub struct MeshSkinInstance {
+    pub palette: Arc<[Mat4]>,
 }
 
 impl From<&MeshLighting> for MeshLightingInfo {

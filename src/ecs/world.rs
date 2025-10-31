@@ -1200,11 +1200,25 @@ impl EcsWorld {
 
     pub fn collect_mesh_instances(&mut self) -> Vec<MeshInstance> {
         let mut instances = Vec::new();
-        let mut query = self.world.query::<(&WorldTransform3D, &MeshRef, Option<&MeshSurface>)>();
-        for (wt, mesh, surface) in query.iter(&self.world) {
+        let mut query = self.world.query::<(
+            &WorldTransform3D,
+            &MeshRef,
+            Option<&MeshSurface>,
+            Option<&BoneTransforms>,
+            Option<&SkinMesh>,
+        )>();
+        for (wt, mesh, surface, bone_transforms, skin_mesh) in query.iter(&self.world) {
             let lighting = surface.map(|s| MeshLightingInfo::from(&s.lighting)).unwrap_or_default();
             let material = surface.and_then(|s| s.material.clone());
-            instances.push(MeshInstance { key: mesh.key.clone(), model: wt.0, material, lighting });
+            let skin = match (bone_transforms, skin_mesh) {
+                (Some(bones), Some(skin)) if skin.joints() > 0 && bones.palette.len() >= skin.joints() => {
+                    let mut palette = bones.palette.clone();
+                    palette.truncate(skin.joints());
+                    Some(MeshSkinInstance { palette: Arc::from(palette.into_boxed_slice()) })
+                }
+                _ => None,
+            };
+            instances.push(MeshInstance { key: mesh.key.clone(), model: wt.0, material, lighting, skin });
         }
         instances
     }

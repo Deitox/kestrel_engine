@@ -8,11 +8,17 @@ struct FrameUniform {
     padding : vec4<f32>,
 }
 
+const MAX_SKIN_JOINTS : u32 = 256u;
+
 struct DrawUniform {
     model : mat4x4<f32>,
     base_color : vec4<f32>,
     emissive : vec4<f32>,
     material_params : vec4<f32>,
+}
+
+struct SkinPalette {
+    matrices : array<mat4x4<f32>, MAX_SKIN_JOINTS>,
 }
 
 struct MaterialUniform {
@@ -34,42 +40,45 @@ var<uniform> frame : FrameUniform;
 var<uniform> draw : DrawUniform;
 
 @group(2) @binding(0)
-var<uniform> material : MaterialUniform;
-
-@group(2) @binding(1)
-var base_color_tex : texture_2d<f32>;
-
-@group(2) @binding(2)
-var metallic_roughness_tex : texture_2d<f32>;
-
-@group(2) @binding(3)
-var normal_tex : texture_2d<f32>;
-
-@group(2) @binding(4)
-var emissive_tex : texture_2d<f32>;
-
-@group(2) @binding(5)
-var material_sampler : sampler;
+var<uniform> skinning : SkinPalette;
 
 @group(3) @binding(0)
-var<uniform> shadow : ShadowUniform;
+var<uniform> material : MaterialUniform;
 
 @group(3) @binding(1)
-var shadow_map : texture_depth_2d;
+var base_color_tex : texture_2d<f32>;
 
 @group(3) @binding(2)
-var shadow_sampler : sampler_comparison;
+var metallic_roughness_tex : texture_2d<f32>;
+
+@group(3) @binding(3)
+var normal_tex : texture_2d<f32>;
+
+@group(3) @binding(4)
+var emissive_tex : texture_2d<f32>;
+
+@group(3) @binding(5)
+var material_sampler : sampler;
 
 @group(4) @binding(0)
-var diffuse_env : texture_cube<f32>;
+var<uniform> shadow : ShadowUniform;
 
 @group(4) @binding(1)
-var specular_env : texture_cube<f32>;
+var shadow_map : texture_depth_2d;
 
 @group(4) @binding(2)
+var shadow_sampler : sampler_comparison;
+
+@group(5) @binding(0)
+var diffuse_env : texture_cube<f32>;
+
+@group(5) @binding(1)
+var specular_env : texture_cube<f32>;
+
+@group(5) @binding(2)
 var brdf_lut : texture_2d<f32>;
 
-@group(4) @binding(3)
+@group(5) @binding(3)
 var env_sampler : sampler;
 
 struct VertexIn {
@@ -77,25 +86,75 @@ struct VertexIn {
     @location(1) normal : vec3<f32>,
     @location(2) tangent : vec4<f32>,
     @location(3) uv : vec2<f32>,
+    @location(4) joints : vec4<u32>,
+    @location(5) weights : vec4<f32>,
 }
 
 struct VertexOut {
     @builtin(position) position : vec4<f32>,
     @location(0) normal : vec3<f32>,
-    @location(1) world_pos : vec3<f32>,
+   @location(1) world_pos : vec3<f32>,
     @location(2) tangent : vec4<f32>,
     @location(3) uv : vec2<f32>,
+}
+
+fn identity_matrix() -> mat4x4<f32> {
+    return mat4x4<f32>(
+        vec4<f32>(1.0, 0.0, 0.0, 0.0),
+        vec4<f32>(0.0, 1.0, 0.0, 0.0),
+        vec4<f32>(0.0, 0.0, 1.0, 0.0),
+        vec4<f32>(0.0, 0.0, 0.0, 1.0),
+    );
+}
+
+fn accumulate_skin(joints : vec4<u32>, weights : vec4<f32>, joint_count : u32) -> mat4x4<f32> {
+    if joint_count == 0u {
+        return identity_matrix();
+    }
+    let max_joints = min(joint_count, MAX_SKIN_JOINTS);
+    var skin = mat4x4<f32>(
+        vec4<f32>(0.0, 0.0, 0.0, 0.0),
+        vec4<f32>(0.0, 0.0, 0.0, 0.0),
+        vec4<f32>(0.0, 0.0, 0.0, 0.0),
+        vec4<f32>(0.0, 0.0, 0.0, 0.0),
+    );
+    var accum = 0.0;
+    var i : u32 = 0u;
+    loop {
+        if i >= 4u {
+            break;
+        }
+        let weight = weights[i];
+        if weight > 0.0 {
+            let index = joints[i];
+            if index < max_joints {
+                let matrix = skinning.matrices[index];
+                skin = skin + matrix * weight;
+                accum = accum + weight;
+            }
+        }
+        i = i + 1u;
+    }
+    if accum <= 0.0 {
+        return identity_matrix();
+    }
+    return skin;
 }
 
 @vertex
 fn vs_main(input : VertexIn) -> VertexOut {
     var out : VertexOut;
-    let world_pos = draw.model * vec4<f32>(input.position, 1.0);
+    let joint_count = u32(draw.material_params.w + 0.5);
+    let skin_matrix = accumulate_skin(input.joints, input.weights, joint_count);
+    let skinned_position = skin_matrix * vec4<f32>(input.position, 1.0);
+    let skinned_normal = (skin_matrix * vec4<f32>(input.normal, 0.0)).xyz;
+    let skinned_tangent = (skin_matrix * vec4<f32>(input.tangent.xyz, 0.0)).xyz;
+    let world_pos = draw.model * skinned_position;
     out.position = frame.view_proj * world_pos;
-    let world_normal = (draw.model * vec4<f32>(input.normal, 0.0)).xyz;
+    let world_normal = (draw.model * vec4<f32>(skinned_normal, 0.0)).xyz;
     out.normal = normalize(world_normal);
     out.world_pos = world_pos.xyz;
-    let world_tangent = (draw.model * vec4<f32>(input.tangent.xyz, 0.0)).xyz;
+    let world_tangent = (draw.model * vec4<f32>(skinned_tangent, 0.0)).xyz;
     out.tangent = vec4<f32>(normalize(world_tangent), input.tangent.w);
     out.uv = input.uv;
     return out;
@@ -237,3 +296,5 @@ fn fs_main(input : VertexOut) -> @location(0) vec4<f32> {
 
     return vec4<f32>(color, base_alpha);
 }
+
+

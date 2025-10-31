@@ -11,6 +11,8 @@ pub struct MeshVertex {
     pub normal: [f32; 3],
     pub tangent: [f32; 4],
     pub uv: [f32; 2],
+    pub joints: [u16; 4],
+    pub weights: [f32; 4],
 }
 
 impl MeshVertex {
@@ -20,7 +22,15 @@ impl MeshVertex {
             normal: normal.to_array(),
             tangent: tangent.to_array(),
             uv: uv.to_array(),
+            joints: [0; 4],
+            weights: [0.0; 4],
         }
+    }
+
+    pub fn with_skin(mut self, joints: [u16; 4], weights: [f32; 4]) -> Self {
+        self.joints = joints;
+        self.weights = weights;
+        self
     }
 
     pub fn layout<'a>() -> wgpu::VertexBufferLayout<'a> {
@@ -48,6 +58,16 @@ impl MeshVertex {
                     offset: 40,
                     shader_location: 3,
                     format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: 48,
+                    shader_location: 4,
+                    format: wgpu::VertexFormat::Uint16x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 56,
+                    shader_location: 5,
+                    format: wgpu::VertexFormat::Float32x4,
                 },
             ],
         }
@@ -312,6 +332,15 @@ impl Mesh {
                 .map(|coords| coords.into_f32().map(Vec2::from_array).collect())
                 .unwrap_or_else(|| vec![Vec2::ZERO; positions.len()]);
 
+            let mut joints: Vec<[u16; 4]> = reader
+                .read_joints(0)
+                .map(|it| it.into_u16().collect())
+                .unwrap_or_else(|| vec![[0; 4]; positions.len()]);
+            let mut weights: Vec<[f32; 4]> = reader
+                .read_weights(0)
+                .map(|it| it.into_f32().collect())
+                .unwrap_or_else(|| vec![[0.0; 4]; positions.len()]);
+
             let local_indices: Vec<u32> = reader
                 .read_indices()
                 .map(|read| read.into_u32().collect())
@@ -327,12 +356,21 @@ impl Mesh {
             if tex_coords.len() != positions.len() {
                 tex_coords.resize(positions.len(), Vec2::ZERO);
             }
+            if joints.len() != positions.len() {
+                joints.resize(positions.len(), [0; 4]);
+            }
+            if weights.len() != positions.len() {
+                weights.resize(positions.len(), [0.0; 4]);
+            }
 
             let base_vertex = vertices.len() as u32;
             vertices.extend(positions.iter().enumerate().map(|(i, pos)| {
                 let norm = normals.get(i).copied().unwrap_or(Vec3::Y).normalize_or_zero();
                 let uv = tex_coords.get(i).copied().unwrap_or(Vec2::ZERO);
+                let joint_indices = joints.get(i).copied().unwrap_or([0; 4]);
+                let weight_values = weights.get(i).copied().unwrap_or([0.0; 4]);
                 MeshVertex::new(*pos, norm, Vec4::new(1.0, 0.0, 0.0, 1.0), uv)
+                    .with_skin(joint_indices, weight_values)
             }));
 
             let index_offset = indices.len() as u32;

@@ -2075,7 +2075,8 @@ impl ApplicationHandler for App {
         };
         let view_proj = self.camera.view_projection(viewport_size);
         let default_material_key = self.material_registry.default_key().to_string();
-        let mut mesh_draw_infos: Vec<(String, Mat4, MeshLightingInfo, String)> = Vec::new();
+        let mut mesh_draw_infos: Vec<(String, Mat4, MeshLightingInfo, String, Option<Arc<[Mat4]>>)> =
+            Vec::new();
         if let Some((preview_key, preview_model)) = self
             .mesh_preview_plugin()
             .map(|plugin| (plugin.preview_mesh_key().to_string(), *plugin.mesh_model()))
@@ -2088,6 +2089,7 @@ impl ApplicationHandler for App {
                         preview_model,
                         MeshLightingInfo::default(),
                         material_key,
+                        None,
                     ));
                 }
                 Err(err) => {
@@ -2101,11 +2103,13 @@ impl ApplicationHandler for App {
                 Ok(_) => {
                     let material_key =
                         self.resolve_material_for_mesh(&instance.key, instance.material.as_ref());
+                    let skin_palette = instance.skin.as_ref().map(|skin| skin.palette.clone());
                     mesh_draw_infos.push((
                         instance.key.clone(),
                         instance.model,
                         instance.lighting,
                         material_key,
+                        skin_palette,
                     ));
                 }
                 Err(err) => {
@@ -2115,7 +2119,7 @@ impl ApplicationHandler for App {
         }
         let mut mesh_draws: Vec<MeshDraw> = Vec::new();
         let mut material_cache: HashMap<String, Arc<MaterialGpu>> = HashMap::new();
-        for (key, model, lighting, material_key) in mesh_draw_infos {
+        for (key, model, lighting, material_key, skin_palette) in mesh_draw_infos {
             let mesh = match self.mesh_registry.gpu_mesh(&key) {
                 Some(mesh) => mesh,
                 None => continue,
@@ -2156,7 +2160,14 @@ impl ApplicationHandler for App {
                 }
             };
             let casts_shadows = lighting.cast_shadows;
-            mesh_draws.push(MeshDraw { mesh, model, lighting, material: material_gpu, casts_shadows });
+            mesh_draws.push(MeshDraw {
+                mesh,
+                model,
+                lighting,
+                material: material_gpu,
+                casts_shadows,
+                skin_palette,
+            });
         }
         let mesh_camera_opt = if mesh_draws.is_empty() { None } else { mesh_camera.as_ref() };
         let render_start = Instant::now();

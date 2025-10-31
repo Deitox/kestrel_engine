@@ -24,6 +24,7 @@ struct Globals {
 }
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+const MAX_SKIN_JOINTS: usize = 256;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -57,6 +58,8 @@ struct ShadowUniform {
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct ShadowDrawUniform {
     model: [[f32; 4]; 4],
+    joint_count: u32,
+    _padding: [u32; 3],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -304,6 +307,7 @@ pub struct MeshDraw<'a> {
     pub lighting: MeshLightingInfo,
     pub material: Arc<MaterialGpu>,
     pub casts_shadows: bool,
+    pub skin_palette: Option<Arc<[Mat4]>>,
 }
 
 pub struct SurfaceFrame {
@@ -342,6 +346,7 @@ struct MeshPipelineResources {
     pipeline: wgpu::RenderPipeline,
     frame_bgl: Arc<wgpu::BindGroupLayout>,
     draw_bgl: Arc<wgpu::BindGroupLayout>,
+    skinning_bgl: Arc<wgpu::BindGroupLayout>,
     material_bgl: Arc<wgpu::BindGroupLayout>,
     environment_bgl: Arc<wgpu::BindGroupLayout>,
 }
@@ -353,6 +358,8 @@ struct MeshPass {
     draw_buffer: Option<wgpu::Buffer>,
     frame_bind_group: Option<wgpu::BindGroup>,
     draw_bind_group: Option<wgpu::BindGroup>,
+    skinning_identity_buffer: Option<wgpu::Buffer>,
+    skinning_identity_bind_group: Option<wgpu::BindGroup>,
 }
 
 struct RendererEnvironmentState {
@@ -363,6 +370,7 @@ struct RendererEnvironmentState {
 
 struct ShadowPipelineResources {
     pipeline: wgpu::RenderPipeline,
+    skinning_bgl: Arc<wgpu::BindGroupLayout>,
 }
 
 struct ShadowPass {
@@ -371,6 +379,8 @@ struct ShadowPass {
     frame_bind_group: Option<wgpu::BindGroup>,
     draw_buffer: Option<wgpu::Buffer>,
     draw_bind_group: Option<wgpu::BindGroup>,
+    skinning_identity_buffer: Option<wgpu::Buffer>,
+    skinning_identity_bind_group: Option<wgpu::BindGroup>,
     map_texture: Option<wgpu::Texture>,
     map_view: Option<wgpu::TextureView>,
     sampler: Option<wgpu::Sampler>,
@@ -388,6 +398,8 @@ impl Default for ShadowPass {
             frame_bind_group: None,
             draw_buffer: None,
             draw_bind_group: None,
+            skinning_identity_buffer: None,
+            skinning_identity_bind_group: None,
             map_texture: None,
             map_view: None,
             sampler: None,
@@ -653,7 +665,9 @@ impl Renderer {
         }
         let mut required_limits =
             wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits());
-        required_limits.max_bind_groups = required_limits.max_bind_groups.max(5);
+        required_limits.max_bind_groups = required_limits.max_bind_groups.max(6);
+        required_limits.max_storage_buffers_per_shader_stage =
+            required_limits.max_storage_buffers_per_shader_stage.max(1);
         let device_desc = wgpu::DeviceDescriptor {
             label: Some("Device"),
             required_features,
@@ -921,6 +935,19 @@ impl Renderer {
                 count: None,
             }],
         }));
+        let skinning_bgl = Arc::new(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Mesh Skinning BGL"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        }));
         let frame_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Mesh Frame Buffer"),
             size: std::mem::size_of::<MeshFrameData>() as u64,
@@ -1075,6 +1102,7 @@ impl Renderer {
             bind_group_layouts: &[
                 frame_bgl.as_ref(),
                 draw_bgl.as_ref(),
+                skinning_bgl.as_ref(),
                 material_bgl.as_ref(),
                 shadow_bgl.as_ref(),
                 environment_bgl.as_ref(),
@@ -1126,6 +1154,7 @@ impl Renderer {
             pipeline,
             frame_bgl: frame_bgl.clone(),
             draw_bgl: draw_bgl.clone(),
+            skinning_bgl: skinning_bgl.clone(),
             material_bgl: material_bgl.clone(),
             environment_bgl: environment_bgl.clone(),
         });
@@ -1133,6 +1162,8 @@ impl Renderer {
         self.mesh_pass.draw_buffer = Some(draw_buf);
         self.mesh_pass.frame_bind_group = None;
         self.mesh_pass.draw_bind_group = None;
+        self.mesh_pass.skinning_identity_buffer = None;
+        self.mesh_pass.skinning_identity_bind_group = None;
         self.shadow_pass.sample_layout = Some(shadow_bgl);
         self.shadow_pass.sample_bind_group = None;
         Ok(())
@@ -1247,6 +1278,37 @@ impl Renderer {
             self.mesh_pass.draw_bind_group.as_ref().context("Mesh draw bind group missing")?;
         let shadow_bind_group =
             self.shadow_pass.sample_bind_group.as_ref().context("Shadow sample bind group missing")?;
+        let environment_bind_group = environment_state.bind_group.as_ref();
+
+        if self.mesh_pass.skinning_identity_buffer.is_none() {
+            let identity = Mat4::IDENTITY.to_cols_array();
+            let palette: Vec<[f32; 16]> = vec![identity; MAX_SKIN_JOINTS];
+            let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Mesh Skinning Identity Buffer"),
+                contents: bytemuck::cast_slice(&palette),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            self.mesh_pass.skinning_identity_buffer = Some(buffer);
+            self.mesh_pass.skinning_identity_bind_group = None;
+        }
+        if self.mesh_pass.skinning_identity_bind_group.is_none() {
+            let buffer = self
+                .mesh_pass
+                .skinning_identity_buffer
+                .as_ref()
+                .context("Mesh skinning identity buffer missing")?;
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Mesh Skinning Identity BG"),
+                layout: mesh_resources.skinning_bgl.as_ref(),
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
+            });
+            self.mesh_pass.skinning_identity_bind_group = Some(bind_group);
+        }
+        let skinning_identity_bind_group = self
+            .mesh_pass
+            .skinning_identity_bind_group
+            .as_ref()
+            .context("Mesh skinning identity bind group missing")?;
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Mesh Pass"),
@@ -1296,14 +1358,20 @@ impl Renderer {
         pass.set_scissor_rect(sc_x, sc_y, sc_w, sc_h);
 
         pass.set_bind_group(0, frame_bind_group, &[]);
-        pass.set_bind_group(3, shadow_bind_group, &[]);
-        pass.set_bind_group(4, environment_state.bind_group.as_ref(), &[]);
+        pass.set_bind_group(4, shadow_bind_group, &[]);
+        pass.set_bind_group(5, environment_bind_group, &[]);
+
+        let mut skinning_buffers: Vec<wgpu::Buffer> = Vec::new();
+        let mut skinning_bind_groups: Vec<wgpu::BindGroup> = Vec::new();
+        let identity_cols = Mat4::IDENTITY.to_cols_array();
 
         for draw in draws {
             let base_color = draw.lighting.base_color;
             let emissive = draw.lighting.emissive.unwrap_or(Vec3::ZERO);
             let metallic = draw.lighting.metallic.clamp(0.0, 1.0);
             let roughness = draw.lighting.roughness.clamp(0.04, 1.0);
+            let mut joint_count = draw.skin_palette.as_ref().map(|palette| palette.len()).unwrap_or(0);
+            joint_count = joint_count.min(MAX_SKIN_JOINTS);
             let draw_data = MeshDrawData {
                 model: draw.model.to_cols_array_2d(),
                 base_color: [base_color.x, base_color.y, base_color.z, 1.0],
@@ -1312,12 +1380,36 @@ impl Renderer {
                     metallic,
                     roughness,
                     if draw.lighting.receive_shadows { 1.0 } else { 0.0 },
-                    0.0,
+                    joint_count as f32,
                 ],
             };
             queue.write_buffer(&draw_buffer, 0, bytemuck::bytes_of(&draw_data));
             pass.set_bind_group(1, draw_bind_group, &[]);
-            pass.set_bind_group(2, draw.material.bind_group(), &[]);
+            if joint_count > 0 {
+                let mut palette_floats = vec![identity_cols; MAX_SKIN_JOINTS];
+                if let Some(palette) = draw.skin_palette.as_ref() {
+                    for i in 0..joint_count {
+                        palette_floats[i] = palette[i].to_cols_array();
+                    }
+                }
+                let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Mesh Skinning Palette Buffer"),
+                    contents: bytemuck::cast_slice(&palette_floats),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
+                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Mesh Skinning Palette BG"),
+                    layout: mesh_resources.skinning_bgl.as_ref(),
+                    entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
+                });
+                skinning_buffers.push(buffer);
+                skinning_bind_groups.push(bind_group);
+                let bind_group_ref = skinning_bind_groups.last().expect("skin bind group");
+                pass.set_bind_group(2, bind_group_ref, &[]);
+            } else {
+                pass.set_bind_group(2, skinning_identity_bind_group, &[]);
+            }
+            pass.set_bind_group(3, draw.material.bind_group(), &[]);
             pass.set_vertex_buffer(0, draw.mesh.vertex_buffer.slice(..));
             pass.set_index_buffer(draw.mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..draw.mesh.index_count, 0, 0..1);
@@ -1430,9 +1522,23 @@ impl Renderer {
                 }],
             }));
 
+            let skinning_bgl = Arc::new(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Shadow Skinning BGL"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            }));
+
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Shadow Pipeline Layout"),
-                bind_group_layouts: &[frame_bgl.as_ref(), draw_bgl.as_ref()],
+                bind_group_layouts: &[frame_bgl.as_ref(), draw_bgl.as_ref(), skinning_bgl.as_ref()],
                 push_constant_ranges: &[],
             });
 
@@ -1467,7 +1573,9 @@ impl Renderer {
                 cache: None,
             });
 
-            self.shadow_pass.resources = Some(ShadowPipelineResources { pipeline });
+            self.shadow_pass.resources = Some(ShadowPipelineResources { pipeline, skinning_bgl });
+            self.shadow_pass.skinning_identity_buffer = None;
+            self.shadow_pass.skinning_identity_bind_group = None;
 
             let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("Shadow Uniform Buffer"),
@@ -1584,6 +1692,7 @@ impl Renderer {
     ) -> Result<()> {
         self.init_mesh_pipeline()?;
         self.ensure_shadow_resources()?;
+        let device = self.device()?.clone();
         let shadow_strength = self.lighting.shadow_strength.clamp(0.0, 1.0);
         let casters: Vec<&MeshDraw> = draws.iter().filter(|draw| draw.casts_shadows).collect();
         if casters.is_empty() || shadow_strength <= 0.0 {
@@ -1619,7 +1728,39 @@ impl Renderer {
         let draw_buffer = self.shadow_pass.draw_buffer.as_ref().context("Shadow draw buffer missing")?;
         let queue = self.queue()?.clone();
 
+        if self.shadow_pass.skinning_identity_buffer.is_none() {
+            let identity = Mat4::IDENTITY.to_cols_array();
+            let palette: Vec<[f32; 16]> = vec![identity; MAX_SKIN_JOINTS];
+            let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Shadow Skinning Identity Buffer"),
+                contents: bytemuck::cast_slice(&palette),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            self.shadow_pass.skinning_identity_buffer = Some(buffer);
+            self.shadow_pass.skinning_identity_bind_group = None;
+        }
+        if self.shadow_pass.skinning_identity_bind_group.is_none() {
+            let buffer = self
+                .shadow_pass
+                .skinning_identity_buffer
+                .as_ref()
+                .context("Shadow skinning identity buffer missing")?;
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Shadow Skinning Identity BG"),
+                layout: resources.skinning_bgl.as_ref(),
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
+            });
+            self.shadow_pass.skinning_identity_bind_group = Some(bind_group);
+        }
+        let shadow_skinning_identity = self
+            .shadow_pass
+            .skinning_identity_bind_group
+            .as_ref()
+            .context("Shadow skinning identity bind group missing")?;
+
         let resolution = self.shadow_pass.resolution.max(1);
+        let mut skinning_buffers: Vec<wgpu::Buffer> = Vec::new();
+        let mut skinning_bind_groups: Vec<wgpu::BindGroup> = Vec::new();
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Shadow Pass"),
@@ -1642,9 +1783,40 @@ impl Renderer {
             pass.set_bind_group(0, frame_bg, &[]);
 
             for draw in casters {
-                let draw_uniform = ShadowDrawUniform { model: draw.model.to_cols_array_2d() };
+                let mut joint_count = draw.skin_palette.as_ref().map(|palette| palette.len()).unwrap_or(0);
+                joint_count = joint_count.min(MAX_SKIN_JOINTS);
+                let draw_uniform = ShadowDrawUniform {
+                    model: draw.model.to_cols_array_2d(),
+                    joint_count: joint_count as u32,
+                    _padding: [0; 3],
+                };
                 queue.write_buffer(draw_buffer, 0, bytemuck::bytes_of(&draw_uniform));
                 pass.set_bind_group(1, draw_bg, &[]);
+                if joint_count > 0 {
+                    let identity_cols = Mat4::IDENTITY.to_cols_array();
+                    let mut palette_floats = vec![identity_cols; MAX_SKIN_JOINTS];
+                    if let Some(palette) = draw.skin_palette.as_ref() {
+                        for i in 0..joint_count {
+                            palette_floats[i] = palette[i].to_cols_array();
+                        }
+                    }
+                    let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Shadow Skinning Palette Buffer"),
+                        contents: bytemuck::cast_slice(&palette_floats),
+                        usage: wgpu::BufferUsages::UNIFORM,
+                    });
+                    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("Shadow Skinning Palette BG"),
+                        layout: resources.skinning_bgl.as_ref(),
+                        entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
+                    });
+                    skinning_buffers.push(buffer);
+                    skinning_bind_groups.push(bind_group);
+                    let bind_group_ref = skinning_bind_groups.last().expect("shadow skin bind group");
+                    pass.set_bind_group(2, bind_group_ref, &[]);
+                } else {
+                    pass.set_bind_group(2, shadow_skinning_identity, &[]);
+                }
                 pass.set_vertex_buffer(0, draw.mesh.vertex_buffer.slice(..));
                 pass.set_index_buffer(draw.mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..draw.mesh.index_count, 0, 0..1);
@@ -2214,7 +2386,9 @@ impl Renderer {
         }
         let mut required_limits =
             wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits());
-        required_limits.max_bind_groups = required_limits.max_bind_groups.max(5);
+        required_limits.max_bind_groups = required_limits.max_bind_groups.max(6);
+        required_limits.max_storage_buffers_per_shader_stage =
+            required_limits.max_storage_buffers_per_shader_stage.max(1);
         let device_desc = wgpu::DeviceDescriptor {
             label: Some("Headless Device"),
             required_features,
