@@ -733,6 +733,126 @@ impl EcsWorld {
         }
     }
 
+    pub fn set_skeleton(&mut self, entity: Entity, assets: &AssetManager, skeleton_key: &str) -> bool {
+        let skeleton = match assets.skeleton(skeleton_key) {
+            Some(value) => value,
+            None => return false,
+        };
+        let skeleton_key_arc: Arc<str> = Arc::from(skeleton_key.to_string());
+        {
+            if let Some(mut instance) = self.world.get_mut::<SkeletonInstance>(entity) {
+                instance.skeleton_key = Arc::clone(&skeleton_key_arc);
+                instance.skeleton = Arc::clone(&skeleton);
+                instance.set_active_clip(None);
+                instance.reset_to_rest_pose();
+                instance.clear_dirty();
+            } else {
+                let mut instance = SkeletonInstance::new(Arc::clone(&skeleton_key_arc), Arc::clone(&skeleton));
+                instance.reset_to_rest_pose();
+                self.world.entity_mut(entity).insert(instance);
+            }
+        }
+        self.refresh_skeleton_pose(entity)
+    }
+
+    pub fn clear_skeleton(&mut self, entity: Entity) -> bool {
+        let mut changed = false;
+        if self.world.get::<SkeletonInstance>(entity).is_some() {
+            self.world.entity_mut(entity).remove::<SkeletonInstance>();
+            changed = true;
+        }
+        if self.world.get::<BoneTransforms>(entity).is_some() {
+            self.world.entity_mut(entity).remove::<BoneTransforms>();
+            changed = true;
+        }
+        changed
+    }
+
+    pub fn set_skeleton_clip(&mut self, entity: Entity, assets: &AssetManager, clip_key: &str) -> bool {
+        let clip = match assets.skeletal_clip(clip_key) {
+            Some(value) => value,
+            None => return false,
+        };
+        {
+            let Some(mut instance) = self.world.get_mut::<SkeletonInstance>(entity) else {
+                return false;
+            };
+            if clip.skeleton.as_ref() != instance.skeleton_key.as_ref() {
+                return false;
+            }
+            instance.set_active_clip(Some(Arc::clone(&clip)));
+            instance.set_time(0.0);
+        }
+        self.refresh_skeleton_pose(entity)
+    }
+
+    pub fn clear_skeleton_clip(&mut self, entity: Entity) -> bool {
+        match self.world.get_mut::<SkeletonInstance>(entity) {
+            Some(mut instance) => {
+                if instance.active_clip.is_none() {
+                    return false;
+                }
+                instance.set_active_clip(None);
+                instance.set_time(0.0);
+            }
+            None => return false,
+        }
+        self.refresh_skeleton_pose(entity)
+    }
+
+    pub fn set_skeleton_clip_playing(&mut self, entity: Entity, playing: bool) -> bool {
+        if let Some(mut instance) = self.world.get_mut::<SkeletonInstance>(entity) {
+            instance.set_playing(playing);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_skeleton_clip_speed(&mut self, entity: Entity, speed: f32) -> bool {
+        if let Some(mut instance) = self.world.get_mut::<SkeletonInstance>(entity) {
+            if speed.is_finite() {
+                instance.set_speed(speed);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_skeleton_clip_group(&mut self, entity: Entity, group: Option<&str>) -> bool {
+        if let Some(mut instance) = self.world.get_mut::<SkeletonInstance>(entity) {
+            instance.set_group(group.map(|value| value.to_string()));
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_skeleton_clip_time(&mut self, entity: Entity, time: f32) -> bool {
+        {
+            let Some(mut instance) = self.world.get_mut::<SkeletonInstance>(entity) else {
+                return false;
+            };
+            if instance.active_clip.is_none() {
+                instance.set_time(0.0);
+                return false;
+            }
+            instance.set_time(time);
+        }
+        self.refresh_skeleton_pose(entity)
+    }
+
+    pub fn reset_skeleton_pose(&mut self, entity: Entity) -> bool {
+        {
+            let Some(mut instance) = self.world.get_mut::<SkeletonInstance>(entity) else {
+                return false;
+            };
+            instance.set_time(0.0);
+        }
+        self.refresh_skeleton_pose(entity)
+    }
+
     pub fn set_transform_track_mask(&mut self, entity: Entity, mask: TransformTrackPlayer) -> bool {
         if self.world.get_entity(entity).is_err() {
             return false;
@@ -780,6 +900,42 @@ impl EcsWorld {
                     tint.0 = value;
                 }
             }
+        }
+    }
+
+    fn refresh_skeleton_pose(&mut self, entity: Entity) -> bool {
+        let (model, palette) = {
+            let Some(mut instance) = self.world.get_mut::<SkeletonInstance>(entity) else {
+                return false;
+            };
+            instance.ensure_capacity();
+            if let Some(clip) = instance.active_clip.clone() {
+                let pose_time = instance.time;
+                evaluate_skeleton_pose(&mut instance, clip.as_ref(), pose_time);
+                instance.clear_dirty();
+            } else {
+                instance.reset_to_rest_pose();
+            }
+            (instance.model_poses.clone(), instance.palette.clone())
+        };
+        self.write_bone_transforms(entity, &model, &palette);
+        true
+    }
+
+    fn write_bone_transforms(&mut self, entity: Entity, model: &[Mat4], palette: &[Mat4]) {
+        if model.len() != palette.len() {
+            return;
+        }
+        if self.world.get::<BoneTransforms>(entity).is_some() {
+            if let Some(mut bones) = self.world.get_mut::<BoneTransforms>(entity) {
+                bones.model.clear();
+                bones.model.extend_from_slice(model);
+                bones.palette.clear();
+                bones.palette.extend_from_slice(palette);
+            }
+        } else {
+            let bones = BoneTransforms { model: model.to_vec(), palette: palette.to_vec() };
+            self.world.entity_mut(entity).insert(bones);
         }
     }
 
@@ -1531,6 +1687,27 @@ impl EcsWorld {
             scale: transform.scale,
         });
         let tint = self.world.get::<Tint>(entity).map(|t| t.0);
+        let bone_transforms = self.world.get::<BoneTransforms>(entity);
+        let palette_joint_count = bone_transforms.map(|bones| bones.palette.len()).unwrap_or(0);
+        let has_bone_transforms = bone_transforms.is_some();
+        let skeleton = self.world.get::<SkeletonInstance>(entity).map(|instance| {
+            let clip_info = instance.active_clip.as_ref().map(|clip| SkeletonClipInfo {
+                clip_key: format!("{}::{}", instance.skeleton_key.as_ref(), clip.name.as_ref()),
+                playing: instance.playing,
+                looped: instance.looped,
+                speed: instance.speed,
+                time: instance.time,
+                duration: clip.duration,
+                group: instance.group.clone(),
+            });
+            SkeletonInfo {
+                skeleton_key: instance.skeleton_key.as_ref().to_string(),
+                joint_count: instance.joint_count(),
+                has_bone_transforms,
+                palette_joint_count,
+                clip: clip_info,
+            }
+        });
         Some(EntityInfo {
             scene_id,
             translation,
@@ -1544,6 +1721,7 @@ impl EcsWorld {
             mesh,
             mesh_transform,
             tint,
+            skeleton,
         })
     }
     pub fn entity_exists(&self, entity: Entity) -> bool {

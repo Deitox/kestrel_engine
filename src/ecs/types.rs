@@ -622,6 +622,27 @@ impl SkeletonInstance {
         self.playback_rate_dirty = true;
     }
 
+    pub fn set_time(&mut self, time: f32) -> f32 {
+        let mut clamped = time.max(0.0);
+        if let Some(clip) = self.active_clip.as_ref() {
+            let duration = clip.duration.max(0.0);
+            if duration <= 0.0 {
+                clamped = 0.0;
+            } else if self.looped {
+                let step = duration.max(std::f32::EPSILON);
+                clamped = clamped.rem_euclid(step);
+            } else if clamped >= duration {
+                clamped = duration;
+                self.playing = false;
+            }
+        } else {
+            clamped = 0.0;
+        }
+        self.time = clamped;
+        self.dirty = true;
+        clamped
+    }
+
     pub fn ensure_playback_rate(&mut self, group_scale: f32) -> f32 {
         if self.playback_rate_dirty {
             let clamped_group = group_scale.max(0.0);
@@ -634,6 +655,12 @@ impl SkeletonInstance {
 
     pub fn clip_duration(&self) -> f32 {
         self.active_clip.as_ref().map(|clip| clip.duration.max(0.0)).unwrap_or(0.0)
+    }
+
+    pub fn active_clip_key(&self) -> Option<String> {
+        self.active_clip
+            .as_ref()
+            .map(|clip| format!("{}::{}", self.skeleton_key, clip.name.as_ref()))
     }
 
     pub fn has_clip(&self) -> bool {
@@ -865,6 +892,26 @@ pub struct TransformClipInfo {
 }
 
 #[derive(Clone)]
+pub struct SkeletonClipInfo {
+    pub clip_key: String,
+    pub playing: bool,
+    pub looped: bool,
+    pub speed: f32,
+    pub time: f32,
+    pub duration: f32,
+    pub group: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct SkeletonInfo {
+    pub skeleton_key: String,
+    pub joint_count: usize,
+    pub has_bone_transforms: bool,
+    pub palette_joint_count: usize,
+    pub clip: Option<SkeletonClipInfo>,
+}
+
+#[derive(Clone)]
 pub struct EntityInfo {
     pub scene_id: SceneEntityId,
     pub translation: Vec2,
@@ -878,6 +925,7 @@ pub struct EntityInfo {
     pub mesh: Option<MeshInfo>,
     pub mesh_transform: Option<Transform3DInfo>,
     pub tint: Option<Vec4>,
+    pub skeleton: Option<SkeletonInfo>,
 }
 
 #[derive(Clone)]

@@ -1,7 +1,8 @@
 use super::{PrefabDragPayload, SpriteAtlasRequest, UiActions};
 use crate::assets::AssetManager;
 use crate::ecs::{
-    EcsWorld, EntityInfo, PropertyTrackPlayer, SpriteInfo, TransformClipInfo, TransformTrackPlayer,
+    EcsWorld, EntityInfo, PropertyTrackPlayer, SkeletonInfo, SpriteInfo, TransformClipInfo,
+    TransformTrackPlayer,
 };
 use crate::gizmo::{GizmoInteraction, GizmoMode, ScaleHandle};
 use crate::input::Input;
@@ -436,6 +437,205 @@ pub(super) fn show_entity_inspector(
             info.transform_clip = clip_info_opt;
             info.transform_tracks = transform_mask_opt;
             info.property_tracks = property_mask_opt;
+
+            ui.separator();
+            let mut skeleton_info_opt: Option<SkeletonInfo> = info.skeleton.clone();
+            let mut skeleton_keys = app.assets.skeleton_keys();
+            skeleton_keys.sort();
+            if let Some(ref skeleton_info) = skeleton_info_opt {
+                if !skeleton_keys.contains(&skeleton_info.skeleton_key) {
+                    skeleton_keys.push(skeleton_info.skeleton_key.clone());
+                    skeleton_keys.sort();
+                }
+            }
+            let mut skeleton_items = skeleton_keys.clone();
+            skeleton_items.insert(0, "<None>".to_string());
+            let mut skeleton_combo = skeleton_info_opt
+                .as_ref()
+                .map(|s| s.skeleton_key.clone())
+                .unwrap_or_else(|| "<None>".to_string());
+            ui.horizontal(|ui| {
+                ui.label("Skeleton");
+                egui::ComboBox::from_id_salt(("skeleton_selector", entity.index()))
+                    .selected_text(skeleton_combo.clone())
+                    .show_ui(ui, |ui| {
+                        for key in &skeleton_items {
+                            ui.selectable_value(&mut skeleton_combo, key.clone(), key);
+                        }
+                    });
+            });
+            if skeleton_combo == "<None>" {
+                if skeleton_info_opt.is_some() {
+                    if app.ecs.clear_skeleton(entity) {
+                        skeleton_info_opt = None;
+                        inspector_refresh = true;
+                        *app.inspector_status = Some("Skeleton detached".to_string());
+                    } else {
+                        *app.inspector_status = Some("Failed to detach skeleton".to_string());
+                    }
+                }
+            } else if skeleton_info_opt
+                .as_ref()
+                .map(|info| info.skeleton_key.as_str() != skeleton_combo.as_str())
+                .unwrap_or(true)
+            {
+                if app.ecs.set_skeleton(entity, &app.assets, &skeleton_combo) {
+                    inspector_refresh = true;
+                    *app.inspector_status = Some(format!("Skeleton set to {}", skeleton_combo));
+                    skeleton_info_opt = app.ecs.entity_info(entity).and_then(|data| data.skeleton);
+                } else {
+                    *app.inspector_status = Some(format!("Skeleton '{}' not available", skeleton_combo));
+                }
+            }
+
+            if let Some(mut skeleton_info) = skeleton_info_opt.clone() {
+                if let Some(source) = app.assets.skeleton_source(&skeleton_info.skeleton_key) {
+                    ui.small(format!("Source: {}", source));
+                } else {
+                    ui.small("Source: n/a");
+                }
+                ui.horizontal(|ui| {
+                    ui.label(format!("Bones: {}", skeleton_info.joint_count));
+                    let palette_text =
+                        format!("Palette: {}/{}", skeleton_info.palette_joint_count, skeleton_info.joint_count);
+                    if !skeleton_info.has_bone_transforms {
+                        ui.colored_label(egui::Color32::YELLOW, "Bone transforms missing");
+                    } else if skeleton_info.palette_joint_count >= skeleton_info.joint_count {
+                        ui.colored_label(egui::Color32::LIGHT_GREEN, palette_text);
+                    } else {
+                        ui.colored_label(egui::Color32::YELLOW, palette_text);
+                    }
+                });
+                let mut clip_keys = app
+                    .assets
+                    .skeletal_clip_keys_for(&skeleton_info.skeleton_key)
+                    .map(|keys| keys.to_vec())
+                    .unwrap_or_default();
+                if let Some(ref clip) = skeleton_info.clip {
+                    if !clip_keys.contains(&clip.clip_key) {
+                        clip_keys.push(clip.clip_key.clone());
+                        clip_keys.sort();
+                    }
+                }
+                let mut clip_combo = skeleton_info
+                    .clip
+                    .as_ref()
+                    .map(|clip| clip.clip_key.clone())
+                    .unwrap_or_else(|| "<None>".to_string());
+                clip_keys.insert(0, "<None>".to_string());
+                ui.horizontal(|ui| {
+                    ui.label("Skeletal Clip");
+                    egui::ComboBox::from_id_salt(("skeletal_clip_selector", entity.index()))
+                        .selected_text(clip_combo.clone())
+                        .show_ui(ui, |ui| {
+                            for key in &clip_keys {
+                                ui.selectable_value(&mut clip_combo, key.clone(), key);
+                            }
+                        });
+                });
+                if clip_combo == "<None>" {
+                    if skeleton_info.clip.is_some() {
+                        if app.ecs.clear_skeleton_clip(entity) {
+                            skeleton_info.clip = None;
+                            inspector_refresh = true;
+                            *app.inspector_status = Some("Skeletal clip cleared".to_string());
+                        } else {
+                            *app.inspector_status = Some("Failed to clear skeletal clip".to_string());
+                        }
+                    }
+                } else if skeleton_info
+                    .clip
+                    .as_ref()
+                    .map(|clip| clip.clip_key.as_str() != clip_combo.as_str())
+                    .unwrap_or(true)
+                {
+                    if app.ecs.set_skeleton_clip(entity, &app.assets, &clip_combo) {
+                        inspector_refresh = true;
+                        *app.inspector_status = Some(format!("Skeletal clip set to {}", clip_combo));
+                        skeleton_info_opt = app.ecs.entity_info(entity).and_then(|data| data.skeleton);
+                    } else {
+                        *app.inspector_status =
+                            Some(format!("Skeletal clip '{}' not available", clip_combo));
+                    }
+                }
+                if let Some(mut clip_info) = skeleton_info_opt.as_ref().and_then(|info| info.clip.clone()) {
+                    ui.horizontal(|ui| {
+                        let mut playing = clip_info.playing;
+                        if ui.checkbox(&mut playing, "Playing").changed() {
+                            if app.ecs.set_skeleton_clip_playing(entity, playing) {
+                                clip_info.playing = playing;
+                                inspector_refresh = true;
+                                *app.inspector_status = None;
+                            }
+                        }
+                        if ui.button("Reset Pose").clicked() {
+                            if app.ecs.reset_skeleton_pose(entity) {
+                                inspector_refresh = true;
+                                *app.inspector_status = Some("Skeletal pose reset".to_string());
+                            } else {
+                                *app.inspector_status =
+                                    Some("Failed to reset skeletal pose".to_string());
+                            }
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Speed");
+                        let mut speed = clip_info.speed;
+                        if ui
+                            .add(egui::DragValue::new(&mut speed).speed(0.05).range(0.0..=4.0).suffix("x"))
+                            .changed()
+                        {
+                            if app.ecs.set_skeleton_clip_speed(entity, speed) {
+                                clip_info.speed = speed;
+                                inspector_refresh = true;
+                                *app.inspector_status = None;
+                            }
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Group");
+                        let mut group_value = clip_info.group.clone().unwrap_or_default();
+                        let response =
+                            ui.add(egui::TextEdit::singleline(&mut group_value).hint_text("optional group id"));
+                        if response.changed() {
+                            let trimmed = group_value.trim();
+                            let result = if trimmed.is_empty() {
+                                app.ecs.set_skeleton_clip_group(entity, None)
+                            } else {
+                                app.ecs.set_skeleton_clip_group(entity, Some(trimmed))
+                            };
+                            if result {
+                                clip_info.group =
+                                    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
+                                inspector_refresh = true;
+                            }
+                        }
+                    });
+                    let duration = clip_info.duration.max(0.0);
+                    let mut clip_time = clip_info.time.clamp(0.0, duration);
+                    let slider_response = ui.add_enabled(
+                        duration > 0.0,
+                        egui::Slider::new(&mut clip_time, 0.0..=duration).text("Time (s)").smart_aim(false),
+                    );
+                    if slider_response.changed() {
+                        if app.ecs.set_skeleton_clip_time(entity, clip_time) {
+                            clip_info.time = clip_time;
+                            inspector_refresh = true;
+                        }
+                    }
+                    if duration <= 0.0 {
+                        ui.label("Duration: 0 (static pose)");
+                    } else {
+                        ui.label(format!("Duration: {:.3} s", duration));
+                    }
+                } else {
+                    ui.label("Skeletal clip: n/a");
+                }
+                skeleton_info_opt = app.ecs.entity_info(entity).and_then(|data| data.skeleton);
+            } else if skeleton_items.len() <= 1 {
+                ui.label("Skeleton: n/a");
+            }
+            info.skeleton = skeleton_info_opt;
 
             if let Some(mut sprite) = info.sprite.clone() {
                 ui.separator();

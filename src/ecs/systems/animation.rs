@@ -276,7 +276,7 @@ fn drive_skeletal_clips(
     }
 }
 
-fn evaluate_skeleton_pose(instance: &mut SkeletonInstance, clip: &SkeletalClip, time: f32) {
+pub(crate) fn evaluate_skeleton_pose(instance: &mut SkeletonInstance, clip: &SkeletalClip, time: f32) {
     let joint_count = instance.joint_count();
     if joint_count == 0 {
         return;
