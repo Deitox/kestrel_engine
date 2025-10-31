@@ -88,7 +88,10 @@
   - Performance budget for this milestone is <= 0.40 ms CPU for 2 000 active clips; once the transform track benchmark lands, trigger it from the `animation_bench` suite to track regressions.
 
 ## Skeletal Animation Pipeline
-- _Stub section - detail GLTF requirements, importer CLI, and validation steps in Milestone 3._
+- Importer, fixture (`fixtures/gltf/skeletons/slime_rig.gltf`), and regression test (`cargo test --test skeletal_import`) now validate skeleton + clip extraction.
+- ECS playback updates `SkeletonInstance` and `BoneTransforms` each frame; renderer binding and inspector tooling are currently in progress.
+- Benchmark coverage: `cargo test --release animation_bench_run -- --ignored --nocapture` emits `animation_skeletal_clips.csv` to track the 1 000-bone CPU budget.
+- Authoring workflow/write-up will land alongside the Milestone 3 runtime drop.
 
 ## Animation Graph Authoring
 - _Stub section - document state machine graphs, parameter wiring, and scripting hooks when available._
@@ -102,3 +105,4 @@
 - 2025-10-28: Added Aseprite importer workflow and CLI usage.
 - 2025-11-02: Documented animation phase controls and AnimationTime integration.
 - 2025-11-08: Added inspector playback controls, event preview details, and hot-reload continuity guarantees.
+

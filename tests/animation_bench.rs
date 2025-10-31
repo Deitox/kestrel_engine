@@ -3,13 +3,16 @@
 //! Marked ignored so it only runs when explicitly requested:
 //! `cargo test --release animation_bench_run -- --ignored --nocapture`.
 
-use glam::{Vec2, Vec4};
+use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
+use kestrel_engine::assets::skeletal::{
+    JointCurve, JointQuatTrack, JointVec3Track, SkeletalClip, SkeletonAsset, SkeletonJoint,
+};
 use kestrel_engine::assets::{
     AnimationClip, ClipInterpolation, ClipKeyframe, ClipScalarTrack, ClipVec2Track, ClipVec4Track,
 };
 use kestrel_engine::ecs::{
-    ClipInstance, EcsWorld, PropertyTrackPlayer, Sprite, SpriteAnimation, SpriteAnimationFrame,
-    SpriteAnimationLoopMode, Tint, Transform, TransformTrackPlayer, WorldTransform,
+    BoneTransforms, ClipInstance, EcsWorld, PropertyTrackPlayer, SkeletonInstance, Sprite, SpriteAnimation,
+    SpriteAnimationFrame, SpriteAnimationLoopMode, Tint, Transform, TransformTrackPlayer, WorldTransform,
 };
 use std::collections::hash_map::DefaultHasher;
 use std::env;
@@ -31,6 +34,10 @@ const BUDGETS_MS: &[(usize, f64)] = &[(10_000, 0.20)];
 const DEFAULT_TRANSFORM_SWEEP: &[usize] = &[2_000];
 const TRANSFORM_CSV_RELATIVE_PATH: &str = "benchmarks/animation_transform_clips.csv";
 const TRANSFORM_BUDGETS_MS: &[(usize, f64)] = &[(2_000, 0.40)];
+const DEFAULT_SKELETAL_SWEEP: &[usize] = &[100];
+const SKELETAL_CSV_RELATIVE_PATH: &str = "benchmarks/animation_skeletal_clips.csv";
+const SKELETAL_BUDGETS_MS: &[(usize, f64)] = &[(100, 1.20)];
+const BENCH_SKELETON_BONES: usize = 10;
 
 struct BenchConfig {
     steps: u32,
@@ -39,6 +46,7 @@ struct BenchConfig {
     samples: usize,
     sweep: Vec<usize>,
     transform_sweep: Vec<usize>,
+    skeletal_sweep: Vec<usize>,
     randomize_phase: bool,
 }
 
@@ -95,6 +103,15 @@ fn animation_bench_run() {
         TRANSFORM_BUDGETS_MS,
         TRANSFORM_CSV_RELATIVE_PATH,
         seed_transform_clips,
+    );
+
+    run_bench_suite(
+        "skeletal_clips",
+        &config.skeletal_sweep,
+        &config,
+        SKELETAL_BUDGETS_MS,
+        SKELETAL_CSV_RELATIVE_PATH,
+        seed_skeletal_clips,
     );
 }
 
@@ -222,9 +239,11 @@ fn bench_config() -> BenchConfig {
     let sweep = parse_sweep("ANIMATION_BENCH_SWEEP").unwrap_or_else(|| DEFAULT_ANIMATOR_SWEEP.to_vec());
     let transform_sweep =
         parse_sweep("ANIMATION_BENCH_TRANSFORM_SWEEP").unwrap_or_else(|| DEFAULT_TRANSFORM_SWEEP.to_vec());
+    let skeletal_sweep =
+        parse_sweep("ANIMATION_BENCH_SKELETAL_SWEEP").unwrap_or_else(|| DEFAULT_SKELETAL_SWEEP.to_vec());
     let randomize_phase = parse_env_bool("ANIMATION_BENCH_RANDOMIZE_PHASES").unwrap_or(true);
 
-    BenchConfig { steps, dt, warmup_steps, samples, sweep, transform_sweep, randomize_phase }
+    BenchConfig { steps, dt, warmup_steps, samples, sweep, transform_sweep, skeletal_sweep, randomize_phase }
 }
 
 fn budget_for(animators: usize, budgets: &[(usize, f64)]) -> Option<f64> {
@@ -415,6 +434,120 @@ fn bench_transform_clip() -> Arc<AnimationClip> {
         version: 1,
     })
 }
+
+fn seed_skeletal_clips(world: &mut EcsWorld, count: usize, randomize_phase: bool) {
+    let skeleton_key: Arc<str> = Arc::from("bench_skeleton");
+    let skeleton = bench_skeleton_asset(BENCH_SKELETON_BONES);
+    let clip = bench_skeletal_clip(Arc::clone(&skeleton_key), BENCH_SKELETON_BONES);
+
+    for index in 0..count {
+        let mut instance = SkeletonInstance::new(Arc::clone(&skeleton_key), Arc::clone(&skeleton));
+        instance.set_active_clip(Some(Arc::clone(&clip)));
+        if randomize_phase {
+            let duration = instance.clip_duration();
+            if duration > 0.0 {
+                let fraction = stable_phase_fraction(index as u64, skeleton_key.as_ref());
+                instance.time = fraction * duration;
+            }
+        }
+        instance.ensure_capacity();
+        instance.mark_dirty();
+
+        let mut bone_transforms = BoneTransforms::new(instance.joint_count());
+        bone_transforms.ensure_joint_count(instance.joint_count());
+
+        world.world.spawn((instance, bone_transforms));
+    }
+}
+
+fn bench_skeleton_asset(bone_count: usize) -> Arc<SkeletonAsset> {
+    let mut joints = Vec::with_capacity(bone_count);
+    for index in 0..bone_count {
+        let parent = if index == 0 { None } else { Some((index - 1) as u32) };
+        let rest_translation = if index == 0 { Vec3::ZERO } else { Vec3::new(0.0, 1.0, 0.0) };
+        let rest_rotation = Quat::IDENTITY;
+        let rest_scale = Vec3::ONE;
+        let rest_local = Mat4::from_scale_rotation_translation(rest_scale, rest_rotation, rest_translation);
+        let rest_world = if let Some(parent_index) = parent {
+            joints[parent_index as usize].rest_world * rest_local
+        } else {
+            rest_local
+        };
+        let inverse_bind = rest_world.inverse();
+        joints.push(SkeletonJoint {
+            name: Arc::from(format!("bone_{index}")),
+            parent,
+            rest_local,
+            rest_world,
+            rest_translation,
+            rest_rotation,
+            rest_scale,
+            inverse_bind,
+        });
+    }
+    let roots = Arc::from(vec![0_u32].into_boxed_slice());
+    Arc::new(SkeletonAsset {
+        name: Arc::from("bench_skeleton"),
+        joints: Arc::from(joints.into_boxed_slice()),
+        roots,
+    })
+}
+
+fn bench_skeletal_clip(skeleton_key: Arc<str>, bone_count: usize) -> Arc<SkeletalClip> {
+    let mut curves = Vec::with_capacity(bone_count);
+    for joint_index in 0..bone_count {
+        let base_height = joint_index as f32;
+        let translation_keys = Arc::from(
+            vec![
+                ClipKeyframe { time: 0.0, value: Vec3::new(0.0, base_height, 0.0) },
+                ClipKeyframe { time: 0.5, value: Vec3::new(0.0, base_height + 0.2, 0.0) },
+                ClipKeyframe { time: 1.0, value: Vec3::new(0.0, base_height, 0.0) },
+            ]
+            .into_boxed_slice(),
+        );
+        let translation =
+            Some(JointVec3Track { interpolation: ClipInterpolation::Linear, keyframes: translation_keys });
+
+        let rotation = if joint_index % 2 == 0 {
+            let rotation_keys = Arc::from(
+                vec![
+                    ClipKeyframe { time: 0.0, value: Quat::IDENTITY },
+                    ClipKeyframe { time: 0.5, value: Quat::from_axis_angle(Vec3::Z, 0.5) },
+                    ClipKeyframe { time: 1.0, value: Quat::IDENTITY },
+                ]
+                .into_boxed_slice(),
+            );
+            Some(JointQuatTrack { interpolation: ClipInterpolation::Linear, keyframes: rotation_keys })
+        } else {
+            None
+        };
+
+        let scale = if joint_index % 3 == 0 {
+            let scale_keys = Arc::from(
+                vec![
+                    ClipKeyframe { time: 0.0, value: Vec3::ONE },
+                    ClipKeyframe { time: 0.5, value: Vec3::new(1.1, 0.9, 1.0) },
+                    ClipKeyframe { time: 1.0, value: Vec3::ONE },
+                ]
+                .into_boxed_slice(),
+            );
+            Some(JointVec3Track { interpolation: ClipInterpolation::Linear, keyframes: scale_keys })
+        } else {
+            None
+        };
+
+        curves.push(JointCurve { joint_index: joint_index as u32, translation, rotation, scale });
+    }
+
+    Arc::new(SkeletalClip {
+        name: Arc::from("bench_skeletal"),
+        skeleton: skeleton_key,
+        duration: 1.0,
+        channels: Arc::from(curves.into_boxed_slice()),
+        looped: true,
+    })
+}
+
 fn stable_phase_fraction(seed: u64, timeline: &str) -> f32 {
     let mut hasher = DefaultHasher::new();
     seed.hash(&mut hasher);
