@@ -234,6 +234,10 @@ pub struct ClipInstance {
     pub last_rotation: Option<f32>,
     pub last_scale: Option<Vec2>,
     pub last_tint: Option<Vec4>,
+    pub translation_cursor: usize,
+    pub rotation_cursor: usize,
+    pub scale_cursor: usize,
+    pub tint_cursor: usize,
 }
 
 impl ClipInstance {
@@ -255,6 +259,10 @@ impl ClipInstance {
             last_rotation: None,
             last_scale: None,
             last_tint: None,
+            translation_cursor: 0,
+            rotation_cursor: 0,
+            scale_cursor: 0,
+            tint_cursor: 0,
         }
     }
 
@@ -275,6 +283,7 @@ impl ClipInstance {
         self.last_rotation = None;
         self.last_scale = None;
         self.last_tint = None;
+        self.reset_cursors();
     }
 
     pub fn set_playing(&mut self, playing: bool) {
@@ -288,6 +297,7 @@ impl ClipInstance {
         self.last_rotation = None;
         self.last_scale = None;
         self.last_tint = None;
+        self.reset_cursors();
     }
 
     pub fn set_speed(&mut self, speed: f32) {
@@ -322,8 +332,10 @@ impl ClipInstance {
         let duration = self.duration();
         if duration > 0.0 {
             if self.looped {
-                if time >= duration && (time - duration).abs() <= CLIP_TIME_EPSILON {
+                if (time - duration).abs() <= CLIP_TIME_EPSILON {
                     self.time = duration;
+                } else if time >= 0.0 && time < duration {
+                    self.time = time;
                 } else {
                     let wrapped = time.rem_euclid(duration.max(std::f32::EPSILON));
                     self.time = wrapped;
@@ -334,10 +346,28 @@ impl ClipInstance {
         } else {
             self.time = 0.0;
         }
+        self.reset_cursors();
     }
 
     pub fn sample(&self) -> ClipSample {
         self.sample_at(self.time)
+    }
+
+    #[inline(always)]
+    pub fn sample_cached(&mut self) -> ClipSample {
+        let translation = self.clip.translation.as_ref().and_then(|track| {
+            sample_vec2_track_cached(track, self.time, self.looped, &mut self.translation_cursor)
+        });
+        let rotation = self.clip.rotation.as_ref().and_then(|track| {
+            sample_scalar_track_cached(track, self.time, self.looped, &mut self.rotation_cursor)
+        });
+        let scale = self.clip.scale.as_ref().and_then(|track| {
+            sample_vec2_track_cached(track, self.time, self.looped, &mut self.scale_cursor)
+        });
+        let tint = self.clip.tint.as_ref().and_then(|track| {
+            sample_vec4_track_cached(track, self.time, self.looped, &mut self.tint_cursor)
+        });
+        ClipSample { translation, rotation, scale, tint }
     }
 
     pub fn sample_at(&self, time: f32) -> ClipSample {
@@ -348,6 +378,14 @@ impl ClipInstance {
         let scale = self.clip.scale.as_ref().and_then(|track| sample_vec2_track(track, time, self.looped));
         let tint = self.clip.tint.as_ref().and_then(|track| sample_vec4_track(track, time, self.looped));
         ClipSample { translation, rotation, scale, tint }
+    }
+
+    #[inline(always)]
+    fn reset_cursors(&mut self) {
+        self.translation_cursor = 0;
+        self.rotation_cursor = 0;
+        self.scale_cursor = 0;
+        self.tint_cursor = 0;
     }
 }
 
@@ -381,58 +419,179 @@ impl PropertyTrackPlayer {
     }
 }
 
+#[inline(always)]
 fn sample_vec2_track(track: &ClipVec2Track, time: f32, looped: bool) -> Option<Vec2> {
     let frames = track.keyframes.as_ref();
     if frames.is_empty() {
         return None;
     }
-    let duration = frames.last().map(|kf| kf.time).unwrap_or(0.0);
-    let sample_time = normalize_time(time, duration, looped);
+    let sample_time = normalize_time(time, track.duration, looped);
     Some(sample_keyframes(frames, track.interpolation, sample_time, |a, b, t| a + (b - a) * t))
 }
 
+#[inline(always)]
 fn sample_scalar_track(track: &ClipScalarTrack, time: f32, looped: bool) -> Option<f32> {
     let frames = track.keyframes.as_ref();
     if frames.is_empty() {
         return None;
     }
-    let duration = frames.last().map(|kf| kf.time).unwrap_or(0.0);
-    let sample_time = normalize_time(time, duration, looped);
+    let sample_time = normalize_time(time, track.duration, looped);
     Some(sample_keyframes(frames, track.interpolation, sample_time, |a, b, t| a + (b - a) * t))
 }
 
+#[inline(always)]
 fn sample_vec4_track(track: &ClipVec4Track, time: f32, looped: bool) -> Option<Vec4> {
     let frames = track.keyframes.as_ref();
     if frames.is_empty() {
         return None;
     }
-    let duration = frames.last().map(|kf| kf.time).unwrap_or(0.0);
-    let sample_time = normalize_time(time, duration, looped);
+    let sample_time = normalize_time(time, track.duration, looped);
     Some(sample_keyframes(frames, track.interpolation, sample_time, |a, b, t| a + (b - a) * t))
+}
+
+#[inline(always)]
+fn sample_vec2_track_cached(
+    track: &ClipVec2Track,
+    time: f32,
+    looped: bool,
+    cursor: &mut usize,
+) -> Option<Vec2> {
+    let frames = track.keyframes.as_ref();
+    if frames.is_empty() {
+        return None;
+    }
+    let sample_time = normalize_time(time, track.duration, looped);
+    let len = frames.len();
+    if len == 1 || sample_time <= frames[0].time {
+        *cursor = 0;
+        return Some(frames[0].value);
+    }
+    let last_index = len - 1;
+    if sample_time >= frames[last_index].time {
+        *cursor = last_index.saturating_sub(1);
+        return Some(frames[last_index].value);
+    }
+    if *cursor >= last_index || sample_time < frames[*cursor].time {
+        *cursor = 0;
+    }
+    while *cursor + 1 < len && sample_time >= frames[*cursor + 1].time {
+        *cursor += 1;
+    }
+    if matches!(track.interpolation, ClipInterpolation::Step) {
+        return Some(frames[*cursor].value);
+    }
+    let segment = *cursor;
+    let start = &frames[segment];
+    let delta = track.segment_deltas.get(segment).copied().unwrap_or(Vec2::ZERO);
+    let inv_duration = track.segment_inv_durations.get(segment).copied().unwrap_or(0.0);
+    let alpha = ((sample_time - start.time) * inv_duration).clamp(0.0, 1.0);
+    Some(start.value + delta * alpha)
+}
+
+#[inline(always)]
+fn sample_scalar_track_cached(
+    track: &ClipScalarTrack,
+    time: f32,
+    looped: bool,
+    cursor: &mut usize,
+) -> Option<f32> {
+    let frames = track.keyframes.as_ref();
+    if frames.is_empty() {
+        return None;
+    }
+    let sample_time = normalize_time(time, track.duration, looped);
+    let len = frames.len();
+    if len == 1 || sample_time <= frames[0].time {
+        *cursor = 0;
+        return Some(frames[0].value);
+    }
+    let last_index = len - 1;
+    if sample_time >= frames[last_index].time {
+        *cursor = last_index.saturating_sub(1);
+        return Some(frames[last_index].value);
+    }
+    if *cursor >= last_index || sample_time < frames[*cursor].time {
+        *cursor = 0;
+    }
+    while *cursor + 1 < len && sample_time >= frames[*cursor + 1].time {
+        *cursor += 1;
+    }
+    if matches!(track.interpolation, ClipInterpolation::Step) {
+        return Some(frames[*cursor].value);
+    }
+    let segment = *cursor;
+    let start = &frames[segment];
+    let delta = track.segment_deltas.get(segment).copied().unwrap_or(0.0);
+    let inv_duration = track.segment_inv_durations.get(segment).copied().unwrap_or(0.0);
+    let alpha = ((sample_time - start.time) * inv_duration).clamp(0.0, 1.0);
+    Some(start.value + delta * alpha)
+}
+
+#[inline(always)]
+fn sample_vec4_track_cached(
+    track: &ClipVec4Track,
+    time: f32,
+    looped: bool,
+    cursor: &mut usize,
+) -> Option<Vec4> {
+    let frames = track.keyframes.as_ref();
+    if frames.is_empty() {
+        return None;
+    }
+    let sample_time = normalize_time(time, track.duration, looped);
+    let len = frames.len();
+    if len == 1 || sample_time <= frames[0].time {
+        *cursor = 0;
+        return Some(frames[0].value);
+    }
+    let last_index = len - 1;
+    if sample_time >= frames[last_index].time {
+        *cursor = last_index.saturating_sub(1);
+        return Some(frames[last_index].value);
+    }
+    if *cursor >= last_index || sample_time < frames[*cursor].time {
+        *cursor = 0;
+    }
+    while *cursor + 1 < len && sample_time >= frames[*cursor + 1].time {
+        *cursor += 1;
+    }
+    if matches!(track.interpolation, ClipInterpolation::Step) {
+        return Some(frames[*cursor].value);
+    }
+    let segment = *cursor;
+    let start = &frames[segment];
+    let delta = track.segment_deltas.get(segment).copied().unwrap_or(Vec4::ZERO);
+    let inv_duration = track.segment_inv_durations.get(segment).copied().unwrap_or(0.0);
+    let alpha = ((sample_time - start.time) * inv_duration).clamp(0.0, 1.0);
+    Some(start.value + delta * alpha)
 }
 
 const CLIP_TIME_EPSILON: f32 = 1e-5;
 
+#[inline(always)]
 fn normalize_time(time: f32, duration: f32, looped: bool) -> f32 {
     if duration <= 0.0 {
         return 0.0;
     }
     if looped {
-        if time >= duration && (time - duration).abs() <= CLIP_TIME_EPSILON {
+        if (time - duration).abs() <= CLIP_TIME_EPSILON {
+            return duration;
+        }
+        if time >= 0.0 && time < duration {
+            return time;
+        }
+        let wrapped = time.rem_euclid(duration.max(std::f32::EPSILON));
+        if wrapped <= CLIP_TIME_EPSILON && time > 0.0 && (time - duration).abs() <= CLIP_TIME_EPSILON {
             duration
         } else {
-            let wrapped = time.rem_euclid(duration.max(std::f32::EPSILON));
-            if wrapped <= CLIP_TIME_EPSILON && time > 0.0 && (time - duration).abs() <= CLIP_TIME_EPSILON {
-                duration
-            } else {
-                wrapped
-            }
+            wrapped
         }
     } else {
         time.clamp(0.0, duration)
     }
 }
 
+#[inline(always)]
 fn sample_keyframes<T, L>(
     frames: &[crate::assets::ClipKeyframe<T>],
     mode: ClipInterpolation,

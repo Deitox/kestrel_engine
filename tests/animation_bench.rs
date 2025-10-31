@@ -362,7 +362,7 @@ fn seed_transform_clips(world: &mut EcsWorld, count: usize, randomize_phase: boo
             let fraction = stable_phase_fraction(index as u64, clip_key.as_ref());
             instance.set_time(fraction * duration);
         }
-        let sample = instance.sample();
+        let sample = instance.sample_cached();
         instance.last_translation = sample.translation;
         instance.last_rotation = sample.rotation;
         instance.last_scale = sample.scale;
@@ -387,7 +387,7 @@ fn seed_transform_clips(world: &mut EcsWorld, count: usize, randomize_phase: boo
 }
 
 fn bench_transform_clip() -> Arc<AnimationClip> {
-    let translation_keys = Arc::from(
+    let translation_keys: Arc<[ClipKeyframe<Vec2>]> = Arc::from(
         vec![
             ClipKeyframe { time: 0.0, value: Vec2::ZERO },
             ClipKeyframe { time: 0.25, value: Vec2::new(0.0, 4.0) },
@@ -395,26 +395,102 @@ fn bench_transform_clip() -> Arc<AnimationClip> {
         ]
         .into_boxed_slice(),
     );
-    let rotation_keys = Arc::from(
+    let rotation_keys: Arc<[ClipKeyframe<f32>]> = Arc::from(
         vec![
             ClipKeyframe { time: 0.0, value: 0.0 },
             ClipKeyframe { time: 0.5, value: std::f32::consts::TAU },
         ]
         .into_boxed_slice(),
     );
-    let scale_keys = Arc::from(
+    let scale_keys: Arc<[ClipKeyframe<Vec2>]> = Arc::from(
         vec![
             ClipKeyframe { time: 0.0, value: Vec2::splat(1.0) },
             ClipKeyframe { time: 0.5, value: Vec2::new(1.2, 0.8) },
         ]
         .into_boxed_slice(),
     );
-    let tint_keys = Arc::from(
+    let tint_keys: Arc<[ClipKeyframe<Vec4>]> = Arc::from(
         vec![
             ClipKeyframe { time: 0.0, value: Vec4::ONE },
             ClipKeyframe { time: 0.5, value: Vec4::new(0.6, 0.9, 1.0, 1.0) },
         ]
         .into_boxed_slice(),
+    );
+    let translation_delta = Arc::from(
+        translation_keys
+            .as_ref()
+            .windows(2)
+            .map(|window| window[1].value - window[0].value)
+            .collect::<Vec<Vec2>>()
+            .into_boxed_slice(),
+    );
+    let translation_inv = Arc::from(
+        translation_keys
+            .as_ref()
+            .windows(2)
+            .map(|window| {
+                let span = (window[1].time - window[0].time).max(std::f32::EPSILON);
+                1.0 / span
+            })
+            .collect::<Vec<f32>>()
+            .into_boxed_slice(),
+    );
+    let rotation_delta = Arc::from(
+        rotation_keys
+            .as_ref()
+            .windows(2)
+            .map(|window| window[1].value - window[0].value)
+            .collect::<Vec<f32>>()
+            .into_boxed_slice(),
+    );
+    let rotation_inv = Arc::from(
+        rotation_keys
+            .as_ref()
+            .windows(2)
+            .map(|window| {
+                let span = (window[1].time - window[0].time).max(std::f32::EPSILON);
+                1.0 / span
+            })
+            .collect::<Vec<f32>>()
+            .into_boxed_slice(),
+    );
+    let scale_delta = Arc::from(
+        scale_keys
+            .as_ref()
+            .windows(2)
+            .map(|window| window[1].value - window[0].value)
+            .collect::<Vec<Vec2>>()
+            .into_boxed_slice(),
+    );
+    let scale_inv = Arc::from(
+        scale_keys
+            .as_ref()
+            .windows(2)
+            .map(|window| {
+                let span = (window[1].time - window[0].time).max(std::f32::EPSILON);
+                1.0 / span
+            })
+            .collect::<Vec<f32>>()
+            .into_boxed_slice(),
+    );
+    let tint_delta = Arc::from(
+        tint_keys
+            .as_ref()
+            .windows(2)
+            .map(|window| window[1].value - window[0].value)
+            .collect::<Vec<Vec4>>()
+            .into_boxed_slice(),
+    );
+    let tint_inv = Arc::from(
+        tint_keys
+            .as_ref()
+            .windows(2)
+            .map(|window| {
+                let span = (window[1].time - window[0].time).max(std::f32::EPSILON);
+                1.0 / span
+            })
+            .collect::<Vec<f32>>()
+            .into_boxed_slice(),
     );
 
     Arc::new(AnimationClip {
@@ -423,13 +499,31 @@ fn bench_transform_clip() -> Arc<AnimationClip> {
         translation: Some(ClipVec2Track {
             interpolation: ClipInterpolation::Linear,
             keyframes: translation_keys,
+            duration: 0.5,
+            segment_deltas: translation_delta,
+            segment_inv_durations: translation_inv,
         }),
         rotation: Some(ClipScalarTrack {
             interpolation: ClipInterpolation::Linear,
             keyframes: rotation_keys,
+            duration: 0.5,
+            segment_deltas: rotation_delta,
+            segment_inv_durations: rotation_inv,
         }),
-        scale: Some(ClipVec2Track { interpolation: ClipInterpolation::Step, keyframes: scale_keys }),
-        tint: Some(ClipVec4Track { interpolation: ClipInterpolation::Linear, keyframes: tint_keys }),
+        scale: Some(ClipVec2Track {
+            interpolation: ClipInterpolation::Step,
+            keyframes: scale_keys,
+            duration: 0.5,
+            segment_deltas: scale_delta,
+            segment_inv_durations: scale_inv,
+        }),
+        tint: Some(ClipVec4Track {
+            interpolation: ClipInterpolation::Linear,
+            keyframes: tint_keys,
+            duration: 0.5,
+            segment_deltas: tint_delta,
+            segment_inv_durations: tint_inv,
+        }),
         looped: true,
         version: 1,
     })

@@ -635,7 +635,7 @@ impl EcsWorld {
         let sample = {
             if let Some(mut instance) = self.world.get_mut::<ClipInstance>(entity) {
                 instance.replace_clip(Arc::clone(&clip_name), Arc::clone(&clip_arc));
-                let sample = instance.sample();
+                let sample = instance.sample_cached();
                 instance.last_translation = sample.translation;
                 instance.last_rotation = sample.rotation;
                 instance.last_scale = sample.scale;
@@ -644,7 +644,7 @@ impl EcsWorld {
             } else {
                 let mut entity_mut = self.world.entity_mut(entity);
                 let mut instance = ClipInstance::new(Arc::clone(&clip_name), Arc::clone(&clip_arc));
-                let sample = instance.sample();
+                let sample = instance.sample_cached();
                 instance.last_translation = sample.translation;
                 instance.last_rotation = sample.rotation;
                 instance.last_scale = sample.scale;
@@ -704,7 +704,7 @@ impl EcsWorld {
     pub fn set_transform_clip_time(&mut self, entity: Entity, time: f32) -> bool {
         if let Some(mut instance) = self.world.get_mut::<ClipInstance>(entity) {
             instance.set_time(time);
-            let sample = instance.sample();
+            let sample = instance.sample_cached();
             instance.last_translation = sample.translation;
             instance.last_rotation = sample.rotation;
             instance.last_scale = sample.scale;
@@ -720,7 +720,7 @@ impl EcsWorld {
     pub fn reset_transform_clip(&mut self, entity: Entity) -> bool {
         if let Some(mut instance) = self.world.get_mut::<ClipInstance>(entity) {
             instance.reset();
-            let sample = instance.sample();
+            let sample = instance.sample_cached();
             instance.last_translation = sample.translation;
             instance.last_rotation = sample.rotation;
             instance.last_scale = sample.scale;

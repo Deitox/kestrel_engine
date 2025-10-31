@@ -8,7 +8,7 @@ use crate::ecs::{
 };
 use crate::events::{EventBus, GameEvent};
 use bevy_ecs::prelude::{Entity, Mut, Query, Res, ResMut};
-use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
+use glam::{Mat4, Quat, Vec3};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::ptr::NonNull;
@@ -408,15 +408,17 @@ fn normalize_time(time: f32, duration: f32, looped: bool) -> f32 {
         return 0.0;
     }
     if looped {
-        if time >= duration && (time - duration).abs() <= CLIP_TIME_EPSILON {
+        if (time - duration).abs() <= CLIP_TIME_EPSILON {
+            return duration;
+        }
+        if time >= 0.0 && time < duration {
+            return time;
+        }
+        let wrapped = time.rem_euclid(duration.max(std::f32::EPSILON));
+        if wrapped <= CLIP_TIME_EPSILON && time > 0.0 && (time - duration).abs() <= CLIP_TIME_EPSILON {
             duration
         } else {
-            let wrapped = time.rem_euclid(duration.max(std::f32::EPSILON));
-            if wrapped <= CLIP_TIME_EPSILON && time > 0.0 && (time - duration).abs() <= CLIP_TIME_EPSILON {
-                duration
-            } else {
-                wrapped
-            }
+            wrapped
         }
     } else {
         time.clamp(0.0, duration)
@@ -468,17 +470,21 @@ fn drive_transform_clips(
         let previous_time = instance.time;
         let mut new_time = previous_time + scaled;
         if instance.looped {
-            new_time = new_time.rem_euclid(duration.max(std::f32::EPSILON));
+            if new_time >= duration {
+                let duration_eps = duration.max(std::f32::EPSILON);
+                new_time = new_time.rem_euclid(duration_eps);
+            }
         } else if new_time >= duration {
             new_time = duration;
             instance.playing = false;
         }
         instance.time = new_time;
-        let sample = instance.sample();
+        let sample = instance.sample_cached();
         apply_clip_sample(&mut instance, transform_player, property_player, transform, tint, sample);
     }
 }
 
+#[inline(always)]
 fn apply_clip_sample(
     instance: &mut ClipInstance,
     transform_player: Option<&TransformTrackPlayer>,
@@ -491,7 +497,7 @@ fn apply_clip_sample(
         let mask = transform_player.copied().unwrap_or_default();
         if mask.apply_translation {
             if let Some(value) = sample.translation {
-                let changed = instance.last_translation.map_or(true, |prev| !approx_eq_vec2(prev, value));
+                let changed = instance.last_translation.map_or(true, |prev| prev != value);
                 if changed {
                     transform.translation = value;
                 }
@@ -499,7 +505,7 @@ fn apply_clip_sample(
         }
         if mask.apply_rotation {
             if let Some(value) = sample.rotation {
-                let changed = instance.last_rotation.map_or(true, |prev| !approx_eq_scalar(prev, value));
+                let changed = instance.last_rotation.map_or(true, |prev| prev != value);
                 if changed {
                     transform.rotation = value;
                 }
@@ -507,7 +513,7 @@ fn apply_clip_sample(
         }
         if mask.apply_scale {
             if let Some(value) = sample.scale {
-                let changed = instance.last_scale.map_or(true, |prev| !approx_eq_vec2(prev, value));
+                let changed = instance.last_scale.map_or(true, |prev| prev != value);
                 if changed {
                     transform.scale = value;
                 }
@@ -519,7 +525,7 @@ fn apply_clip_sample(
         let mask = property_player.copied().unwrap_or_default();
         if mask.apply_tint {
             if let Some(value) = sample.tint {
-                let changed = instance.last_tint.map_or(true, |prev| !approx_eq_vec4(prev, value));
+                let changed = instance.last_tint.map_or(true, |prev| prev != value);
                 if changed {
                     tint_component.0 = value;
                 }
@@ -531,18 +537,6 @@ fn apply_clip_sample(
     instance.last_rotation = sample.rotation;
     instance.last_scale = sample.scale;
     instance.last_tint = sample.tint;
-}
-
-fn approx_eq_scalar(a: f32, b: f32) -> bool {
-    (a - b).abs() <= 1e-5
-}
-
-fn approx_eq_vec2(a: Vec2, b: Vec2) -> bool {
-    (a - b).length_squared() <= 1e-8
-}
-
-fn approx_eq_vec4(a: Vec4, b: Vec4) -> bool {
-    (a - b).length_squared() <= 1e-6
 }
 
 pub(crate) fn initialize_animation_phase(animation: &mut SpriteAnimation, entity: Entity) -> bool {
