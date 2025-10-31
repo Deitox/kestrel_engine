@@ -347,6 +347,75 @@ impl From<AtlasDependencyRepr> for AtlasDependency {
 }
 
 #[derive(Debug, Clone)]
+pub struct ClipDependency {
+    key: String,
+    path: Option<String>,
+}
+
+impl ClipDependency {
+    pub fn new(key: String, path: Option<String>) -> Self {
+        Self { key, path }
+    }
+
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    pub fn path(&self) -> Option<&str> {
+        self.path.as_deref()
+    }
+}
+
+pub struct ClipDependencyView<'a> {
+    key: &'a str,
+    path: Option<&'a str>,
+}
+
+impl<'a> ClipDependencyView<'a> {
+    fn new(key: &'a str, path: Option<&'a str>) -> Self {
+        Self { key, path }
+    }
+
+    pub fn key(&self) -> &str {
+        self.key
+    }
+
+    pub fn path(&self) -> Option<&str> {
+        self.path
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum ClipDependencyRepr {
+    Key(String),
+    Detailed {
+        key: String,
+        #[serde(default)]
+        path: Option<String>,
+    },
+}
+
+impl From<ClipDependency> for ClipDependencyRepr {
+    fn from(dep: ClipDependency) -> Self {
+        if let Some(path) = dep.path {
+            ClipDependencyRepr::Detailed { key: dep.key, path: Some(path) }
+        } else {
+            ClipDependencyRepr::Key(dep.key)
+        }
+    }
+}
+
+impl From<ClipDependencyRepr> for ClipDependency {
+    fn from(repr: ClipDependencyRepr) -> Self {
+        match repr {
+            ClipDependencyRepr::Key(key) => ClipDependency::new(key, None),
+            ClipDependencyRepr::Detailed { key, path } => ClipDependency::new(key, path),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct MeshDependency {
     key: String,
     path: Option<String>,
@@ -558,6 +627,8 @@ pub struct SceneDependencies {
     #[serde(default)]
     atlases: Vec<AtlasDependencyRepr>,
     #[serde(default)]
+    clips: Vec<ClipDependencyRepr>,
+    #[serde(default)]
     meshes: Vec<MeshDependencyRepr>,
     #[serde(default)]
     materials: Vec<MaterialDependencyRepr>,
@@ -590,10 +661,24 @@ impl SceneDependencies {
                     AtlasDependencyRepr::from(AtlasDependency::new(key, path))
                 })
                 .collect(),
+            clips: Vec::new(),
             meshes: Vec::new(),
             materials: Vec::new(),
             environments: Vec::new(),
         };
+        let mut clip_set = BTreeSet::new();
+        for entity in entities {
+            if let Some(clip) = &entity.transform_clip {
+                clip_set.insert(clip.clip_key.clone());
+            }
+        }
+        deps.clips = clip_set
+            .into_iter()
+            .map(|key| {
+                let path = assets.clip_source(&key).map(|p| p.to_string());
+                ClipDependencyRepr::from(ClipDependency::new(key, path))
+            })
+            .collect();
         let mut mesh_set = BTreeSet::new();
         for entity in entities {
             if let Some(mesh) = &entity.mesh {
@@ -634,6 +719,17 @@ impl SceneDependencies {
         self.atlases.iter().map(|repr| match repr {
             AtlasDependencyRepr::Key(key) => AtlasDependencyView::new(key, None),
             AtlasDependencyRepr::Detailed { key, path } => AtlasDependencyView::new(key, path.as_deref()),
+        })
+    }
+
+    pub fn contains_clip(&self, key: &str) -> bool {
+        self.clip_dependencies().any(|dep| dep.key() == key)
+    }
+
+    pub fn clip_dependencies(&self) -> impl Iterator<Item = ClipDependencyView<'_>> {
+        self.clips.iter().map(|repr| match repr {
+            ClipDependencyRepr::Key(key) => ClipDependencyView::new(key, None),
+            ClipDependencyRepr::Detailed { key, path } => ClipDependencyView::new(key, path.as_deref()),
         })
     }
 
@@ -735,11 +831,15 @@ impl SceneDependencies {
         environment: Option<&SceneEnvironment>,
     ) -> Self {
         let mut atlas_keys = BTreeSet::new();
+        let mut clip_keys = BTreeSet::new();
         let mut mesh_keys = BTreeSet::new();
         let mut material_keys = BTreeSet::new();
         for entity in entities {
             if let Some(sprite) = &entity.sprite {
                 atlas_keys.insert(sprite.atlas.clone());
+            }
+            if let Some(clip) = &entity.transform_clip {
+                clip_keys.insert(clip.clip_key.clone());
             }
             if let Some(mesh) = &entity.mesh {
                 mesh_keys.insert(mesh.key.clone());
@@ -755,6 +855,15 @@ impl SceneDependencies {
             .cloned()
             .map(|repr| {
                 let dep: AtlasDependency = repr.into();
+                (dep.key().to_string(), dep)
+            })
+            .collect();
+        let clip_lookup: HashMap<_, _> = self
+            .clips
+            .iter()
+            .cloned()
+            .map(|repr| {
+                let dep: ClipDependency = repr.into();
                 (dep.key().to_string(), dep)
             })
             .collect();
@@ -796,6 +905,14 @@ impl SceneDependencies {
                 AtlasDependencyRepr::from(dep)
             })
             .collect();
+        let clips = clip_keys
+            .into_iter()
+            .map(|key| {
+                let dep =
+                    clip_lookup.get(&key).cloned().unwrap_or_else(|| ClipDependency::new(key.clone(), None));
+                ClipDependencyRepr::from(dep)
+            })
+            .collect();
         let meshes = mesh_keys
             .into_iter()
             .map(|key| {
@@ -825,7 +942,7 @@ impl SceneDependencies {
             }
         }
 
-        let mut subset = SceneDependencies { atlases, meshes, materials, environments };
+        let mut subset = SceneDependencies { atlases, clips, meshes, materials, environments };
         subset.normalize();
         subset
     }
@@ -849,6 +966,25 @@ impl SceneDependencies {
             }
         }
         self.atlases = map.into_iter().map(|(_, dep)| AtlasDependencyRepr::from(dep)).collect();
+
+        let mut clip_map: BTreeMap<String, ClipDependency> = BTreeMap::new();
+        for repr in std::mem::take(&mut self.clips) {
+            let dep = ClipDependency::from(repr);
+            let key = dep.key().to_string();
+            let path_opt = dep.path().map(|s| s.to_string());
+            match clip_map.entry(key) {
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    if entry.get().path.is_none() {
+                        entry.get_mut().path = path_opt;
+                    }
+                }
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    let key_clone = entry.key().clone();
+                    entry.insert(ClipDependency::new(key_clone, path_opt));
+                }
+            }
+        }
+        self.clips = clip_map.into_iter().map(|(_, dep)| ClipDependencyRepr::from(dep)).collect();
 
         let mut mesh_map: BTreeMap<String, MeshDependency> = BTreeMap::new();
         for repr in std::mem::take(&mut self.meshes) {
@@ -918,6 +1054,8 @@ pub struct SceneEntity {
     pub name: Option<String>,
     pub transform: TransformData,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform_clip: Option<TransformClipData>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sprite: Option<SpriteData>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transform3d: Option<Transform3DData>,
@@ -985,6 +1123,29 @@ pub struct SpriteAnimationData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransformClipData {
+    pub clip_key: String,
+    #[serde(default = "default_transform_clip_playing")]
+    pub playing: bool,
+    #[serde(default = "default_transform_clip_looped")]
+    pub looped: bool,
+    #[serde(default = "default_transform_clip_speed")]
+    pub speed: f32,
+    #[serde(default)]
+    pub time: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    #[serde(default = "default_transform_clip_mask")]
+    pub apply_translation: bool,
+    #[serde(default = "default_transform_clip_mask")]
+    pub apply_rotation: bool,
+    #[serde(default = "default_transform_clip_mask")]
+    pub apply_scale: bool,
+    #[serde(default = "default_transform_clip_mask")]
+    pub apply_tint: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeshData {
     pub key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1048,6 +1209,22 @@ const fn default_sprite_anim_playing() -> bool {
 
 const fn default_sprite_anim_speed() -> f32 {
     1.0
+}
+
+const fn default_transform_clip_playing() -> bool {
+    true
+}
+
+const fn default_transform_clip_speed() -> f32 {
+    1.0
+}
+
+const fn default_transform_clip_looped() -> bool {
+    true
+}
+
+const fn default_transform_clip_mask() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

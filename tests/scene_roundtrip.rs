@@ -3,7 +3,8 @@ use glam::{EulerRot, Quat, Vec2, Vec3, Vec4};
 use kestrel_engine::assets::AssetManager;
 use kestrel_engine::ecs::{
     Aabb, Children, EcsWorld, Mass, MeshLighting, MeshRef, MeshSurface, Parent, ParticleEmitter,
-    SceneEntityTag, Sprite, Transform, Transform3D, Velocity, WorldTransform, WorldTransform3D,
+    PropertyTrackPlayer, SceneEntityTag, Sprite, Tint, Transform, Transform3D, TransformTrackPlayer, Velocity,
+    WorldTransform, WorldTransform3D,
 };
 use kestrel_engine::environment::EnvironmentRegistry;
 use kestrel_engine::material_registry::MaterialRegistry;
@@ -492,6 +493,7 @@ fn scene_clone_subtree_includes_descendants() {
             id,
             name: None,
             transform: TransformData::from_components(Vec2::ZERO, 0.0, Vec2::splat(1.0)),
+            transform_clip: None,
             sprite: None,
             transform3d: None,
             mesh: None,
@@ -723,4 +725,93 @@ fn scene_roundtrip_captures_hierarchy_dependencies_and_environment_metadata() {
         runtime_environments.release(dep.key());
         assert_eq!(runtime_environments.ref_count(dep.key()), Some(0));
     }
+}
+
+#[test]
+fn scene_roundtrip_preserves_transform_clip_binding() {
+    let mut world = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    assets
+        .retain_clip("slime", Some("fixtures/animation_clips/slime_bob.json"))
+        .expect("load transform clip");
+
+    let entity = world
+        .world
+        .spawn((
+            Transform { translation: Vec2::new(-3.0, 1.5), rotation: 0.0, scale: Vec2::splat(1.0) },
+            WorldTransform::default(),
+            Tint(Vec4::new(0.9, 0.5, 0.3, 1.0)),
+        ))
+        .id();
+
+    assert!(world.set_transform_clip(entity, &assets, "slime"));
+    let _ = world.set_transform_clip_group(entity, Some("cutscene"));
+    let _ = world.set_transform_clip_speed(entity, 0.75);
+    let _ = world.set_transform_clip_time(entity, 0.25);
+    let _ = world.set_transform_clip_playing(entity, true);
+    {
+        let mut mask = world.world.get_mut::<TransformTrackPlayer>(entity).expect("mask present");
+        mask.apply_translation = true;
+        mask.apply_rotation = false;
+        mask.apply_scale = false;
+    }
+    {
+        let mut property =
+            world.world.get_mut::<PropertyTrackPlayer>(entity).expect("property mask present");
+        property.apply_tint = false;
+    }
+    {
+        let mut transform = world.world.get_mut::<Transform>(entity).expect("transform present");
+        transform.rotation = 0.15;
+        transform.scale = Vec2::new(1.25, 0.95);
+    }
+    {
+        let mut tint = world.world.get_mut::<Tint>(entity).expect("tint present");
+        tint.0 = Vec4::new(0.2, 0.4, 0.8, 1.0);
+    }
+
+    let scene = world.export_scene(&assets);
+    assert!(scene.dependencies.contains_clip("slime"));
+
+    let entity_id = scene
+        .entities
+        .first()
+        .expect("scene entity")
+        .id
+        .as_str()
+        .to_string();
+
+    let mut clone_world = EcsWorld::new();
+    clone_world.load_scene(&scene, &assets).expect("load scene");
+    let clone_entity = clone_world
+        .find_entity_by_scene_id(&entity_id)
+        .expect("entity restored by id");
+    let info = clone_world.entity_info(clone_entity).expect("entity info");
+
+    let clip = info.transform_clip.expect("transform clip info");
+    assert_eq!(clip.clip_key, "slime");
+    assert!(clip.playing);
+    assert!((clip.speed - 0.75).abs() < 1e-6);
+    assert!((clip.time - 0.25).abs() < 1e-6);
+    assert_eq!(clip.group.as_deref(), Some("cutscene"));
+    let translation = clip.sample_translation.expect("translation sample");
+    assert!((translation.y - 4.0).abs() < 1e-4);
+
+    let mask = info.transform_tracks.expect("transform track mask");
+    assert!(mask.apply_translation);
+    assert!(!mask.apply_rotation);
+    assert!(!mask.apply_scale);
+    let property = info.property_tracks.expect("property track mask");
+    assert!(!property.apply_tint);
+
+    let transform = clone_world.world.get::<Transform>(clone_entity).expect("transform present");
+    assert!((transform.translation.y - 4.0).abs() < 1e-4);
+    assert!((transform.rotation - 0.15).abs() < 1e-6);
+    assert!((transform.scale.x - 1.25).abs() < 1e-6);
+    assert!((transform.scale.y - 0.95).abs() < 1e-6);
+
+    let tint = clone_world.world.get::<Tint>(clone_entity).expect("tint present").0;
+    assert!((tint.x - 0.2).abs() < 1e-6);
+    assert!((tint.y - 0.4).abs() < 1e-6);
+    assert!((tint.z - 0.8).abs() < 1e-6);
 }

@@ -6,7 +6,7 @@ use crate::mesh_registry::MeshRegistry;
 use crate::scene::{
     ColliderData, ColorData, MeshData, MeshLightingData, OrbitControllerData, ParticleEmitterData, Scene,
     SceneDependencies, SceneEntity, SceneEntityId, SpriteAnimationData, SpriteData, Transform3DData,
-    TransformData,
+    TransformClipData, TransformData,
 };
 use anyhow::{anyhow, Result};
 use bevy_ecs::prelude::{Entity, Schedule, With, World};
@@ -1925,6 +1925,26 @@ impl EcsWorld {
             return Err(anyhow!("Scene requires atlases that could not be loaded: {}", missing.join(", ")));
         }
 
+        let mut clip_missing = Vec::new();
+        for dep in scene.dependencies.clip_dependencies() {
+            if assets.clip(dep.key()).is_some() {
+                continue;
+            }
+            if let Some(path) = dep.path() {
+                if let Err(err) = assets.load_clip(dep.key(), path) {
+                    clip_missing.push(format!("{} ({}): {err}", dep.key(), path));
+                }
+            } else {
+                clip_missing.push(format!("{} (no path provided)", dep.key()));
+            }
+        }
+        if !clip_missing.is_empty() {
+            return Err(anyhow!(
+                "Scene requires clips that could not be loaded: {}",
+                clip_missing.join(", ")
+            ));
+        }
+
         let mut mesh_missing = Vec::new();
         for dep in scene.dependencies.mesh_dependencies() {
             if let Err(err) = mesh_loader(dep.key(), dep.path()) {
@@ -1962,6 +1982,14 @@ impl EcsWorld {
             if !assets.has_atlas(dep.key()) {
                 return Err(anyhow!(
                     "Scene requires atlas '{}' which is not loaded. Call AssetManager::load_atlas before loading the scene.",
+                    dep.key()
+                ));
+            }
+        }
+        for dep in scene.dependencies.clip_dependencies() {
+            if assets.clip(dep.key()).is_none() {
+                return Err(anyhow!(
+                    "Scene requires clip '{}' which is not loaded. Call AssetManager::load_clip before loading the scene.",
                     dep.key()
                 ));
             }
@@ -2259,6 +2287,39 @@ impl EcsWorld {
             rapier.register_collider_entity(collider, entity_id);
         }
 
+        if let Some(clip) = data.transform_clip.as_ref() {
+            if !self.set_transform_clip(entity_id, assets, &clip.clip_key) {
+                return Err(anyhow!("Scene references unknown transform clip '{}'", clip.clip_key));
+            }
+            if let Some(mut mask) = self.world.get_mut::<TransformTrackPlayer>(entity_id) {
+                mask.apply_translation = clip.apply_translation;
+                mask.apply_rotation = clip.apply_rotation;
+                mask.apply_scale = clip.apply_scale;
+            }
+            if let Some(mut property) = self.world.get_mut::<PropertyTrackPlayer>(entity_id) {
+                property.apply_tint = clip.apply_tint;
+            }
+            let _ = self.set_transform_clip_group(entity_id, clip.group.as_deref());
+            let _ = self.set_transform_clip_speed(entity_id, clip.speed);
+            let _ = self.set_transform_clip_time(entity_id, clip.time);
+            let _ = self.set_transform_clip_playing(entity_id, clip.playing);
+
+            if !clip.apply_translation || !clip.apply_rotation || !clip.apply_scale {
+                if let Some(mut transform_comp) = self.world.get_mut::<Transform>(entity_id) {
+                    transform_comp.translation = translation;
+                    transform_comp.rotation = rotation;
+                    transform_comp.scale = scale;
+                }
+            }
+            if let Some(saved_tint) = data.tint.as_ref() {
+                if !clip.apply_tint {
+                    if let Some(mut tint_comp) = self.world.get_mut::<Tint>(entity_id) {
+                        tint_comp.0 = saved_tint.clone().into();
+                    }
+                }
+            }
+        }
+
         if let Some(sprite) = data.sprite.as_ref().and_then(|sprite_data| sprite_data.animation.as_ref()) {
             if !self.set_sprite_timeline(entity_id, assets, Some(&sprite.timeline)) {
                 eprintln!(
@@ -2310,6 +2371,36 @@ impl EcsWorld {
 
         let entity_id = self.ensure_scene_entity_tag(entity);
         let transform = *self.world.get::<Transform>(entity).unwrap();
+        let transform_clip = self
+            .world
+            .get::<ClipInstance>(entity)
+            .map(|instance| {
+                (
+                    instance.clip_key.as_ref().to_string(),
+                    instance.playing,
+                    instance.looped,
+                    instance.speed,
+                    instance.time,
+                    instance.group.clone(),
+                )
+            })
+            .map(|(clip_key, playing, looped, speed, time, group)| {
+                let mask = self.world.get::<TransformTrackPlayer>(entity).copied().unwrap_or_default();
+                let property_mask =
+                    self.world.get::<PropertyTrackPlayer>(entity).copied().unwrap_or_default();
+                TransformClipData {
+                    clip_key,
+                    playing,
+                    looped,
+                    speed,
+                    time,
+                    group,
+                    apply_translation: mask.apply_translation,
+                    apply_rotation: mask.apply_rotation,
+                    apply_scale: mask.apply_scale,
+                    apply_tint: property_mask.apply_tint,
+                }
+            });
         let mesh_surface = self.world.get::<MeshSurface>(entity).cloned();
         let scene_entity = SceneEntity {
             id: entity_id.clone(),
@@ -2319,6 +2410,7 @@ impl EcsWorld {
                 transform.rotation,
                 transform.scale,
             ),
+            transform_clip,
             sprite: self
                 .world
                 .get::<Sprite>(entity)
