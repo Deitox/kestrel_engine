@@ -7,6 +7,7 @@ default-run = "kestrel_engine"
 [features]
 default = []
 binary_scene = ["bincode", "lz4_flex"]
+anim_stats = []
 
 [dependencies]
 winit = { version = "0.30.12", features = ["rwh_06"] }

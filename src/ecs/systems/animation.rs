@@ -13,7 +13,68 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::ptr::NonNull;
 
+#[cfg(feature = "anim_stats")]
+use std::sync::atomic::{AtomicU64, Ordering};
+
+#[cfg(feature = "anim_stats")]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SpriteAnimationStats {
+    pub fast_loop_calls: u64,
+    pub event_calls: u64,
+    pub plain_calls: u64,
+}
+
+#[cfg(feature = "anim_stats")]
+static SPRITE_FAST_LOOP_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "anim_stats")]
+static SPRITE_EVENT_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "anim_stats")]
+static SPRITE_PLAIN_CALLS: AtomicU64 = AtomicU64::new(0);
+
 const CLIP_TIME_EPSILON: f32 = 1e-5;
+
+#[cfg(feature = "anim_stats")]
+pub fn sprite_animation_stats_snapshot() -> SpriteAnimationStats {
+    SpriteAnimationStats {
+        fast_loop_calls: SPRITE_FAST_LOOP_CALLS.load(Ordering::Relaxed),
+        event_calls: SPRITE_EVENT_CALLS.load(Ordering::Relaxed),
+        plain_calls: SPRITE_PLAIN_CALLS.load(Ordering::Relaxed),
+    }
+}
+
+#[cfg(feature = "anim_stats")]
+pub fn reset_sprite_animation_stats() {
+    SPRITE_FAST_LOOP_CALLS.store(0, Ordering::Relaxed);
+    SPRITE_EVENT_CALLS.store(0, Ordering::Relaxed);
+    SPRITE_PLAIN_CALLS.store(0, Ordering::Relaxed);
+}
+
+#[cfg(feature = "anim_stats")]
+fn record_fast_loop_call(count: u64) {
+    SPRITE_FAST_LOOP_CALLS.fetch_add(count, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "anim_stats"))]
+#[allow(dead_code)]
+fn record_fast_loop_call(_count: u64) {}
+
+#[cfg(feature = "anim_stats")]
+fn record_event_call(count: u64) {
+    SPRITE_EVENT_CALLS.fetch_add(count, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "anim_stats"))]
+#[allow(dead_code)]
+fn record_event_call(_count: u64) {}
+
+#[cfg(feature = "anim_stats")]
+fn record_plain_call(count: u64) {
+    SPRITE_PLAIN_CALLS.fetch_add(count, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "anim_stats"))]
+#[allow(dead_code)]
+fn record_plain_call(_count: u64) {}
 
 pub fn sys_drive_sprite_animations(
     mut profiler: ResMut<SystemProfiler>,
@@ -461,24 +522,12 @@ fn drive_transform_clips(
             continue;
         }
 
-        let duration = instance.duration();
-        if duration <= 0.0 {
+        if instance.duration() <= 0.0 {
             instance.time = 0.0;
             continue;
         }
 
-        let previous_time = instance.time;
-        let mut new_time = previous_time + scaled;
-        if instance.looped {
-            if new_time >= duration {
-                let duration_eps = duration.max(std::f32::EPSILON);
-                new_time = new_time.rem_euclid(duration_eps);
-            }
-        } else if new_time >= duration {
-            new_time = duration;
-            instance.playing = false;
-        }
-        instance.time = new_time;
+        instance.advance_time(scaled);
         let sample = instance.sample_cached();
         apply_clip_sample(&mut instance, transform_player, property_player, transform, tint, sample);
     }
@@ -495,27 +544,42 @@ fn apply_clip_sample(
 ) {
     if let Some(mut transform) = transform {
         let mask = transform_player.copied().unwrap_or_default();
-        if mask.apply_translation {
+        if mask.apply_translation && mask.apply_rotation && mask.apply_scale {
             if let Some(value) = sample.translation {
-                let changed = instance.last_translation.map_or(true, |prev| prev != value);
-                if changed {
+                if instance.last_translation.map_or(true, |prev| prev != value) {
                     transform.translation = value;
                 }
             }
-        }
-        if mask.apply_rotation {
             if let Some(value) = sample.rotation {
-                let changed = instance.last_rotation.map_or(true, |prev| prev != value);
-                if changed {
+                if instance.last_rotation.map_or(true, |prev| prev != value) {
                     transform.rotation = value;
                 }
             }
-        }
-        if mask.apply_scale {
             if let Some(value) = sample.scale {
-                let changed = instance.last_scale.map_or(true, |prev| prev != value);
-                if changed {
+                if instance.last_scale.map_or(true, |prev| prev != value) {
                     transform.scale = value;
+                }
+            }
+        } else {
+            if mask.apply_translation {
+                if let Some(value) = sample.translation {
+                    if instance.last_translation.map_or(true, |prev| prev != value) {
+                        transform.translation = value;
+                    }
+                }
+            }
+            if mask.apply_rotation {
+                if let Some(value) = sample.rotation {
+                    if instance.last_rotation.map_or(true, |prev| prev != value) {
+                        transform.rotation = value;
+                    }
+                }
+            }
+            if mask.apply_scale {
+                if let Some(value) = sample.scale {
+                    if instance.last_scale.map_or(true, |prev| prev != value) {
+                        transform.scale = value;
+                    }
                 }
             }
         }
@@ -582,6 +646,13 @@ pub(crate) fn advance_animation(
     let frames = animation.frames.as_ref();
     if frames.is_empty() {
         return false;
+    }
+
+    #[cfg(feature = "anim_stats")]
+    if events.as_ref().is_some() {
+        record_event_call(1);
+    } else {
+        record_plain_call(1);
     }
 
     let len = frames.len();
@@ -706,6 +777,9 @@ fn advance_animation_loop_no_events(animation: &mut SpriteAnimation, mut delta: 
         return false;
     }
 
+    #[cfg(feature = "anim_stats")]
+    record_fast_loop_call(1);
+
     let mut index = animation.frame_index;
     let mut elapsed = animation.elapsed_in_frame;
     let mut frame_changed = false;
@@ -774,8 +848,8 @@ fn drive_single(
         if animation.fast_loop {
             let current_duration = animation.current_duration;
             let new_elapsed = animation.elapsed_in_frame + scaled;
-            if new_elapsed <= current_duration {
-                animation.elapsed_in_frame = new_elapsed;
+            if new_elapsed <= current_duration + CLIP_TIME_EPSILON {
+                animation.elapsed_in_frame = new_elapsed.min(current_duration);
             } else if advance_animation_loop_no_events(&mut animation, scaled) {
                 sprite_changed = true;
             }
@@ -843,8 +917,8 @@ fn drive_fixed(
             let total = scaled_step * steps as f32;
             let current_duration = animation.current_duration;
             let new_elapsed = animation.elapsed_in_frame + total;
-            if new_elapsed <= current_duration {
-                animation.elapsed_in_frame = new_elapsed;
+            if new_elapsed <= current_duration + CLIP_TIME_EPSILON {
+                animation.elapsed_in_frame = new_elapsed.min(current_duration);
             } else if advance_animation_loop_no_events(&mut animation, total) {
                 sprite_changed = true;
             }
