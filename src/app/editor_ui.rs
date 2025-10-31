@@ -18,7 +18,7 @@ use crate::plugins::{PluginState, PluginStatus};
 use crate::prefab::{PrefabFormat, PrefabStatusKind, PrefabStatusMessage};
 
 use bevy_ecs::prelude::Entity;
-use egui::{DragAndDrop, Key, SliderClamping};
+use egui::{Checkbox, DragAndDrop, Key, SliderClamping};
 use egui_plot as eplot;
 use glam::{Vec2, Vec3};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -65,10 +65,15 @@ pub(super) struct PrefabInstantiateRequest {
 }
 
 #[derive(Debug, Clone)]
+pub(super) enum PluginToggleKind {
+    Dynamic { new_enabled: bool },
+    Builtin { disable: bool },
+}
+
+#[derive(Debug, Clone)]
 pub(super) struct PluginToggleRequest {
     pub name: String,
-    pub prev_enabled: bool,
-    pub new_enabled: bool,
+    pub kind: PluginToggleKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -126,9 +131,7 @@ fn plugin_status_summary(status: &PluginStatus) -> (egui::Color32, String) {
         PluginState::Disabled(reason) => {
             (egui::Color32::from_rgb(220, 180, 80), format!("Disabled: {reason}"))
         }
-        PluginState::Failed(reason) => {
-            (egui::Color32::from_rgb(220, 120, 120), format!("Failed: {reason}"))
-        }
+        PluginState::Failed(reason) => (egui::Color32::from_rgb(220, 120, 120), format!("Failed: {reason}")),
     }
 }
 
@@ -1636,7 +1639,9 @@ impl App {
                         actions.reload_plugins = true;
                     }
                     ui.small("Rebuild plugin cdylibs, then click reload to rescan manifest entries.");
-                    ui.small("Toggle entries below to update config/plugins.json without leaving the editor.");
+                    ui.small(
+                        "Toggle entries below to update config/plugins.json without leaving the editor.",
+                    );
                     let status_snapshot = self.plugins.statuses().to_vec();
                     let mut dynamic_statuses: BTreeMap<String, PluginStatus> = BTreeMap::new();
                     let mut builtin_statuses = Vec::new();
@@ -1648,16 +1653,15 @@ impl App {
                         }
                     }
                     builtin_statuses.sort_by(|a, b| a.name.cmp(&b.name));
-                    if let Some(manifest) = self.plugin_manifest.as_mut() {
+                    if let Some(manifest) = self.plugin_manifest.as_ref() {
                         if let Some(path) = manifest.path() {
                             ui.small(format!("Manifest: {}", path.display()));
                         }
                         if manifest.entries().is_empty() {
                             ui.label("No dynamic plugins listed in manifest.");
                         } else {
-                            for entry in manifest.entries_mut() {
+                            for entry in manifest.entries() {
                                 let plugin_name = entry.name.clone();
-                                let prev_enabled = entry.enabled;
                                 let mut enabled_flag = entry.enabled;
                                 let mut toggled = false;
                                 let status = dynamic_statuses.remove(&plugin_name);
@@ -1707,8 +1711,7 @@ impl App {
                                 if toggled {
                                     actions.plugin_toggles.push(PluginToggleRequest {
                                         name: plugin_name,
-                                        prev_enabled,
-                                        new_enabled: enabled_flag,
+                                        kind: PluginToggleKind::Dynamic { new_enabled: enabled_flag },
                                     });
                                 }
                             }
@@ -1736,17 +1739,44 @@ impl App {
                         if !dynamic_statuses.is_empty() {
                             ui.separator();
                         }
+                        let manifest_ref = self.plugin_manifest.as_ref();
                         for status in builtin_statuses {
-                            let (color, summary) = plugin_status_summary(&status);
-                            let label =
-                                format!("{} v{} (built-in)", status.name, status.version.as_deref().unwrap_or("n/a"));
-                            ui.colored_label(color, format!("{label} - {summary}"));
-                            if !status.depends_on.is_empty() {
-                                ui.small(format!("Depends on: {}", status.depends_on.join(", ")));
+                            let mut enabled_flag = manifest_ref
+                                .map(|manifest| !manifest.is_builtin_disabled(&status.name))
+                                .unwrap_or(!matches!(status.state, PluginState::Disabled(_)));
+                            let mut toggled = false;
+                            ui.group(|ui| {
+                                ui.horizontal(|ui| {
+                                    if manifest_ref.is_some() {
+                                        if ui.checkbox(&mut enabled_flag, &status.name).changed() {
+                                            toggled = true;
+                                        }
+                                    } else {
+                                        ui.add_enabled(false, Checkbox::new(&mut enabled_flag, &status.name));
+                                    }
+                                    let (color, summary) = plugin_status_summary(&status);
+                                    ui.colored_label(color, summary);
+                                    let version_label = status.version.as_deref().unwrap_or("n/a");
+                                    ui.small(format!("v{} (built-in)", version_label));
+                                });
+                                if !status.depends_on.is_empty() {
+                                    ui.small(format!("Depends on: {}", status.depends_on.join(", ")));
+                                }
+                                if !status.provides.is_empty() {
+                                    ui.small(format!("Provides: {}", status.provides.join(", ")));
+                                }
+                            });
+                            if toggled {
+                                actions.plugin_toggles.push(PluginToggleRequest {
+                                    name: status.name.clone(),
+                                    kind: PluginToggleKind::Builtin { disable: !enabled_flag },
+                                });
                             }
-                            if !status.provides.is_empty() {
-                                ui.small(format!("Provides: {}", status.provides.join(", ")));
-                            }
+                        }
+                        if manifest_ref.is_some() {
+                            ui.small("Built-in plugin changes take effect after restarting the engine.");
+                        } else {
+                            ui.small("Load config/plugins.json to edit built-in toggles.");
                         }
                     } else if self.plugin_manifest.is_none() && dynamic_statuses.is_empty() {
                         ui.label("No plugins reported");

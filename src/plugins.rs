@@ -637,15 +637,16 @@ impl PluginManifest {
     }
 
     pub fn save(&self) -> Result<()> {
-        let path = self
-            .source_path
-            .as_ref()
-            .ok_or_else(|| anyhow!("plugin manifest path unavailable"))?;
+        let path = self.source_path.as_ref().ok_or_else(|| anyhow!("plugin manifest path unavailable"))?;
         let json = serde_json::to_string_pretty(self)
             .context(format!("serializing plugin manifest '{}'", path.display()))?;
         fs::write(path, format!("{json}\n"))
             .with_context(|| format!("writing plugin manifest '{}'", path.display()))?;
         Ok(())
+    }
+
+    pub fn is_builtin_disabled(&self, name: &str) -> bool {
+        self.disable_builtins.iter().any(|entry| entry == name)
     }
 }
 
@@ -670,26 +671,28 @@ fn default_enabled() -> bool {
 }
 
 #[derive(Debug, Clone)]
-pub struct ManifestToggle {
+pub struct ManifestDynamicToggle {
     pub name: String,
-    pub prev_enabled: bool,
     pub new_enabled: bool,
 }
 
 #[derive(Debug, Default)]
-pub struct ManifestToggleOutcome {
+pub struct ManifestDynamicToggleOutcome {
     pub enabled: Vec<String>,
     pub disabled: Vec<String>,
     pub missing: Vec<String>,
     pub changed: bool,
 }
 
-pub fn apply_manifest_toggles(manifest: &mut PluginManifest, toggles: &[ManifestToggle]) -> ManifestToggleOutcome {
-    let mut outcome = ManifestToggleOutcome::default();
+pub fn apply_manifest_dynamic_toggles(
+    manifest: &mut PluginManifest,
+    toggles: &[ManifestDynamicToggle],
+) -> ManifestDynamicToggleOutcome {
+    let mut outcome = ManifestDynamicToggleOutcome::default();
     if toggles.is_empty() {
         return outcome;
     }
-    let mut dedup: BTreeMap<&str, &ManifestToggle> = BTreeMap::new();
+    let mut dedup: BTreeMap<&str, &ManifestDynamicToggle> = BTreeMap::new();
     for toggle in toggles {
         dedup.insert(toggle.name.as_str(), toggle);
     }
@@ -712,5 +715,51 @@ pub fn apply_manifest_toggles(manifest: &mut PluginManifest, toggles: &[Manifest
     outcome.enabled.sort();
     outcome.disabled.sort();
     outcome.missing.sort();
+    outcome
+}
+
+#[derive(Debug, Clone)]
+pub struct ManifestBuiltinToggle {
+    pub name: String,
+    pub disable: bool,
+}
+
+#[derive(Debug, Default)]
+pub struct ManifestBuiltinToggleOutcome {
+    pub disabled: Vec<String>,
+    pub enabled: Vec<String>,
+    pub changed: bool,
+}
+
+pub fn apply_manifest_builtin_toggles(
+    manifest: &mut PluginManifest,
+    toggles: &[ManifestBuiltinToggle],
+) -> ManifestBuiltinToggleOutcome {
+    let mut outcome = ManifestBuiltinToggleOutcome::default();
+    if toggles.is_empty() {
+        return outcome;
+    }
+    let mut dedup: BTreeMap<&str, &ManifestBuiltinToggle> = BTreeMap::new();
+    for toggle in toggles {
+        dedup.insert(toggle.name.as_str(), toggle);
+    }
+    let mut disabled: BTreeSet<String> = manifest.disable_builtins.iter().cloned().collect();
+    for toggle in dedup.values() {
+        let was_disabled = disabled.contains(&toggle.name);
+        if toggle.disable {
+            if !was_disabled {
+                disabled.insert(toggle.name.clone());
+                outcome.disabled.push(toggle.name.clone());
+                outcome.changed = true;
+            }
+        } else if was_disabled {
+            disabled.remove(&toggle.name);
+            outcome.enabled.push(toggle.name.clone());
+            outcome.changed = true;
+        }
+    }
+    manifest.disable_builtins = disabled.into_iter().collect();
+    outcome.disabled.sort();
+    outcome.enabled.sort();
     outcome
 }

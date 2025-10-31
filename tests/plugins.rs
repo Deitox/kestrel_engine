@@ -8,7 +8,8 @@ use kestrel_engine::input::Input;
 use kestrel_engine::material_registry::MaterialRegistry;
 use kestrel_engine::mesh_registry::MeshRegistry;
 use kestrel_engine::plugins::{
-    apply_manifest_toggles, EnginePlugin, ManifestToggle, PluginContext, PluginManager,
+    apply_manifest_builtin_toggles, apply_manifest_dynamic_toggles, EnginePlugin, ManifestBuiltinToggle,
+    ManifestDynamicToggle, PluginContext, PluginManager,
 };
 use kestrel_engine::renderer::Renderer;
 use kestrel_engine::time::Time;
@@ -260,16 +261,15 @@ fn manifest_toggle_updates_and_persists() {
 "#;
     fs::write(&manifest_path, manifest_json).expect("manifest written");
 
-    let mut manifest = PluginManager::load_manifest(&manifest_path)
-        .expect("manifest read")
-        .expect("manifest present");
+    let mut manifest =
+        PluginManager::load_manifest(&manifest_path).expect("manifest read").expect("manifest present");
     let toggles = vec![
-        ManifestToggle { name: "alpha".to_string(), prev_enabled: true, new_enabled: false },
-        ManifestToggle { name: "beta".to_string(), prev_enabled: false, new_enabled: true },
-        ManifestToggle { name: "beta".to_string(), prev_enabled: false, new_enabled: true },
+        ManifestDynamicToggle { name: "alpha".to_string(), new_enabled: false },
+        ManifestDynamicToggle { name: "beta".to_string(), new_enabled: true },
+        ManifestDynamicToggle { name: "beta".to_string(), new_enabled: true },
     ];
 
-    let outcome = apply_manifest_toggles(&mut manifest, &toggles);
+    let outcome = apply_manifest_dynamic_toggles(&mut manifest, &toggles);
     assert!(outcome.changed, "changes are detected");
     assert_eq!(outcome.enabled, vec!["beta".to_string()], "beta enabled list");
     assert_eq!(outcome.disabled, vec!["alpha".to_string()], "alpha disabled list");
@@ -284,9 +284,8 @@ fn manifest_toggle_updates_and_persists() {
     );
 
     manifest.save().expect("manifest saved");
-    let reloaded = PluginManager::load_manifest(&manifest_path)
-        .expect("reload ok")
-        .expect("manifest still present");
+    let reloaded =
+        PluginManager::load_manifest(&manifest_path).expect("reload ok").expect("manifest still present");
     let persisted: Vec<(String, bool)> =
         reloaded.entries().iter().map(|entry| (entry.name.clone(), entry.enabled)).collect();
     assert_eq!(
@@ -310,17 +309,43 @@ fn manifest_toggle_reports_missing_entries() {
 "#;
     fs::write(&manifest_path, manifest_json).expect("manifest written");
 
-    let mut manifest = PluginManager::load_manifest(&manifest_path)
-        .expect("manifest read")
-        .expect("manifest present");
-    let toggles = vec![ManifestToggle {
-        name: "ghost".to_string(),
-        prev_enabled: false,
-        new_enabled: true,
-    }];
-    let outcome = apply_manifest_toggles(&mut manifest, &toggles);
+    let mut manifest =
+        PluginManager::load_manifest(&manifest_path).expect("manifest read").expect("manifest present");
+    let toggles = vec![ManifestDynamicToggle { name: "ghost".to_string(), new_enabled: true }];
+    let outcome = apply_manifest_dynamic_toggles(&mut manifest, &toggles);
     assert!(!outcome.changed, "no changes applied");
     assert_eq!(outcome.enabled, Vec::<String>::new(), "no enabled entries reported");
     assert_eq!(outcome.disabled, Vec::<String>::new(), "no disabled entries reported");
     assert_eq!(outcome.missing, vec!["ghost".to_string()], "missing entry is reported");
+}
+
+#[test]
+fn manifest_builtin_toggle_updates_disable_list() {
+    let dir = tempdir().expect("temp dir created");
+    let manifest_path = dir.path().join("plugins.json");
+    let manifest_json = r#"
+{
+  "disable_builtins": ["audio"],
+  "plugins": []
+}
+"#;
+    fs::write(&manifest_path, manifest_json).expect("manifest written");
+
+    let mut manifest =
+        PluginManager::load_manifest(&manifest_path).expect("manifest read").expect("manifest present");
+
+    let toggles = vec![
+        ManifestBuiltinToggle { name: "audio".to_string(), disable: false },
+        ManifestBuiltinToggle { name: "analytics".to_string(), disable: true },
+    ];
+    let outcome = apply_manifest_builtin_toggles(&mut manifest, &toggles);
+    assert!(outcome.changed, "changes detected for built-ins");
+    assert_eq!(outcome.enabled, vec!["audio".to_string()], "audio re-enabled");
+    assert_eq!(outcome.disabled, vec!["analytics".to_string()], "analytics disabled");
+
+    manifest.save().expect("manifest saved");
+    let reloaded =
+        PluginManager::load_manifest(&manifest_path).expect("reload ok").expect("manifest present");
+    assert!(!reloaded.is_builtin_disabled("audio"), "audio should be removed from disable list");
+    assert!(reloaded.is_builtin_disabled("analytics"), "analytics should be present in disable list");
 }

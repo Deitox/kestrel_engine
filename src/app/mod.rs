@@ -13,8 +13,8 @@ use crate::material_registry::{MaterialGpu, MaterialRegistry};
 use crate::mesh_preview::{MeshControlMode, MeshPreviewPlugin};
 use crate::mesh_registry::MeshRegistry;
 use crate::plugins::{
-    apply_manifest_toggles, FeatureRegistryHandle, ManifestToggle, PluginContext, PluginManager,
-    PluginManifest,
+    apply_manifest_builtin_toggles, apply_manifest_dynamic_toggles, FeatureRegistryHandle,
+    ManifestBuiltinToggle, ManifestDynamicToggle, PluginContext, PluginManager, PluginManifest,
 };
 use crate::prefab::{PrefabFormat, PrefabLibrary, PrefabStatusKind, PrefabStatusMessage};
 use crate::renderer::{GpuPassTiming, MeshDraw, RenderViewport, Renderer, SpriteBatch};
@@ -484,7 +484,7 @@ impl App {
             if let Some((original, normalized)) = normalize_path_for_watch(&path_buf) {
                 desired.push((original, normalized, key));
             } else {
-                eprintln!("[assets] skipping atlas '{key}' – unable to resolve path for watching");
+                eprintln!("[assets] skipping atlas '{key}' ΓÇô unable to resolve path for watching");
             }
         }
         if let Err(err) = watcher.sync(&desired) {
@@ -637,27 +637,30 @@ impl App {
             self.ui_scene_status = Some("Plugin manifest not found.".to_string());
             return;
         };
-        let requests: Vec<ManifestToggle> = toggles
-            .iter()
-            .map(|toggle| ManifestToggle {
-                name: toggle.name.clone(),
-                prev_enabled: toggle.prev_enabled,
-                new_enabled: toggle.new_enabled,
-            })
-            .collect();
-        let outcome = apply_manifest_toggles(manifest, &requests);
-        if !outcome.changed {
-            if outcome.missing.is_empty() {
-                self.ui_scene_status = Some("Plugin manifest unchanged.".to_string());
-            } else {
+        let mut dynamic_requests = Vec::new();
+        let mut builtin_requests = Vec::new();
+        for toggle in toggles {
+            match &toggle.kind {
+                editor_ui::PluginToggleKind::Dynamic { new_enabled } => dynamic_requests
+                    .push(ManifestDynamicToggle { name: toggle.name.clone(), new_enabled: *new_enabled }),
+                editor_ui::PluginToggleKind::Builtin { disable } => builtin_requests
+                    .push(ManifestBuiltinToggle { name: toggle.name.clone(), disable: *disable }),
+            }
+        }
+        let dynamic_outcome = apply_manifest_dynamic_toggles(manifest, &dynamic_requests);
+        let builtin_outcome = apply_manifest_builtin_toggles(manifest, &builtin_requests);
+        if !dynamic_outcome.changed && !builtin_outcome.changed {
+            if !dynamic_outcome.missing.is_empty() {
                 self.ui_scene_status = Some(format!(
                     "Plugin toggle skipped; missing manifest entr{} {}",
-                    if outcome.missing.len() == 1 { "y:" } else { "ies:" },
-                    outcome.missing.join(", ")
+                    if dynamic_outcome.missing.len() == 1 { "y:" } else { "ies:" },
+                    dynamic_outcome.missing.join(", ")
                 ));
                 if let Ok(fresh) = PluginManager::load_manifest(PLUGIN_MANIFEST_PATH) {
                     self.plugin_manifest = fresh;
                 }
+            } else {
+                self.ui_scene_status = Some("Plugin manifest unchanged.".to_string());
             }
             return;
         }
@@ -670,18 +673,27 @@ impl App {
         }
         self.reload_dynamic_plugins();
         let mut parts = Vec::new();
-        if !outcome.enabled.is_empty() {
-            parts.push(format!("enabled {}", outcome.enabled.join(", ")));
+        if !dynamic_outcome.enabled.is_empty() {
+            parts.push(format!("enabled {}", dynamic_outcome.enabled.join(", ")));
         }
-        if !outcome.disabled.is_empty() {
-            parts.push(format!("disabled {}", outcome.disabled.join(", ")));
+        if !dynamic_outcome.disabled.is_empty() {
+            parts.push(format!("disabled {}", dynamic_outcome.disabled.join(", ")));
         }
-        if !outcome.missing.is_empty() {
+        if !builtin_outcome.enabled.is_empty() {
+            parts.push(format!("enabled built-ins {}", builtin_outcome.enabled.join(", ")));
+        }
+        if !builtin_outcome.disabled.is_empty() {
+            parts.push(format!("disabled built-ins {}", builtin_outcome.disabled.join(", ")));
+        }
+        if !dynamic_outcome.missing.is_empty() {
             parts.push(format!(
                 "skipped unknown entr{} {}",
-                if outcome.missing.len() == 1 { "y" } else { "ies" },
-                outcome.missing.join(", ")
+                if dynamic_outcome.missing.len() == 1 { "y" } else { "ies" },
+                dynamic_outcome.missing.join(", ")
             ));
+        }
+        if builtin_outcome.changed {
+            parts.push("restart required for built-in changes".to_string());
         }
         if parts.is_empty() {
             self.ui_scene_status = Some("Plugin manifest updated.".to_string());

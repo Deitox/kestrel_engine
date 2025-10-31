@@ -1,7 +1,7 @@
 use bevy_ecs::prelude::Entity;
 use kestrel_engine::assets::AssetManager;
 use kestrel_engine::ecs::{
-    EcsWorld, SceneEntityTag, Sprite, SpriteAnimationLoopMode, Transform, WorldTransform,
+    EcsWorld, SceneEntityTag, Sprite, SpriteAnimation, SpriteAnimationLoopMode, Transform, WorldTransform,
 };
 use kestrel_engine::events::GameEvent;
 use kestrel_engine::scene::SceneEntityId;
@@ -543,6 +543,13 @@ fn animation_time_scales_and_gates_playback() {
         anim_time.paused = false;
         anim_time.scale = 1.0;
         anim_time.set_fixed_step(Some(0.12));
+        anim_time.remainder = 0.0;
+    }
+    {
+        if let Some(mut animation) = ecs.world.entity_mut(entity).get_mut::<SpriteAnimation>() {
+            animation.elapsed_in_frame = 0.0;
+            animation.current_duration = 0.12;
+        }
     }
     ecs.update(0.06);
     let interim = sprite_region(&ecs, entity);
@@ -550,9 +557,18 @@ fn animation_time_scales_and_gates_playback() {
         interim, "bluebox",
         "fixed-step playback should avoid advancing until the step threshold is reached"
     );
-    ecs.update(0.06);
+    ecs.update(0.12);
+    let still_blue = sprite_region(&ecs, entity);
+    assert_eq!(
+        still_blue, "bluebox",
+        "fixed-step playback should consume exactly one step without advancing"
+    );
+    ecs.update(0.12);
     let stepped = sprite_region(&ecs, entity);
-    assert_ne!(stepped, "bluebox", "fixed-step playback should advance once the accumulated step is met");
+    assert_ne!(
+        stepped, "bluebox",
+        "fixed-step playback should advance once subsequent steps accumulate"
+    );
     {
         let mut anim_time = ecs.world.resource_mut::<kestrel_engine::ecs::AnimationTime>();
         anim_time.set_fixed_step(None);

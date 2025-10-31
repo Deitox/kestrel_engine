@@ -40,6 +40,12 @@ Fields:
 - `requires_features`: optional features that must already be present in the registry.
 - `provides_features`: optional list automatically added to the registry after successful registration so other plugins can depend on them.
 
+### Editing the manifest from the editor
+
+- **Dynamic plugins** – The Plugins panel lists every manifest entry with a checkbox matching the `enabled` flag. Toggling a row rewrites `config/plugins.json`, then immediately reloads dynamic libraries so you can test changes without restarting.
+- **Built-in plugins** – The same panel exposes checkboxes for the built-in modules listed in `disable_builtins` (`audio`, `analytics`, `mesh_preview`, `scripts`). Updates are saved to the manifest right away and apply on the next engine restart.
+- **Out-of-sync entries** – If a toggle targets a plugin that no longer exists in the manifest, the editor posts a warning and reloads the file so the UI reflects the current state.
+
 If the manifest is missing, the loader simply skips dynamic registration.
 
 ## Building a plugin
