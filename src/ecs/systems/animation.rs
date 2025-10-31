@@ -44,6 +44,207 @@ pub fn sys_drive_sprite_animations(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::assets::skeletal::{load_skeleton_from_gltf, SkeletonAsset};
+    use anyhow::Result;
+    use glam::{Mat4, Quat, Vec3};
+    use std::path::Path;
+    use std::sync::Arc;
+
+    struct SkeletalFixture {
+        skeleton: Arc<SkeletonAsset>,
+        clip: Arc<SkeletalClip>,
+    }
+
+    impl SkeletalFixture {
+        fn load() -> Result<Self> {
+            let path = Path::new("fixtures/gltf/skeletons/slime_rig.gltf");
+            let import = load_skeleton_from_gltf(path)?;
+            let skeleton = Arc::new(import.skeleton);
+            let clip = Arc::new(
+                import
+                    .clips
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("Fixture clip missing"))?,
+            );
+            Ok(Self { skeleton, clip })
+        }
+
+        fn sample(&self, time: f32) -> SkeletonInstance {
+            let skeleton_key = Arc::clone(&self.skeleton.name);
+            let mut instance = SkeletonInstance::new(skeleton_key, Arc::clone(&self.skeleton));
+            instance.reset_to_rest_pose();
+            evaluate_skeleton_pose(&mut instance, self.clip.as_ref(), time);
+            instance
+        }
+    }
+
+    #[test]
+    fn slime_rig_pose_matches_keyframes() -> Result<()> {
+        let fixture = SkeletalFixture::load()?;
+
+        let at_start = fixture.sample(0.0);
+        let expected_root_start = Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0));
+        let expected_child_local_start = Mat4::from_translation(Vec3::new(0.0, 2.0, 0.0));
+        let expected_child_model_start = expected_root_start * expected_child_local_start;
+        assert_mat4_approx(
+            at_start.local_poses[0],
+            expected_root_start,
+            "root local @ t=0",
+        );
+        assert_mat4_approx(
+            at_start.model_poses[0],
+            expected_root_start,
+            "root model @ t=0",
+        );
+        assert_mat4_approx(
+            at_start.palette[0],
+            expected_root_start,
+            "root palette @ t=0",
+        );
+        assert_mat4_approx(
+            at_start.local_poses[1],
+            expected_child_local_start,
+            "child local @ t=0",
+        );
+        assert_mat4_approx(
+            at_start.model_poses[1],
+            expected_child_model_start,
+            "child model @ t=0",
+        );
+        assert_mat4_approx(
+            at_start.palette[1],
+            expected_child_model_start,
+            "child palette @ t=0",
+        );
+
+        let at_mid = fixture.sample(0.5);
+        let expected_root_mid = Mat4::from_translation(Vec3::new(0.0, 1.05, 0.0));
+        let expected_child_local_mid = Mat4::from_scale_rotation_translation(
+            Vec3::new(1.05, 0.95, 1.0),
+            Quat::from_rotation_z(std::f32::consts::FRAC_PI_4),
+            Vec3::new(0.0, 2.1, 0.0),
+        );
+        let expected_child_model_mid = expected_root_mid * expected_child_local_mid;
+        assert_mat4_approx(
+            at_mid.local_poses[0],
+            expected_root_mid,
+            "root local @ t=0.5",
+        );
+        assert_mat4_approx(
+            at_mid.model_poses[0],
+            expected_root_mid,
+            "root model @ t=0.5",
+        );
+        assert_mat4_approx(
+            at_mid.palette[0],
+            expected_root_mid,
+            "root palette @ t=0.5",
+        );
+        assert_mat4_approx(
+            at_mid.local_poses[1],
+            expected_child_local_mid,
+            "child local @ t=0.5",
+        );
+        assert_mat4_approx(
+            at_mid.model_poses[1],
+            expected_child_model_mid,
+            "child model @ t=0.5",
+        );
+        assert_mat4_approx(
+            at_mid.palette[1],
+            expected_child_model_mid,
+            "child palette @ t=0.5",
+        );
+
+        let at_end = fixture.sample(1.0);
+        let expected_root_end = Mat4::from_translation(Vec3::new(0.0, 1.1, 0.0));
+        let expected_child_local_end = Mat4::from_scale_rotation_translation(
+            Vec3::new(1.1, 0.9, 1.0),
+            Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+            Vec3::new(0.0, 2.2, 0.0),
+        );
+        let expected_child_model_end = expected_root_end * expected_child_local_end;
+        assert_mat4_approx(
+            at_end.local_poses[0],
+            expected_root_end,
+            "root local @ t=1.0",
+        );
+        assert_mat4_approx(
+            at_end.model_poses[0],
+            expected_root_end,
+            "root model @ t=1.0",
+        );
+        assert_mat4_approx(
+            at_end.palette[0],
+            expected_root_end,
+            "root palette @ t=1.0",
+        );
+        assert_mat4_approx(
+            at_end.local_poses[1],
+            expected_child_local_end,
+            "child local @ t=1.0",
+        );
+        assert_mat4_approx(
+            at_end.model_poses[1],
+            expected_child_model_end,
+            "child model @ t=1.0",
+        );
+        assert_mat4_approx(
+            at_end.palette[1],
+            expected_child_model_end,
+            "child palette @ t=1.0",
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn slime_rig_pose_wraps_time() -> Result<()> {
+        let fixture = SkeletalFixture::load()?;
+        let early = fixture.sample(0.25);
+        let late = fixture.sample(1.25);
+
+        assert_mat4_approx(
+            early.model_poses[0],
+            late.model_poses[0],
+            "root model wrap",
+        );
+        assert_mat4_approx(
+            early.palette[0],
+            late.palette[0],
+            "root palette wrap",
+        );
+        assert_mat4_approx(
+            early.model_poses[1],
+            late.model_poses[1],
+            "child model wrap",
+        );
+        assert_mat4_approx(
+            early.palette[1],
+            late.palette[1],
+            "child palette wrap",
+        );
+
+        Ok(())
+    }
+
+    fn assert_mat4_approx(actual: Mat4, expected: Mat4, label: &str) {
+        let actual = actual.to_cols_array();
+        let expected = expected.to_cols_array();
+        for (index, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
+            let delta = (a - e).abs();
+            assert!(
+                delta < 1e-4,
+                "{label} mismatch at element {index}: expected {e}, got {a}, delta {delta}"
+            );
+        }
+    }
+}
+
 pub fn sys_drive_transform_clips(
     mut profiler: ResMut<SystemProfiler>,
     dt: Res<TimeDelta>,

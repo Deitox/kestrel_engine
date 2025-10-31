@@ -461,7 +461,7 @@ fn seed_skeletal_clips(world: &mut EcsWorld, count: usize, randomize_phase: bool
 }
 
 fn bench_skeleton_asset(bone_count: usize) -> Arc<SkeletonAsset> {
-    let mut joints = Vec::with_capacity(bone_count);
+    let mut joints: Vec<SkeletonJoint> = Vec::with_capacity(bone_count);
     for index in 0..bone_count {
         let parent = if index == 0 { None } else { Some((index - 1) as u32) };
         let rest_translation = if index == 0 { Vec3::ZERO } else { Vec3::new(0.0, 1.0, 0.0) };
