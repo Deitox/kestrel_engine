@@ -148,7 +148,7 @@ Benchmarks emit CSV summaries for CI. Failing budgets block the milestone exit.
 - [x] Expose transform/property clip controls in the inspector (assignment widget, scrubber, per-track status).
 - [x] Add golden tests covering linear/step interpolation and final pose verification for transform clips.
 - [x] Extend `animation_bench` to include the 2 000 clip performance sweep and CSV reporting for Milestone 2.
-- [ ] Capture inspector walkthrough for transform/property clips and publish alongside workflow docs.
+- [x] Capture inspector walkthrough for transform/property clips and publish alongside workflow docs.
 - [x] Track transform clip perf budget in CI dashboards using new CSV output.
 
 This roadmap supersedes earlier drafts and reflects the final agreed-upon plan for animation system development. Further adjustments will follow formal change control once milestones begin execution.

@@ -75,6 +75,12 @@
   2. Author keyframes per track, keeping the last keyframe time equal to the intended clip length; insert exact duplicates when you need step changes.
   3. In the editor build that includes Milestone 2, assign the clip key (e.g., `slime_bob`) in the Transform/Property Clip inspector panel; this wires the entity's `ClipInstance` to `TransformTrackPlayer`/`PropertyTrackPlayer`.
   4. Use the scrubber to confirm interpolation, playback speed, and looping. Inspector track badges surface which channels are present.
+- **Inspector walkthrough:** Use the Transform/Property Clip panel to validate runtime behavior before wiring clips into gameplay.
+  1. Select an entity that retains the clip (or assign it using the key field), then confirm the panel lists the clip duration, loop mode, and play state.
+  2. Use the Play/Pause toggle, Loop switch, and Speed slider to preview playback at different rates; the elapsed time readout honors global and group scaling as well as fixed-step evaluation.
+  3. Drag the scrubber or tap the `<`/`>` nudge buttons to inspect specific keyframes. Track badges highlight which channels (translation, rotation, scale, tint) carry authored keys.
+  4. Watch the per-track value previews update while the clip plays. If nothing changes, verify the entity owns the expected `TransformTrackPlayer` or `PropertyTrackPlayer` components.
+  5. Edit and save the source JSON to trigger hot reload. The inspector preserves the current normalized time and immediately reflects the new keyframe data for comparison.
 - **Validation & troubleshooting:**
   - Run `cargo test animation_clip` after editing clips; it exercises loader invariants against `fixtures/animation_clips` and catches ordering/finite-value issues.
   - Loader errors such as `Clip keyframe time cannot be negative` or `Clip keyframe contains non-finite rotation value` point directly at the offending keyframe index.
