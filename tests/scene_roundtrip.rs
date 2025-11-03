@@ -3,8 +3,8 @@ use glam::{EulerRot, Quat, Vec2, Vec3, Vec4};
 use kestrel_engine::assets::AssetManager;
 use kestrel_engine::ecs::{
     Aabb, Children, EcsWorld, Mass, MeshLighting, MeshRef, MeshSurface, Parent, ParticleEmitter,
-    PropertyTrackPlayer, SceneEntityTag, Sprite, Tint, Transform, Transform3D, TransformTrackPlayer, Velocity,
-    WorldTransform, WorldTransform3D,
+    PropertyTrackPlayer, SceneEntityTag, Sprite, Tint, Transform, Transform3D, TransformTrackPlayer,
+    Velocity, WorldTransform, WorldTransform3D,
 };
 use kestrel_engine::environment::EnvironmentRegistry;
 use kestrel_engine::material_registry::MaterialRegistry;
@@ -756,8 +756,7 @@ fn scene_roundtrip_preserves_transform_clip_binding() {
         mask.apply_scale = false;
     }
     {
-        let mut property =
-            world.world.get_mut::<PropertyTrackPlayer>(entity).expect("property mask present");
+        let mut property = world.world.get_mut::<PropertyTrackPlayer>(entity).expect("property mask present");
         property.apply_tint = false;
     }
     {
@@ -773,19 +772,11 @@ fn scene_roundtrip_preserves_transform_clip_binding() {
     let scene = world.export_scene(&assets);
     assert!(scene.dependencies.contains_clip("slime"));
 
-    let entity_id = scene
-        .entities
-        .first()
-        .expect("scene entity")
-        .id
-        .as_str()
-        .to_string();
+    let entity_id = scene.entities.first().expect("scene entity").id.as_str().to_string();
 
     let mut clone_world = EcsWorld::new();
     clone_world.load_scene(&scene, &assets).expect("load scene");
-    let clone_entity = clone_world
-        .find_entity_by_scene_id(&entity_id)
-        .expect("entity restored by id");
+    let clone_entity = clone_world.find_entity_by_scene_id(&entity_id).expect("entity restored by id");
     let info = clone_world.entity_info(clone_entity).expect("entity info");
 
     let clip = info.transform_clip.expect("transform clip info");

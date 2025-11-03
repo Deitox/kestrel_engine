@@ -1,5 +1,5 @@
 use super::{AnimationDelta, AnimationTime, TimeDelta};
-use crate::assets::skeletal::{JointCurve, JointQuatTrack, JointVec3Track, SkeletalClip};
+use crate::assets::skeletal::{JointQuatTrack, JointVec3Track, SkeletalClip};
 use crate::assets::{ClipInterpolation, ClipKeyframe};
 use crate::ecs::profiler::SystemProfiler;
 use crate::ecs::{
@@ -428,20 +428,15 @@ pub(crate) fn evaluate_skeleton_pose(instance: &mut SkeletonInstance, clip: &Ske
         return;
     }
 
-    let mut curve_map: Vec<Option<&JointCurve>> = vec![None; joint_count];
-    for curve in clip.channels.iter() {
-        let index = curve.joint_index as usize;
-        if index < curve_map.len() {
-            curve_map[index] = Some(curve);
-        }
+    instance.ensure_capacity();
+    let channel_map = &mut instance.joint_channel_map;
+    for slot in channel_map.iter_mut() {
+        *slot = None;
     }
-
-    let mut children: Vec<Vec<usize>> = vec![Vec::new(); joint_count];
-    for (index, joint) in instance.skeleton.joints.iter().enumerate() {
-        if let Some(parent) = joint.parent {
-            if let Some(list) = children.get_mut(parent as usize) {
-                list.push(index);
-            }
+    for (curve_index, curve) in clip.channels.iter().enumerate() {
+        let index = curve.joint_index as usize;
+        if index < channel_map.len() {
+            channel_map[index] = Some(curve_index);
         }
     }
 
@@ -449,7 +444,8 @@ pub(crate) fn evaluate_skeleton_pose(instance: &mut SkeletonInstance, clip: &Ske
         let mut translation = joint.rest_translation;
         let mut rotation = joint.rest_rotation;
         let mut scale = joint.rest_scale;
-        if let Some(curve) = curve_map[index] {
+        if let Some(curve_index) = channel_map[index] {
+            let curve = &clip.channels[curve_index];
             if let Some(track) = &curve.translation {
                 translation = sample_vec3_track(track, time, clip.looped);
             }
@@ -463,32 +459,34 @@ pub(crate) fn evaluate_skeleton_pose(instance: &mut SkeletonInstance, clip: &Ske
         instance.local_poses[index] = Mat4::from_scale_rotation_translation(scale, rotation, translation);
     }
 
-    let mut visited = vec![false; joint_count];
+    let mut visited = std::mem::take(&mut instance.joint_visited);
+    if visited.len() != joint_count {
+        visited.resize(joint_count, false);
+    }
+    for flag in visited.iter_mut() {
+        *flag = false;
+    }
 
-    let root_indices: Vec<usize> = instance
-        .skeleton
-        .roots
-        .iter()
-        .map(|&root| root as usize)
-        .filter(|&index| index < joint_count)
-        .collect();
-
-    for root_index in root_indices {
-        propagate_joint(root_index, Mat4::IDENTITY, instance, &children, &mut visited);
+    let roots = instance.skeleton.roots.clone();
+    for &root in roots.iter() {
+        let root_index = root as usize;
+        if root_index < joint_count {
+            propagate_joint(root_index, Mat4::IDENTITY, instance, &mut visited);
+        }
     }
 
     for index in 0..joint_count {
         if !visited[index] {
-            propagate_joint(index, Mat4::IDENTITY, instance, &children, &mut visited);
+            propagate_joint(index, Mat4::IDENTITY, instance, &mut visited);
         }
     }
+    instance.joint_visited = visited;
 }
 
 fn propagate_joint(
     joint_index: usize,
     parent_model: Mat4,
     instance: &mut SkeletonInstance,
-    children: &[Vec<usize>],
     visited: &mut [bool],
 ) {
     let model = parent_model * instance.local_poses[joint_index];
@@ -496,8 +494,14 @@ fn propagate_joint(
     let joint = &instance.skeleton.joints[joint_index];
     instance.palette[joint_index] = model * joint.inverse_bind;
     visited[joint_index] = true;
-    for &child in &children[joint_index] {
-        propagate_joint(child, model, instance, children, visited);
+    debug_assert!(joint_index < instance.joint_children.len());
+    let (child_ptr, child_len) = unsafe {
+        let child_vec = instance.joint_children.get_unchecked(joint_index);
+        (child_vec.as_ptr(), child_vec.len())
+    };
+    for idx in 0..child_len {
+        let child = unsafe { *child_ptr.add(idx) };
+        propagate_joint(child, model, instance, visited);
     }
 }
 
@@ -584,7 +588,7 @@ fn drive_transform_clips(
         Option<Mut<Tint>>,
     )>,
 ) {
-    for (_entity, mut instance, transform_player, property_player, transform, tint) in clips.iter_mut() {
+    for (_entity, mut instance, transform_player, property_player, mut transform, tint) in clips.iter_mut() {
         if !instance.playing && instance.looped {
             // Looping clips resume automatically; keep advancing even if flagged not playing.
             #[cfg(feature = "anim_stats")]
@@ -618,19 +622,76 @@ fn drive_transform_clips(
             continue;
         }
 
-        #[cfg(feature = "anim_stats")]
-        let applied = instance.advance_time(scaled);
-        #[cfg(not(feature = "anim_stats"))]
-        {
-            instance.advance_time(scaled);
-        }
-        #[cfg(feature = "anim_stats")]
-        {
+        let transform_mask = transform_player.copied().unwrap_or_default();
+        let property_mask = property_player.copied().unwrap_or_default();
+        let wants_tint = property_mask.apply_tint;
+        let transform_available = transform.is_some();
+        let tint_available = !wants_tint || tint.is_some();
+        let can_fast_path = transform_available
+            && transform_mask.apply_translation
+            && transform_mask.apply_rotation
+            && transform_mask.apply_scale
+            && tint_available;
+
+        if can_fast_path {
+            let applied = instance.advance_time(scaled);
             record_transform_advance(1);
+            #[cfg(feature = "anim_stats")]
+            {
+                if applied <= 0.0 {
+                    record_transform_zero_delta(1);
+                }
+            }
+            #[cfg(not(feature = "anim_stats"))]
+            let _ = applied;
+
+            let sample = instance.sample_cached();
+            let transform_ref =
+                transform.as_deref_mut().expect("transform missing in fast path despite guard");
+            if let Some(value) = sample.translation {
+                if instance.last_translation.map_or(true, |prev| prev != value) {
+                    transform_ref.translation = value;
+                }
+            }
+            if let Some(value) = sample.rotation {
+                if instance.last_rotation.map_or(true, |prev| prev != value) {
+                    transform_ref.rotation = value;
+                }
+            }
+            if let Some(value) = sample.scale {
+                if instance.last_scale.map_or(true, |prev| prev != value) {
+                    transform_ref.scale = value;
+                }
+            }
+
+            if wants_tint {
+                if let Some(mut tint_ref) = tint {
+                    if let Some(value) = sample.tint {
+                        if instance.last_tint.map_or(true, |prev| prev != value) {
+                            tint_ref.0 = value;
+                        }
+                    }
+                }
+            }
+
+            instance.last_translation = sample.translation;
+            instance.last_rotation = sample.rotation;
+            instance.last_scale = sample.scale;
+            instance.last_tint = sample.tint;
+
+            continue;
+        }
+
+        let applied = instance.advance_time(scaled);
+        record_transform_advance(1);
+        #[cfg(feature = "anim_stats")]
+        {
             if applied <= 0.0 {
                 record_transform_zero_delta(1);
             }
         }
+        #[cfg(not(feature = "anim_stats"))]
+        let _ = applied;
         let sample = instance.sample_cached();
         apply_clip_sample(&mut instance, transform_player, property_player, transform, tint, sample);
     }

@@ -26,8 +26,7 @@ struct FinalPose {
 
 fn simulate_clip_pose(assets: &AssetManager, deltas: &[f32]) -> FinalPose {
     let mut ecs = EcsWorld::new();
-    let entity =
-        ecs.world.spawn((Transform::default(), WorldTransform::default(), Tint(Vec4::ONE))).id();
+    let entity = ecs.world.spawn((Transform::default(), WorldTransform::default(), Tint(Vec4::ONE))).id();
 
     assert!(ecs.set_transform_clip(entity, assets, "slime"), "attach clip for playback");
     for &dt in deltas {
@@ -64,22 +63,14 @@ fn simulate_clip_pose(assets: &AssetManager, deltas: &[f32]) -> FinalPose {
 #[test]
 fn transform_clip_sampling_matches_golden_values() {
     let mut assets = AssetManager::new();
-    assets
-        .retain_clip("slime", Some("fixtures/animation_clips/slime_bob.json"))
-        .expect("load slime clip");
+    assets.retain_clip("slime", Some("fixtures/animation_clips/slime_bob.json")).expect("load slime clip");
 
     let clip_arc = Arc::new(assets.clip("slime").expect("missing clip").clone());
     let clip_key: Arc<str> = Arc::from("slime");
     let instance = ClipInstance::new(Arc::clone(&clip_key), Arc::clone(&clip_arc));
 
     let cases = [
-        (
-            0.0,
-            Vec2::new(0.0, 0.0),
-            0.0,
-            Vec2::splat(1.0),
-            Vec4::new(1.0, 1.0, 1.0, 1.0),
-        ),
+        (0.0, Vec2::new(0.0, 0.0), 0.0, Vec2::splat(1.0), Vec4::new(1.0, 1.0, 1.0, 1.0)),
         (
             0.125,
             Vec2::new(0.0, 2.0),
@@ -87,13 +78,7 @@ fn transform_clip_sampling_matches_golden_values() {
             Vec2::splat(1.0),
             Vec4::new(0.9, 0.975, 1.0, 1.0),
         ),
-        (
-            0.25,
-            Vec2::new(0.0, 4.0),
-            std::f32::consts::PI,
-            Vec2::splat(1.0),
-            Vec4::new(0.8, 0.95, 1.0, 1.0),
-        ),
+        (0.25, Vec2::new(0.0, 4.0), std::f32::consts::PI, Vec2::splat(1.0), Vec4::new(0.8, 0.95, 1.0, 1.0)),
         (
             0.375,
             Vec2::new(0.0, 2.0),
@@ -101,13 +86,7 @@ fn transform_clip_sampling_matches_golden_values() {
             Vec2::splat(1.0),
             Vec4::new(0.7, 0.925, 1.0, 1.0),
         ),
-        (
-            0.5,
-            Vec2::new(0.0, 0.0),
-            std::f32::consts::TAU,
-            Vec2::new(1.2, 0.8),
-            Vec4::new(0.6, 0.9, 1.0, 1.0),
-        ),
+        (0.5, Vec2::new(0.0, 0.0), std::f32::consts::TAU, Vec2::new(1.2, 0.8), Vec4::new(0.6, 0.9, 1.0, 1.0)),
         (
             0.625,
             Vec2::new(0.0, 2.0),
@@ -120,16 +99,10 @@ fn transform_clip_sampling_matches_golden_values() {
     for (time, expected_translation, expected_rotation, expected_scale, expected_tint) in cases {
         let sample = instance.sample_at(time);
         let translation = sample.translation.expect("expected translation sample");
-        assert!(
-            approx_vec2(translation, expected_translation),
-            "translation mismatch at t={time}"
-        );
+        assert!(approx_vec2(translation, expected_translation), "translation mismatch at t={time}");
 
         let rotation = sample.rotation.expect("expected rotation sample");
-        assert!(
-            approx_scalar(rotation, expected_rotation),
-            "rotation mismatch at t={time}"
-        );
+        assert!(approx_scalar(rotation, expected_rotation), "rotation mismatch at t={time}");
 
         let scale = sample.scale.expect("expected scale sample");
         assert!(approx_vec2(scale, expected_scale), "scale mismatch at t={time}");
@@ -314,9 +287,7 @@ fn transform_clip_advance_time_large_delta_wraps_cleanly() {
 #[test]
 fn transform_clip_final_pose_consistent_across_update_chunking() {
     let mut assets = AssetManager::new();
-    assets
-        .retain_clip("slime", Some("fixtures/animation_clips/slime_bob.json"))
-        .expect("load slime clip");
+    assets.retain_clip("slime", Some("fixtures/animation_clips/slime_bob.json")).expect("load slime clip");
 
     let clip_arc = Arc::new(assets.clip("slime").expect("missing clip").clone());
     let clip_key: Arc<str> = Arc::from("slime");
@@ -332,19 +303,10 @@ fn transform_clip_final_pose_consistent_across_update_chunking() {
     for &deltas in sequences {
         let pose = simulate_clip_pose(&assets, deltas);
 
-        assert!(
-            approx_vec2(pose.translation, Vec2::ZERO),
-            "translation should reset after full loop"
-        );
+        assert!(approx_vec2(pose.translation, Vec2::ZERO), "translation should reset after full loop");
         assert!(approx_scalar(pose.rotation, 0.0), "rotation should reset after full loop");
-        assert!(
-            approx_vec2(pose.scale, Vec2::splat(1.0)),
-            "scale should reset after full loop"
-        );
-        assert!(
-            approx_vec4(pose.tint, Vec4::new(1.0, 1.0, 1.0, 1.0)),
-            "tint should reset after full loop"
-        );
+        assert!(approx_vec2(pose.scale, Vec2::splat(1.0)), "scale should reset after full loop");
+        assert!(approx_vec4(pose.tint, Vec4::new(1.0, 1.0, 1.0, 1.0)), "tint should reset after full loop");
         assert!(approx_scalar(pose.clip_time, 0.0), "clip time should wrap to zero");
 
         let mut reference = ClipInstance::new(Arc::clone(&clip_key), Arc::clone(&clip_arc));

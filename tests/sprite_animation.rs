@@ -565,10 +565,7 @@ fn animation_time_scales_and_gates_playback() {
     );
     ecs.update(0.12);
     let stepped = sprite_region(&ecs, entity);
-    assert_ne!(
-        stepped, "bluebox",
-        "fixed-step playback should advance once subsequent steps accumulate"
-    );
+    assert_ne!(stepped, "bluebox", "fixed-step playback should advance once subsequent steps accumulate");
     {
         let mut anim_time = ecs.world.resource_mut::<kestrel_engine::ecs::AnimationTime>();
         anim_time.set_fixed_step(None);

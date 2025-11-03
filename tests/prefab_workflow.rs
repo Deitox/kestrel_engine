@@ -108,8 +108,7 @@ fn prefab_roundtrip_preserves_transform_clip_binding() {
         mask.apply_scale = false;
     }
     {
-        let mut property =
-            ecs.world.get_mut::<PropertyTrackPlayer>(entity).expect("property mask present");
+        let mut property = ecs.world.get_mut::<PropertyTrackPlayer>(entity).expect("property mask present");
         property.apply_tint = false;
     }
     {

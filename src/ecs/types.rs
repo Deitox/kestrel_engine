@@ -406,29 +406,18 @@ impl ClipInstance {
     #[inline(always)]
     pub fn sample_cached(&mut self) -> ClipSample {
         let translation = self.clip.translation.as_ref().and_then(|track| {
-            sample_vec2_track_from_state(
-                track,
-                self.translation_cursor,
-                self.translation_segment_time,
-            )
+            sample_vec2_track_from_state(track, self.translation_cursor, self.translation_segment_time)
         });
         let rotation = self.clip.rotation.as_ref().and_then(|track| {
-            sample_scalar_track_from_state(
-                track,
-                self.rotation_cursor,
-                self.rotation_segment_time,
-            )
+            sample_scalar_track_from_state(track, self.rotation_cursor, self.rotation_segment_time)
         });
         let scale = self.clip.scale.as_ref().and_then(|track| {
-            sample_vec2_track_from_state(
-                track,
-                self.scale_cursor,
-                self.scale_segment_time,
-            )
+            sample_vec2_track_from_state(track, self.scale_cursor, self.scale_segment_time)
         });
-        let tint = self.clip.tint.as_ref().and_then(|track| {
-            sample_vec4_track_from_state(track, self.tint_cursor, self.tint_segment_time)
-        });
+        let tint =
+            self.clip.tint.as_ref().and_then(|track| {
+                sample_vec4_track_from_state(track, self.tint_cursor, self.tint_segment_time)
+            });
         let sample = ClipSample { translation, rotation, scale, tint };
         #[cfg(debug_assertions)]
         {
@@ -537,14 +526,26 @@ impl ClipInstance {
     fn advance_track_states(&mut self, delta: f32) {
         let looped = self.looped;
         if let Some(track) = self.clip.translation.as_ref() {
-            advance_vec2_cursor(track, delta, looped, &mut self.translation_cursor, &mut self.translation_segment_time);
+            advance_vec2_cursor(
+                track,
+                delta,
+                looped,
+                &mut self.translation_cursor,
+                &mut self.translation_segment_time,
+            );
         } else {
             self.translation_cursor = 0;
             self.translation_segment_time = 0.0;
         }
 
         if let Some(track) = self.clip.rotation.as_ref() {
-            advance_scalar_cursor(track, delta, looped, &mut self.rotation_cursor, &mut self.rotation_segment_time);
+            advance_scalar_cursor(
+                track,
+                delta,
+                looped,
+                &mut self.rotation_cursor,
+                &mut self.rotation_segment_time,
+            );
         } else {
             self.rotation_cursor = 0;
             self.rotation_segment_time = 0.0;
@@ -627,11 +628,7 @@ fn sample_vec4_track(track: &ClipVec4Track, time: f32, looped: bool) -> Option<V
 }
 
 #[inline(always)]
-fn sample_vec2_track_from_state(
-    track: &ClipVec2Track,
-    cursor: usize,
-    segment_time: f32,
-) -> Option<Vec2> {
+fn sample_vec2_track_from_state(track: &ClipVec2Track, cursor: usize, segment_time: f32) -> Option<Vec2> {
     let frames = track.keyframes.as_ref();
     if frames.is_empty() {
         return None;
@@ -644,29 +641,30 @@ fn sample_vec2_track_from_state(
     if cursor >= last_index {
         return Some(frames[last_index].value);
     }
+    let duration = track.segment_durations.get(cursor).copied().unwrap_or(0.0);
+    let inv = track.segment_inv_durations.get(cursor).copied().unwrap_or(0.0);
     if matches!(track.interpolation, ClipInterpolation::Step) {
         let start = &frames[cursor];
         let end = &frames[cursor + 1];
-        let span = (end.time - start.time).max(0.0);
-        if segment_time >= span {
+        if duration <= 0.0 || segment_time * inv >= 1.0 {
             return Some(end.value);
         }
         return Some(start.value);
     }
     let start = &frames[cursor];
     let delta = track.segment_deltas.get(cursor).copied().unwrap_or(Vec2::ZERO);
-    let end_time = frames[cursor + 1].time;
-    let span = (end_time - start.time).max(std::f32::EPSILON);
-    let alpha = (segment_time / span).clamp(0.0, 1.0);
+    let alpha = if inv > 0.0 {
+        (segment_time * inv).clamp(0.0, 1.0)
+    } else if duration > 0.0 {
+        (segment_time / duration).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     Some(start.value + delta * alpha)
 }
 
 #[inline(always)]
-fn sample_scalar_track_from_state(
-    track: &ClipScalarTrack,
-    cursor: usize,
-    segment_time: f32,
-) -> Option<f32> {
+fn sample_scalar_track_from_state(track: &ClipScalarTrack, cursor: usize, segment_time: f32) -> Option<f32> {
     let frames = track.keyframes.as_ref();
     if frames.is_empty() {
         return None;
@@ -679,29 +677,30 @@ fn sample_scalar_track_from_state(
     if cursor >= last_index {
         return Some(frames[last_index].value);
     }
+    let duration = track.segment_durations.get(cursor).copied().unwrap_or(0.0);
+    let inv = track.segment_inv_durations.get(cursor).copied().unwrap_or(0.0);
     if matches!(track.interpolation, ClipInterpolation::Step) {
         let start = &frames[cursor];
         let end = &frames[cursor + 1];
-        let span = (end.time - start.time).max(0.0);
-        if segment_time >= span {
+        if duration <= 0.0 || segment_time * inv >= 1.0 {
             return Some(end.value);
         }
         return Some(start.value);
     }
     let start = &frames[cursor];
     let delta = track.segment_deltas.get(cursor).copied().unwrap_or(0.0);
-    let end_time = frames[cursor + 1].time;
-    let span = (end_time - start.time).max(std::f32::EPSILON);
-    let alpha = (segment_time / span).clamp(0.0, 1.0);
+    let alpha = if inv > 0.0 {
+        (segment_time * inv).clamp(0.0, 1.0)
+    } else if duration > 0.0 {
+        (segment_time / duration).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     Some(start.value + delta * alpha)
 }
 
 #[inline(always)]
-fn sample_vec4_track_from_state(
-    track: &ClipVec4Track,
-    cursor: usize,
-    segment_time: f32,
-) -> Option<Vec4> {
+fn sample_vec4_track_from_state(track: &ClipVec4Track, cursor: usize, segment_time: f32) -> Option<Vec4> {
     let frames = track.keyframes.as_ref();
     if frames.is_empty() {
         return None;
@@ -714,20 +713,25 @@ fn sample_vec4_track_from_state(
     if cursor >= last_index {
         return Some(frames[last_index].value);
     }
+    let duration = track.segment_durations.get(cursor).copied().unwrap_or(0.0);
+    let inv = track.segment_inv_durations.get(cursor).copied().unwrap_or(0.0);
     if matches!(track.interpolation, ClipInterpolation::Step) {
         let start = &frames[cursor];
         let end = &frames[cursor + 1];
-        let span = (end.time - start.time).max(0.0);
-        if segment_time >= span {
+        if duration <= 0.0 || segment_time * inv >= 1.0 {
             return Some(end.value);
         }
         return Some(start.value);
     }
     let start = &frames[cursor];
     let delta = track.segment_deltas.get(cursor).copied().unwrap_or(Vec4::ZERO);
-    let end_time = frames[cursor + 1].time;
-    let span = (end_time - start.time).max(std::f32::EPSILON);
-    let alpha = (segment_time / span).clamp(0.0, 1.0);
+    let alpha = if inv > 0.0 {
+        (segment_time * inv).clamp(0.0, 1.0)
+    } else if duration > 0.0 {
+        (segment_time / duration).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     Some(start.value + delta * alpha)
 }
 
@@ -750,7 +754,15 @@ fn advance_vec2_cursor(
     cursor: &mut usize,
     segment_time: &mut f32,
 ) {
-    advance_cursor_impl(track.keyframes.as_ref(), track.duration, delta, looped, cursor, segment_time);
+    advance_cursor_impl(
+        track.keyframes.as_ref(),
+        track.duration,
+        track.segment_durations.as_ref(),
+        delta,
+        looped,
+        cursor,
+        segment_time,
+    );
 }
 
 fn advance_scalar_cursor(
@@ -760,7 +772,15 @@ fn advance_scalar_cursor(
     cursor: &mut usize,
     segment_time: &mut f32,
 ) {
-    advance_cursor_impl(track.keyframes.as_ref(), track.duration, delta, looped, cursor, segment_time);
+    advance_cursor_impl(
+        track.keyframes.as_ref(),
+        track.duration,
+        track.segment_durations.as_ref(),
+        delta,
+        looped,
+        cursor,
+        segment_time,
+    );
 }
 
 fn advance_vec4_cursor(
@@ -770,7 +790,15 @@ fn advance_vec4_cursor(
     cursor: &mut usize,
     segment_time: &mut f32,
 ) {
-    advance_cursor_impl(track.keyframes.as_ref(), track.duration, delta, looped, cursor, segment_time);
+    advance_cursor_impl(
+        track.keyframes.as_ref(),
+        track.duration,
+        track.segment_durations.as_ref(),
+        delta,
+        looped,
+        cursor,
+        segment_time,
+    );
 }
 
 fn rebuild_cursor_impl<T>(
@@ -817,6 +845,7 @@ fn cursor_from_time<T>(frames: &[ClipKeyframe<T>], sample_time: f32) -> (usize, 
 fn advance_cursor_impl<T>(
     frames: &[ClipKeyframe<T>],
     duration: f32,
+    segment_durations: &[f32],
     mut delta: f32,
     looped: bool,
     cursor: &mut usize,
@@ -830,7 +859,7 @@ fn advance_cursor_impl<T>(
     }
     if delta <= 0.0 {
         *cursor = (*cursor).min(len - 2);
-        let span = segment_duration(frames, *cursor);
+        let span = segment_durations.get(*cursor).copied().unwrap_or(0.0);
         if *segment_time < 0.0 {
             *segment_time = 0.0;
         } else if *segment_time > span {
@@ -840,7 +869,7 @@ fn advance_cursor_impl<T>(
     }
 
     let mut index = (*cursor).min(len - 2);
-    let mut span = segment_duration(frames, index);
+    let mut span = segment_durations.get(index).copied().unwrap_or(0.0);
     let mut offset = (*segment_time).clamp(0.0, span);
 
     if looped && duration > 0.0 {
@@ -870,27 +899,20 @@ fn advance_cursor_impl<T>(
         if index >= len - 1 {
             if looped && duration > 0.0 {
                 index = 0;
-                span = segment_duration(frames, index);
+                span = segment_durations.get(index).copied().unwrap_or(0.0);
                 continue;
             } else {
                 index = len - 2;
-                offset = segment_duration(frames, index);
+                offset = segment_durations.get(index).copied().unwrap_or(0.0);
                 break;
             }
         }
 
-        span = segment_duration(frames, index);
+        span = segment_durations.get(index).copied().unwrap_or(0.0);
     }
 
     *cursor = index;
     *segment_time = offset.min(span);
-}
-
-fn segment_duration<T>(frames: &[ClipKeyframe<T>], index: usize) -> f32 {
-    if frames.len() <= 1 || index >= frames.len() - 1 {
-        return 0.0;
-    }
-    (frames[index + 1].time - frames[index].time).max(std::f32::EPSILON)
 }
 
 const CLIP_TIME_EPSILON: f32 = 1e-5;
@@ -1045,6 +1067,9 @@ pub struct SkeletonInstance {
     pub local_poses: Vec<Mat4>,
     pub model_poses: Vec<Mat4>,
     pub palette: Vec<Mat4>,
+    pub joint_channel_map: Vec<Option<usize>>,
+    pub joint_children: Vec<Vec<usize>>,
+    pub joint_visited: Vec<bool>,
     pub dirty: bool,
 }
 
@@ -1054,11 +1079,20 @@ impl SkeletonInstance {
         let mut local_poses = Vec::with_capacity(joint_count);
         let mut model_poses = Vec::with_capacity(joint_count);
         let mut palette = Vec::with_capacity(joint_count);
-        for joint in skeleton.joints.iter() {
+        let mut joint_children = vec![Vec::new(); joint_count];
+        for (index, joint) in skeleton.joints.iter().enumerate() {
             local_poses.push(joint.rest_local);
             model_poses.push(joint.rest_world);
             palette.push(joint.rest_world * joint.inverse_bind);
+            if let Some(parent) = joint.parent {
+                let parent_index = parent as usize;
+                if parent_index < joint_children.len() {
+                    joint_children[parent_index].push(index);
+                }
+            }
         }
+        let joint_channel_map = vec![None; joint_count];
+        let joint_visited = vec![false; joint_count];
         Self {
             skeleton_key,
             skeleton,
@@ -1073,6 +1107,9 @@ impl SkeletonInstance {
             local_poses,
             model_poses,
             palette,
+            joint_channel_map,
+            joint_children,
+            joint_visited,
             dirty: false,
         }
     }
@@ -1172,6 +1209,15 @@ impl SkeletonInstance {
         if self.palette.len() != joint_count {
             self.palette.resize(joint_count, Mat4::IDENTITY);
         }
+        if self.joint_channel_map.len() != joint_count {
+            self.joint_channel_map.resize(joint_count, None);
+        }
+        if self.joint_visited.len() != joint_count {
+            self.joint_visited.resize(joint_count, false);
+        }
+        if self.joint_children.len() != joint_count {
+            self.rebuild_joint_children();
+        }
     }
 
     pub fn reset_to_rest_pose(&mut self) {
@@ -1181,6 +1227,20 @@ impl SkeletonInstance {
             self.palette[index] = joint.rest_world * joint.inverse_bind;
         }
         self.dirty = false;
+    }
+
+    fn rebuild_joint_children(&mut self) {
+        let joint_count = self.joint_count();
+        self.joint_children.clear();
+        self.joint_children.resize_with(joint_count, Vec::new);
+        for (index, joint) in self.skeleton.joints.iter().enumerate() {
+            if let Some(parent) = joint.parent {
+                let parent_index = parent as usize;
+                if parent_index < self.joint_children.len() {
+                    self.joint_children[parent_index].push(index);
+                }
+            }
+        }
     }
 }
 
