@@ -83,6 +83,8 @@ fn animation_profile_snapshot() {
                     - prev_transform_stats.looped_resume_clips,
                 zero_duration_clips: current_transform.zero_duration_clips
                     - prev_transform_stats.zero_duration_clips,
+                fast_path_clips: current_transform.fast_path_clips - prev_transform_stats.fast_path_clips,
+                slow_path_clips: current_transform.slow_path_clips - prev_transform_stats.slow_path_clips,
             });
             prev_transform_stats = current_transform;
         }

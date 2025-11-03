@@ -405,58 +405,92 @@ impl ClipInstance {
 
     #[inline(always)]
     pub fn sample_cached(&mut self) -> ClipSample {
-        let translation = self.clip.translation.as_ref().and_then(|track| {
-            sample_vec2_track_from_state(track, self.translation_cursor, self.translation_segment_time)
-        });
-        let rotation = self.clip.rotation.as_ref().and_then(|track| {
-            sample_scalar_track_from_state(track, self.rotation_cursor, self.rotation_segment_time)
-        });
-        let scale = self.clip.scale.as_ref().and_then(|track| {
-            sample_vec2_track_from_state(track, self.scale_cursor, self.scale_segment_time)
-        });
-        let tint =
+        self.sample_with_masks(None, None)
+    }
+
+    #[inline(always)]
+    pub fn sample_with_masks(
+        &mut self,
+        transform_mask: Option<TransformTrackPlayer>,
+        property_mask: Option<PropertyTrackPlayer>,
+    ) -> ClipSample {
+        let transform_mask = transform_mask.unwrap_or_default();
+        let property_mask = property_mask.unwrap_or_default();
+        let translation = if transform_mask.apply_translation {
+            self.clip.translation.as_ref().and_then(|track| {
+                sample_vec2_track_from_state(track, self.translation_cursor, self.translation_segment_time)
+            })
+        } else {
+            None
+        };
+        let rotation = if transform_mask.apply_rotation {
+            self.clip.rotation.as_ref().and_then(|track| {
+                sample_scalar_track_from_state(track, self.rotation_cursor, self.rotation_segment_time)
+            })
+        } else {
+            None
+        };
+        let scale = if transform_mask.apply_scale {
+            self.clip.scale.as_ref().and_then(|track| {
+                sample_vec2_track_from_state(track, self.scale_cursor, self.scale_segment_time)
+            })
+        } else {
+            None
+        };
+        let tint = if property_mask.apply_tint {
             self.clip.tint.as_ref().and_then(|track| {
                 sample_vec4_track_from_state(track, self.tint_cursor, self.tint_segment_time)
-            });
+            })
+        } else {
+            None
+        };
         let sample = ClipSample { translation, rotation, scale, tint };
         #[cfg(debug_assertions)]
         {
             let reference = self.sample_at(self.time);
-            if let (Some(actual), Some(expected)) = (sample.translation, reference.translation) {
-                debug_assert!(
-                    (actual - expected).length_squared() <= 1e-5,
-                    "sample_cached translation mismatch: cached={:?} expected={:?}",
-                    actual,
-                    expected
-                );
+            if transform_mask.apply_translation {
+                if let (Some(actual), Some(expected)) = (sample.translation, reference.translation) {
+                    debug_assert!(
+                        (actual - expected).length_squared() <= 1e-5,
+                        "sample_with_masks translation mismatch: cached={:?} expected={:?}",
+                        actual,
+                        expected
+                    );
+                }
             }
-            if let (Some(actual), Some(expected)) = (sample.rotation, reference.rotation) {
-                debug_assert!(
-                    (actual - expected).abs() <= 1e-5,
-                    "sample_cached rotation mismatch: cached={:?} expected={:?} time={} cursor={} offset={} looped={}",
-                    actual,
-                    expected,
-                    self.time,
-                    self.rotation_cursor,
-                    self.rotation_segment_time,
-                    self.looped
-                );
+            if transform_mask.apply_rotation {
+                if let (Some(actual), Some(expected)) = (sample.rotation, reference.rotation) {
+                    debug_assert!(
+                        (actual - expected).abs() <= 1e-5,
+                        "sample_with_masks rotation mismatch: cached={:?} expected={:?} time={} cursor={} offset={} looped={}",
+                        actual,
+                        expected,
+                        self.time,
+                        self.rotation_cursor,
+                        self.rotation_segment_time,
+                        self.looped
+                    );
+                }
             }
-            if let (Some(actual), Some(expected)) = (sample.scale, reference.scale) {
-                debug_assert!(
-                    (actual - expected).length_squared() <= 1e-5,
-                    "sample_cached scale mismatch: cached={:?} expected={:?}",
-                    actual,
-                    expected
-                );
+            if transform_mask.apply_scale {
+                if let (Some(actual), Some(expected)) = (sample.scale, reference.scale) {
+                    debug_assert!(
+                        (actual - expected).length_squared() <= 1e-5,
+                        "sample_with_masks scale mismatch: cached={:?} expected={:?}",
+                        actual,
+                        expected
+                    );
+                }
             }
-            if let (Some(actual), Some(expected)) = (sample.tint, reference.tint) {
-                debug_assert!(
-                    (actual - expected).length_squared() <= 1e-5,
-                    "sample_cached tint mismatch: cached={:?} expected={:?}",
-                    actual,
-                    expected
-                );
+            if property_mask.apply_tint {
+                if let (Some(actual), Some(expected)) = (sample.tint, reference.tint) {
+                    debug_assert!(
+                        (actual - expected).length_squared() <= 1e-5,
+                        "sample_with_masks tint mismatch: cached={:?} expected={:?}",
+                        actual,
+                        expected
+                    );
+                }
             }
         }
         sample

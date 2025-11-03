@@ -174,9 +174,11 @@ where
             let transform_avg_skipped = result.transform_stats.skipped_clips as f64 / denom;
             let transform_avg_loop = result.transform_stats.looped_resume_clips as f64 / denom;
             let transform_avg_zero_duration = result.transform_stats.zero_duration_clips as f64 / denom;
+            let transform_avg_fast_path = result.transform_stats.fast_path_clips as f64 / denom;
+            let transform_avg_slow_path = result.transform_stats.slow_path_clips as f64 / denom;
             println!(
                 "[animation_bench][{label}]      anim_stats avg/step -> sprite(fast={:.2} event={:.2} plain={:.2}) \
-                 transform(adv={:.2} zero={:.2} skipped={:.2} loop_resume={:.2} zero_duration={:.2})",
+                 transform(adv={:.2} zero={:.2} skipped={:.2} loop_resume={:.2} zero_duration={:.2} fast={:.2} slow={:.2})",
                 sprite_avg_fast,
                 sprite_avg_event,
                 sprite_avg_plain,
@@ -184,7 +186,9 @@ where
                 transform_avg_zero,
                 transform_avg_skipped,
                 transform_avg_loop,
-                transform_avg_zero_duration
+                transform_avg_zero_duration,
+                transform_avg_fast_path,
+                transform_avg_slow_path
             );
         }
         results.push(result);
@@ -241,6 +245,8 @@ where
             transform_totals.skipped_clips += transform_stats.skipped_clips;
             transform_totals.looped_resume_clips += transform_stats.looped_resume_clips;
             transform_totals.zero_duration_clips += transform_stats.zero_duration_clips;
+            transform_totals.fast_path_clips += transform_stats.fast_path_clips;
+            transform_totals.slow_path_clips += transform_stats.slow_path_clips;
         }
         black_box(&world);
     }
@@ -697,7 +703,7 @@ fn write_csv(
     #[cfg(feature = "anim_stats")]
     {
         header.push_str(
-            ",sprite_fast_loop_avg,sprite_event_avg,sprite_plain_avg,transform_advance_avg,transform_zero_delta_avg,transform_skipped_avg,transform_loop_resume_avg,transform_zero_duration_avg",
+            ",sprite_fast_loop_avg,sprite_event_avg,sprite_plain_avg,transform_advance_avg,transform_zero_delta_avg,transform_skipped_avg,transform_loop_resume_avg,transform_zero_duration_avg,transform_fast_path_avg,transform_slow_path_avg",
         );
     }
     writeln!(file, "{header}")?;
@@ -711,7 +717,7 @@ fn write_csv(
             writeln!(
                 file,
                 "{},{},{},{:.6},{:.3},{:.3},{:.3},{:.1},{:.3},{},{}\
-,{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4}",
+,{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4}",
                 result.animators,
                 result.steps,
                 result.samples,
@@ -730,7 +736,9 @@ fn write_csv(
                 result.transform_stats.zero_delta_calls as f64 / denom,
                 result.transform_stats.skipped_clips as f64 / denom,
                 result.transform_stats.looped_resume_clips as f64 / denom,
-                result.transform_stats.zero_duration_clips as f64 / denom
+                result.transform_stats.zero_duration_clips as f64 / denom,
+                result.transform_stats.fast_path_clips as f64 / denom,
+                result.transform_stats.slow_path_clips as f64 / denom
             )?;
         }
         #[cfg(not(feature = "anim_stats"))]

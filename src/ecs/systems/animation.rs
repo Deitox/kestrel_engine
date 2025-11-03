@@ -7,7 +7,7 @@ use crate::ecs::{
     SpriteAnimationLoopMode, Tint, Transform, TransformTrackPlayer,
 };
 use crate::events::{EventBus, GameEvent};
-use bevy_ecs::prelude::{Entity, Mut, Query, Res, ResMut};
+use bevy_ecs::prelude::{Entity, Local, Mut, Query, Res, ResMut};
 use glam::{Mat4, Quat, Vec3};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -32,6 +32,8 @@ pub struct TransformClipStats {
     pub skipped_clips: u64,
     pub looped_resume_clips: u64,
     pub zero_duration_clips: u64,
+    pub fast_path_clips: u64,
+    pub slow_path_clips: u64,
 }
 
 #[cfg(feature = "anim_stats")]
@@ -50,8 +52,22 @@ static TRANSFORM_CLIP_SKIPPED: AtomicU64 = AtomicU64::new(0);
 static TRANSFORM_CLIP_LOOPED_RESUME: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "anim_stats")]
 static TRANSFORM_CLIP_ZERO_DURATION: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "anim_stats")]
+static TRANSFORM_CLIP_FAST_PATH: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "anim_stats")]
+static TRANSFORM_CLIP_SLOW_PATH: AtomicU64 = AtomicU64::new(0);
 
 const CLIP_TIME_EPSILON: f32 = 1e-5;
+
+pub struct TransformFastEntry {
+    instance: NonNull<ClipInstance>,
+    transform: NonNull<Transform>,
+    tint: Option<NonNull<Tint>>,
+    delta: f32,
+    apply_tint: bool,
+}
+
+unsafe impl Send for TransformFastEntry {}
 
 #[cfg(feature = "anim_stats")]
 pub fn sprite_animation_stats_snapshot() -> SpriteAnimationStats {
@@ -77,6 +93,8 @@ pub fn transform_clip_stats_snapshot() -> TransformClipStats {
         skipped_clips: TRANSFORM_CLIP_SKIPPED.load(Ordering::Relaxed),
         looped_resume_clips: TRANSFORM_CLIP_LOOPED_RESUME.load(Ordering::Relaxed),
         zero_duration_clips: TRANSFORM_CLIP_ZERO_DURATION.load(Ordering::Relaxed),
+        fast_path_clips: TRANSFORM_CLIP_FAST_PATH.load(Ordering::Relaxed),
+        slow_path_clips: TRANSFORM_CLIP_SLOW_PATH.load(Ordering::Relaxed),
     }
 }
 
@@ -87,6 +105,8 @@ pub fn reset_transform_clip_stats() {
     TRANSFORM_CLIP_SKIPPED.store(0, Ordering::Relaxed);
     TRANSFORM_CLIP_LOOPED_RESUME.store(0, Ordering::Relaxed);
     TRANSFORM_CLIP_ZERO_DURATION.store(0, Ordering::Relaxed);
+    TRANSFORM_CLIP_FAST_PATH.store(0, Ordering::Relaxed);
+    TRANSFORM_CLIP_SLOW_PATH.store(0, Ordering::Relaxed);
 }
 
 #[cfg(feature = "anim_stats")]
@@ -160,6 +180,24 @@ fn record_transform_zero_duration(count: u64) {
 #[cfg(not(feature = "anim_stats"))]
 #[allow(dead_code)]
 fn record_transform_zero_duration(_count: u64) {}
+
+#[cfg(feature = "anim_stats")]
+fn record_transform_fast_path(count: u64) {
+    TRANSFORM_CLIP_FAST_PATH.fetch_add(count, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "anim_stats"))]
+#[allow(dead_code)]
+fn record_transform_fast_path(_count: u64) {}
+
+#[cfg(feature = "anim_stats")]
+fn record_transform_slow_path(count: u64) {
+    TRANSFORM_CLIP_SLOW_PATH.fetch_add(count, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "anim_stats"))]
+#[allow(dead_code)]
+fn record_transform_slow_path(_count: u64) {}
 
 pub fn sys_drive_sprite_animations(
     mut profiler: ResMut<SystemProfiler>,
@@ -303,6 +341,7 @@ pub fn sys_drive_transform_clips(
     mut profiler: ResMut<SystemProfiler>,
     dt: Res<TimeDelta>,
     mut animation_time: ResMut<AnimationTime>,
+    mut fast_entries: Local<Vec<TransformFastEntry>>,
     mut clips: Query<(
         Entity,
         &mut ClipInstance,
@@ -327,7 +366,7 @@ pub fn sys_drive_transform_clips(
     if delta <= 0.0 {
         return;
     }
-    drive_transform_clips(delta, has_group_scales, animation_time_ref, &mut clips);
+    drive_transform_clips(delta, has_group_scales, animation_time_ref, &mut clips, &mut fast_entries);
 }
 
 pub fn sys_drive_skeletal_clips(
@@ -587,8 +626,12 @@ fn drive_transform_clips(
         Option<Mut<Transform>>,
         Option<Mut<Tint>>,
     )>,
+    fast_entries: &mut Vec<TransformFastEntry>,
 ) {
-    for (_entity, mut instance, transform_player, property_player, mut transform, tint) in clips.iter_mut() {
+    fast_entries.clear();
+    for (_entity, mut instance, transform_player, property_player, mut transform, mut tint) in
+        clips.iter_mut()
+    {
         if !instance.playing && instance.looped {
             // Looping clips resume automatically; keep advancing even if flagged not playing.
             #[cfg(feature = "anim_stats")]
@@ -634,51 +677,24 @@ fn drive_transform_clips(
             && tint_available;
 
         if can_fast_path {
-            let applied = instance.advance_time(scaled);
-            record_transform_advance(1);
-            #[cfg(feature = "anim_stats")]
-            {
-                if applied <= 0.0 {
-                    record_transform_zero_delta(1);
-                }
-            }
-            #[cfg(not(feature = "anim_stats"))]
-            let _ = applied;
-
-            let sample = instance.sample_cached();
-            let transform_ref =
-                transform.as_deref_mut().expect("transform missing in fast path despite guard");
-            if let Some(value) = sample.translation {
-                if instance.last_translation.map_or(true, |prev| prev != value) {
-                    transform_ref.translation = value;
-                }
-            }
-            if let Some(value) = sample.rotation {
-                if instance.last_rotation.map_or(true, |prev| prev != value) {
-                    transform_ref.rotation = value;
-                }
-            }
-            if let Some(value) = sample.scale {
-                if instance.last_scale.map_or(true, |prev| prev != value) {
-                    transform_ref.scale = value;
-                }
-            }
-
-            if wants_tint {
-                if let Some(mut tint_ref) = tint {
-                    if let Some(value) = sample.tint {
-                        if instance.last_tint.map_or(true, |prev| prev != value) {
-                            tint_ref.0 = value;
-                        }
-                    }
-                }
-            }
-
-            instance.last_translation = sample.translation;
-            instance.last_rotation = sample.rotation;
-            instance.last_scale = sample.scale;
-            instance.last_tint = sample.tint;
-
+            let instance_ptr = NonNull::from(&mut *instance);
+            let transform_ptr = transform
+                .as_mut()
+                .map(|component| NonNull::from(&mut **component))
+                .expect("transform missing in fast path despite guard");
+            let tint_ptr = if wants_tint {
+                tint.as_mut().map(|component| NonNull::from(&mut **component))
+            } else {
+                None
+            };
+            fast_entries.push(TransformFastEntry {
+                instance: instance_ptr,
+                transform: transform_ptr,
+                tint: tint_ptr,
+                delta: scaled,
+                apply_tint: wants_tint,
+            });
+            record_transform_fast_path(1);
             continue;
         }
 
@@ -692,8 +708,58 @@ fn drive_transform_clips(
         }
         #[cfg(not(feature = "anim_stats"))]
         let _ = applied;
-        let sample = instance.sample_cached();
+        let sample = instance.sample_with_masks(transform_player.copied(), property_player.copied());
         apply_clip_sample(&mut instance, transform_player, property_player, transform, tint, sample);
+        record_transform_slow_path(1);
+    }
+
+    for entry in fast_entries.drain(..) {
+        unsafe {
+            let instance = entry.instance.as_ptr();
+            let instance = &mut *instance;
+            let applied = instance.advance_time(entry.delta);
+            record_transform_advance(1);
+            #[cfg(feature = "anim_stats")]
+            {
+                if applied <= 0.0 {
+                    record_transform_zero_delta(1);
+                }
+            }
+            #[cfg(not(feature = "anim_stats"))]
+            let _ = applied;
+
+            let sample = instance.sample_cached();
+            let transform = &mut *entry.transform.as_ptr();
+            if let Some(value) = sample.translation {
+                if instance.last_translation.map_or(true, |prev| prev != value) {
+                    transform.translation = value;
+                }
+            }
+            if let Some(value) = sample.rotation {
+                if instance.last_rotation.map_or(true, |prev| prev != value) {
+                    transform.rotation = value;
+                }
+            }
+            if let Some(value) = sample.scale {
+                if instance.last_scale.map_or(true, |prev| prev != value) {
+                    transform.scale = value;
+                }
+            }
+
+            if entry.apply_tint {
+                if let (Some(tint_ptr), Some(value)) = (entry.tint, sample.tint) {
+                    let tint = &mut *tint_ptr.as_ptr();
+                    if instance.last_tint.map_or(true, |prev| prev != value) {
+                        tint.0 = value;
+                    }
+                }
+            }
+
+            instance.last_translation = sample.translation;
+            instance.last_rotation = sample.rotation;
+            instance.last_scale = sample.scale;
+            instance.last_tint = sample.tint;
+        }
     }
 }
 
