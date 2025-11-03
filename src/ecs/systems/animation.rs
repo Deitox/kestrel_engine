@@ -25,11 +25,31 @@ pub struct SpriteAnimationStats {
 }
 
 #[cfg(feature = "anim_stats")]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TransformClipStats {
+    pub advance_calls: u64,
+    pub zero_delta_calls: u64,
+    pub skipped_clips: u64,
+    pub looped_resume_clips: u64,
+    pub zero_duration_clips: u64,
+}
+
+#[cfg(feature = "anim_stats")]
 static SPRITE_FAST_LOOP_CALLS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "anim_stats")]
 static SPRITE_EVENT_CALLS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "anim_stats")]
 static SPRITE_PLAIN_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "anim_stats")]
+static TRANSFORM_CLIP_ADVANCE_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "anim_stats")]
+static TRANSFORM_CLIP_ZERO_DELTA_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "anim_stats")]
+static TRANSFORM_CLIP_SKIPPED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "anim_stats")]
+static TRANSFORM_CLIP_LOOPED_RESUME: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "anim_stats")]
+static TRANSFORM_CLIP_ZERO_DURATION: AtomicU64 = AtomicU64::new(0);
 
 const CLIP_TIME_EPSILON: f32 = 1e-5;
 
@@ -47,6 +67,26 @@ pub fn reset_sprite_animation_stats() {
     SPRITE_FAST_LOOP_CALLS.store(0, Ordering::Relaxed);
     SPRITE_EVENT_CALLS.store(0, Ordering::Relaxed);
     SPRITE_PLAIN_CALLS.store(0, Ordering::Relaxed);
+}
+
+#[cfg(feature = "anim_stats")]
+pub fn transform_clip_stats_snapshot() -> TransformClipStats {
+    TransformClipStats {
+        advance_calls: TRANSFORM_CLIP_ADVANCE_CALLS.load(Ordering::Relaxed),
+        zero_delta_calls: TRANSFORM_CLIP_ZERO_DELTA_CALLS.load(Ordering::Relaxed),
+        skipped_clips: TRANSFORM_CLIP_SKIPPED.load(Ordering::Relaxed),
+        looped_resume_clips: TRANSFORM_CLIP_LOOPED_RESUME.load(Ordering::Relaxed),
+        zero_duration_clips: TRANSFORM_CLIP_ZERO_DURATION.load(Ordering::Relaxed),
+    }
+}
+
+#[cfg(feature = "anim_stats")]
+pub fn reset_transform_clip_stats() {
+    TRANSFORM_CLIP_ADVANCE_CALLS.store(0, Ordering::Relaxed);
+    TRANSFORM_CLIP_ZERO_DELTA_CALLS.store(0, Ordering::Relaxed);
+    TRANSFORM_CLIP_SKIPPED.store(0, Ordering::Relaxed);
+    TRANSFORM_CLIP_LOOPED_RESUME.store(0, Ordering::Relaxed);
+    TRANSFORM_CLIP_ZERO_DURATION.store(0, Ordering::Relaxed);
 }
 
 #[cfg(feature = "anim_stats")]
@@ -75,6 +115,51 @@ fn record_plain_call(count: u64) {
 #[cfg(not(feature = "anim_stats"))]
 #[allow(dead_code)]
 fn record_plain_call(_count: u64) {}
+
+#[cfg(feature = "anim_stats")]
+fn record_transform_advance(count: u64) {
+    TRANSFORM_CLIP_ADVANCE_CALLS.fetch_add(count, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "anim_stats"))]
+#[allow(dead_code)]
+fn record_transform_advance(_count: u64) {}
+
+#[cfg(feature = "anim_stats")]
+fn record_transform_zero_delta(count: u64) {
+    TRANSFORM_CLIP_ZERO_DELTA_CALLS.fetch_add(count, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "anim_stats"))]
+#[allow(dead_code)]
+fn record_transform_zero_delta(_count: u64) {}
+
+#[cfg(feature = "anim_stats")]
+fn record_transform_skipped(count: u64) {
+    TRANSFORM_CLIP_SKIPPED.fetch_add(count, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "anim_stats"))]
+#[allow(dead_code)]
+fn record_transform_skipped(_count: u64) {}
+
+#[cfg(feature = "anim_stats")]
+fn record_transform_looped_resume(count: u64) {
+    TRANSFORM_CLIP_LOOPED_RESUME.fetch_add(count, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "anim_stats"))]
+#[allow(dead_code)]
+fn record_transform_looped_resume(_count: u64) {}
+
+#[cfg(feature = "anim_stats")]
+fn record_transform_zero_duration(count: u64) {
+    TRANSFORM_CLIP_ZERO_DURATION.fetch_add(count, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "anim_stats"))]
+#[allow(dead_code)]
+fn record_transform_zero_duration(_count: u64) {}
 
 pub fn sys_drive_sprite_animations(
     mut profiler: ResMut<SystemProfiler>,
@@ -502,7 +587,11 @@ fn drive_transform_clips(
     for (_entity, mut instance, transform_player, property_player, transform, tint) in clips.iter_mut() {
         if !instance.playing && instance.looped {
             // Looping clips resume automatically; keep advancing even if flagged not playing.
+            #[cfg(feature = "anim_stats")]
+            record_transform_looped_resume(1);
         } else if !instance.playing {
+            #[cfg(feature = "anim_stats")]
+            record_transform_skipped(1);
             continue;
         }
 
@@ -523,11 +612,25 @@ fn drive_transform_clips(
         }
 
         if instance.duration() <= 0.0 {
+            #[cfg(feature = "anim_stats")]
+            record_transform_zero_duration(1);
             instance.time = 0.0;
             continue;
         }
 
-        instance.advance_time(scaled);
+        #[cfg(feature = "anim_stats")]
+        let applied = instance.advance_time(scaled);
+        #[cfg(not(feature = "anim_stats"))]
+        {
+            instance.advance_time(scaled);
+        }
+        #[cfg(feature = "anim_stats")]
+        {
+            record_transform_advance(1);
+            if applied <= 0.0 {
+                record_transform_zero_delta(1);
+            }
+        }
         let sample = instance.sample_cached();
         apply_clip_sample(&mut instance, transform_player, property_player, transform, tint, sample);
     }

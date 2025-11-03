@@ -10,6 +10,11 @@ use kestrel_engine::assets::skeletal::{
 use kestrel_engine::assets::{
     AnimationClip, ClipInterpolation, ClipKeyframe, ClipScalarTrack, ClipVec2Track, ClipVec4Track,
 };
+#[cfg(feature = "anim_stats")]
+use kestrel_engine::ecs::{
+    reset_sprite_animation_stats, reset_transform_clip_stats, sprite_animation_stats_snapshot,
+    transform_clip_stats_snapshot, SpriteAnimationStats, TransformClipStats,
+};
 use kestrel_engine::ecs::{
     BoneTransforms, ClipInstance, EcsWorld, PropertyTrackPlayer, SkeletonInstance, Sprite, SpriteAnimation,
     SpriteAnimationFrame, SpriteAnimationLoopMode, Tint, Transform, TransformTrackPlayer, WorldTransform,
@@ -64,6 +69,10 @@ struct BenchResult {
     dt: f32,
     samples: usize,
     summary: BenchSummary,
+    #[cfg(feature = "anim_stats")]
+    sprite_stats: SpriteAnimationStats,
+    #[cfg(feature = "anim_stats")]
+    transform_stats: TransformClipStats,
 }
 
 #[test]
@@ -154,6 +163,30 @@ where
             summary.mean_ns_per_animator_step,
             budget_msg
         );
+        #[cfg(feature = "anim_stats")]
+        {
+            let denom = (result.steps as f64) * (result.samples as f64).max(1.0);
+            let sprite_avg_fast = result.sprite_stats.fast_loop_calls as f64 / denom;
+            let sprite_avg_event = result.sprite_stats.event_calls as f64 / denom;
+            let sprite_avg_plain = result.sprite_stats.plain_calls as f64 / denom;
+            let transform_avg_adv = result.transform_stats.advance_calls as f64 / denom;
+            let transform_avg_zero = result.transform_stats.zero_delta_calls as f64 / denom;
+            let transform_avg_skipped = result.transform_stats.skipped_clips as f64 / denom;
+            let transform_avg_loop = result.transform_stats.looped_resume_clips as f64 / denom;
+            let transform_avg_zero_duration = result.transform_stats.zero_duration_clips as f64 / denom;
+            println!(
+                "[animation_bench][{label}]      anim_stats avg/step -> sprite(fast={:.2} event={:.2} plain={:.2}) \
+                 transform(adv={:.2} zero={:.2} skipped={:.2} loop_resume={:.2} zero_duration={:.2})",
+                sprite_avg_fast,
+                sprite_avg_event,
+                sprite_avg_plain,
+                transform_avg_adv,
+                transform_avg_zero,
+                transform_avg_skipped,
+                transform_avg_loop,
+                transform_avg_zero_duration
+            );
+        }
         results.push(result);
     }
 
@@ -169,6 +202,10 @@ where
     F: FnMut(&mut EcsWorld, usize, bool),
 {
     let mut sample_elapsed = Vec::with_capacity(config.samples);
+    #[cfg(feature = "anim_stats")]
+    let mut sprite_totals = SpriteAnimationStats::default();
+    #[cfg(feature = "anim_stats")]
+    let mut transform_totals = TransformClipStats::default();
 
     for _ in 0..config.samples {
         let mut world = EcsWorld::new();
@@ -178,12 +215,33 @@ where
             world.update(config.dt);
         }
 
+        #[cfg(feature = "anim_stats")]
+        {
+            reset_sprite_animation_stats();
+            reset_transform_clip_stats();
+        }
+
         let start = Instant::now();
         for _ in 0..config.steps {
             world.update(black_box(config.dt));
         }
         let elapsed = start.elapsed();
         sample_elapsed.push(elapsed);
+
+        #[cfg(feature = "anim_stats")]
+        {
+            let sprite_stats = sprite_animation_stats_snapshot();
+            sprite_totals.fast_loop_calls += sprite_stats.fast_loop_calls;
+            sprite_totals.event_calls += sprite_stats.event_calls;
+            sprite_totals.plain_calls += sprite_stats.plain_calls;
+
+            let transform_stats = transform_clip_stats_snapshot();
+            transform_totals.advance_calls += transform_stats.advance_calls;
+            transform_totals.zero_delta_calls += transform_stats.zero_delta_calls;
+            transform_totals.skipped_clips += transform_stats.skipped_clips;
+            transform_totals.looped_resume_clips += transform_stats.looped_resume_clips;
+            transform_totals.zero_duration_clips += transform_stats.zero_duration_clips;
+        }
         black_box(&world);
     }
 
@@ -194,6 +252,10 @@ where
         dt: config.dt,
         samples: config.samples,
         summary,
+        #[cfg(feature = "anim_stats")]
+        sprite_stats: sprite_totals,
+        #[cfg(feature = "anim_stats")]
+        transform_stats: transform_totals,
     }
 }
 
@@ -666,29 +728,66 @@ fn write_csv(
     }
 
     let mut file = File::create(&path)?;
-    writeln!(
-        file,
-        "animators,steps,samples,dt,mean_step_ms,min_step_ms,max_step_ms,mean_ns_per_animator_step,total_elapsed_ms,budget_ms,meets_budget"
-    )?;
+    let mut header = String::from(
+        "animators,steps,samples,dt,mean_step_ms,min_step_ms,max_step_ms,mean_ns_per_animator_step,total_elapsed_ms,budget_ms,meets_budget",
+    );
+    #[cfg(feature = "anim_stats")]
+    {
+        header.push_str(
+            ",sprite_fast_loop_avg,sprite_event_avg,sprite_plain_avg,transform_advance_avg,transform_zero_delta_avg,transform_skipped_avg,transform_loop_resume_avg,transform_zero_duration_avg",
+        );
+    }
+    writeln!(file, "{header}")?;
     for result in results {
         let summary = &result.summary;
         let budget = budget_for(result.animators, budgets);
         let meets_budget = budget.map(|limit| summary.mean_step_ms <= limit);
-        writeln!(
-            file,
-            "{},{},{},{:.6},{:.3},{:.3},{:.3},{:.1},{:.3},{},{}",
-            result.animators,
-            result.steps,
-            result.samples,
-            result.dt,
-            summary.mean_step_ms,
-            summary.min_step_ms,
-            summary.max_step_ms,
-            summary.mean_ns_per_animator_step,
-            summary.total_elapsed_ms,
-            budget.map(|value| format!("{:.3}", value)).unwrap_or_else(|| "".to_string()),
-            meets_budget.map(|pass| if pass { "pass" } else { "fail" }).unwrap_or("info")
-        )?;
+        #[cfg(feature = "anim_stats")]
+        {
+            let denom = (result.steps as f64) * (result.samples as f64).max(1.0);
+            writeln!(
+                file,
+                "{},{},{},{:.6},{:.3},{:.3},{:.3},{:.1},{:.3},{},{}\
+,{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4}",
+                result.animators,
+                result.steps,
+                result.samples,
+                result.dt,
+                summary.mean_step_ms,
+                summary.min_step_ms,
+                summary.max_step_ms,
+                summary.mean_ns_per_animator_step,
+                summary.total_elapsed_ms,
+                budget.map(|value| format!("{:.3}", value)).unwrap_or_else(|| "".to_string()),
+                meets_budget.map(|pass| if pass { "pass" } else { "fail" }).unwrap_or("info"),
+                result.sprite_stats.fast_loop_calls as f64 / denom,
+                result.sprite_stats.event_calls as f64 / denom,
+                result.sprite_stats.plain_calls as f64 / denom,
+                result.transform_stats.advance_calls as f64 / denom,
+                result.transform_stats.zero_delta_calls as f64 / denom,
+                result.transform_stats.skipped_clips as f64 / denom,
+                result.transform_stats.looped_resume_clips as f64 / denom,
+                result.transform_stats.zero_duration_clips as f64 / denom
+            )?;
+        }
+        #[cfg(not(feature = "anim_stats"))]
+        {
+            writeln!(
+                file,
+                "{},{},{},{:.6},{:.3},{:.3},{:.3},{:.1},{:.3},{},{}",
+                result.animators,
+                result.steps,
+                result.samples,
+                result.dt,
+                summary.mean_step_ms,
+                summary.min_step_ms,
+                summary.max_step_ms,
+                summary.mean_ns_per_animator_step,
+                summary.total_elapsed_ms,
+                budget.map(|value| format!("{:.3}", value)).unwrap_or_else(|| "".to_string()),
+                meets_budget.map(|pass| if pass { "pass" } else { "fail" }).unwrap_or("info")
+            )?;
+        }
     }
     println!("[animation_bench] CSV written to {}", path.display());
     Ok(())

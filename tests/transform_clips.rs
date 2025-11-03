@@ -225,6 +225,93 @@ fn transform_clip_time_seek_applies_sample() {
 }
 
 #[test]
+fn transform_clip_set_time_handles_extremes() {
+    let mut assets = AssetManager::new();
+    assets.retain_clip("slime", Some("fixtures/animation_clips/slime_bob.json")).expect("load slime clip");
+
+    let clip_arc = Arc::new(assets.clip("slime").expect("missing clip").clone());
+    let clip_key: Arc<str> = Arc::from("slime");
+    let mut instance = ClipInstance::new(Arc::clone(&clip_key), Arc::clone(&clip_arc));
+    let duration = instance.duration();
+    assert!(duration > 0.0, "fixture clip should have positive duration");
+
+    instance.set_time(-0.125);
+    let expected_neg = (-0.125_f32).rem_euclid(duration.max(std::f32::EPSILON));
+    assert!(approx_scalar(instance.time, expected_neg), "negative time should wrap inside clip duration");
+
+    instance.set_time(duration);
+    assert!(approx_scalar(instance.time, duration), "exact duration should be preserved");
+
+    instance.set_time(duration + 0.001);
+    let wrap_back = (duration + 0.001).rem_euclid(duration.max(std::f32::EPSILON));
+    assert!(approx_scalar(instance.time, wrap_back));
+
+    instance.set_time(42.25);
+    let expected = 42.25_f32.rem_euclid(duration.max(std::f32::EPSILON));
+    assert!(approx_scalar(instance.time, expected));
+
+    instance.set_time(f32::MAX);
+    assert!(instance.time.is_finite());
+    assert!(instance.time >= 0.0 && instance.time <= duration);
+
+    instance.set_time(-f32::MAX);
+    assert!(instance.time.is_finite());
+    assert!(instance.time >= 0.0 && instance.time <= duration);
+
+    let cached = instance.sample_cached();
+    let direct = instance.sample_at(instance.time);
+    if let (Some(cached_translation), Some(direct_translation)) = (cached.translation, direct.translation) {
+        assert!(approx_vec2(cached_translation, direct_translation));
+    }
+    if let (Some(cached_rotation), Some(direct_rotation)) = (cached.rotation, direct.rotation) {
+        assert!(approx_scalar(cached_rotation, direct_rotation));
+    }
+    if let (Some(cached_scale), Some(direct_scale)) = (cached.scale, direct.scale) {
+        assert!(approx_vec2(cached_scale, direct_scale));
+    }
+    if let (Some(cached_tint), Some(direct_tint)) = (cached.tint, direct.tint) {
+        assert!(approx_vec4(cached_tint, direct_tint));
+    }
+}
+
+#[test]
+fn transform_clip_advance_time_large_delta_wraps_cleanly() {
+    let mut assets = AssetManager::new();
+    assets.retain_clip("slime", Some("fixtures/animation_clips/slime_bob.json")).expect("load slime clip");
+
+    let clip_arc = Arc::new(assets.clip("slime").expect("missing clip").clone());
+    let clip_key: Arc<str> = Arc::from("slime");
+    let mut instance = ClipInstance::new(Arc::clone(&clip_key), Arc::clone(&clip_arc));
+    let duration = instance.duration();
+    assert!(duration > 0.0);
+
+    instance.set_time(0.123);
+    let wrapped_delta = duration * 4.5;
+    let applied = instance.advance_time(wrapped_delta);
+    assert!(applied.is_finite() && applied > 0.0);
+    assert!(instance.time.is_finite());
+    assert!(instance.time >= 0.0 && instance.time <= duration);
+
+    let cached = instance.sample_cached();
+    let direct = instance.sample_at(instance.time);
+    if let (Some(cached_translation), Some(direct_translation)) = (cached.translation, direct.translation) {
+        assert!(approx_vec2(cached_translation, direct_translation));
+    }
+    if let (Some(cached_rotation), Some(direct_rotation)) = (cached.rotation, direct.rotation) {
+        assert!(approx_scalar(cached_rotation, direct_rotation));
+    }
+    if let (Some(cached_scale), Some(direct_scale)) = (cached.scale, direct.scale) {
+        assert!(approx_vec2(cached_scale, direct_scale));
+    }
+    if let (Some(cached_tint), Some(direct_tint)) = (cached.tint, direct.tint) {
+        assert!(approx_vec4(cached_tint, direct_tint));
+    }
+
+    let applied_negative = instance.advance_time(-1.0);
+    assert_eq!(applied_negative, 0.0);
+}
+
+#[test]
 fn transform_clip_final_pose_consistent_across_update_chunking() {
     let mut assets = AssetManager::new();
     assets

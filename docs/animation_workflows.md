@@ -128,8 +128,16 @@
 ## Testing Checklist
 - Hot-reload sanity steps.
 - Golden playback verification.
-- Benchmark invocation (`cargo test -- --ignored animation_bench_run`).
+- Benchmark invocation (`cargo test --release --features anim_stats animation_bench_run -- --ignored --exact --nocapture`).
 - GPU timing capture (`Export GPU CSV` in the Stats panel, see below).
+
+## anim_stats Profiling
+- Enable the counters with `--features anim_stats` when running either profiling harness:  
+  - `cargo test --release --features anim_stats --test animation_profile animation_profile_snapshot -- --ignored --exact --nocapture` (per-frame traces).  
+  - `cargo test --release --features anim_stats animation_bench_run -- --ignored --exact --nocapture` (CI automation).
+- `animation_profile` logs per-step sprite counters in the format `sprite(fast=… event=… plain=…)` and transform clip counters `transform(adv=… zero=… skipped=… loop_resume=… zero_duration=…)`, aligned with the heaviest timing samples so you can spot whether spikes come from the fast-loop path or event/paused branches.
+- `animation_bench` emits the same counters averaged per step and appends them to the CSV outputs (`animation_sprite_timelines.csv`, `animation_transform_clips.csv`). CI dashboards can now ingest both timing and path mix data from a single artifact.
+- Call `reset_sprite_animation_stats()` / `reset_transform_clip_stats()` between custom runs if you are inspecting counters from scripts or the REPL; the helpers are re-exported under `kestrel_engine::ecs::*`.
 
 ## GPU Timing Capture
 - Open the **Stats** panel in the editor and scroll to **GPU Timings**. Hardware must expose timestamp queries; unsupported adapters show a warning.

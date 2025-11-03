@@ -10,7 +10,7 @@ $workspaceRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\..")
 Push-Location $workspaceRoot
 try {
     Write-Host "Running animation benchmark harness (release build, ignored test)..." -ForegroundColor Cyan
-    cargo test --release animation_bench_run -- --ignored --exact --nocapture
+    cargo test --release --features anim_stats animation_bench_run -- --ignored --exact --nocapture
 } finally {
     Pop-Location
 }
