@@ -12,6 +12,7 @@ use glam::{Mat4, Quat, Vec3};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::ptr::NonNull;
+use std::sync::Arc;
 
 #[cfg(feature = "anim_stats")]
 use std::time::{Duration, Instant};
@@ -681,14 +682,17 @@ fn drive_transform_clips(
     for (_entity, mut instance, transform_player, property_player, mut transform, mut tint) in
         clips.iter_mut()
     {
-        if !instance.playing && instance.looped {
-            // Looping clips resume automatically; keep advancing even if flagged not playing.
-            #[cfg(feature = "anim_stats")]
-            record_transform_looped_resume(1);
-        } else if !instance.playing {
-            #[cfg(feature = "anim_stats")]
-            record_transform_skipped(1);
-            continue;
+        if !instance.playing {
+            if instance.looped {
+                // Looping clips resume automatically; re-arm playback and keep advancing.
+                #[cfg(feature = "anim_stats")]
+                record_transform_looped_resume(1);
+                instance.playing = true;
+            } else {
+                #[cfg(feature = "anim_stats")]
+                record_transform_skipped(1);
+                continue;
+            }
         }
 
         let group_scale =
@@ -1037,8 +1041,8 @@ fn emit_sprite_animation_events(entity: Entity, animation: &SpriteAnimation, eve
         for name in frame.events.iter() {
             events.push(GameEvent::SpriteAnimationEvent {
                 entity,
-                timeline: animation.timeline.as_ref().to_string(),
-                event: name.as_ref().to_string(),
+                timeline: Arc::clone(&animation.timeline),
+                event: Arc::clone(name),
             });
         }
     }
@@ -1292,35 +1296,27 @@ fn drive_fixed(
             continue;
         }
 
+        let total_delta = scaled_step * steps as f32;
+        if total_delta <= 0.0 {
+            continue;
+        }
+
         let mut sprite_changed = false;
         if animation.fast_loop {
-            let total = scaled_step * steps as f32;
             let current_duration = animation.current_duration;
-            let new_elapsed = animation.elapsed_in_frame + total;
+            let new_elapsed = animation.elapsed_in_frame + total_delta;
             if new_elapsed <= current_duration + CLIP_TIME_EPSILON {
                 animation.elapsed_in_frame = new_elapsed.min(current_duration);
-            } else if advance_animation_loop_no_events(&mut animation, total) {
+            } else if advance_animation_loop_no_events(&mut animation, total_delta) {
                 sprite_changed = true;
             }
         } else if animation.has_events {
             let events_ref = &mut *events;
-            for _ in 0..steps {
-                if !animation.playing {
-                    break;
-                }
-                if advance_animation(&mut animation, scaled_step, entity, Some(events_ref), true) {
-                    sprite_changed = true;
-                }
+            if advance_animation(&mut animation, total_delta, entity, Some(events_ref), true) {
+                sprite_changed = true;
             }
-        } else {
-            for _ in 0..steps {
-                if !animation.playing {
-                    break;
-                }
-                if advance_animation(&mut animation, scaled_step, entity, None, true) {
-                    sprite_changed = true;
-                }
-            }
+        } else if advance_animation(&mut animation, total_delta, entity, None, true) {
+            sprite_changed = true;
         }
 
         if sprite_changed {

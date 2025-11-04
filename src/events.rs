@@ -1,10 +1,11 @@
 use bevy_ecs::prelude::{Entity, Resource};
 use std::fmt;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub enum GameEvent {
     SpriteSpawned { entity: Entity, atlas: String, region: String },
-    SpriteAnimationEvent { entity: Entity, timeline: String, event: String },
+    SpriteAnimationEvent { entity: Entity, timeline: Arc<str>, event: Arc<str> },
     EntityDespawned { entity: Entity },
     CollisionStarted { a: Entity, b: Entity },
     CollisionEnded { a: Entity, b: Entity },

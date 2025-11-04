@@ -264,9 +264,9 @@ fn sprite_animation_events_emit_on_frame_entry() {
     ecs.update(0.12);
     let events = ecs.drain_events();
     assert!(
-        events.iter().any(
-            |event| matches!(event, GameEvent::SpriteAnimationEvent { event, .. } if event == "footstep")
-        ),
+        events
+            .iter()
+            .any(|event| matches!(event, GameEvent::SpriteAnimationEvent { event, .. } if event.as_ref() == "footstep")),
         "animation should emit declared events when entering the frame"
     );
 }
