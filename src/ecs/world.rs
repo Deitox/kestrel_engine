@@ -1062,9 +1062,17 @@ impl EcsWorld {
                 }
                 let frames = Arc::clone(&definition.frames);
                 let durations = Arc::clone(&definition.durations);
+                let offsets = Arc::clone(&definition.frame_offsets);
+                let total_duration = definition.total_duration;
                 let loop_mode = definition.loop_mode;
-                let component =
-                    SpriteAnimation::new(Arc::clone(&definition.name), frames, durations, loop_mode);
+                let component = SpriteAnimation::new(
+                    Arc::clone(&definition.name),
+                    frames,
+                    durations,
+                    offsets,
+                    total_duration,
+                    loop_mode,
+                );
                 self.world.entity_mut(entity).insert(component);
                 if let Some(mut animation) = self.world.get_mut::<SpriteAnimation>(entity) {
                     if let Some((offset, random, group)) = previous_config {

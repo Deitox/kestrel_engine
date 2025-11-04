@@ -166,6 +166,7 @@ where
         #[cfg(feature = "anim_stats")]
         {
             let denom = (result.steps as f64) * (result.samples as f64).max(1.0);
+            let denom_per_anim = denom * (result.animators.max(1) as f64);
             let sprite_avg_fast = result.sprite_stats.fast_loop_calls as f64 / denom;
             let sprite_avg_event = result.sprite_stats.event_calls as f64 / denom;
             let sprite_avg_plain = result.sprite_stats.plain_calls as f64 / denom;
@@ -176,9 +177,21 @@ where
             let transform_avg_zero_duration = result.transform_stats.zero_duration_clips as f64 / denom;
             let transform_avg_fast_path = result.transform_stats.fast_path_clips as f64 / denom;
             let transform_avg_slow_path = result.transform_stats.slow_path_clips as f64 / denom;
+            let transform_avg_segment_cross = result.transform_stats.segment_crosses as f64 / denom;
+            let transform_avg_adv_time_ns = result.transform_stats.advance_time_ns as f64 / denom;
+            let transform_avg_sample_time_ns = result.transform_stats.sample_time_ns as f64 / denom;
+            let transform_avg_apply_time_ns = result.transform_stats.apply_time_ns as f64 / denom;
+            let transform_avg_adv_time_per_anim_ns =
+                result.transform_stats.advance_time_ns as f64 / denom_per_anim;
+            let transform_avg_sample_time_per_anim_ns =
+                result.transform_stats.sample_time_ns as f64 / denom_per_anim;
+            let transform_avg_apply_time_per_anim_ns =
+                result.transform_stats.apply_time_ns as f64 / denom_per_anim;
+            let transform_avg_segment_cross_per_anim =
+                result.transform_stats.segment_crosses as f64 / denom_per_anim;
             println!(
                 "[animation_bench][{label}]      anim_stats avg/step -> sprite(fast={:.2} event={:.2} plain={:.2}) \
-                 transform(adv={:.2} zero={:.2} skipped={:.2} loop_resume={:.2} zero_duration={:.2} fast={:.2} slow={:.2})",
+                 transform(adv={:.2} zero={:.2} skipped={:.2} loop_resume={:.2} zero_duration={:.2} fast={:.2} slow={:.2} segment={:.2})",
                 sprite_avg_fast,
                 sprite_avg_event,
                 sprite_avg_plain,
@@ -188,7 +201,19 @@ where
                 transform_avg_loop,
                 transform_avg_zero_duration,
                 transform_avg_fast_path,
-                transform_avg_slow_path
+                transform_avg_slow_path,
+                transform_avg_segment_cross
+            );
+            println!(
+                "[animation_bench][{label}]      transform time avg -> advance={:.1} ns sample={:.1} ns apply={:.1} ns \
+                 | per anim -> advance={:.3} ns sample={:.3} ns apply={:.3} ns segment={:.3}",
+                transform_avg_adv_time_ns,
+                transform_avg_sample_time_ns,
+                transform_avg_apply_time_ns,
+                transform_avg_adv_time_per_anim_ns,
+                transform_avg_sample_time_per_anim_ns,
+                transform_avg_apply_time_per_anim_ns,
+                transform_avg_segment_cross_per_anim
             );
         }
         results.push(result);
@@ -247,6 +272,10 @@ where
             transform_totals.zero_duration_clips += transform_stats.zero_duration_clips;
             transform_totals.fast_path_clips += transform_stats.fast_path_clips;
             transform_totals.slow_path_clips += transform_stats.slow_path_clips;
+            transform_totals.segment_crosses += transform_stats.segment_crosses;
+            transform_totals.advance_time_ns += transform_stats.advance_time_ns;
+            transform_totals.sample_time_ns += transform_stats.sample_time_ns;
+            transform_totals.apply_time_ns += transform_stats.apply_time_ns;
         }
         black_box(&world);
     }
@@ -350,12 +379,24 @@ fn seed_sprite_animators(world: &mut EcsWorld, count: usize, randomize_phase: bo
     let atlas_key = Arc::from("bench");
     let frame_durations: Arc<[f32]> =
         Arc::from(frame_template.iter().map(|frame| frame.duration).collect::<Vec<_>>());
+    let frame_offsets: Arc<[f32]> = {
+        let mut offsets = Vec::with_capacity(frame_template.len());
+        let mut accumulated = 0.0_f32;
+        for frame in frame_template.iter() {
+            offsets.push(accumulated);
+            accumulated += frame.duration;
+        }
+        Arc::from(offsets.into_boxed_slice())
+    };
+    let total_duration: f32 = frame_durations.iter().copied().sum();
 
     for index in 0..count {
         let mut animation = SpriteAnimation::new(
             Arc::clone(&timeline_name),
             Arc::clone(&frame_template),
             Arc::clone(&frame_durations),
+            Arc::clone(&frame_offsets),
+            total_duration,
             SpriteAnimationLoopMode::Loop,
         );
 
@@ -484,23 +525,26 @@ fn bench_transform_clip() -> Arc<AnimationClip> {
         ]
         .into_boxed_slice(),
     );
-    let (translation_delta, translation_durations, translation_inv) =
+    let (translation_delta, translation_offsets, translation_durations, translation_inv) =
         build_segment_cache_from_keys(translation_keys.as_ref(), |window| window[1].value - window[0].value);
-    let (rotation_delta, rotation_durations, rotation_inv) =
+    let (rotation_delta, rotation_offsets, rotation_durations, rotation_inv) =
         build_segment_cache_from_keys(rotation_keys.as_ref(), |window| window[1].value - window[0].value);
-    let (scale_delta, scale_durations, scale_inv) =
+    let (scale_delta, scale_offsets, scale_durations, scale_inv) =
         build_segment_cache_from_keys(scale_keys.as_ref(), |window| window[1].value - window[0].value);
-    let (tint_delta, tint_durations, tint_inv) =
+    let (tint_delta, tint_offsets, tint_durations, tint_inv) =
         build_segment_cache_from_keys(tint_keys.as_ref(), |window| window[1].value - window[0].value);
 
     Arc::new(AnimationClip {
         name: Arc::from("bench_transform"),
         duration: 0.5,
+        duration_inv: 2.0,
         translation: Some(ClipVec2Track {
             interpolation: ClipInterpolation::Linear,
             keyframes: translation_keys,
             duration: 0.5,
+            duration_inv: 2.0,
             segment_deltas: translation_delta,
+            segment_offsets: translation_offsets,
             segment_durations: translation_durations,
             segment_inv_durations: translation_inv,
         }),
@@ -508,7 +552,9 @@ fn bench_transform_clip() -> Arc<AnimationClip> {
             interpolation: ClipInterpolation::Linear,
             keyframes: rotation_keys,
             duration: 0.5,
+            duration_inv: 2.0,
             segment_deltas: rotation_delta,
+            segment_offsets: rotation_offsets,
             segment_durations: rotation_durations,
             segment_inv_durations: rotation_inv,
         }),
@@ -516,7 +562,9 @@ fn bench_transform_clip() -> Arc<AnimationClip> {
             interpolation: ClipInterpolation::Step,
             keyframes: scale_keys,
             duration: 0.5,
+            duration_inv: 2.0,
             segment_deltas: scale_delta,
+            segment_offsets: scale_offsets,
             segment_durations: scale_durations,
             segment_inv_durations: scale_inv,
         }),
@@ -524,7 +572,9 @@ fn bench_transform_clip() -> Arc<AnimationClip> {
             interpolation: ClipInterpolation::Linear,
             keyframes: tint_keys,
             duration: 0.5,
+            duration_inv: 2.0,
             segment_deltas: tint_delta,
+            segment_offsets: tint_offsets,
             segment_durations: tint_durations,
             segment_inv_durations: tint_inv,
         }),
@@ -536,18 +586,20 @@ fn bench_transform_clip() -> Arc<AnimationClip> {
 fn build_segment_cache_from_keys<T, F>(
     frames: &[ClipKeyframe<T>],
     mut delta_fn: F,
-) -> (Arc<[T]>, Arc<[f32]>, Arc<[f32]>)
+) -> (Arc<[T]>, Arc<[f32]>, Arc<[f32]>, Arc<[f32]>)
 where
     T: Clone,
     F: FnMut(&[ClipKeyframe<T>]) -> T,
 {
     if frames.len() < 2 {
-        return (Arc::from([]), Arc::from([]), Arc::from([]));
+        return (Arc::from([]), Arc::from([]), Arc::from([]), Arc::from([]));
     }
     let mut deltas = Vec::with_capacity(frames.len() - 1);
+    let mut offsets = Vec::with_capacity(frames.len() - 1);
     let mut durations = Vec::with_capacity(frames.len() - 1);
     let mut inv = Vec::with_capacity(frames.len() - 1);
     for window in frames.windows(2) {
+        offsets.push(window[0].time);
         let span = (window[1].time - window[0].time).max(std::f32::EPSILON);
         durations.push(span);
         inv.push(1.0 / span);
@@ -555,6 +607,7 @@ where
     }
     (
         Arc::from(deltas.into_boxed_slice()),
+        Arc::from(offsets.into_boxed_slice()),
         Arc::from(durations.into_boxed_slice()),
         Arc::from(inv.into_boxed_slice()),
     )
@@ -697,13 +750,14 @@ fn write_csv(
     }
 
     let mut file = File::create(&path)?;
+    #[cfg_attr(not(feature = "anim_stats"), allow(unused_mut))]
     let mut header = String::from(
         "animators,steps,samples,dt,mean_step_ms,min_step_ms,max_step_ms,mean_ns_per_animator_step,total_elapsed_ms,budget_ms,meets_budget",
     );
     #[cfg(feature = "anim_stats")]
     {
         header.push_str(
-            ",sprite_fast_loop_avg,sprite_event_avg,sprite_plain_avg,transform_advance_avg,transform_zero_delta_avg,transform_skipped_avg,transform_loop_resume_avg,transform_zero_duration_avg,transform_fast_path_avg,transform_slow_path_avg",
+            ",sprite_fast_loop_avg,sprite_event_avg,sprite_plain_avg,transform_advance_avg,transform_zero_delta_avg,transform_skipped_avg,transform_loop_resume_avg,transform_zero_duration_avg,transform_fast_path_avg,transform_slow_path_avg,transform_segment_cross_avg,transform_advance_time_avg_ns,transform_sample_time_avg_ns,transform_apply_time_avg_ns,transform_advance_time_avg_per_anim_ns,transform_sample_time_avg_per_anim_ns,transform_apply_time_avg_per_anim_ns,transform_segment_cross_avg_per_anim",
         );
     }
     writeln!(file, "{header}")?;
@@ -714,10 +768,14 @@ fn write_csv(
         #[cfg(feature = "anim_stats")]
         {
             let denom = (result.steps as f64) * (result.samples as f64).max(1.0);
+            let denom_per_anim = denom * (result.animators.max(1) as f64);
+            let transform_segment_cross_avg = result.transform_stats.segment_crosses as f64 / denom;
+            let transform_segment_cross_avg_per_anim =
+                result.transform_stats.segment_crosses as f64 / denom_per_anim;
             writeln!(
                 file,
                 "{},{},{},{:.6},{:.3},{:.3},{:.3},{:.1},{:.3},{},{}\
-,{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4}",
+,{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.6},{:.6},{:.6},{:.6}",
                 result.animators,
                 result.steps,
                 result.samples,
@@ -738,7 +796,15 @@ fn write_csv(
                 result.transform_stats.looped_resume_clips as f64 / denom,
                 result.transform_stats.zero_duration_clips as f64 / denom,
                 result.transform_stats.fast_path_clips as f64 / denom,
-                result.transform_stats.slow_path_clips as f64 / denom
+                result.transform_stats.slow_path_clips as f64 / denom,
+                transform_segment_cross_avg,
+                result.transform_stats.advance_time_ns as f64 / denom,
+                result.transform_stats.sample_time_ns as f64 / denom,
+                result.transform_stats.apply_time_ns as f64 / denom,
+                result.transform_stats.advance_time_ns as f64 / denom_per_anim,
+                result.transform_stats.sample_time_ns as f64 / denom_per_anim,
+                result.transform_stats.apply_time_ns as f64 / denom_per_anim,
+                transform_segment_cross_avg_per_anim
             )?;
         }
         #[cfg(not(feature = "anim_stats"))]

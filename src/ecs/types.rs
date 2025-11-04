@@ -2,6 +2,8 @@ use crate::assets::{
     skeletal::{SkeletalClip, SkeletonAsset},
     AnimationClip, ClipInterpolation, ClipKeyframe, ClipScalarTrack, ClipVec2Track, ClipVec4Track,
 };
+#[cfg(feature = "anim_stats")]
+use crate::ecs::systems::record_transform_segment_crosses;
 use crate::scene::{MeshLightingData, SceneEntityId};
 use bevy_ecs::prelude::*;
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
@@ -78,6 +80,9 @@ pub struct SpriteAnimation {
     pub timeline: Arc<str>,
     pub frames: Arc<[SpriteAnimationFrame]>,
     pub frame_durations: Arc<[f32]>,
+    pub frame_offsets: Arc<[f32]>,
+    pub total_duration: f32,
+    pub total_duration_inv: f32,
     pub current_duration: f32,
     pub frame_index: usize,
     pub elapsed_in_frame: f32,
@@ -100,8 +105,11 @@ impl SpriteAnimation {
         timeline: Arc<str>,
         frames: Arc<[SpriteAnimationFrame]>,
         frame_durations: Arc<[f32]>,
+        frame_offsets: Arc<[f32]>,
+        total_duration: f32,
         mode: SpriteAnimationLoopMode,
     ) -> Self {
+        let duration_inv = if total_duration > 0.0 { 1.0 / total_duration } else { 0.0 };
         let has_events = frames.iter().any(|frame| !frame.events.is_empty());
         let fast_loop = !has_events && matches!(mode, SpriteAnimationLoopMode::Loop);
         let current_duration = frame_durations.first().copied().unwrap_or(0.0);
@@ -109,6 +117,9 @@ impl SpriteAnimation {
             timeline,
             frames,
             frame_durations,
+            frame_offsets,
+            total_duration,
+            total_duration_inv: duration_inv,
             current_duration,
             frame_index: 0,
             elapsed_in_frame: 0.0,
@@ -172,7 +183,7 @@ impl SpriteAnimation {
     }
 
     pub fn total_duration(&self) -> f32 {
-        self.frame_durations.iter().copied().sum()
+        self.total_duration
     }
 
     pub fn mark_playback_rate_dirty(&mut self) {
@@ -242,6 +253,10 @@ pub struct ClipInstance {
     pub rotation_segment_time: f32,
     pub scale_segment_time: f32,
     pub tint_segment_time: f32,
+    pub translation_segment_span: f32,
+    pub rotation_segment_span: f32,
+    pub scale_segment_span: f32,
+    pub tint_segment_span: f32,
 }
 
 impl ClipInstance {
@@ -271,6 +286,10 @@ impl ClipInstance {
             rotation_segment_time: 0.0,
             scale_segment_time: 0.0,
             tint_segment_time: 0.0,
+            translation_segment_span: 0.0,
+            rotation_segment_span: 0.0,
+            scale_segment_span: 0.0,
+            tint_segment_span: 0.0,
         };
         instance.rebuild_track_cursors();
         instance
@@ -348,13 +367,19 @@ impl ClipInstance {
         }
 
         if self.looped {
-            let duration_eps = duration.max(std::f32::EPSILON);
             let mut next = self.time + delta;
-            if !next.is_finite() {
+            if next.is_finite() {
+                if next >= 0.0 && next < (duration - CLIP_TIME_EPSILON) {
+                    self.time = next;
+                    self.advance_track_states(delta);
+                    return delta;
+                }
+            } else {
                 next = 0.0;
             }
-            let mut wrapped = next.rem_euclid(duration_eps);
-            if wrapped <= CLIP_TIME_EPSILON || (duration_eps - wrapped) <= CLIP_TIME_EPSILON {
+            let duration_inv = self.clip.duration_inv;
+            let mut wrapped = wrap_time_looped(next, duration, duration_inv);
+            if wrapped <= CLIP_TIME_EPSILON || (duration - wrapped) <= CLIP_TIME_EPSILON {
                 wrapped = 0.0;
             }
             self.time = wrapped;
@@ -386,7 +411,7 @@ impl ClipInstance {
                 } else if time >= 0.0 && time < duration {
                     self.time = time;
                 } else {
-                    let wrapped = time.rem_euclid(duration.max(std::f32::EPSILON));
+                    let wrapped = wrap_time_looped(time, duration, self.clip.duration_inv);
                     self.time = wrapped;
                 }
             } else {
@@ -405,7 +430,25 @@ impl ClipInstance {
 
     #[inline(always)]
     pub fn sample_cached(&mut self) -> ClipSample {
-        self.sample_with_masks(None, None)
+        self.sample_all_tracks()
+    }
+
+    #[inline(always)]
+    fn sample_all_tracks(&mut self) -> ClipSample {
+        let translation = self.clip.translation.as_ref().and_then(|track| {
+            sample_vec2_track_from_state(track, self.translation_cursor, self.translation_segment_time)
+        });
+        let rotation = self.clip.rotation.as_ref().and_then(|track| {
+            sample_scalar_track_from_state(track, self.rotation_cursor, self.rotation_segment_time)
+        });
+        let scale = self.clip.scale.as_ref().and_then(|track| {
+            sample_vec2_track_from_state(track, self.scale_cursor, self.scale_segment_time)
+        });
+        let tint =
+            self.clip.tint.as_ref().and_then(|track| {
+                sample_vec4_track_from_state(track, self.tint_cursor, self.tint_segment_time)
+            });
+        ClipSample { translation, rotation, scale, tint }
     }
 
     #[inline(always)]
@@ -516,6 +559,10 @@ impl ClipInstance {
         self.rotation_segment_time = 0.0;
         self.scale_segment_time = 0.0;
         self.tint_segment_time = 0.0;
+        self.translation_segment_span = 0.0;
+        self.rotation_segment_span = 0.0;
+        self.scale_segment_span = 0.0;
+        self.tint_segment_span = 0.0;
     }
 
     fn rebuild_track_cursors(&mut self) {
@@ -524,36 +571,48 @@ impl ClipInstance {
             let (cursor, offset) = rebuild_vec2_cursor(track, time, self.looped);
             self.translation_cursor = cursor;
             self.translation_segment_time = offset;
+            self.translation_segment_span =
+                track.segment_durations.get(cursor).copied().unwrap_or(0.0).max(0.0);
         } else {
             self.translation_cursor = 0;
             self.translation_segment_time = 0.0;
+            self.translation_segment_span = 0.0;
         }
 
         if let Some(track) = self.clip.rotation.as_ref() {
             let (cursor, offset) = rebuild_scalar_cursor(track, time, self.looped);
             self.rotation_cursor = cursor;
             self.rotation_segment_time = offset;
+            self.rotation_segment_span =
+                track.segment_durations.get(cursor).copied().unwrap_or(0.0).max(0.0);
         } else {
             self.rotation_cursor = 0;
             self.rotation_segment_time = 0.0;
+            self.rotation_segment_span = 0.0;
         }
 
         if let Some(track) = self.clip.scale.as_ref() {
             let (cursor, offset) = rebuild_vec2_cursor(track, time, self.looped);
             self.scale_cursor = cursor;
             self.scale_segment_time = offset;
+            self.scale_segment_span =
+                track.segment_durations.get(cursor).copied().unwrap_or(0.0).max(0.0);
         } else {
             self.scale_cursor = 0;
             self.scale_segment_time = 0.0;
+            self.scale_segment_span = 0.0;
         }
 
         if let Some(track) = self.clip.tint.as_ref() {
             let (cursor, offset) = rebuild_vec4_cursor(track, time, self.looped);
             self.tint_cursor = cursor;
             self.tint_segment_time = offset;
+            self.tint_segment_span =
+                track.segment_durations.get(cursor).copied().unwrap_or(0.0).max(0.0);
         } else {
             self.tint_cursor = 0;
             self.tint_segment_time = 0.0;
+            self.tint_segment_span = 0.0;
         }
     }
 
@@ -566,10 +625,12 @@ impl ClipInstance {
                 looped,
                 &mut self.translation_cursor,
                 &mut self.translation_segment_time,
+                &mut self.translation_segment_span,
             );
         } else {
             self.translation_cursor = 0;
             self.translation_segment_time = 0.0;
+            self.translation_segment_span = 0.0;
         }
 
         if let Some(track) = self.clip.rotation.as_ref() {
@@ -579,24 +640,42 @@ impl ClipInstance {
                 looped,
                 &mut self.rotation_cursor,
                 &mut self.rotation_segment_time,
+                &mut self.rotation_segment_span,
             );
         } else {
             self.rotation_cursor = 0;
             self.rotation_segment_time = 0.0;
+            self.rotation_segment_span = 0.0;
         }
 
         if let Some(track) = self.clip.scale.as_ref() {
-            advance_vec2_cursor(track, delta, looped, &mut self.scale_cursor, &mut self.scale_segment_time);
+            advance_vec2_cursor(
+                track,
+                delta,
+                looped,
+                &mut self.scale_cursor,
+                &mut self.scale_segment_time,
+                &mut self.scale_segment_span,
+            );
         } else {
             self.scale_cursor = 0;
             self.scale_segment_time = 0.0;
+            self.scale_segment_span = 0.0;
         }
 
         if let Some(track) = self.clip.tint.as_ref() {
-            advance_vec4_cursor(track, delta, looped, &mut self.tint_cursor, &mut self.tint_segment_time);
+            advance_vec4_cursor(
+                track,
+                delta,
+                looped,
+                &mut self.tint_cursor,
+                &mut self.tint_segment_time,
+                &mut self.tint_segment_span,
+            );
         } else {
             self.tint_cursor = 0;
             self.tint_segment_time = 0.0;
+            self.tint_segment_span = 0.0;
         }
     }
 }
@@ -637,7 +716,7 @@ fn sample_vec2_track(track: &ClipVec2Track, time: f32, looped: bool) -> Option<V
     if frames.is_empty() {
         return None;
     }
-    let sample_time = normalize_time(time, track.duration, looped);
+    let sample_time = normalize_time(time, track.duration, track.duration_inv, looped);
     Some(sample_keyframes(frames, track.interpolation, sample_time, |a, b, t| a + (b - a) * t))
 }
 
@@ -647,7 +726,7 @@ fn sample_scalar_track(track: &ClipScalarTrack, time: f32, looped: bool) -> Opti
     if frames.is_empty() {
         return None;
     }
-    let sample_time = normalize_time(time, track.duration, looped);
+    let sample_time = normalize_time(time, track.duration, track.duration_inv, looped);
     Some(sample_keyframes(frames, track.interpolation, sample_time, |a, b, t| a + (b - a) * t))
 }
 
@@ -657,7 +736,7 @@ fn sample_vec4_track(track: &ClipVec4Track, time: f32, looped: bool) -> Option<V
     if frames.is_empty() {
         return None;
     }
-    let sample_time = normalize_time(time, track.duration, looped);
+    let sample_time = normalize_time(time, track.duration, track.duration_inv, looped);
     Some(sample_keyframes(frames, track.interpolation, sample_time, |a, b, t| a + (b - a) * t))
 }
 
@@ -770,15 +849,15 @@ fn sample_vec4_track_from_state(track: &ClipVec4Track, cursor: usize, segment_ti
 }
 
 fn rebuild_vec2_cursor(track: &ClipVec2Track, clip_time: f32, looped: bool) -> (usize, f32) {
-    rebuild_cursor_impl(track.keyframes.as_ref(), track.duration, clip_time, looped)
+    rebuild_cursor_impl(track.keyframes.as_ref(), track.duration, track.duration_inv, clip_time, looped)
 }
 
 fn rebuild_scalar_cursor(track: &ClipScalarTrack, clip_time: f32, looped: bool) -> (usize, f32) {
-    rebuild_cursor_impl(track.keyframes.as_ref(), track.duration, clip_time, looped)
+    rebuild_cursor_impl(track.keyframes.as_ref(), track.duration, track.duration_inv, clip_time, looped)
 }
 
 fn rebuild_vec4_cursor(track: &ClipVec4Track, clip_time: f32, looped: bool) -> (usize, f32) {
-    rebuild_cursor_impl(track.keyframes.as_ref(), track.duration, clip_time, looped)
+    rebuild_cursor_impl(track.keyframes.as_ref(), track.duration, track.duration_inv, clip_time, looped)
 }
 
 fn advance_vec2_cursor(
@@ -787,6 +866,7 @@ fn advance_vec2_cursor(
     looped: bool,
     cursor: &mut usize,
     segment_time: &mut f32,
+    segment_span: &mut f32,
 ) {
     advance_cursor_impl(
         track.keyframes.as_ref(),
@@ -796,6 +876,7 @@ fn advance_vec2_cursor(
         looped,
         cursor,
         segment_time,
+        segment_span,
     );
 }
 
@@ -805,6 +886,7 @@ fn advance_scalar_cursor(
     looped: bool,
     cursor: &mut usize,
     segment_time: &mut f32,
+    segment_span: &mut f32,
 ) {
     advance_cursor_impl(
         track.keyframes.as_ref(),
@@ -814,6 +896,7 @@ fn advance_scalar_cursor(
         looped,
         cursor,
         segment_time,
+        segment_span,
     );
 }
 
@@ -823,6 +906,7 @@ fn advance_vec4_cursor(
     looped: bool,
     cursor: &mut usize,
     segment_time: &mut f32,
+    segment_span: &mut f32,
 ) {
     advance_cursor_impl(
         track.keyframes.as_ref(),
@@ -832,12 +916,14 @@ fn advance_vec4_cursor(
         looped,
         cursor,
         segment_time,
+        segment_span,
     );
 }
 
 fn rebuild_cursor_impl<T>(
     frames: &[ClipKeyframe<T>],
     duration: f32,
+    duration_inv: f32,
     clip_time: f32,
     looped: bool,
 ) -> (usize, f32) {
@@ -847,7 +933,7 @@ fn rebuild_cursor_impl<T>(
     if frames.len() == 1 {
         return (0, 0.0);
     }
-    let sample_time = normalize_time(clip_time, duration, looped);
+    let sample_time = normalize_time(clip_time, duration, duration_inv, looped);
     cursor_from_time(frames, sample_time)
 }
 
@@ -884,75 +970,162 @@ fn advance_cursor_impl<T>(
     looped: bool,
     cursor: &mut usize,
     segment_time: &mut f32,
+    segment_span: &mut f32,
 ) {
     let len = frames.len();
     if len <= 1 {
         *cursor = 0;
         *segment_time = 0.0;
-        return;
-    }
-    if delta <= 0.0 {
-        *cursor = (*cursor).min(len - 2);
-        let span = segment_durations.get(*cursor).copied().unwrap_or(0.0);
-        if *segment_time < 0.0 {
-            *segment_time = 0.0;
-        } else if *segment_time > span {
-            *segment_time = span;
-        }
+        *segment_span = 0.0;
         return;
     }
 
-    let mut index = (*cursor).min(len - 2);
-    let mut span = segment_durations.get(index).copied().unwrap_or(0.0);
-    let mut offset = (*segment_time).clamp(0.0, span);
+    let max_segment_index = len - 2;
+    if *cursor > max_segment_index {
+        *cursor = max_segment_index;
+    }
+
+    let mut index = *cursor;
+    let mut span = if *segment_span > 0.0 {
+        (*segment_span).max(0.0)
+    } else {
+        segment_durations.get(index).copied().unwrap_or(0.0).max(0.0)
+    };
+
+    if !span.is_finite() || span < 0.0 {
+        span = 0.0;
+    }
+
+    let mut offset = (*segment_time).max(0.0);
+    if span > 0.0 && offset > span {
+        offset = span;
+    } else if span <= 0.0 {
+        offset = 0.0;
+    }
+
+    if delta <= 0.0 {
+        *cursor = index;
+        *segment_time = offset;
+        *segment_span = span;
+        return;
+    }
 
     if looped && duration > 0.0 {
         let duration_eps = duration.max(std::f32::EPSILON);
         if delta >= duration_eps {
             delta = delta.rem_euclid(duration_eps);
             if delta == 0.0 {
-                // Full loop brings us back to current position.
                 *cursor = index;
-                *segment_time = offset.min(span);
+                *segment_time = offset;
+                *segment_span = span;
                 return;
             }
         }
     }
 
+    let mut remaining = (span - offset).max(0.0);
+    if delta <= remaining || span <= 0.0 {
+        if span > 0.0 {
+            offset = (offset + delta).min(span);
+        } else {
+            offset = 0.0;
+        }
+        *cursor = index;
+        *segment_time = offset;
+        *segment_span = span;
+        return;
+    }
+
+    delta -= remaining;
+    index += 1;
+
+    #[cfg(feature = "anim_stats")]
+    let mut segment_crosses: u32 = 1;
+
     loop {
-        let remaining = (span - offset).max(0.0);
-        if delta < remaining || span <= 0.0 {
-            offset += delta;
+        if index >= len - 1 {
+            if looped && duration > 0.0 {
+                index = 0;
+                span = segment_durations.get(index).copied().unwrap_or(0.0).max(0.0);
+                remaining = span.max(0.0);
+            } else {
+                index = max_segment_index;
+                span = segment_durations.get(index).copied().unwrap_or(0.0).max(0.0);
+                offset = span;
+                break;
+            }
+        } else {
+            span = segment_durations.get(index).copied().unwrap_or(0.0).max(0.0);
+            remaining = span.max(0.0);
+        }
+
+        if delta <= remaining || span <= 0.0 {
+            if span > 0.0 {
+                offset = delta.min(span);
+            } else {
+                offset = 0.0;
+            }
             break;
         }
 
         delta -= remaining;
-        offset = 0.0;
         index += 1;
-
-        if index >= len - 1 {
-            if looped && duration > 0.0 {
-                index = 0;
-                span = segment_durations.get(index).copied().unwrap_or(0.0);
-                continue;
-            } else {
-                index = len - 2;
-                offset = segment_durations.get(index).copied().unwrap_or(0.0);
-                break;
-            }
+        #[cfg(feature = "anim_stats")]
+        {
+            segment_crosses += 1;
         }
-
-        span = segment_durations.get(index).copied().unwrap_or(0.0);
     }
 
     *cursor = index;
-    *segment_time = offset.min(span);
+    *segment_time = if span > 0.0 { offset.min(span).max(0.0) } else { 0.0 };
+    *segment_span = span;
+
+    #[cfg(feature = "anim_stats")]
+    {
+        if segment_crosses > 0 {
+            record_transform_segment_crosses(segment_crosses as u64);
+        }
+    }
 }
 
 const CLIP_TIME_EPSILON: f32 = 1e-5;
 
 #[inline(always)]
-fn normalize_time(time: f32, duration: f32, looped: bool) -> f32 {
+fn wrap_time_looped(time: f32, duration: f32, duration_inv: f32) -> f32 {
+    if !time.is_finite() || duration <= 0.0 {
+        return 0.0;
+    }
+    let duration_eps = duration.max(std::f32::EPSILON);
+    let mut wrapped = if duration_inv > 0.0 {
+        let scaled = time * duration_inv;
+        if scaled.is_finite() {
+            let loops = scaled.floor();
+            let remainder = time - loops * duration;
+            if remainder.is_finite() {
+                remainder
+            } else {
+                time.rem_euclid(duration_eps)
+            }
+        } else {
+            time.rem_euclid(duration_eps)
+        }
+    } else {
+        time.rem_euclid(duration_eps)
+    };
+    if !wrapped.is_finite() {
+        wrapped = 0.0;
+    }
+    if wrapped < 0.0 {
+        wrapped += duration_eps;
+    }
+    if wrapped >= duration_eps {
+        wrapped -= duration_eps;
+    }
+    wrapped
+}
+
+#[inline(always)]
+fn normalize_time(time: f32, duration: f32, duration_inv: f32, looped: bool) -> f32 {
     if duration <= 0.0 {
         return 0.0;
     }
@@ -963,7 +1136,7 @@ fn normalize_time(time: f32, duration: f32, looped: bool) -> f32 {
         if time >= 0.0 && time < duration {
             return time;
         }
-        let wrapped = time.rem_euclid(duration.max(std::f32::EPSILON));
+        let wrapped = wrap_time_looped(time, duration, duration_inv);
         if wrapped <= CLIP_TIME_EPSILON && time > 0.0 && (time - duration).abs() <= CLIP_TIME_EPSILON {
             duration
         } else {

@@ -85,6 +85,10 @@ fn animation_profile_snapshot() {
                     - prev_transform_stats.zero_duration_clips,
                 fast_path_clips: current_transform.fast_path_clips - prev_transform_stats.fast_path_clips,
                 slow_path_clips: current_transform.slow_path_clips - prev_transform_stats.slow_path_clips,
+                segment_crosses: current_transform.segment_crosses - prev_transform_stats.segment_crosses,
+                advance_time_ns: current_transform.advance_time_ns - prev_transform_stats.advance_time_ns,
+                sample_time_ns: current_transform.sample_time_ns - prev_transform_stats.sample_time_ns,
+                apply_time_ns: current_transform.apply_time_ns - prev_transform_stats.apply_time_ns,
             });
             prev_transform_stats = current_transform;
         }
@@ -158,6 +162,12 @@ fn animation_profile_snapshot() {
                 total_transform.skipped_clips += stats.skipped_clips;
                 total_transform.looped_resume_clips += stats.looped_resume_clips;
                 total_transform.zero_duration_clips += stats.zero_duration_clips;
+                total_transform.fast_path_clips += stats.fast_path_clips;
+                total_transform.slow_path_clips += stats.slow_path_clips;
+                total_transform.segment_crosses += stats.segment_crosses;
+                total_transform.advance_time_ns += stats.advance_time_ns;
+                total_transform.sample_time_ns += stats.sample_time_ns;
+                total_transform.apply_time_ns += stats.apply_time_ns;
             }
 
             println!(
@@ -165,12 +175,20 @@ fn animation_profile_snapshot() {
                 total_sprite.fast_loop_calls, total_sprite.event_calls, total_sprite.plain_calls
             );
             println!(
-                "[animation_profile] anim_stats transform totals: advance={} zero_delta={} skipped={} loop_resume={} zero_duration={}",
+                "[animation_profile] anim_stats transform totals: advance={} zero_delta={} skipped={} loop_resume={} zero_duration={} fast_path={} slow_path={}",
                 total_transform.advance_calls,
                 total_transform.zero_delta_calls,
                 total_transform.skipped_clips,
                 total_transform.looped_resume_clips,
-                total_transform.zero_duration_clips
+                total_transform.zero_duration_clips,
+                total_transform.fast_path_clips,
+                total_transform.slow_path_clips
+            );
+            println!(
+                "[animation_profile] anim_stats transform time totals: advance={:.3} ms sample={:.3} ms apply={:.3} ms",
+                total_transform.advance_time_ns as f64 / 1_000_000.0,
+                total_transform.sample_time_ns as f64 / 1_000_000.0,
+                total_transform.apply_time_ns as f64 / 1_000_000.0
             );
 
             println!("[animation_profile] anim_stats top step mix:");
@@ -178,7 +196,7 @@ fn animation_profile_snapshot() {
                 let sprite_step = sprite_stats_per_step.get(index).copied().unwrap_or_default();
                 let transform_step = transform_stats_per_step.get(index).copied().unwrap_or_default();
                 println!(
-                    "[animation_profile]   step {:>4} -> {:>8.4} ms | sprite(fast={} event={} plain={}) transform(adv={} zero={} skipped={} loop_resume={} zero_duration={})",
+                    "[animation_profile]   step {:>4} -> {:>8.4} ms | sprite(fast={} event={} plain={}) transform(adv={} zero={} skipped={} loop_resume={} zero_duration={} fast={} slow={}) time_ns(adv={} sample={} apply={})",
                     index,
                     value,
                     sprite_step.fast_loop_calls,
@@ -188,7 +206,12 @@ fn animation_profile_snapshot() {
                     transform_step.zero_delta_calls,
                     transform_step.skipped_clips,
                     transform_step.looped_resume_clips,
-                    transform_step.zero_duration_clips
+                    transform_step.zero_duration_clips,
+                    transform_step.fast_path_clips,
+                    transform_step.slow_path_clips,
+                    transform_step.advance_time_ns,
+                    transform_step.sample_time_ns,
+                    transform_step.apply_time_ns
                 );
             }
         }
@@ -225,6 +248,16 @@ fn seed_sprite_animators(world: &mut EcsWorld, count: usize, frame_duration: f32
     ]);
     let timeline_name = Arc::from("bench_cycle");
     let frame_durations: Arc<[f32]> = Arc::from(vec![frame_duration; frame_template.len()]);
+    let frame_offsets: Arc<[f32]> = {
+        let mut offsets = Vec::with_capacity(frame_template.len());
+        let mut accumulated = 0.0_f32;
+        for _ in 0..frame_template.len() {
+            offsets.push(accumulated);
+            accumulated += frame_duration;
+        }
+        Arc::from(offsets.into_boxed_slice())
+    };
+    let total_duration = frame_duration * frame_template.len() as f32;
 
     for _ in 0..count {
         world.world.spawn((
@@ -238,6 +271,8 @@ fn seed_sprite_animators(world: &mut EcsWorld, count: usize, frame_duration: f32
                 Arc::clone(&timeline_name),
                 Arc::clone(&frame_template),
                 Arc::clone(&frame_durations),
+                Arc::clone(&frame_offsets),
+                total_duration,
                 SpriteAnimationLoopMode::Loop,
             ),
         ));

@@ -40,14 +40,16 @@ fn build_vec2_track(raw: ClipVec2TrackFile) -> Result<(ClipVec2Track, f32)> {
         }
         Ok(ClipKeyframe { time: kf.time, value })
     })?;
-    let (segment_deltas, segment_durations, segment_inv_durations) =
+    let (segment_deltas, segment_offsets, segment_durations, segment_inv_durations) =
         build_segment_cache_vec2(keyframes.as_ref());
     Ok((
         ClipVec2Track {
             interpolation,
             keyframes,
             duration,
+            duration_inv: if duration > 0.0 { 1.0 / duration } else { 0.0 },
             segment_deltas,
+            segment_offsets,
             segment_durations,
             segment_inv_durations,
         },
@@ -66,14 +68,16 @@ fn build_scalar_track(raw: ClipScalarTrackFile) -> Result<(ClipScalarTrack, f32)
         }
         Ok(ClipKeyframe { time: kf.time, value: kf.value })
     })?;
-    let (segment_deltas, segment_durations, segment_inv_durations) =
+    let (segment_deltas, segment_offsets, segment_durations, segment_inv_durations) =
         build_segment_cache_scalar(keyframes.as_ref());
     Ok((
         ClipScalarTrack {
             interpolation,
             keyframes,
             duration,
+            duration_inv: if duration > 0.0 { 1.0 / duration } else { 0.0 },
             segment_deltas,
+            segment_offsets,
             segment_durations,
             segment_inv_durations,
         },
@@ -93,14 +97,16 @@ fn build_vec4_track(raw: ClipVec4TrackFile) -> Result<(ClipVec4Track, f32)> {
         }
         Ok(ClipKeyframe { time: kf.time, value })
     })?;
-    let (segment_deltas, segment_durations, segment_inv_durations) =
+    let (segment_deltas, segment_offsets, segment_durations, segment_inv_durations) =
         build_segment_cache_vec4(keyframes.as_ref());
     Ok((
         ClipVec4Track {
             interpolation,
             keyframes,
             duration,
+            duration_inv: if duration > 0.0 { 1.0 / duration } else { 0.0 },
             segment_deltas,
+            segment_offsets,
             segment_durations,
             segment_inv_durations,
         },
@@ -108,67 +114,82 @@ fn build_vec4_track(raw: ClipVec4TrackFile) -> Result<(ClipVec4Track, f32)> {
     ))
 }
 
-fn build_segment_cache_vec2(frames: &[ClipKeyframe<Vec2>]) -> (Arc<[Vec2]>, Arc<[f32]>, Arc<[f32]>) {
+fn build_segment_cache_vec2(
+    frames: &[ClipKeyframe<Vec2>],
+) -> (Arc<[Vec2]>, Arc<[f32]>, Arc<[f32]>, Arc<[f32]>) {
     if frames.len() < 2 {
-        return (Arc::from([]), Arc::from([]), Arc::from([]));
+        return (Arc::from([]), Arc::from([]), Arc::from([]), Arc::from([]));
     }
     let mut deltas = Vec::with_capacity(frames.len() - 1);
+    let mut offsets = Vec::with_capacity(frames.len() - 1);
     let mut durations = Vec::with_capacity(frames.len() - 1);
     let mut inv = Vec::with_capacity(frames.len() - 1);
     for window in frames.windows(2) {
         let start = &window[0];
         let end = &window[1];
         let span = (end.time - start.time).max(std::f32::EPSILON);
+        offsets.push(start.time);
         durations.push(span);
         inv.push(1.0 / span);
         deltas.push(end.value - start.value);
     }
     (
         Arc::from(deltas.into_boxed_slice()),
+        Arc::from(offsets.into_boxed_slice()),
         Arc::from(durations.into_boxed_slice()),
         Arc::from(inv.into_boxed_slice()),
     )
 }
 
-fn build_segment_cache_scalar(frames: &[ClipKeyframe<f32>]) -> (Arc<[f32]>, Arc<[f32]>, Arc<[f32]>) {
+fn build_segment_cache_scalar(
+    frames: &[ClipKeyframe<f32>],
+) -> (Arc<[f32]>, Arc<[f32]>, Arc<[f32]>, Arc<[f32]>) {
     if frames.len() < 2 {
-        return (Arc::from([]), Arc::from([]), Arc::from([]));
+        return (Arc::from([]), Arc::from([]), Arc::from([]), Arc::from([]));
     }
     let mut deltas = Vec::with_capacity(frames.len() - 1);
+    let mut offsets = Vec::with_capacity(frames.len() - 1);
     let mut durations = Vec::with_capacity(frames.len() - 1);
     let mut inv = Vec::with_capacity(frames.len() - 1);
     for window in frames.windows(2) {
         let start = &window[0];
         let end = &window[1];
         let span = (end.time - start.time).max(std::f32::EPSILON);
+        offsets.push(start.time);
         durations.push(span);
         inv.push(1.0 / span);
         deltas.push(end.value - start.value);
     }
     (
         Arc::from(deltas.into_boxed_slice()),
+        Arc::from(offsets.into_boxed_slice()),
         Arc::from(durations.into_boxed_slice()),
         Arc::from(inv.into_boxed_slice()),
     )
 }
 
-fn build_segment_cache_vec4(frames: &[ClipKeyframe<Vec4>]) -> (Arc<[Vec4]>, Arc<[f32]>, Arc<[f32]>) {
+fn build_segment_cache_vec4(
+    frames: &[ClipKeyframe<Vec4>],
+) -> (Arc<[Vec4]>, Arc<[f32]>, Arc<[f32]>, Arc<[f32]>) {
     if frames.len() < 2 {
-        return (Arc::from([]), Arc::from([]), Arc::from([]));
+        return (Arc::from([]), Arc::from([]), Arc::from([]), Arc::from([]));
     }
     let mut deltas = Vec::with_capacity(frames.len() - 1);
+    let mut offsets = Vec::with_capacity(frames.len() - 1);
     let mut durations = Vec::with_capacity(frames.len() - 1);
     let mut inv = Vec::with_capacity(frames.len() - 1);
     for window in frames.windows(2) {
         let start = &window[0];
         let end = &window[1];
         let span = (end.time - start.time).max(std::f32::EPSILON);
+        offsets.push(start.time);
         durations.push(span);
         inv.push(1.0 / span);
         deltas.push(end.value - start.value);
     }
     (
         Arc::from(deltas.into_boxed_slice()),
+        Arc::from(offsets.into_boxed_slice()),
         Arc::from(durations.into_boxed_slice()),
         Arc::from(inv.into_boxed_slice()),
     )
@@ -243,12 +264,16 @@ pub struct SpriteTimeline {
     pub loop_mode: SpriteAnimationLoopMode,
     pub frames: Arc<[SpriteAnimationFrame]>,
     pub durations: Arc<[f32]>,
+    pub frame_offsets: Arc<[f32]>,
+    pub total_duration: f32,
+    pub total_duration_inv: f32,
 }
 
 #[derive(Clone)]
 pub struct AnimationClip {
     pub name: Arc<str>,
     pub duration: f32,
+    pub duration_inv: f32,
     pub translation: Option<ClipVec2Track>,
     pub rotation: Option<ClipScalarTrack>,
     pub scale: Option<ClipVec2Track>,
@@ -262,7 +287,9 @@ pub struct ClipVec2Track {
     pub interpolation: ClipInterpolation,
     pub keyframes: Arc<[ClipKeyframe<Vec2>]>,
     pub duration: f32,
+    pub duration_inv: f32,
     pub segment_deltas: Arc<[Vec2]>,
+    pub segment_offsets: Arc<[f32]>,
     pub segment_durations: Arc<[f32]>,
     pub segment_inv_durations: Arc<[f32]>,
 }
@@ -272,7 +299,9 @@ pub struct ClipScalarTrack {
     pub interpolation: ClipInterpolation,
     pub keyframes: Arc<[ClipKeyframe<f32>]>,
     pub duration: f32,
+    pub duration_inv: f32,
     pub segment_deltas: Arc<[f32]>,
+    pub segment_offsets: Arc<[f32]>,
     pub segment_durations: Arc<[f32]>,
     pub segment_inv_durations: Arc<[f32]>,
 }
@@ -282,7 +311,9 @@ pub struct ClipVec4Track {
     pub interpolation: ClipInterpolation,
     pub keyframes: Arc<[ClipKeyframe<Vec4>]>,
     pub duration: f32,
+    pub duration_inv: f32,
     pub segment_deltas: Arc<[Vec4]>,
+    pub segment_offsets: Arc<[f32]>,
     pub segment_durations: Arc<[f32]>,
     pub segment_inv_durations: Arc<[f32]>,
 }
@@ -504,10 +535,12 @@ impl AssetManager {
         for (timeline_key, mut data) in raw {
             let mut frames = Vec::new();
             let mut durations = Vec::new();
+            let mut offsets = Vec::new();
             let mut event_map: HashMap<usize, Vec<String>> = HashMap::new();
             for event in data.events.drain(..) {
                 event_map.entry(event.frame).or_default().push(event.name);
             }
+            let mut accumulated = 0.0_f32;
             for (frame_index, frame) in data.frames.into_iter().enumerate() {
                 let Some((region_key, region_info)) = regions.get_key_value(frame.region.as_str()) else {
                     eprintln!(
@@ -522,6 +555,7 @@ impl AssetManager {
                 let event_names = event_map.remove(&frame_index).unwrap_or_default();
                 let events: Vec<Arc<str>> =
                     event_names.into_iter().map(|name| Arc::<str>::from(name)).collect();
+                offsets.push(accumulated);
                 frames.push(SpriteAnimationFrame {
                     name: frame_name_arc,
                     region: Arc::clone(region_key),
@@ -531,6 +565,7 @@ impl AssetManager {
                     events: Arc::from(events),
                 });
                 durations.push(duration);
+                accumulated += duration;
             }
             if frames.is_empty() {
                 eprintln!(
@@ -562,6 +597,9 @@ impl AssetManager {
                     loop_mode: mode_enum,
                     frames: Arc::from(frames),
                     durations: Arc::from(durations),
+                    frame_offsets: Arc::from(offsets.into_boxed_slice()),
+                    total_duration: accumulated,
+                    total_duration_inv: if accumulated > 0.0 { 1.0 / accumulated } else { 0.0 },
                 },
             );
         }
@@ -618,6 +656,7 @@ impl AssetManager {
         let clip = AnimationClip {
             name: Arc::from(name),
             duration,
+            duration_inv: if duration > 0.0 { 1.0 / duration } else { 0.0 },
             translation,
             rotation,
             scale,
