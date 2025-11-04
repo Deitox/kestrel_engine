@@ -1,6 +1,6 @@
 use super::*;
 use crate::assets::AssetManager;
-use crate::ecs::systems::{initialize_animation_phase, AnimationTime, TimeDelta};
+use crate::ecs::systems::{initialize_animation_phase, AnimationPlan, AnimationTime, AnimationDelta, TimeDelta};
 #[cfg(feature = "anim_stats")]
 use crate::ecs::systems::record_transform_looped_resume;
 use crate::events::{EventBus, GameEvent};
@@ -42,6 +42,7 @@ impl EcsWorld {
         let mut world = World::new();
         world.insert_resource(TimeDelta(0.0));
         world.insert_resource(AnimationTime::default());
+        world.insert_resource(AnimationPlan::default());
         world.insert_resource(SpatialHash::new(0.25));
         world.insert_resource(SpatialQuadtree::new(6, 8));
         world.insert_resource(SpatialIndexConfig::default());
@@ -431,7 +432,16 @@ impl EcsWorld {
 
     pub fn update(&mut self, dt: f32) {
         self.world.resource_mut::<TimeDelta>().0 = dt;
+        let plan = {
+            let mut animation_time = self.world.resource_mut::<AnimationTime>();
+            animation_time.consume(dt)
+        };
+        {
+            let mut animation_plan = self.world.resource_mut::<AnimationPlan>();
+            animation_plan.delta = plan;
+        }
         self.schedule_var.run(&mut self.world);
+        self.world.resource_mut::<AnimationPlan>().delta = AnimationDelta::None;
     }
     pub fn fixed_step(&mut self, dt: f32) {
         self.world.resource_mut::<TimeDelta>().0 = dt;

@@ -1,4 +1,4 @@
-use super::{AnimationDelta, AnimationTime, TimeDelta};
+use super::{AnimationDelta, AnimationPlan, AnimationTime};
 use crate::assets::skeletal::{JointQuatTrack, JointVec3Track, SkeletalClip};
 use crate::assets::{ClipInterpolation, ClipKeyframe};
 use crate::ecs::profiler::SystemProfiler;
@@ -254,13 +254,13 @@ fn record_transform_apply_time(_duration: std::time::Duration) {}
 
 pub fn sys_drive_sprite_animations(
     mut profiler: ResMut<SystemProfiler>,
-    dt: Res<TimeDelta>,
-    mut animation_time: ResMut<AnimationTime>,
+    animation_plan: Res<AnimationPlan>,
+    animation_time: Res<AnimationTime>,
     mut events: ResMut<EventBus>,
     mut animations: Query<(Entity, &mut SpriteAnimation, &mut Sprite)>,
 ) {
     let _span = profiler.scope("sys_drive_sprite_animations");
-    let plan = animation_time.consume(dt.0);
+    let plan = animation_plan.delta;
     if !plan.has_steps() {
         return;
     }
@@ -392,8 +392,8 @@ mod tests {
 
 pub fn sys_drive_transform_clips(
     mut profiler: ResMut<SystemProfiler>,
-    dt: Res<TimeDelta>,
-    mut animation_time: ResMut<AnimationTime>,
+    animation_plan: Res<AnimationPlan>,
+    animation_time: Res<AnimationTime>,
     mut clips: Query<(
         Entity,
         &mut ClipInstance,
@@ -404,7 +404,7 @@ pub fn sys_drive_transform_clips(
     )>,
 ) {
     let _span = profiler.scope("sys_drive_transform_clips");
-    let plan = animation_time.consume(dt.0);
+    let plan = animation_plan.delta;
     if !plan.has_steps() {
         return;
     }
@@ -423,12 +423,12 @@ pub fn sys_drive_transform_clips(
 
 pub fn sys_drive_skeletal_clips(
     mut profiler: ResMut<SystemProfiler>,
-    dt: Res<TimeDelta>,
-    mut animation_time: ResMut<AnimationTime>,
+    animation_plan: Res<AnimationPlan>,
+    animation_time: Res<AnimationTime>,
     mut skeletons: Query<(Entity, &mut SkeletonInstance, Option<Mut<BoneTransforms>>)>,
 ) {
     let _span = profiler.scope("sys_drive_skeletal_clips");
-    let plan = animation_time.consume(dt.0);
+    let plan = animation_plan.delta;
     if !plan.has_steps() {
         return;
     }

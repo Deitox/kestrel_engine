@@ -14,6 +14,17 @@ pub use picking::*;
 #[derive(Resource, Clone, Copy)]
 pub struct TimeDelta(pub f32);
 
+#[derive(Resource, Clone, Copy)]
+pub struct AnimationPlan {
+    pub delta: AnimationDelta,
+}
+
+impl Default for AnimationPlan {
+    fn default() -> Self {
+        Self { delta: AnimationDelta::None }
+    }
+}
+
 #[derive(Resource, Clone)]
 pub struct AnimationTime {
     pub scale: f32,
@@ -80,6 +91,7 @@ impl AnimationTime {
         }
     }
 }
+#[derive(Clone, Copy, Debug)]
 pub enum AnimationDelta {
     None,
     Single(f32),
