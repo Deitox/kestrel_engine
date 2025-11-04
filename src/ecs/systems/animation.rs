@@ -178,13 +178,13 @@ fn record_transform_skipped(count: u64) {
 fn record_transform_skipped(_count: u64) {}
 
 #[cfg(feature = "anim_stats")]
-fn record_transform_looped_resume(count: u64) {
+pub(crate) fn record_transform_looped_resume(count: u64) {
     TRANSFORM_CLIP_LOOPED_RESUME.fetch_add(count, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "anim_stats"))]
 #[allow(dead_code)]
-fn record_transform_looped_resume(_count: u64) {}
+pub(crate) fn record_transform_looped_resume(_count: u64) {}
 
 #[cfg(feature = "anim_stats")]
 fn record_transform_zero_duration(count: u64) {
@@ -683,16 +683,9 @@ fn drive_transform_clips(
         clips.iter_mut()
     {
         if !instance.playing {
-            if instance.looped {
-                // Looping clips resume automatically; re-arm playback and keep advancing.
-                #[cfg(feature = "anim_stats")]
-                record_transform_looped_resume(1);
-                instance.playing = true;
-            } else {
-                #[cfg(feature = "anim_stats")]
-                record_transform_skipped(1);
-                continue;
-            }
+            #[cfg(feature = "anim_stats")]
+            record_transform_skipped(1);
+            continue;
         }
 
         let group_scale =

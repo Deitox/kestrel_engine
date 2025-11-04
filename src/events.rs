@@ -78,6 +78,6 @@ impl EventBus {
     }
 
     pub fn drain(&mut self) -> Vec<GameEvent> {
-        self.events.drain(..).collect()
+        std::mem::take(&mut self.events)
     }
 }

@@ -1,6 +1,8 @@
 use super::*;
 use crate::assets::AssetManager;
 use crate::ecs::systems::{initialize_animation_phase, AnimationTime, TimeDelta};
+#[cfg(feature = "anim_stats")]
+use crate::ecs::systems::record_transform_looped_resume;
 use crate::events::{EventBus, GameEvent};
 use crate::mesh_registry::MeshRegistry;
 use crate::scene::{
@@ -674,7 +676,15 @@ impl EcsWorld {
 
     pub fn set_transform_clip_playing(&mut self, entity: Entity, playing: bool) -> bool {
         if let Some(mut instance) = self.world.get_mut::<ClipInstance>(entity) {
+            #[cfg(feature = "anim_stats")]
+            let was_playing = instance.playing;
             instance.set_playing(playing);
+            #[cfg(feature = "anim_stats")]
+            {
+                if !was_playing && playing && instance.looped {
+                    record_transform_looped_resume(1);
+                }
+            }
             true
         } else {
             false
