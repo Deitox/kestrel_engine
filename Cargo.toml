@@ -47,3 +47,7 @@ opt-level = 1
 
 [profile.release]
 opt-level = 3
+codegen-units = 1
+lto = "fat"
+panic = "abort"
+incremental = false
