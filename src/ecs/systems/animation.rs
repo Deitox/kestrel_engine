@@ -736,12 +736,19 @@ fn drive_transform_clips(
                     record_transform_zero_delta(1);
                 }
             }
+            #[cfg(not(feature = "legacy_transform_sampling"))]
+            if applied <= 0.0 {
+                continue;
+            }
             #[cfg(not(feature = "anim_stats"))]
             let _ = applied;
 
             #[cfg(feature = "anim_stats")]
             let sample_timer = Instant::now();
+            #[cfg(feature = "legacy_transform_sampling")]
             let sample = instance.sample_cached();
+            #[cfg(not(feature = "legacy_transform_sampling"))]
+            let sample = instance.current_sample_full();
             #[cfg(feature = "anim_stats")]
             record_transform_sample_time(sample_timer.elapsed());
 
@@ -797,11 +804,19 @@ fn drive_transform_clips(
                 record_transform_zero_delta(1);
             }
         }
+        #[cfg(not(feature = "legacy_transform_sampling"))]
+        if applied <= 0.0 {
+            record_transform_slow_path(1);
+            continue;
+        }
         #[cfg(not(feature = "anim_stats"))]
         let _ = applied;
         #[cfg(feature = "anim_stats")]
         let sample_timer = Instant::now();
+        #[cfg(feature = "legacy_transform_sampling")]
         let sample = instance.sample_with_masks(transform_player.copied(), property_player.copied());
+        #[cfg(not(feature = "legacy_transform_sampling"))]
+        let sample = instance.current_sample_masked(transform_player, property_player);
         #[cfg(feature = "anim_stats")]
         record_transform_sample_time(sample_timer.elapsed());
         apply_clip_sample(&mut instance, transform_player, property_player, transform, tint, sample);

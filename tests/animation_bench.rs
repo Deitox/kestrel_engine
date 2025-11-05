@@ -525,13 +525,13 @@ fn bench_transform_clip() -> Arc<AnimationClip> {
         ]
         .into_boxed_slice(),
     );
-    let (translation_delta, translation_offsets, translation_durations, translation_inv) =
+    let (translation_delta, translation_slopes, translation_offsets, translation_durations, translation_inv) =
         build_segment_cache_from_keys(translation_keys.as_ref(), |window| window[1].value - window[0].value);
-    let (rotation_delta, rotation_offsets, rotation_durations, rotation_inv) =
+    let (rotation_delta, rotation_slopes, rotation_offsets, rotation_durations, rotation_inv) =
         build_segment_cache_from_keys(rotation_keys.as_ref(), |window| window[1].value - window[0].value);
-    let (scale_delta, scale_offsets, scale_durations, scale_inv) =
+    let (scale_delta, scale_slopes, scale_offsets, scale_durations, scale_inv) =
         build_segment_cache_from_keys(scale_keys.as_ref(), |window| window[1].value - window[0].value);
-    let (tint_delta, tint_offsets, tint_durations, tint_inv) =
+    let (tint_delta, tint_slopes, tint_offsets, tint_durations, tint_inv) =
         build_segment_cache_from_keys(tint_keys.as_ref(), |window| window[1].value - window[0].value);
 
     Arc::new(AnimationClip {
@@ -544,6 +544,7 @@ fn bench_transform_clip() -> Arc<AnimationClip> {
             duration: 0.5,
             duration_inv: 2.0,
             segment_deltas: translation_delta,
+            segment_slopes: translation_slopes,
             segment_offsets: translation_offsets,
             segment_durations: translation_durations,
             segment_inv_durations: translation_inv,
@@ -554,6 +555,7 @@ fn bench_transform_clip() -> Arc<AnimationClip> {
             duration: 0.5,
             duration_inv: 2.0,
             segment_deltas: rotation_delta,
+            segment_slopes: rotation_slopes,
             segment_offsets: rotation_offsets,
             segment_durations: rotation_durations,
             segment_inv_durations: rotation_inv,
@@ -564,6 +566,7 @@ fn bench_transform_clip() -> Arc<AnimationClip> {
             duration: 0.5,
             duration_inv: 2.0,
             segment_deltas: scale_delta,
+            segment_slopes: scale_slopes,
             segment_offsets: scale_offsets,
             segment_durations: scale_durations,
             segment_inv_durations: scale_inv,
@@ -574,6 +577,7 @@ fn bench_transform_clip() -> Arc<AnimationClip> {
             duration: 0.5,
             duration_inv: 2.0,
             segment_deltas: tint_delta,
+            segment_slopes: tint_slopes,
             segment_offsets: tint_offsets,
             segment_durations: tint_durations,
             segment_inv_durations: tint_inv,
@@ -586,15 +590,16 @@ fn bench_transform_clip() -> Arc<AnimationClip> {
 fn build_segment_cache_from_keys<T, F>(
     frames: &[ClipKeyframe<T>],
     mut delta_fn: F,
-) -> (Arc<[T]>, Arc<[f32]>, Arc<[f32]>, Arc<[f32]>)
+) -> (Arc<[T]>, Arc<[T]>, Arc<[f32]>, Arc<[f32]>, Arc<[f32]>)
 where
-    T: Clone,
+    T: Copy + std::ops::Mul<f32, Output = T>,
     F: FnMut(&[ClipKeyframe<T>]) -> T,
 {
     if frames.len() < 2 {
-        return (Arc::from([]), Arc::from([]), Arc::from([]), Arc::from([]));
+        return (Arc::from([]), Arc::from([]), Arc::from([]), Arc::from([]), Arc::from([]));
     }
     let mut deltas = Vec::with_capacity(frames.len() - 1);
+    let mut slopes = Vec::with_capacity(frames.len() - 1);
     let mut offsets = Vec::with_capacity(frames.len() - 1);
     let mut durations = Vec::with_capacity(frames.len() - 1);
     let mut inv = Vec::with_capacity(frames.len() - 1);
@@ -603,10 +608,13 @@ where
         let span = (window[1].time - window[0].time).max(std::f32::EPSILON);
         durations.push(span);
         inv.push(1.0 / span);
-        deltas.push(delta_fn(window));
+        let delta = delta_fn(window);
+        slopes.push(delta * (1.0 / span));
+        deltas.push(delta);
     }
     (
         Arc::from(deltas.into_boxed_slice()),
+        Arc::from(slopes.into_boxed_slice()),
         Arc::from(offsets.into_boxed_slice()),
         Arc::from(durations.into_boxed_slice()),
         Arc::from(inv.into_boxed_slice()),

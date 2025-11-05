@@ -245,6 +245,14 @@ pub struct ClipInstance {
     pub last_rotation: Option<f32>,
     pub last_scale: Option<Vec2>,
     pub last_tint: Option<Vec4>,
+    #[cfg(not(feature = "legacy_transform_sampling"))]
+    pub current_translation: Option<Vec2>,
+    #[cfg(not(feature = "legacy_transform_sampling"))]
+    pub current_rotation: Option<f32>,
+    #[cfg(not(feature = "legacy_transform_sampling"))]
+    pub current_scale: Option<Vec2>,
+    #[cfg(not(feature = "legacy_transform_sampling"))]
+    pub current_tint: Option<Vec4>,
     pub translation_cursor: usize,
     pub rotation_cursor: usize,
     pub scale_cursor: usize,
@@ -278,6 +286,14 @@ impl ClipInstance {
             last_rotation: None,
             last_scale: None,
             last_tint: None,
+            #[cfg(not(feature = "legacy_transform_sampling"))]
+            current_translation: None,
+            #[cfg(not(feature = "legacy_transform_sampling"))]
+            current_rotation: None,
+            #[cfg(not(feature = "legacy_transform_sampling"))]
+            current_scale: None,
+            #[cfg(not(feature = "legacy_transform_sampling"))]
+            current_tint: None,
             translation_cursor: 0,
             rotation_cursor: 0,
             scale_cursor: 0,
@@ -292,6 +308,7 @@ impl ClipInstance {
             tint_segment_span: 0.0,
         };
         instance.rebuild_track_cursors();
+        instance.advance_track_states(0.0);
         instance
     }
 
@@ -314,6 +331,7 @@ impl ClipInstance {
         self.last_tint = None;
         self.reset_cursors();
         self.rebuild_track_cursors();
+        self.advance_track_states(0.0);
     }
 
     pub fn set_playing(&mut self, playing: bool) {
@@ -329,6 +347,7 @@ impl ClipInstance {
         self.last_tint = None;
         self.reset_cursors();
         self.rebuild_track_cursors();
+        self.advance_track_states(0.0);
     }
 
     pub fn set_speed(&mut self, speed: f32) {
@@ -366,25 +385,23 @@ impl ClipInstance {
             return 0.0;
         }
 
-        if self.looped {
+        let applied = if self.looped {
             let mut next = self.time + delta;
-            if next.is_finite() {
-                if next >= 0.0 && next < (duration - CLIP_TIME_EPSILON) {
-                    self.time = next;
-                    self.advance_track_states(delta);
-                    return delta;
-                }
-            } else {
+            if !next.is_finite() {
                 next = 0.0;
             }
-            let duration_inv = self.clip.duration_inv;
-            let mut wrapped = wrap_time_looped(next, duration, duration_inv);
-            if wrapped <= CLIP_TIME_EPSILON || (duration - wrapped) <= CLIP_TIME_EPSILON {
-                wrapped = 0.0;
+            if next >= 0.0 && next < (duration - CLIP_TIME_EPSILON) {
+                self.time = next;
+                delta
+            } else {
+                let duration_inv = self.clip.duration_inv;
+                let mut wrapped = wrap_time_looped(next, duration, duration_inv);
+                if wrapped <= CLIP_TIME_EPSILON || (duration - wrapped) <= CLIP_TIME_EPSILON {
+                    wrapped = 0.0;
+                }
+                self.time = wrapped;
+                delta
             }
-            self.time = wrapped;
-            self.advance_track_states(delta);
-            delta
         } else {
             let mut next = (self.time + delta).min(duration);
             if next >= duration - CLIP_TIME_EPSILON {
@@ -393,9 +410,15 @@ impl ClipInstance {
             }
             let applied = (next - self.time).max(0.0);
             self.time = next;
-            self.advance_track_states(applied);
             applied
+        };
+
+        if applied > 0.0 {
+            self.advance_track_states(applied);
+        } else {
+            self.advance_track_states(0.0);
         }
+        applied
     }
 
     pub fn duration(&self) -> f32 {
@@ -422,6 +445,7 @@ impl ClipInstance {
         }
         self.reset_cursors();
         self.rebuild_track_cursors();
+        self.advance_track_states(0.0);
     }
 
     pub fn sample(&self) -> ClipSample {
@@ -430,11 +454,19 @@ impl ClipInstance {
 
     #[inline(always)]
     pub fn sample_cached(&mut self) -> ClipSample {
-        self.sample_all_tracks()
+        #[cfg(feature = "legacy_transform_sampling")]
+        {
+            self.sample_all_tracks()
+        }
+        #[cfg(not(feature = "legacy_transform_sampling"))]
+        {
+            self.current_sample_full()
+        }
     }
 
+    #[cfg_attr(not(any(feature = "legacy_transform_sampling", debug_assertions)), allow(dead_code))]
     #[inline(always)]
-    fn sample_all_tracks(&mut self) -> ClipSample {
+    fn sample_all_tracks(&self) -> ClipSample {
         let translation = self.clip.translation.as_ref().and_then(|track| {
             sample_vec2_track_from_state(track, self.translation_cursor, self.translation_segment_time)
         });
@@ -457,86 +489,140 @@ impl ClipInstance {
         transform_mask: Option<TransformTrackPlayer>,
         property_mask: Option<PropertyTrackPlayer>,
     ) -> ClipSample {
-        let transform_mask = transform_mask.unwrap_or_default();
-        let property_mask = property_mask.unwrap_or_default();
-        let translation = if transform_mask.apply_translation {
-            self.clip.translation.as_ref().and_then(|track| {
-                sample_vec2_track_from_state(track, self.translation_cursor, self.translation_segment_time)
-            })
-        } else {
-            None
-        };
-        let rotation = if transform_mask.apply_rotation {
-            self.clip.rotation.as_ref().and_then(|track| {
-                sample_scalar_track_from_state(track, self.rotation_cursor, self.rotation_segment_time)
-            })
-        } else {
-            None
-        };
-        let scale = if transform_mask.apply_scale {
-            self.clip.scale.as_ref().and_then(|track| {
-                sample_vec2_track_from_state(track, self.scale_cursor, self.scale_segment_time)
-            })
-        } else {
-            None
-        };
-        let tint = if property_mask.apply_tint {
-            self.clip.tint.as_ref().and_then(|track| {
-                sample_vec4_track_from_state(track, self.tint_cursor, self.tint_segment_time)
-            })
-        } else {
-            None
-        };
-        let sample = ClipSample { translation, rotation, scale, tint };
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "legacy_transform_sampling")]
         {
-            let reference = self.sample_at(self.time);
-            if transform_mask.apply_translation {
-                if let (Some(actual), Some(expected)) = (sample.translation, reference.translation) {
-                    debug_assert!(
-                        (actual - expected).length_squared() <= 1e-5,
-                        "sample_with_masks translation mismatch: cached={:?} expected={:?}",
-                        actual,
-                        expected
-                    );
+            let transform_mask = transform_mask.unwrap_or_default();
+            let property_mask = property_mask.unwrap_or_default();
+            let translation = if transform_mask.apply_translation {
+                self.clip.translation.as_ref().and_then(|track| {
+                    sample_vec2_track_from_state(track, self.translation_cursor, self.translation_segment_time)
+                })
+            } else {
+                None
+            };
+            let rotation = if transform_mask.apply_rotation {
+                self.clip.rotation.as_ref().and_then(|track| {
+                    sample_scalar_track_from_state(track, self.rotation_cursor, self.rotation_segment_time)
+                })
+            } else {
+                None
+            };
+            let scale = if transform_mask.apply_scale {
+                self.clip.scale.as_ref().and_then(|track| {
+                    sample_vec2_track_from_state(track, self.scale_cursor, self.scale_segment_time)
+                })
+            } else {
+                None
+            };
+            let tint = if property_mask.apply_tint {
+                self.clip.tint.as_ref().and_then(|track| {
+                    sample_vec4_track_from_state(track, self.tint_cursor, self.tint_segment_time)
+                })
+            } else {
+                None
+            };
+            let sample = ClipSample { translation, rotation, scale, tint };
+            #[cfg(debug_assertions)]
+            {
+                let reference = self.sample_at(self.time);
+                if transform_mask.apply_translation {
+                    if let (Some(actual), Some(expected)) = (sample.translation, reference.translation) {
+                        debug_assert!(
+                            (actual - expected).length_squared() <= 1e-5,
+                            "sample_with_masks translation mismatch: cached={:?} expected={:?}",
+                            actual,
+                            expected
+                        );
+                    }
+                }
+                if transform_mask.apply_rotation {
+                    if let (Some(actual), Some(expected)) = (sample.rotation, reference.rotation) {
+                        debug_assert!(
+                            (actual - expected).abs() <= 1e-5,
+                            "sample_with_masks rotation mismatch: cached={:?} expected={:?} time={} cursor={} offset={} looped={}",
+                            actual,
+                            expected,
+                            self.time,
+                            self.rotation_cursor,
+                            self.rotation_segment_time,
+                            self.looped
+                        );
+                    }
+                }
+                if transform_mask.apply_scale {
+                    if let (Some(actual), Some(expected)) = (sample.scale, reference.scale) {
+                        debug_assert!(
+                            (actual - expected).length_squared() <= 1e-5,
+                            "sample_with_masks scale mismatch: cached={:?} expected={:?}",
+                            actual,
+                            expected
+                        );
+                    }
+                }
+                if property_mask.apply_tint {
+                    if let (Some(actual), Some(expected)) = (sample.tint, reference.tint) {
+                        debug_assert!(
+                            (actual - expected).length_squared() <= 1e-5,
+                            "sample_with_masks tint mismatch: cached={:?} expected={:?}",
+                            actual,
+                            expected
+                        );
+                    }
                 }
             }
-            if transform_mask.apply_rotation {
-                if let (Some(actual), Some(expected)) = (sample.rotation, reference.rotation) {
-                    debug_assert!(
-                        (actual - expected).abs() <= 1e-5,
-                        "sample_with_masks rotation mismatch: cached={:?} expected={:?} time={} cursor={} offset={} looped={}",
-                        actual,
-                        expected,
-                        self.time,
-                        self.rotation_cursor,
-                        self.rotation_segment_time,
-                        self.looped
-                    );
-                }
-            }
-            if transform_mask.apply_scale {
-                if let (Some(actual), Some(expected)) = (sample.scale, reference.scale) {
-                    debug_assert!(
-                        (actual - expected).length_squared() <= 1e-5,
-                        "sample_with_masks scale mismatch: cached={:?} expected={:?}",
-                        actual,
-                        expected
-                    );
-                }
-            }
-            if property_mask.apply_tint {
-                if let (Some(actual), Some(expected)) = (sample.tint, reference.tint) {
-                    debug_assert!(
-                        (actual - expected).length_squared() <= 1e-5,
-                        "sample_with_masks tint mismatch: cached={:?} expected={:?}",
-                        actual,
-                        expected
-                    );
-                }
-            }
+            sample
         }
-        sample
+        #[cfg(not(feature = "legacy_transform_sampling"))]
+        {
+            let sample = self.current_sample_masked(transform_mask.as_ref(), property_mask.as_ref());
+            #[cfg(debug_assertions)]
+            {
+                let reference = self.sample_at(self.time);
+                let transform_mask = transform_mask.unwrap_or_default();
+                let property_mask = property_mask.unwrap_or_default();
+                if transform_mask.apply_translation {
+                    if let (Some(actual), Some(expected)) = (sample.translation, reference.translation) {
+                        debug_assert!(
+                            (actual - expected).length_squared() <= 1e-5,
+                            "current sample translation mismatch: {:?} vs {:?}",
+                            actual,
+                            expected
+                        );
+                    }
+                }
+                if transform_mask.apply_rotation {
+                    if let (Some(actual), Some(expected)) = (sample.rotation, reference.rotation) {
+                        debug_assert!(
+                            (actual - expected).abs() <= 1e-5,
+                            "current sample rotation mismatch: {:?} vs {:?}",
+                            actual,
+                            expected
+                        );
+                    }
+                }
+                if transform_mask.apply_scale {
+                    if let (Some(actual), Some(expected)) = (sample.scale, reference.scale) {
+                        debug_assert!(
+                            (actual - expected).length_squared() <= 1e-5,
+                            "current sample scale mismatch: {:?} vs {:?}",
+                            actual,
+                            expected
+                        );
+                    }
+                }
+                if property_mask.apply_tint {
+                    if let (Some(actual), Some(expected)) = (sample.tint, reference.tint) {
+                        debug_assert!(
+                            (actual - expected).length_squared() <= 1e-5,
+                            "current sample tint mismatch: {:?} vs {:?}",
+                            actual,
+                            expected
+                        );
+                    }
+                }
+            }
+            sample
+        }
     }
 
     pub fn sample_at(&self, time: f32) -> ClipSample {
@@ -627,10 +713,22 @@ impl ClipInstance {
                 &mut self.translation_segment_time,
                 &mut self.translation_segment_span,
             );
+            #[cfg(not(feature = "legacy_transform_sampling"))]
+            {
+                self.current_translation = sample_vec2_track_from_state(
+                    track,
+                    self.translation_cursor,
+                    self.translation_segment_time,
+                );
+            }
         } else {
             self.translation_cursor = 0;
             self.translation_segment_time = 0.0;
             self.translation_segment_span = 0.0;
+            #[cfg(not(feature = "legacy_transform_sampling"))]
+            {
+                self.current_translation = None;
+            }
         }
 
         if let Some(track) = self.clip.rotation.as_ref() {
@@ -642,10 +740,22 @@ impl ClipInstance {
                 &mut self.rotation_segment_time,
                 &mut self.rotation_segment_span,
             );
+            #[cfg(not(feature = "legacy_transform_sampling"))]
+            {
+                self.current_rotation = sample_scalar_track_from_state(
+                    track,
+                    self.rotation_cursor,
+                    self.rotation_segment_time,
+                );
+            }
         } else {
             self.rotation_cursor = 0;
             self.rotation_segment_time = 0.0;
             self.rotation_segment_span = 0.0;
+            #[cfg(not(feature = "legacy_transform_sampling"))]
+            {
+                self.current_rotation = None;
+            }
         }
 
         if let Some(track) = self.clip.scale.as_ref() {
@@ -657,10 +767,22 @@ impl ClipInstance {
                 &mut self.scale_segment_time,
                 &mut self.scale_segment_span,
             );
+            #[cfg(not(feature = "legacy_transform_sampling"))]
+            {
+                self.current_scale = sample_vec2_track_from_state(
+                    track,
+                    self.scale_cursor,
+                    self.scale_segment_time,
+                );
+            }
         } else {
             self.scale_cursor = 0;
             self.scale_segment_time = 0.0;
             self.scale_segment_span = 0.0;
+            #[cfg(not(feature = "legacy_transform_sampling"))]
+            {
+                self.current_scale = None;
+            }
         }
 
         if let Some(track) = self.clip.tint.as_ref() {
@@ -672,10 +794,83 @@ impl ClipInstance {
                 &mut self.tint_segment_time,
                 &mut self.tint_segment_span,
             );
+            #[cfg(not(feature = "legacy_transform_sampling"))]
+            {
+                self.current_tint = sample_vec4_track_from_state(
+                    track,
+                    self.tint_cursor,
+                    self.tint_segment_time,
+                );
+            }
         } else {
             self.tint_cursor = 0;
             self.tint_segment_time = 0.0;
             self.tint_segment_span = 0.0;
+            #[cfg(not(feature = "legacy_transform_sampling"))]
+            {
+                self.current_tint = None;
+            }
+        }
+
+        #[cfg(all(not(feature = "legacy_transform_sampling"), debug_assertions))]
+        self.debug_verify_current_values();
+    }
+
+    #[cfg(all(not(feature = "legacy_transform_sampling"), debug_assertions))]
+    fn debug_verify_current_values(&self) {
+        let reference = self.sample_all_tracks();
+        if let (Some(actual), Some(expected)) = (self.current_translation, reference.translation) {
+            debug_assert!(
+                (actual - expected).length_squared() <= 1e-5,
+                "translation mismatch: {:?} vs {:?}",
+                actual,
+                expected
+            );
+        }
+        if let (Some(actual), Some(expected)) = (self.current_rotation, reference.rotation) {
+            debug_assert!((actual - expected).abs() <= 1e-5, "rotation mismatch: {} vs {}", actual, expected);
+        }
+        if let (Some(actual), Some(expected)) = (self.current_scale, reference.scale) {
+            debug_assert!(
+                (actual - expected).length_squared() <= 1e-5,
+                "scale mismatch: {:?} vs {:?}",
+                actual,
+                expected
+            );
+        }
+        if let (Some(actual), Some(expected)) = (self.current_tint, reference.tint) {
+            debug_assert!(
+                (actual - expected).length_squared() <= 1e-5,
+                "tint mismatch: {:?} vs {:?}",
+                actual,
+                expected
+            );
+        }
+    }
+
+    #[cfg(not(feature = "legacy_transform_sampling"))]
+    pub(crate) fn current_sample_full(&self) -> ClipSample {
+        ClipSample {
+            translation: self.current_translation,
+            rotation: self.current_rotation,
+            scale: self.current_scale,
+            tint: self.current_tint,
+        }
+    }
+
+    #[cfg(not(feature = "legacy_transform_sampling"))]
+    pub(crate) fn current_sample_masked(
+        &self,
+        transform_player: Option<&TransformTrackPlayer>,
+        property_player: Option<&PropertyTrackPlayer>,
+    ) -> ClipSample {
+        let transform_mask = transform_player.copied().unwrap_or_default();
+        let property_mask = property_player.copied().unwrap_or_default();
+        ClipSample {
+            translation: if transform_mask.apply_translation { self.current_translation } else { None },
+            rotation: if transform_mask.apply_rotation { self.current_rotation } else { None },
+            scale: if transform_mask.apply_scale { self.current_scale } else { None },
+            tint: if property_mask.apply_tint { self.current_tint } else { None },
         }
     }
 }
@@ -765,15 +960,14 @@ fn sample_vec2_track_from_state(track: &ClipVec2Track, cursor: usize, segment_ti
         return Some(start.value);
     }
     let start = &frames[cursor];
-    let delta = track.segment_deltas.get(cursor).copied().unwrap_or(Vec2::ZERO);
-    let alpha = if inv > 0.0 {
-        (segment_time * inv).clamp(0.0, 1.0)
-    } else if duration > 0.0 {
-        (segment_time / duration).clamp(0.0, 1.0)
+    let mut t = segment_time;
+    if duration > 0.0 {
+        t = t.clamp(0.0, duration);
     } else {
-        0.0
-    };
-    Some(start.value + delta * alpha)
+        t = 0.0;
+    }
+    let slope = track.segment_slopes.get(cursor).copied().unwrap_or(Vec2::ZERO);
+    Some(start.value + slope * t)
 }
 
 #[inline(always)]
@@ -801,15 +995,14 @@ fn sample_scalar_track_from_state(track: &ClipScalarTrack, cursor: usize, segmen
         return Some(start.value);
     }
     let start = &frames[cursor];
-    let delta = track.segment_deltas.get(cursor).copied().unwrap_or(0.0);
-    let alpha = if inv > 0.0 {
-        (segment_time * inv).clamp(0.0, 1.0)
-    } else if duration > 0.0 {
-        (segment_time / duration).clamp(0.0, 1.0)
+    let mut t = segment_time;
+    if duration > 0.0 {
+        t = t.clamp(0.0, duration);
     } else {
-        0.0
-    };
-    Some(start.value + delta * alpha)
+        t = 0.0;
+    }
+    let slope = track.segment_slopes.get(cursor).copied().unwrap_or(0.0);
+    Some(start.value + slope * t)
 }
 
 #[inline(always)]
@@ -837,15 +1030,14 @@ fn sample_vec4_track_from_state(track: &ClipVec4Track, cursor: usize, segment_ti
         return Some(start.value);
     }
     let start = &frames[cursor];
-    let delta = track.segment_deltas.get(cursor).copied().unwrap_or(Vec4::ZERO);
-    let alpha = if inv > 0.0 {
-        (segment_time * inv).clamp(0.0, 1.0)
-    } else if duration > 0.0 {
-        (segment_time / duration).clamp(0.0, 1.0)
+    let mut t = segment_time;
+    if duration > 0.0 {
+        t = t.clamp(0.0, duration);
     } else {
-        0.0
-    };
-    Some(start.value + delta * alpha)
+        t = 0.0;
+    }
+    let slope = track.segment_slopes.get(cursor).copied().unwrap_or(Vec4::ZERO);
+    Some(start.value + slope * t)
 }
 
 fn rebuild_vec2_cursor(track: &ClipVec2Track, clip_time: f32, looped: bool) -> (usize, f32) {
