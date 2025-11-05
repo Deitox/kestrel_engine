@@ -1,6 +1,6 @@
 use crate::assets::{
     skeletal::{SkeletalClip, SkeletonAsset},
-    AnimationClip, ClipInterpolation, ClipKeyframe, ClipScalarTrack, ClipVec2Track, ClipVec4Track,
+    AnimationClip, ClipInterpolation, ClipKeyframe, ClipScalarTrack, ClipSegment, ClipVec2Track, ClipVec4Track,
 };
 #[cfg(feature = "anim_stats")]
 use crate::ecs::systems::record_transform_segment_crosses;
@@ -413,11 +413,11 @@ impl ClipInstance {
             applied
         };
 
-        if applied > 0.0 {
-            self.advance_track_states(applied);
-        } else {
-            self.advance_track_states(0.0);
+        if applied <= 0.0 {
+            return 0.0;
         }
+
+        self.advance_track_states(applied);
         applied
     }
 
@@ -658,7 +658,7 @@ impl ClipInstance {
             self.translation_cursor = cursor;
             self.translation_segment_time = offset;
             self.translation_segment_span =
-                track.segment_durations.get(cursor).copied().unwrap_or(0.0).max(0.0);
+                track.segments.get(cursor).map(|segment| segment.span).unwrap_or(0.0).max(0.0);
         } else {
             self.translation_cursor = 0;
             self.translation_segment_time = 0.0;
@@ -670,7 +670,7 @@ impl ClipInstance {
             self.rotation_cursor = cursor;
             self.rotation_segment_time = offset;
             self.rotation_segment_span =
-                track.segment_durations.get(cursor).copied().unwrap_or(0.0).max(0.0);
+                track.segments.get(cursor).map(|segment| segment.span).unwrap_or(0.0).max(0.0);
         } else {
             self.rotation_cursor = 0;
             self.rotation_segment_time = 0.0;
@@ -682,7 +682,7 @@ impl ClipInstance {
             self.scale_cursor = cursor;
             self.scale_segment_time = offset;
             self.scale_segment_span =
-                track.segment_durations.get(cursor).copied().unwrap_or(0.0).max(0.0);
+                track.segments.get(cursor).map(|segment| segment.span).unwrap_or(0.0).max(0.0);
         } else {
             self.scale_cursor = 0;
             self.scale_segment_time = 0.0;
@@ -694,7 +694,7 @@ impl ClipInstance {
             self.tint_cursor = cursor;
             self.tint_segment_time = offset;
             self.tint_segment_span =
-                track.segment_durations.get(cursor).copied().unwrap_or(0.0).max(0.0);
+                track.segments.get(cursor).map(|segment| segment.span).unwrap_or(0.0).max(0.0);
         } else {
             self.tint_cursor = 0;
             self.tint_segment_time = 0.0;
@@ -949,8 +949,9 @@ fn sample_vec2_track_from_state(track: &ClipVec2Track, cursor: usize, segment_ti
     if cursor >= last_index {
         return Some(frames[last_index].value);
     }
-    let duration = track.segment_durations.get(cursor).copied().unwrap_or(0.0);
-    let inv = track.segment_inv_durations.get(cursor).copied().unwrap_or(0.0);
+    let segment = track.segments.get(cursor);
+    let duration = segment.map(|seg| seg.span).unwrap_or(0.0);
+    let inv = segment.map(|seg| seg.inv_span).unwrap_or(0.0);
     if matches!(track.interpolation, ClipInterpolation::Step) {
         let start = &frames[cursor];
         let end = &frames[cursor + 1];
@@ -966,7 +967,7 @@ fn sample_vec2_track_from_state(track: &ClipVec2Track, cursor: usize, segment_ti
     } else {
         t = 0.0;
     }
-    let slope = track.segment_slopes.get(cursor).copied().unwrap_or(Vec2::ZERO);
+    let slope = segment.map(|seg| seg.slope).unwrap_or(Vec2::ZERO);
     Some(start.value + slope * t)
 }
 
@@ -984,8 +985,9 @@ fn sample_scalar_track_from_state(track: &ClipScalarTrack, cursor: usize, segmen
     if cursor >= last_index {
         return Some(frames[last_index].value);
     }
-    let duration = track.segment_durations.get(cursor).copied().unwrap_or(0.0);
-    let inv = track.segment_inv_durations.get(cursor).copied().unwrap_or(0.0);
+    let segment = track.segments.get(cursor);
+    let duration = segment.map(|seg| seg.span).unwrap_or(0.0);
+    let inv = segment.map(|seg| seg.inv_span).unwrap_or(0.0);
     if matches!(track.interpolation, ClipInterpolation::Step) {
         let start = &frames[cursor];
         let end = &frames[cursor + 1];
@@ -996,12 +998,12 @@ fn sample_scalar_track_from_state(track: &ClipScalarTrack, cursor: usize, segmen
     }
     let start = &frames[cursor];
     let mut t = segment_time;
-    if duration > 0.0 {
+   if duration > 0.0 {
         t = t.clamp(0.0, duration);
     } else {
         t = 0.0;
     }
-    let slope = track.segment_slopes.get(cursor).copied().unwrap_or(0.0);
+    let slope = segment.map(|seg| seg.slope).unwrap_or(0.0);
     Some(start.value + slope * t)
 }
 
@@ -1019,8 +1021,9 @@ fn sample_vec4_track_from_state(track: &ClipVec4Track, cursor: usize, segment_ti
     if cursor >= last_index {
         return Some(frames[last_index].value);
     }
-    let duration = track.segment_durations.get(cursor).copied().unwrap_or(0.0);
-    let inv = track.segment_inv_durations.get(cursor).copied().unwrap_or(0.0);
+    let segment = track.segments.get(cursor);
+    let duration = segment.map(|seg| seg.span).unwrap_or(0.0);
+    let inv = segment.map(|seg| seg.inv_span).unwrap_or(0.0);
     if matches!(track.interpolation, ClipInterpolation::Step) {
         let start = &frames[cursor];
         let end = &frames[cursor + 1];
@@ -1036,7 +1039,7 @@ fn sample_vec4_track_from_state(track: &ClipVec4Track, cursor: usize, segment_ti
     } else {
         t = 0.0;
     }
-    let slope = track.segment_slopes.get(cursor).copied().unwrap_or(Vec4::ZERO);
+    let slope = segment.map(|seg| seg.slope).unwrap_or(Vec4::ZERO);
     Some(start.value + slope * t)
 }
 
@@ -1063,7 +1066,7 @@ fn advance_vec2_cursor(
     advance_cursor_impl(
         track.keyframes.as_ref(),
         track.duration,
-        track.segment_durations.as_ref(),
+        track.segments.as_ref(),
         delta,
         looped,
         cursor,
@@ -1083,7 +1086,7 @@ fn advance_scalar_cursor(
     advance_cursor_impl(
         track.keyframes.as_ref(),
         track.duration,
-        track.segment_durations.as_ref(),
+        track.segments.as_ref(),
         delta,
         looped,
         cursor,
@@ -1103,7 +1106,7 @@ fn advance_vec4_cursor(
     advance_cursor_impl(
         track.keyframes.as_ref(),
         track.duration,
-        track.segment_durations.as_ref(),
+        track.segments.as_ref(),
         delta,
         looped,
         cursor,
@@ -1154,16 +1157,18 @@ fn cursor_from_time<T>(frames: &[ClipKeyframe<T>], sample_time: f32) -> (usize, 
     (penultimate, span)
 }
 
-fn advance_cursor_impl<T>(
+fn advance_cursor_impl<T, S>(
     frames: &[ClipKeyframe<T>],
     duration: f32,
-    segment_durations: &[f32],
+    segments: &[ClipSegment<S>],
     mut delta: f32,
     looped: bool,
     cursor: &mut usize,
     segment_time: &mut f32,
     segment_span: &mut f32,
-) {
+) where
+    S: Copy,
+{
     let len = frames.len();
     if len <= 1 {
         *cursor = 0;
@@ -1173,25 +1178,64 @@ fn advance_cursor_impl<T>(
     }
 
     let max_segment_index = len - 2;
-    if *cursor > max_segment_index {
-        *cursor = max_segment_index;
+    let original_index = *cursor;
+    let mut index = if original_index > max_segment_index {
+        max_segment_index
+    } else {
+        original_index
+    };
+    let cursor_clamped = original_index != index;
+    if cursor_clamped {
+        *cursor = index;
     }
 
-    let mut index = *cursor;
-    let mut span = if *segment_span > 0.0 {
-        (*segment_span).max(0.0)
+    let cached_span = *segment_span;
+    let cached_time = *segment_time;
+    let cached_span_valid = cached_span.is_finite() && cached_span >= 0.0;
+    let cached_time_valid = cached_time.is_finite()
+        && cached_time >= 0.0
+        && (!cached_span_valid || cached_time <= cached_span);
+
+    if !cursor_clamped && cached_span_valid && cached_time_valid {
+        if delta <= 0.0 {
+            return;
+        }
+
+        if cached_span == 0.0 {
+            if cached_time != 0.0 {
+                *segment_time = 0.0;
+            }
+            return;
+        }
+
+        let remaining = cached_span - cached_time;
+        if delta <= remaining {
+            let updated = cached_time + delta;
+            *segment_time = if updated <= cached_span { updated } else { cached_span };
+            return;
+        }
+    }
+
+    let mut span = if !cursor_clamped && cached_span_valid {
+        cached_span.max(0.0)
     } else {
-        segment_durations.get(index).copied().unwrap_or(0.0).max(0.0)
+        segments.get(index).map(|segment| segment.span).unwrap_or(0.0).max(0.0)
     };
 
     if !span.is_finite() || span < 0.0 {
         span = 0.0;
     }
 
-    let mut offset = (*segment_time).max(0.0);
-    if span > 0.0 && offset > span {
-        offset = span;
-    } else if span <= 0.0 {
+    let mut offset = if !cursor_clamped && cached_time_valid {
+        cached_time.max(0.0)
+    } else {
+        0.0
+    };
+    if span > 0.0 {
+        if offset > span {
+            offset = span;
+        }
+    } else {
         offset = 0.0;
     }
 
@@ -1238,16 +1282,16 @@ fn advance_cursor_impl<T>(
         if index >= len - 1 {
             if looped && duration > 0.0 {
                 index = 0;
-                span = segment_durations.get(index).copied().unwrap_or(0.0).max(0.0);
+                span = segments.get(index).map(|segment| segment.span).unwrap_or(0.0).max(0.0);
                 remaining = span.max(0.0);
             } else {
                 index = max_segment_index;
-                span = segment_durations.get(index).copied().unwrap_or(0.0).max(0.0);
+                span = segments.get(index).map(|segment| segment.span).unwrap_or(0.0).max(0.0);
                 offset = span;
                 break;
             }
         } else {
-            span = segment_durations.get(index).copied().unwrap_or(0.0).max(0.0);
+            span = segments.get(index).map(|segment| segment.span).unwrap_or(0.0).max(0.0);
             remaining = span.max(0.0);
         }
 
