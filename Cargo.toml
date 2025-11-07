@@ -8,7 +8,6 @@ default-run = "kestrel_engine"
 default = []
 binary_scene = ["bincode", "lz4_flex"]
 anim_stats = []
-legacy_transform_sampling = []
 
 [dependencies]
 winit = { version = "0.30.12", features = ["rwh_06"] }

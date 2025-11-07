@@ -3,12 +3,40 @@ use crate::ecs::profiler::SystemProfiler;
 use bevy_ecs::prelude::*;
 use glam::Mat4;
 use smallvec::SmallVec;
-use std::collections::HashSet;
 
 #[derive(Resource, Default)]
 pub struct TransformPropagationScratch {
     pub stack: SmallVec<[(Entity, Mat4); 128]>,
-    pub visited: HashSet<Entity>,
+    pub visited: VisitTracker,
+}
+
+#[derive(Default)]
+pub struct VisitTracker {
+    marks: Vec<u32>,
+    generation: u32,
+}
+
+impl VisitTracker {
+    fn clear(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        if self.generation == 0 {
+            self.marks.fill(0);
+            self.generation = 1;
+        }
+    }
+
+    fn mark(&mut self, entity: Entity) {
+        let index = entity.index() as usize;
+        if index >= self.marks.len() {
+            self.marks.resize(index + 1, 0);
+        }
+        self.marks[index] = self.generation;
+    }
+
+    fn is_marked(&self, entity: Entity) -> bool {
+        let index = entity.index() as usize;
+        index < self.marks.len() && self.marks[index] == self.generation
+    }
 }
 
 pub fn sys_propagate_scene_transforms(
@@ -44,7 +72,7 @@ pub fn sys_propagate_scene_transforms(
         if let Ok((entity, transform2d, transform3d, children, mut world)) = nodes.get_mut(root) {
             let local = compose_local(transform2d, transform3d);
             world.0 = local;
-            visited.insert(entity);
+            visited.mark(entity);
             let world_mat = world.0;
             if let Some(children) = children {
                 for &child in children.0.iter().rev() {
@@ -56,13 +84,13 @@ pub fn sys_propagate_scene_transforms(
 
     while let Some((entity, parent_world)) = stack.pop() {
         if let Ok((current, transform2d, transform3d, children, mut world)) = nodes.get_mut(entity) {
-            if visited.contains(&current) {
+            if visited.is_marked(current) {
                 continue;
             }
             let local = compose_local(transform2d, transform3d);
             let world_mat = parent_world * local;
             world.0 = world_mat;
-            visited.insert(current);
+            visited.mark(current);
             if let Some(children) = children {
                 for &child in children.0.iter().rev() {
                     stack.push((child, world_mat));
@@ -73,7 +101,7 @@ pub fn sys_propagate_scene_transforms(
 
     let visited_ref = &visited;
     for (entity, transform2d, transform3d, _, mut world) in nodes.iter_mut() {
-        if !visited_ref.contains(&entity) {
+        if !visited_ref.is_marked(entity) {
             world.0 = compose_local(transform2d, transform3d);
         }
     }

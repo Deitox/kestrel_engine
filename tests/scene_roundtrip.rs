@@ -271,6 +271,8 @@ fn scene_roundtrip_preserves_transforms_and_emitters() {
                 end_color: emitter_color_end,
                 start_size: 0.22,
                 end_size: 0.06,
+                atlas: Arc::from("main"),
+                region: Arc::from("green"),
             },
         ))
         .id();
@@ -583,6 +585,8 @@ fn scene_roundtrip_captures_hierarchy_dependencies_and_environment_metadata() {
                 end_color: Vec4::new(1.0, 0.25, 0.15, 0.0),
                 start_size: 0.45,
                 end_size: 0.1,
+                atlas: Arc::from("main"),
+                region: Arc::from("green"),
             },
         ))
         .id();

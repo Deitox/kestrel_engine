@@ -1,8 +1,10 @@
 use super::*;
 use crate::assets::AssetManager;
-use crate::ecs::systems::{initialize_animation_phase, AnimationPlan, AnimationTime, AnimationDelta, TimeDelta};
 #[cfg(feature = "anim_stats")]
 use crate::ecs::systems::record_transform_looped_resume;
+use crate::ecs::systems::{
+    initialize_animation_phase, AnimationDelta, AnimationPlan, AnimationTime, TimeDelta,
+};
 use crate::events::{EventBus, GameEvent};
 use crate::mesh_registry::MeshRegistry;
 use crate::scene::{
@@ -49,6 +51,7 @@ impl EcsWorld {
         world.insert_resource(SpatialMetrics::default());
         world.insert_resource(ParticleContacts::default());
         world.insert_resource(ParticleCaps::default());
+        world.insert_resource(ParticleState::default());
         let world_bounds =
             WorldBounds { min: Vec2::new(-1.4, -1.0), max: Vec2::new(1.4, 1.0), thickness: 0.05 };
         world.insert_resource(world_bounds);
@@ -320,6 +323,8 @@ impl EcsWorld {
                     end_color,
                     start_size,
                     end_size,
+                    atlas: Arc::from("main"),
+                    region: Arc::from("green"),
                 },
             ))
             .id();
@@ -363,6 +368,9 @@ impl EcsWorld {
             emitter.accumulator = 0.0;
         }
         self.world.resource_mut::<ParticleContacts>().pairs.clear();
+        if let Some(mut state) = self.world.get_resource_mut::<ParticleState>() {
+            state.active_particles = 0;
+        }
     }
 
     pub fn particle_budget_metrics(&mut self) -> ParticleBudgetMetrics {
@@ -2268,6 +2276,8 @@ impl EcsWorld {
                 end_color: emitter.end_color.into(),
                 start_size: emitter.start_size,
                 end_size: emitter.end_size,
+                atlas: Arc::from(emitter.atlas.as_str()),
+                region: Arc::from(emitter.region.as_str()),
             });
         }
         if let Some(orbit) = data.orbit.clone() {
@@ -2482,6 +2492,8 @@ impl EcsWorld {
                 end_color: emitter.end_color.into(),
                 start_size: emitter.start_size,
                 end_size: emitter.end_size,
+                atlas: emitter.atlas.to_string(),
+                region: emitter.region.to_string(),
             }),
             orbit: self.world.get::<OrbitController>(entity).map(|orbit| OrbitControllerData {
                 center: orbit.center.into(),

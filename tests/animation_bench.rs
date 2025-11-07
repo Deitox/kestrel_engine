@@ -8,7 +8,8 @@ use kestrel_engine::assets::skeletal::{
     JointCurve, JointQuatTrack, JointVec3Track, SkeletalClip, SkeletonAsset, SkeletonJoint,
 };
 use kestrel_engine::assets::{
-    AnimationClip, ClipInterpolation, ClipKeyframe, ClipScalarTrack, ClipSegment, ClipVec2Track, ClipVec4Track,
+    AnimationClip, ClipInterpolation, ClipKeyframe, ClipScalarTrack, ClipSegment, ClipVec2Track,
+    ClipVec4Track,
 };
 #[cfg(feature = "anim_stats")]
 use kestrel_engine::ecs::{

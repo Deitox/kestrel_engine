@@ -205,8 +205,9 @@ pub fn sys_collide_spatial(
     mut contacts: ResMut<ParticleContacts>,
 ) {
     let _span = profiler.scope("sys_collide_spatial");
-    let mut previous_pairs = std::mem::take(&mut contacts.pairs);
-    contacts.pairs.clear();
+    let ParticleContacts { pairs: current_pairs, previous_pairs } = &mut *contacts;
+    std::mem::swap(current_pairs, previous_pairs);
+    current_pairs.clear();
     let mut checked: SmallVec<[Entity; 16]> = SmallVec::new();
     let mut candidates: SmallVec<[Entity; 16]> = SmallVec::new();
     let neighbors = [(-1, -1), (0, -1), (1, -1), (-1, 0), (0, 0), (1, 0), (-1, 1), (0, 1), (1, 1)];
@@ -226,8 +227,8 @@ pub fn sys_collide_spatial(
                             &positions,
                             &mut checked,
                             &mut impulse,
-                            contacts.as_mut(),
-                            &mut previous_pairs,
+                            current_pairs,
+                            previous_pairs,
                             events.as_mut(),
                         );
                     }
@@ -246,15 +247,15 @@ pub fn sys_collide_spatial(
                     &positions,
                     &mut checked,
                     &mut impulse,
-                    contacts.as_mut(),
-                    &mut previous_pairs,
+                    current_pairs,
+                    previous_pairs,
                     events.as_mut(),
                 );
             }
         }
         v.0 += impulse;
     }
-    for pair in previous_pairs {
+    for pair in previous_pairs.drain() {
         events.push(GameEvent::collision_ended(pair.0, pair.1));
     }
 }
@@ -271,7 +272,7 @@ fn process_neighbors<'a, I>(
     positions: &Query<(&Transform, &Aabb), Without<RapierBody>>,
     checked: &mut SmallVec<[Entity; 16]>,
     impulse: &mut Vec2,
-    contacts: &mut ParticleContacts,
+    contacts: &mut HashSet<(Entity, Entity)>,
     previous_pairs: &mut HashSet<(Entity, Entity)>,
     events: &mut EventBus,
 ) where
@@ -288,7 +289,7 @@ fn process_neighbors<'a, I>(
                 let dir = delta.signum();
                 *impulse += dir * 0.04;
                 let pair = if entity.index() <= other.index() { (entity, other) } else { (other, entity) };
-                if contacts.pairs.insert(pair) && !previous_pairs.remove(&pair) {
+                if contacts.insert(pair) && !previous_pairs.remove(&pair) {
                     events.push(GameEvent::collision_started(pair.0, pair.1));
                 }
             }

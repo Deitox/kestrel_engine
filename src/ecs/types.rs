@@ -1,14 +1,16 @@
 use crate::assets::{
     skeletal::{SkeletalClip, SkeletonAsset},
-    AnimationClip, ClipInterpolation, ClipKeyframe, ClipScalarTrack, ClipSegment, ClipVec2Track, ClipVec4Track,
+    AnimationClip, ClipInterpolation, ClipKeyframe, ClipScalarTrack, ClipVec2Track, ClipVec4Track,
 };
 #[cfg(feature = "anim_stats")]
-use crate::ecs::systems::record_transform_segment_crosses;
+use crate::ecs::systems::{record_transform_advance_time, record_transform_segment_crosses};
 use crate::scene::{MeshLightingData, SceneEntityId};
 use bevy_ecs::prelude::*;
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use rapier2d::prelude::{ColliderHandle, RigidBodyHandle};
 use std::sync::Arc;
+#[cfg(feature = "anim_stats")]
+use std::time::Instant;
 
 #[derive(Component, Clone, Copy)]
 pub struct Transform {
@@ -221,12 +223,40 @@ pub struct SpriteAnimationFrame {
     pub events: Arc<[Arc<str>]>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Copy, Default)]
 pub struct ClipSample {
     pub translation: Option<Vec2>,
     pub rotation: Option<f32>,
     pub scale: Option<Vec2>,
     pub tint: Option<Vec4>,
+}
+
+#[derive(Clone, Copy)]
+struct ClipChannelMask {
+    translation: bool,
+    rotation: bool,
+    scale: bool,
+    tint: bool,
+}
+
+impl ClipChannelMask {
+    const fn all() -> Self {
+        Self { translation: true, rotation: true, scale: true, tint: true }
+    }
+
+    fn from_players(
+        transform: Option<&TransformTrackPlayer>,
+        property: Option<&PropertyTrackPlayer>,
+    ) -> Self {
+        let transform_mask = transform.copied().unwrap_or_default();
+        let property_mask = property.copied().unwrap_or_default();
+        Self {
+            translation: transform_mask.apply_translation,
+            rotation: transform_mask.apply_rotation,
+            scale: transform_mask.apply_scale,
+            tint: property_mask.apply_tint,
+        }
+    }
 }
 
 #[derive(Component, Clone)]
@@ -245,14 +275,31 @@ pub struct ClipInstance {
     pub last_rotation: Option<f32>,
     pub last_scale: Option<Vec2>,
     pub last_tint: Option<Vec4>,
-    #[cfg(not(feature = "legacy_transform_sampling"))]
-    pub current_translation: Option<Vec2>,
-    #[cfg(not(feature = "legacy_transform_sampling"))]
-    pub current_rotation: Option<f32>,
-    #[cfg(not(feature = "legacy_transform_sampling"))]
-    pub current_scale: Option<Vec2>,
-    #[cfg(not(feature = "legacy_transform_sampling"))]
-    pub current_tint: Option<Vec4>,
+    pub current_sample: ClipSample,
+    pub translation_sample_dirty: bool,
+    pub rotation_sample_dirty: bool,
+    pub scale_sample_dirty: bool,
+    pub tint_sample_dirty: bool,
+    pub translation_segment_start: Vec2,
+    pub translation_segment_slope: Vec2,
+    pub rotation_segment_start: f32,
+    pub rotation_segment_slope: f32,
+    pub scale_segment_start: Vec2,
+    pub scale_segment_slope: Vec2,
+    pub tint_segment_start: Vec4,
+    pub tint_segment_slope: Vec4,
+    pub translation_segment_cached_index: usize,
+    pub rotation_segment_cached_index: usize,
+    pub scale_segment_cached_index: usize,
+    pub tint_segment_cached_index: usize,
+    pub translation_segment_cache_valid: bool,
+    pub rotation_segment_cache_valid: bool,
+    pub scale_segment_cache_valid: bool,
+    pub tint_segment_cache_valid: bool,
+    pub translation_state_current: bool,
+    pub rotation_state_current: bool,
+    pub scale_state_current: bool,
+    pub tint_state_current: bool,
     pub translation_cursor: usize,
     pub rotation_cursor: usize,
     pub scale_cursor: usize,
@@ -286,14 +333,31 @@ impl ClipInstance {
             last_rotation: None,
             last_scale: None,
             last_tint: None,
-            #[cfg(not(feature = "legacy_transform_sampling"))]
-            current_translation: None,
-            #[cfg(not(feature = "legacy_transform_sampling"))]
-            current_rotation: None,
-            #[cfg(not(feature = "legacy_transform_sampling"))]
-            current_scale: None,
-            #[cfg(not(feature = "legacy_transform_sampling"))]
-            current_tint: None,
+            current_sample: ClipSample::default(),
+            translation_sample_dirty: true,
+            rotation_sample_dirty: true,
+            scale_sample_dirty: true,
+            tint_sample_dirty: true,
+            translation_segment_start: Vec2::ZERO,
+            translation_segment_slope: Vec2::ZERO,
+            rotation_segment_start: 0.0,
+            rotation_segment_slope: 0.0,
+            scale_segment_start: Vec2::ZERO,
+            scale_segment_slope: Vec2::ZERO,
+            tint_segment_start: Vec4::ZERO,
+            tint_segment_slope: Vec4::ZERO,
+            translation_segment_cached_index: usize::MAX,
+            rotation_segment_cached_index: usize::MAX,
+            scale_segment_cached_index: usize::MAX,
+            tint_segment_cached_index: usize::MAX,
+            translation_segment_cache_valid: false,
+            rotation_segment_cache_valid: false,
+            scale_segment_cache_valid: false,
+            tint_segment_cache_valid: false,
+            translation_state_current: true,
+            rotation_state_current: true,
+            scale_state_current: true,
+            tint_state_current: true,
             translation_cursor: 0,
             rotation_cursor: 0,
             scale_cursor: 0,
@@ -308,7 +372,7 @@ impl ClipInstance {
             tint_segment_span: 0.0,
         };
         instance.rebuild_track_cursors();
-        instance.advance_track_states(0.0);
+        instance.advance_track_states(0.0, ClipChannelMask::all());
         instance
     }
 
@@ -329,9 +393,26 @@ impl ClipInstance {
         self.last_rotation = None;
         self.last_scale = None;
         self.last_tint = None;
+        self.clear_current_sample();
+        self.translation_segment_start = Vec2::ZERO;
+        self.translation_segment_slope = Vec2::ZERO;
+        self.rotation_segment_start = 0.0;
+        self.rotation_segment_slope = 0.0;
+        self.scale_segment_start = Vec2::ZERO;
+        self.scale_segment_slope = Vec2::ZERO;
+        self.tint_segment_start = Vec4::ZERO;
+        self.tint_segment_slope = Vec4::ZERO;
+        self.translation_segment_cached_index = usize::MAX;
+        self.rotation_segment_cached_index = usize::MAX;
+        self.scale_segment_cached_index = usize::MAX;
+        self.tint_segment_cached_index = usize::MAX;
+        self.translation_segment_cache_valid = false;
+        self.rotation_segment_cache_valid = false;
+        self.scale_segment_cache_valid = false;
+        self.tint_segment_cache_valid = false;
         self.reset_cursors();
         self.rebuild_track_cursors();
-        self.advance_track_states(0.0);
+        self.advance_track_states(0.0, ClipChannelMask::all());
     }
 
     pub fn set_playing(&mut self, playing: bool) {
@@ -345,9 +426,26 @@ impl ClipInstance {
         self.last_rotation = None;
         self.last_scale = None;
         self.last_tint = None;
+        self.clear_current_sample();
+        self.translation_segment_start = Vec2::ZERO;
+        self.translation_segment_slope = Vec2::ZERO;
+        self.rotation_segment_start = 0.0;
+        self.rotation_segment_slope = 0.0;
+        self.scale_segment_start = Vec2::ZERO;
+        self.scale_segment_slope = Vec2::ZERO;
+        self.tint_segment_start = Vec4::ZERO;
+        self.tint_segment_slope = Vec4::ZERO;
+        self.translation_segment_cached_index = usize::MAX;
+        self.rotation_segment_cached_index = usize::MAX;
+        self.scale_segment_cached_index = usize::MAX;
+        self.tint_segment_cached_index = usize::MAX;
+        self.translation_segment_cache_valid = false;
+        self.rotation_segment_cache_valid = false;
+        self.scale_segment_cache_valid = false;
+        self.tint_segment_cache_valid = false;
         self.reset_cursors();
         self.rebuild_track_cursors();
-        self.advance_track_states(0.0);
+        self.advance_track_states(0.0, ClipChannelMask::all());
     }
 
     pub fn set_speed(&mut self, speed: f32) {
@@ -364,6 +462,15 @@ impl ClipInstance {
         self.playback_rate_dirty = true;
     }
 
+    #[inline(always)]
+    fn clear_current_sample(&mut self) {
+        self.current_sample = ClipSample::default();
+        self.translation_sample_dirty = true;
+        self.rotation_sample_dirty = true;
+        self.scale_sample_dirty = true;
+        self.tint_sample_dirty = true;
+    }
+
     pub fn ensure_playback_rate(&mut self, group_scale: f32) -> f32 {
         if self.playback_rate_dirty {
             let clamped_group = group_scale.max(0.0);
@@ -375,13 +482,27 @@ impl ClipInstance {
     }
 
     pub fn advance_time(&mut self, delta: f32) -> f32 {
+        self.advance_time_with_mask(delta, ClipChannelMask::all())
+    }
+
+    pub fn advance_time_masked(
+        &mut self,
+        delta: f32,
+        transform_mask: Option<&TransformTrackPlayer>,
+        property_mask: Option<&PropertyTrackPlayer>,
+    ) -> f32 {
+        let channel_mask = ClipChannelMask::from_players(transform_mask, property_mask);
+        self.advance_time_with_mask(delta, channel_mask)
+    }
+
+    fn advance_time_with_mask(&mut self, delta: f32, channel_mask: ClipChannelMask) -> f32 {
         if delta <= 0.0 {
             return 0.0;
         }
         let duration = self.duration();
         if duration <= 0.0 {
             self.time = 0.0;
-            self.advance_track_states(0.0);
+            self.advance_track_states(0.0, channel_mask);
             return 0.0;
         }
 
@@ -417,7 +538,7 @@ impl ClipInstance {
             return 0.0;
         }
 
-        self.advance_track_states(applied);
+        self.advance_track_states(applied, channel_mask);
         applied
     }
 
@@ -445,7 +566,7 @@ impl ClipInstance {
         }
         self.reset_cursors();
         self.rebuild_track_cursors();
-        self.advance_track_states(0.0);
+        self.advance_track_states(0.0, ClipChannelMask::all());
     }
 
     pub fn sample(&self) -> ClipSample {
@@ -454,17 +575,10 @@ impl ClipInstance {
 
     #[inline(always)]
     pub fn sample_cached(&mut self) -> ClipSample {
-        #[cfg(feature = "legacy_transform_sampling")]
-        {
-            self.sample_all_tracks()
-        }
-        #[cfg(not(feature = "legacy_transform_sampling"))]
-        {
-            self.current_sample_full()
-        }
+        self.current_sample_full()
     }
 
-    #[cfg_attr(not(any(feature = "legacy_transform_sampling", debug_assertions)), allow(dead_code))]
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     #[inline(always)]
     fn sample_all_tracks(&self) -> ClipSample {
         let translation = self.clip.translation.as_ref().and_then(|track| {
@@ -489,140 +603,54 @@ impl ClipInstance {
         transform_mask: Option<TransformTrackPlayer>,
         property_mask: Option<PropertyTrackPlayer>,
     ) -> ClipSample {
-        #[cfg(feature = "legacy_transform_sampling")]
+        let sample = self.current_sample_masked(transform_mask.as_ref(), property_mask.as_ref());
+        #[cfg(debug_assertions)]
         {
+            let reference = self.sample_at(self.time);
             let transform_mask = transform_mask.unwrap_or_default();
             let property_mask = property_mask.unwrap_or_default();
-            let translation = if transform_mask.apply_translation {
-                self.clip.translation.as_ref().and_then(|track| {
-                    sample_vec2_track_from_state(track, self.translation_cursor, self.translation_segment_time)
-                })
-            } else {
-                None
-            };
-            let rotation = if transform_mask.apply_rotation {
-                self.clip.rotation.as_ref().and_then(|track| {
-                    sample_scalar_track_from_state(track, self.rotation_cursor, self.rotation_segment_time)
-                })
-            } else {
-                None
-            };
-            let scale = if transform_mask.apply_scale {
-                self.clip.scale.as_ref().and_then(|track| {
-                    sample_vec2_track_from_state(track, self.scale_cursor, self.scale_segment_time)
-                })
-            } else {
-                None
-            };
-            let tint = if property_mask.apply_tint {
-                self.clip.tint.as_ref().and_then(|track| {
-                    sample_vec4_track_from_state(track, self.tint_cursor, self.tint_segment_time)
-                })
-            } else {
-                None
-            };
-            let sample = ClipSample { translation, rotation, scale, tint };
-            #[cfg(debug_assertions)]
-            {
-                let reference = self.sample_at(self.time);
-                if transform_mask.apply_translation {
-                    if let (Some(actual), Some(expected)) = (sample.translation, reference.translation) {
-                        debug_assert!(
-                            (actual - expected).length_squared() <= 1e-5,
-                            "sample_with_masks translation mismatch: cached={:?} expected={:?}",
-                            actual,
-                            expected
-                        );
-                    }
-                }
-                if transform_mask.apply_rotation {
-                    if let (Some(actual), Some(expected)) = (sample.rotation, reference.rotation) {
-                        debug_assert!(
-                            (actual - expected).abs() <= 1e-5,
-                            "sample_with_masks rotation mismatch: cached={:?} expected={:?} time={} cursor={} offset={} looped={}",
-                            actual,
-                            expected,
-                            self.time,
-                            self.rotation_cursor,
-                            self.rotation_segment_time,
-                            self.looped
-                        );
-                    }
-                }
-                if transform_mask.apply_scale {
-                    if let (Some(actual), Some(expected)) = (sample.scale, reference.scale) {
-                        debug_assert!(
-                            (actual - expected).length_squared() <= 1e-5,
-                            "sample_with_masks scale mismatch: cached={:?} expected={:?}",
-                            actual,
-                            expected
-                        );
-                    }
-                }
-                if property_mask.apply_tint {
-                    if let (Some(actual), Some(expected)) = (sample.tint, reference.tint) {
-                        debug_assert!(
-                            (actual - expected).length_squared() <= 1e-5,
-                            "sample_with_masks tint mismatch: cached={:?} expected={:?}",
-                            actual,
-                            expected
-                        );
-                    }
+            if transform_mask.apply_translation {
+                if let (Some(actual), Some(expected)) = (sample.translation, reference.translation) {
+                    debug_assert!(
+                        (actual - expected).length_squared() <= 1e-5,
+                        "current sample translation mismatch: {:?} vs {:?}",
+                        actual,
+                        expected
+                    );
                 }
             }
-            sample
-        }
-        #[cfg(not(feature = "legacy_transform_sampling"))]
-        {
-            let sample = self.current_sample_masked(transform_mask.as_ref(), property_mask.as_ref());
-            #[cfg(debug_assertions)]
-            {
-                let reference = self.sample_at(self.time);
-                let transform_mask = transform_mask.unwrap_or_default();
-                let property_mask = property_mask.unwrap_or_default();
-                if transform_mask.apply_translation {
-                    if let (Some(actual), Some(expected)) = (sample.translation, reference.translation) {
-                        debug_assert!(
-                            (actual - expected).length_squared() <= 1e-5,
-                            "current sample translation mismatch: {:?} vs {:?}",
-                            actual,
-                            expected
-                        );
-                    }
-                }
-                if transform_mask.apply_rotation {
-                    if let (Some(actual), Some(expected)) = (sample.rotation, reference.rotation) {
-                        debug_assert!(
-                            (actual - expected).abs() <= 1e-5,
-                            "current sample rotation mismatch: {:?} vs {:?}",
-                            actual,
-                            expected
-                        );
-                    }
-                }
-                if transform_mask.apply_scale {
-                    if let (Some(actual), Some(expected)) = (sample.scale, reference.scale) {
-                        debug_assert!(
-                            (actual - expected).length_squared() <= 1e-5,
-                            "current sample scale mismatch: {:?} vs {:?}",
-                            actual,
-                            expected
-                        );
-                    }
-                }
-                if property_mask.apply_tint {
-                    if let (Some(actual), Some(expected)) = (sample.tint, reference.tint) {
-                        debug_assert!(
-                            (actual - expected).length_squared() <= 1e-5,
-                            "current sample tint mismatch: {:?} vs {:?}",
-                            actual,
-                            expected
-                        );
-                    }
+            if transform_mask.apply_rotation {
+                if let (Some(actual), Some(expected)) = (sample.rotation, reference.rotation) {
+                    debug_assert!(
+                        (actual - expected).abs() <= 1e-5,
+                        "current sample rotation mismatch: {:?} vs {:?}",
+                        actual,
+                        expected
+                    );
                 }
             }
-            sample
+            if transform_mask.apply_scale {
+                if let (Some(actual), Some(expected)) = (sample.scale, reference.scale) {
+                    debug_assert!(
+                        (actual - expected).length_squared() <= 1e-5,
+                        "current sample scale mismatch: {:?} vs {:?}",
+                        actual,
+                        expected
+                    );
+                }
+            }
+            if property_mask.apply_tint {
+                if let (Some(actual), Some(expected)) = (sample.tint, reference.tint) {
+                    debug_assert!(
+                        (actual - expected).length_squared() <= 1e-5,
+                        "current sample tint mismatch: {:?} vs {:?}",
+                        actual,
+                        expected
+                    );
+                }
+            }
         }
+        sample
     }
 
     pub fn sample_at(&self, time: f32) -> ClipSample {
@@ -649,10 +677,37 @@ impl ClipInstance {
         self.rotation_segment_span = 0.0;
         self.scale_segment_span = 0.0;
         self.tint_segment_span = 0.0;
+        self.translation_segment_start = Vec2::ZERO;
+        self.translation_segment_slope = Vec2::ZERO;
+        self.rotation_segment_start = 0.0;
+        self.rotation_segment_slope = 0.0;
+        self.scale_segment_start = Vec2::ZERO;
+        self.scale_segment_slope = Vec2::ZERO;
+        self.tint_segment_start = Vec4::ZERO;
+        self.tint_segment_slope = Vec4::ZERO;
+        self.translation_segment_cached_index = usize::MAX;
+        self.rotation_segment_cached_index = usize::MAX;
+        self.scale_segment_cached_index = usize::MAX;
+        self.tint_segment_cached_index = usize::MAX;
+        self.translation_segment_cache_valid = false;
+        self.rotation_segment_cache_valid = false;
+        self.scale_segment_cache_valid = false;
+        self.tint_segment_cache_valid = false;
+        self.translation_state_current = false;
+        self.rotation_state_current = false;
+        self.scale_state_current = false;
+        self.tint_state_current = false;
     }
 
     fn rebuild_track_cursors(&mut self) {
         let time = self.time;
+        self.sync_translation_state_to_time(time);
+        self.sync_rotation_state_to_time(time);
+        self.sync_scale_state_to_time(time);
+        self.sync_tint_state_to_time(time);
+    }
+
+    fn sync_translation_state_to_time(&mut self, time: f32) {
         if let Some(track) = self.clip.translation.as_ref() {
             let (cursor, offset) = rebuild_vec2_cursor(track, time, self.looped);
             self.translation_cursor = cursor;
@@ -664,7 +719,15 @@ impl ClipInstance {
             self.translation_segment_time = 0.0;
             self.translation_segment_span = 0.0;
         }
+        self.translation_segment_start = Vec2::ZERO;
+        self.translation_segment_slope = Vec2::ZERO;
+        self.translation_segment_cached_index = usize::MAX;
+        self.translation_segment_cache_valid = false;
+        self.translation_state_current = true;
+        self.translation_sample_dirty = true;
+    }
 
+    fn sync_rotation_state_to_time(&mut self, time: f32) {
         if let Some(track) = self.clip.rotation.as_ref() {
             let (cursor, offset) = rebuild_scalar_cursor(track, time, self.looped);
             self.rotation_cursor = cursor;
@@ -676,7 +739,15 @@ impl ClipInstance {
             self.rotation_segment_time = 0.0;
             self.rotation_segment_span = 0.0;
         }
+        self.rotation_segment_start = 0.0;
+        self.rotation_segment_slope = 0.0;
+        self.rotation_segment_cached_index = usize::MAX;
+        self.rotation_segment_cache_valid = false;
+        self.rotation_state_current = true;
+        self.rotation_sample_dirty = true;
+    }
 
+    fn sync_scale_state_to_time(&mut self, time: f32) {
         if let Some(track) = self.clip.scale.as_ref() {
             let (cursor, offset) = rebuild_vec2_cursor(track, time, self.looped);
             self.scale_cursor = cursor;
@@ -688,7 +759,15 @@ impl ClipInstance {
             self.scale_segment_time = 0.0;
             self.scale_segment_span = 0.0;
         }
+        self.scale_segment_start = Vec2::ZERO;
+        self.scale_segment_slope = Vec2::ZERO;
+        self.scale_segment_cached_index = usize::MAX;
+        self.scale_segment_cache_valid = false;
+        self.scale_state_current = true;
+        self.scale_sample_dirty = true;
+    }
 
+    fn sync_tint_state_to_time(&mut self, time: f32) {
         if let Some(track) = self.clip.tint.as_ref() {
             let (cursor, offset) = rebuild_vec4_cursor(track, time, self.looped);
             self.tint_cursor = cursor;
@@ -700,126 +779,767 @@ impl ClipInstance {
             self.tint_segment_time = 0.0;
             self.tint_segment_span = 0.0;
         }
+        self.tint_segment_start = Vec4::ZERO;
+        self.tint_segment_slope = Vec4::ZERO;
+        self.tint_segment_cached_index = usize::MAX;
+        self.tint_segment_cache_valid = false;
+        self.tint_state_current = true;
+        self.tint_sample_dirty = true;
     }
 
-    fn advance_track_states(&mut self, delta: f32) {
+    #[inline(always)]
+    fn advance_vec2_track_state(
+        track: &ClipVec2Track,
+        mut delta: f32,
+        looped: bool,
+        cursor: &mut usize,
+        segment_time: &mut f32,
+        segment_span: &mut f32,
+        segment_start: &mut Vec2,
+        segment_slope: &mut Vec2,
+        cached_index: &mut usize,
+        cache_valid: &mut bool,
+    ) {
+        let keyframes = track.keyframes.as_ref();
+        let segments = track.segments.as_ref();
+        let frame_count = keyframes.len();
+        if frame_count == 0 {
+            *cursor = 0;
+            *segment_time = 0.0;
+            *segment_span = 0.0;
+            *cached_index = usize::MAX;
+            *cache_valid = false;
+            return;
+        }
+        if frame_count == 1 || segments.is_empty() {
+            let value = keyframes[0].value;
+            *cursor = 0;
+            *segment_time = 0.0;
+            *segment_span = 0.0;
+            *segment_start = value;
+            *segment_slope = Vec2::ZERO;
+            *cached_index = 0;
+            *cache_valid = true;
+            return;
+        }
+
+        let segment_count = segments.len();
+        let last_segment = segment_count.saturating_sub(1);
+        let mut index = (*cursor).min(last_segment);
+        *cursor = index;
+
+        if !*cache_valid || *cached_index != index {
+            unsafe {
+                let start_kf = keyframes.get_unchecked(index);
+                let segment = segments.get_unchecked(index);
+                *segment_start = start_kf.value;
+                *segment_slope = segment.slope;
+            }
+            *cached_index = index;
+            *cache_valid = true;
+        }
+
+        let mut span = if *segment_span > 0.0 {
+            (*segment_span).max(0.0)
+        } else {
+            segments.get(index).map(|seg| seg.span).unwrap_or(0.0).max(0.0)
+        };
+        if !span.is_finite() {
+            span = 0.0;
+        }
+        *segment_span = span;
+
+        let mut offset = (*segment_time).clamp(0.0, span);
+
+        if delta <= 0.0 {
+            *segment_time = offset;
+            return;
+        }
+
+        if looped && track.duration > 0.0 && delta >= track.duration {
+            let duration_eps = track.duration.max(std::f32::EPSILON);
+            delta = delta.rem_euclid(duration_eps);
+            if delta <= 0.0 {
+                *segment_time = offset;
+                return;
+            }
+        }
+
+        let remaining = if span > offset { span - offset } else { 0.0 };
+        if span <= 0.0 || delta <= remaining {
+            if span > 0.0 {
+                offset = (offset + delta).min(span);
+            } else {
+                offset = 0.0;
+            }
+            *segment_time = offset;
+            return;
+        }
+
+        delta -= remaining;
+        #[cfg(feature = "anim_stats")]
+        let mut segment_crosses: u32 = 1;
+
+        loop {
+            if looped {
+                index = if index + 1 >= segment_count { 0 } else { index + 1 };
+            } else {
+                if index + 1 >= segment_count {
+                    index = last_segment;
+                    span = segments.get(index).map(|seg| seg.span).unwrap_or(0.0).max(0.0);
+                    offset = span;
+                    unsafe {
+                        let start_kf = keyframes.get_unchecked(index);
+                        let segment = segments.get_unchecked(index);
+                        *segment_start = start_kf.value;
+                        *segment_slope = segment.slope;
+                    }
+                    *cached_index = index;
+                    *cache_valid = true;
+                    break;
+                }
+                index += 1;
+            }
+
+            span = segments.get(index).map(|seg| seg.span).unwrap_or(0.0).max(0.0);
+            unsafe {
+                let start_kf = keyframes.get_unchecked(index);
+                let segment = segments.get_unchecked(index);
+                *segment_start = start_kf.value;
+                *segment_slope = segment.slope;
+            }
+            *cached_index = index;
+            *cache_valid = true;
+
+            if span <= 0.0 {
+                offset = 0.0;
+                break;
+            }
+
+            if delta <= span {
+                offset = delta.min(span);
+                break;
+            }
+
+            delta -= span;
+            #[cfg(feature = "anim_stats")]
+            {
+                segment_crosses += 1;
+            }
+        }
+
+        *cursor = index;
+        *segment_span = span;
+        *segment_time = offset.clamp(0.0, span);
+
+        #[cfg(feature = "anim_stats")]
+        {
+            if segment_crosses > 0 {
+                record_transform_segment_crosses(segment_crosses as u64);
+            }
+        }
+
+        return;
+    }
+
+    #[inline(always)]
+    fn advance_scalar_track_state(
+        track: &ClipScalarTrack,
+        mut delta: f32,
+        looped: bool,
+        cursor: &mut usize,
+        segment_time: &mut f32,
+        segment_span: &mut f32,
+        segment_start: &mut f32,
+        segment_slope: &mut f32,
+        cached_index: &mut usize,
+        cache_valid: &mut bool,
+    ) {
+        let keyframes = track.keyframes.as_ref();
+        let segments = track.segments.as_ref();
+        let frame_count = keyframes.len();
+        if frame_count == 0 {
+            *cursor = 0;
+            *segment_time = 0.0;
+            *segment_span = 0.0;
+            *cached_index = usize::MAX;
+            *cache_valid = false;
+            return;
+        }
+        if frame_count == 1 || segments.is_empty() {
+            let value = keyframes[0].value;
+            *cursor = 0;
+            *segment_time = 0.0;
+            *segment_span = 0.0;
+            *segment_start = value;
+            *segment_slope = 0.0;
+            *cached_index = 0;
+            *cache_valid = true;
+            return;
+        }
+
+        let segment_count = segments.len();
+        let last_segment = segment_count.saturating_sub(1);
+        let mut index = (*cursor).min(last_segment);
+        *cursor = index;
+
+        if !*cache_valid || *cached_index != index {
+            unsafe {
+                let start_kf = keyframes.get_unchecked(index);
+                let segment = segments.get_unchecked(index);
+                *segment_start = start_kf.value;
+                *segment_slope = segment.slope;
+            }
+            *cached_index = index;
+            *cache_valid = true;
+        }
+
+        let mut span = if *segment_span > 0.0 {
+            (*segment_span).max(0.0)
+        } else {
+            segments.get(index).map(|seg| seg.span).unwrap_or(0.0).max(0.0)
+        };
+        if !span.is_finite() {
+            span = 0.0;
+        }
+        *segment_span = span;
+
+        let mut offset = (*segment_time).clamp(0.0, span);
+
+        if delta <= 0.0 {
+            *segment_time = offset;
+            return;
+        }
+
+        if looped && track.duration > 0.0 && delta >= track.duration {
+            let duration_eps = track.duration.max(std::f32::EPSILON);
+            delta = delta.rem_euclid(duration_eps);
+            if delta <= 0.0 {
+                *segment_time = offset;
+                return;
+            }
+        }
+
+        let remaining = if span > offset { span - offset } else { 0.0 };
+        if span <= 0.0 || delta <= remaining {
+            if span > 0.0 {
+                offset = (offset + delta).min(span);
+            } else {
+                offset = 0.0;
+            }
+            *segment_time = offset;
+            return;
+        }
+
+        delta -= remaining;
+        #[cfg(feature = "anim_stats")]
+        let mut segment_crosses: u32 = 1;
+
+        loop {
+            if looped {
+                index = if index + 1 >= segment_count { 0 } else { index + 1 };
+            } else {
+                if index + 1 >= segment_count {
+                    index = last_segment;
+                    span = segments.get(index).map(|seg| seg.span).unwrap_or(0.0).max(0.0);
+                    offset = span;
+                    unsafe {
+                        let start_kf = keyframes.get_unchecked(index);
+                        let segment = segments.get_unchecked(index);
+                        *segment_start = start_kf.value;
+                        *segment_slope = segment.slope;
+                    }
+                    *cached_index = index;
+                    *cache_valid = true;
+                    break;
+                }
+                index += 1;
+            }
+
+            span = segments.get(index).map(|seg| seg.span).unwrap_or(0.0).max(0.0);
+            unsafe {
+                let start_kf = keyframes.get_unchecked(index);
+                let segment = segments.get_unchecked(index);
+                *segment_start = start_kf.value;
+                *segment_slope = segment.slope;
+            }
+            *cached_index = index;
+            *cache_valid = true;
+
+            if span <= 0.0 {
+                offset = 0.0;
+                break;
+            }
+
+            if delta <= span {
+                offset = delta.min(span);
+                break;
+            }
+
+            delta -= span;
+            #[cfg(feature = "anim_stats")]
+            {
+                segment_crosses += 1;
+            }
+        }
+
+        *cursor = index;
+        *segment_span = span;
+        *segment_time = offset.clamp(0.0, span);
+
+        #[cfg(feature = "anim_stats")]
+        {
+            if segment_crosses > 0 {
+                record_transform_segment_crosses(segment_crosses as u64);
+            }
+        }
+
+        return;
+    }
+
+    #[inline(always)]
+    fn advance_vec4_track_state(
+        track: &ClipVec4Track,
+        mut delta: f32,
+        looped: bool,
+        cursor: &mut usize,
+        segment_time: &mut f32,
+        segment_span: &mut f32,
+        segment_start: &mut Vec4,
+        segment_slope: &mut Vec4,
+        cached_index: &mut usize,
+        cache_valid: &mut bool,
+    ) {
+        let keyframes = track.keyframes.as_ref();
+        let segments = track.segments.as_ref();
+        let frame_count = keyframes.len();
+        if frame_count == 0 {
+            *cursor = 0;
+            *segment_time = 0.0;
+            *segment_span = 0.0;
+            *cached_index = usize::MAX;
+            *cache_valid = false;
+            return;
+        }
+        if frame_count == 1 || segments.is_empty() {
+            let value = keyframes[0].value;
+            *cursor = 0;
+            *segment_time = 0.0;
+            *segment_span = 0.0;
+            *segment_start = value;
+            *segment_slope = Vec4::ZERO;
+            *cached_index = 0;
+            *cache_valid = true;
+            return;
+        }
+
+        let segment_count = segments.len();
+        let last_segment = segment_count.saturating_sub(1);
+        let mut index = (*cursor).min(last_segment);
+        *cursor = index;
+
+        if !*cache_valid || *cached_index != index {
+            unsafe {
+                let start_kf = keyframes.get_unchecked(index);
+                let segment = segments.get_unchecked(index);
+                *segment_start = start_kf.value;
+                *segment_slope = segment.slope;
+            }
+            *cached_index = index;
+            *cache_valid = true;
+        }
+
+        let mut span = if *segment_span > 0.0 {
+            (*segment_span).max(0.0)
+        } else {
+            segments.get(index).map(|seg| seg.span).unwrap_or(0.0).max(0.0)
+        };
+        if !span.is_finite() {
+            span = 0.0;
+        }
+        *segment_span = span;
+
+        let mut offset = (*segment_time).clamp(0.0, span);
+
+        if delta <= 0.0 {
+            *segment_time = offset;
+            return;
+        }
+
+        if looped && track.duration > 0.0 && delta >= track.duration {
+            let duration_eps = track.duration.max(std::f32::EPSILON);
+            delta = delta.rem_euclid(duration_eps);
+            if delta <= 0.0 {
+                *segment_time = offset;
+                return;
+            }
+        }
+
+        let remaining = if span > offset { span - offset } else { 0.0 };
+        if span <= 0.0 || delta <= remaining {
+            if span > 0.0 {
+                offset = (offset + delta).min(span);
+            } else {
+                offset = 0.0;
+            }
+            *segment_time = offset;
+            return;
+        }
+
+        delta -= remaining;
+        #[cfg(feature = "anim_stats")]
+        let mut segment_crosses: u32 = 1;
+
+        loop {
+            if looped {
+                index = if index + 1 >= segment_count { 0 } else { index + 1 };
+            } else {
+                if index + 1 >= segment_count {
+                    index = last_segment;
+                    span = segments.get(index).map(|seg| seg.span).unwrap_or(0.0).max(0.0);
+                    offset = span;
+                    unsafe {
+                        let start_kf = keyframes.get_unchecked(index);
+                        let segment = segments.get_unchecked(index);
+                        *segment_start = start_kf.value;
+                        *segment_slope = segment.slope;
+                    }
+                    *cached_index = index;
+                    *cache_valid = true;
+                    break;
+                }
+                index += 1;
+            }
+
+            span = segments.get(index).map(|seg| seg.span).unwrap_or(0.0).max(0.0);
+            unsafe {
+                let start_kf = keyframes.get_unchecked(index);
+                let segment = segments.get_unchecked(index);
+                *segment_start = start_kf.value;
+                *segment_slope = segment.slope;
+            }
+            *cached_index = index;
+            *cache_valid = true;
+
+            if span <= 0.0 {
+                offset = 0.0;
+                break;
+            }
+
+            if delta <= span {
+                offset = delta.min(span);
+                break;
+            }
+
+            delta -= span;
+            #[cfg(feature = "anim_stats")]
+            {
+                segment_crosses += 1;
+            }
+        }
+
+        *cursor = index;
+        *segment_span = span;
+        *segment_time = offset.clamp(0.0, span);
+
+        #[cfg(feature = "anim_stats")]
+        {
+            if segment_crosses > 0 {
+                record_transform_segment_crosses(segment_crosses as u64);
+            }
+        }
+
+        return;
+    }
+
+    #[inline(always)]
+    fn sample_vec2_from_cached(
+        track: &ClipVec2Track,
+        index: usize,
+        offset: f32,
+        span: f32,
+        start: Vec2,
+        slope: Vec2,
+    ) -> Vec2 {
+        if matches!(track.interpolation, ClipInterpolation::Step) {
+            if span <= 0.0 || offset >= span {
+                track.keyframes.as_ref().get(index + 1).map(|kf| kf.value).unwrap_or(start)
+            } else {
+                start
+            }
+        } else if span > 0.0 {
+            start + slope * offset.clamp(0.0, span)
+        } else {
+            start
+        }
+    }
+
+    #[inline(always)]
+    fn sample_scalar_from_cached(
+        track: &ClipScalarTrack,
+        index: usize,
+        offset: f32,
+        span: f32,
+        start: f32,
+        slope: f32,
+    ) -> f32 {
+        if matches!(track.interpolation, ClipInterpolation::Step) {
+            if span <= 0.0 || offset >= span {
+                track.keyframes.as_ref().get(index + 1).map(|kf| kf.value).unwrap_or(start)
+            } else {
+                start
+            }
+        } else if span > 0.0 {
+            start + slope * offset.clamp(0.0, span)
+        } else {
+            start
+        }
+    }
+
+    #[inline(always)]
+    fn sample_vec4_from_cached(
+        track: &ClipVec4Track,
+        index: usize,
+        offset: f32,
+        span: f32,
+        start: Vec4,
+        slope: Vec4,
+    ) -> Vec4 {
+        if matches!(track.interpolation, ClipInterpolation::Step) {
+            if span <= 0.0 || offset >= span {
+                track.keyframes.as_ref().get(index + 1).map(|kf| kf.value).unwrap_or(start)
+            } else {
+                start
+            }
+        } else if span > 0.0 {
+            start + slope * offset.clamp(0.0, span)
+        } else {
+            start
+        }
+    }
+
+    #[inline(always)]
+    fn sample_vec2_from_state_cached(
+        track: &ClipVec2Track,
+        cursor: usize,
+        segment_time: f32,
+        segment_span: f32,
+        segment_start: Vec2,
+        segment_slope: Vec2,
+        cached_index: usize,
+        cache_valid: bool,
+    ) -> Option<Vec2> {
+        if cache_valid && cached_index == cursor {
+            let span = segment_span.max(0.0);
+            let offset = if span > 0.0 { segment_time.clamp(0.0, span) } else { 0.0 };
+            Some(Self::sample_vec2_from_cached(track, cursor, offset, span, segment_start, segment_slope))
+        } else {
+            sample_vec2_track_from_state(track, cursor, segment_time)
+        }
+    }
+
+    #[inline(always)]
+    fn sample_scalar_from_state_cached(
+        track: &ClipScalarTrack,
+        cursor: usize,
+        segment_time: f32,
+        segment_span: f32,
+        segment_start: f32,
+        segment_slope: f32,
+        cached_index: usize,
+        cache_valid: bool,
+    ) -> Option<f32> {
+        if cache_valid && cached_index == cursor {
+            let span = segment_span.max(0.0);
+            let offset = if span > 0.0 { segment_time.clamp(0.0, span) } else { 0.0 };
+            Some(Self::sample_scalar_from_cached(track, cursor, offset, span, segment_start, segment_slope))
+        } else {
+            sample_scalar_track_from_state(track, cursor, segment_time)
+        }
+    }
+
+    #[inline(always)]
+    fn sample_vec4_from_state_cached(
+        track: &ClipVec4Track,
+        cursor: usize,
+        segment_time: f32,
+        segment_span: f32,
+        segment_start: Vec4,
+        segment_slope: Vec4,
+        cached_index: usize,
+        cache_valid: bool,
+    ) -> Option<Vec4> {
+        if cache_valid && cached_index == cursor {
+            let span = segment_span.max(0.0);
+            let offset = if span > 0.0 { segment_time.clamp(0.0, span) } else { 0.0 };
+            Some(Self::sample_vec4_from_cached(track, cursor, offset, span, segment_start, segment_slope))
+        } else {
+            sample_vec4_track_from_state(track, cursor, segment_time)
+        }
+    }
+
+    fn advance_track_states(&mut self, delta: f32, mask: ClipChannelMask) {
+        #[cfg(feature = "anim_stats")]
+        let advance_timer = Instant::now();
         let looped = self.looped;
-        if let Some(track) = self.clip.translation.as_ref() {
-            advance_vec2_cursor(
-                track,
-                delta,
-                looped,
-                &mut self.translation_cursor,
-                &mut self.translation_segment_time,
-                &mut self.translation_segment_span,
-            );
-            #[cfg(not(feature = "legacy_transform_sampling"))]
-            {
-                self.current_translation = sample_vec2_track_from_state(
-                    track,
-                    self.translation_cursor,
-                    self.translation_segment_time,
-                );
+        {
+            if let Some(track) = self.clip.translation.as_ref() {
+                if mask.translation {
+                    if !self.translation_state_current {
+                        self.sync_translation_state_to_time(self.time);
+                    } else if delta > 0.0 {
+                        Self::advance_vec2_track_state(
+                            track,
+                            delta,
+                            looped,
+                            &mut self.translation_cursor,
+                            &mut self.translation_segment_time,
+                            &mut self.translation_segment_span,
+                            &mut self.translation_segment_start,
+                            &mut self.translation_segment_slope,
+                            &mut self.translation_segment_cached_index,
+                            &mut self.translation_segment_cache_valid,
+                        );
+                        self.translation_sample_dirty = true;
+                    }
+                } else if delta > 0.0 {
+                    self.translation_state_current = false;
+                    self.translation_sample_dirty = true;
+                }
+            } else {
+                self.translation_cursor = 0;
+                self.translation_segment_time = 0.0;
+                self.translation_segment_span = 0.0;
+                self.translation_segment_start = Vec2::ZERO;
+                self.translation_segment_slope = Vec2::ZERO;
+                self.translation_segment_cached_index = usize::MAX;
+                self.translation_segment_cache_valid = false;
+                self.translation_state_current = true;
+                self.translation_sample_dirty = true;
+                self.current_sample.translation = None;
             }
-        } else {
-            self.translation_cursor = 0;
-            self.translation_segment_time = 0.0;
-            self.translation_segment_span = 0.0;
-            #[cfg(not(feature = "legacy_transform_sampling"))]
-            {
-                self.current_translation = None;
+
+            if let Some(track) = self.clip.rotation.as_ref() {
+                if mask.rotation {
+                    if !self.rotation_state_current {
+                        self.sync_rotation_state_to_time(self.time);
+                    } else if delta > 0.0 {
+                        Self::advance_scalar_track_state(
+                            track,
+                            delta,
+                            looped,
+                            &mut self.rotation_cursor,
+                            &mut self.rotation_segment_time,
+                            &mut self.rotation_segment_span,
+                            &mut self.rotation_segment_start,
+                            &mut self.rotation_segment_slope,
+                            &mut self.rotation_segment_cached_index,
+                            &mut self.rotation_segment_cache_valid,
+                        );
+                        self.rotation_sample_dirty = true;
+                    }
+                } else if delta > 0.0 {
+                    self.rotation_state_current = false;
+                    self.rotation_sample_dirty = true;
+                }
+            } else {
+                self.rotation_cursor = 0;
+                self.rotation_segment_time = 0.0;
+                self.rotation_segment_span = 0.0;
+                self.rotation_segment_start = 0.0;
+                self.rotation_segment_slope = 0.0;
+                self.rotation_segment_cached_index = usize::MAX;
+                self.rotation_segment_cache_valid = false;
+                self.rotation_state_current = true;
+                self.rotation_sample_dirty = true;
+                self.current_sample.rotation = None;
+            }
+
+            if let Some(track) = self.clip.scale.as_ref() {
+                if mask.scale {
+                    if !self.scale_state_current {
+                        self.sync_scale_state_to_time(self.time);
+                    } else if delta > 0.0 {
+                        Self::advance_vec2_track_state(
+                            track,
+                            delta,
+                            looped,
+                            &mut self.scale_cursor,
+                            &mut self.scale_segment_time,
+                            &mut self.scale_segment_span,
+                            &mut self.scale_segment_start,
+                            &mut self.scale_segment_slope,
+                            &mut self.scale_segment_cached_index,
+                            &mut self.scale_segment_cache_valid,
+                        );
+                        self.scale_sample_dirty = true;
+                    }
+                } else if delta > 0.0 {
+                    self.scale_state_current = false;
+                    self.scale_sample_dirty = true;
+                }
+            } else {
+                self.scale_cursor = 0;
+                self.scale_segment_time = 0.0;
+                self.scale_segment_span = 0.0;
+                self.scale_segment_start = Vec2::ZERO;
+                self.scale_segment_slope = Vec2::ZERO;
+                self.scale_segment_cached_index = usize::MAX;
+                self.scale_segment_cache_valid = false;
+                self.scale_state_current = true;
+                self.scale_sample_dirty = true;
+                self.current_sample.scale = None;
+            }
+
+            if let Some(track) = self.clip.tint.as_ref() {
+                if mask.tint {
+                    if !self.tint_state_current {
+                        self.sync_tint_state_to_time(self.time);
+                    } else if delta > 0.0 {
+                        Self::advance_vec4_track_state(
+                            track,
+                            delta,
+                            looped,
+                            &mut self.tint_cursor,
+                            &mut self.tint_segment_time,
+                            &mut self.tint_segment_span,
+                            &mut self.tint_segment_start,
+                            &mut self.tint_segment_slope,
+                            &mut self.tint_segment_cached_index,
+                            &mut self.tint_segment_cache_valid,
+                        );
+                        self.tint_sample_dirty = true;
+                    }
+                } else if delta > 0.0 {
+                    self.tint_state_current = false;
+                    self.tint_sample_dirty = true;
+                }
+            } else {
+                self.tint_cursor = 0;
+                self.tint_segment_time = 0.0;
+                self.tint_segment_span = 0.0;
+                self.tint_segment_start = Vec4::ZERO;
+                self.tint_segment_slope = Vec4::ZERO;
+                self.tint_segment_cached_index = usize::MAX;
+                self.tint_segment_cache_valid = false;
+                self.tint_state_current = true;
+                self.tint_sample_dirty = true;
+                self.current_sample.tint = None;
             }
         }
 
-        if let Some(track) = self.clip.rotation.as_ref() {
-            advance_scalar_cursor(
-                track,
-                delta,
-                looped,
-                &mut self.rotation_cursor,
-                &mut self.rotation_segment_time,
-                &mut self.rotation_segment_span,
-            );
-            #[cfg(not(feature = "legacy_transform_sampling"))]
-            {
-                self.current_rotation = sample_scalar_track_from_state(
-                    track,
-                    self.rotation_cursor,
-                    self.rotation_segment_time,
-                );
-            }
-        } else {
-            self.rotation_cursor = 0;
-            self.rotation_segment_time = 0.0;
-            self.rotation_segment_span = 0.0;
-            #[cfg(not(feature = "legacy_transform_sampling"))]
-            {
-                self.current_rotation = None;
-            }
-        }
-
-        if let Some(track) = self.clip.scale.as_ref() {
-            advance_vec2_cursor(
-                track,
-                delta,
-                looped,
-                &mut self.scale_cursor,
-                &mut self.scale_segment_time,
-                &mut self.scale_segment_span,
-            );
-            #[cfg(not(feature = "legacy_transform_sampling"))]
-            {
-                self.current_scale = sample_vec2_track_from_state(
-                    track,
-                    self.scale_cursor,
-                    self.scale_segment_time,
-                );
-            }
-        } else {
-            self.scale_cursor = 0;
-            self.scale_segment_time = 0.0;
-            self.scale_segment_span = 0.0;
-            #[cfg(not(feature = "legacy_transform_sampling"))]
-            {
-                self.current_scale = None;
-            }
-        }
-
-        if let Some(track) = self.clip.tint.as_ref() {
-            advance_vec4_cursor(
-                track,
-                delta,
-                looped,
-                &mut self.tint_cursor,
-                &mut self.tint_segment_time,
-                &mut self.tint_segment_span,
-            );
-            #[cfg(not(feature = "legacy_transform_sampling"))]
-            {
-                self.current_tint = sample_vec4_track_from_state(
-                    track,
-                    self.tint_cursor,
-                    self.tint_segment_time,
-                );
-            }
-        } else {
-            self.tint_cursor = 0;
-            self.tint_segment_time = 0.0;
-            self.tint_segment_span = 0.0;
-            #[cfg(not(feature = "legacy_transform_sampling"))]
-            {
-                self.current_tint = None;
-            }
-        }
-
-        #[cfg(all(not(feature = "legacy_transform_sampling"), debug_assertions))]
+        #[cfg(debug_assertions)]
         self.debug_verify_current_values();
+
+        #[cfg(feature = "anim_stats")]
+        record_transform_advance_time(advance_timer.elapsed());
     }
 
-    #[cfg(all(not(feature = "legacy_transform_sampling"), debug_assertions))]
-    fn debug_verify_current_values(&self) {
+    #[cfg(debug_assertions)]
+    fn debug_verify_current_values(&mut self) {
+        let sample = self.current_sample_full();
         let reference = self.sample_all_tracks();
-        if let (Some(actual), Some(expected)) = (self.current_translation, reference.translation) {
+        if let (Some(actual), Some(expected)) = (sample.translation, reference.translation) {
             debug_assert!(
                 (actual - expected).length_squared() <= 1e-5,
                 "translation mismatch: {:?} vs {:?}",
@@ -827,10 +1547,10 @@ impl ClipInstance {
                 expected
             );
         }
-        if let (Some(actual), Some(expected)) = (self.current_rotation, reference.rotation) {
+        if let (Some(actual), Some(expected)) = (sample.rotation, reference.rotation) {
             debug_assert!((actual - expected).abs() <= 1e-5, "rotation mismatch: {} vs {}", actual, expected);
         }
-        if let (Some(actual), Some(expected)) = (self.current_scale, reference.scale) {
+        if let (Some(actual), Some(expected)) = (sample.scale, reference.scale) {
             debug_assert!(
                 (actual - expected).length_squared() <= 1e-5,
                 "scale mismatch: {:?} vs {:?}",
@@ -838,7 +1558,7 @@ impl ClipInstance {
                 expected
             );
         }
-        if let (Some(actual), Some(expected)) = (self.current_tint, reference.tint) {
+        if let (Some(actual), Some(expected)) = (sample.tint, reference.tint) {
             debug_assert!(
                 (actual - expected).length_squared() <= 1e-5,
                 "tint mismatch: {:?} vs {:?}",
@@ -848,29 +1568,128 @@ impl ClipInstance {
         }
     }
 
-    #[cfg(not(feature = "legacy_transform_sampling"))]
-    pub(crate) fn current_sample_full(&self) -> ClipSample {
-        ClipSample {
-            translation: self.current_translation,
-            rotation: self.current_rotation,
-            scale: self.current_scale,
-            tint: self.current_tint,
-        }
+    pub(crate) fn current_sample_full(&mut self) -> ClipSample {
+        self.ensure_current_sample_channels(ClipChannelMask::all());
+        self.current_sample
     }
 
-    #[cfg(not(feature = "legacy_transform_sampling"))]
     pub(crate) fn current_sample_masked(
-        &self,
+        &mut self,
         transform_player: Option<&TransformTrackPlayer>,
         property_player: Option<&PropertyTrackPlayer>,
     ) -> ClipSample {
+        let channel_mask = ClipChannelMask::from_players(transform_player, property_player);
+        self.ensure_current_sample_channels(channel_mask);
         let transform_mask = transform_player.copied().unwrap_or_default();
         let property_mask = property_player.copied().unwrap_or_default();
         ClipSample {
-            translation: if transform_mask.apply_translation { self.current_translation } else { None },
-            rotation: if transform_mask.apply_rotation { self.current_rotation } else { None },
-            scale: if transform_mask.apply_scale { self.current_scale } else { None },
-            tint: if property_mask.apply_tint { self.current_tint } else { None },
+            translation: if transform_mask.apply_translation {
+                self.current_sample.translation
+            } else {
+                None
+            },
+            rotation: if transform_mask.apply_rotation { self.current_sample.rotation } else { None },
+            scale: if transform_mask.apply_scale { self.current_sample.scale } else { None },
+            tint: if property_mask.apply_tint { self.current_sample.tint } else { None },
+        }
+    }
+
+    fn ensure_current_sample_channels(&mut self, mask: ClipChannelMask) {
+        if mask.translation {
+            self.ensure_translation_sample();
+        }
+        if mask.rotation {
+            self.ensure_rotation_sample();
+        }
+        if mask.scale {
+            self.ensure_scale_sample();
+        }
+        if mask.tint {
+            self.ensure_tint_sample();
+        }
+    }
+
+    fn ensure_translation_sample(&mut self) {
+        if !self.translation_state_current {
+            self.sync_translation_state_to_time(self.time);
+        }
+        if self.translation_sample_dirty {
+            self.current_sample.translation = self.clip.translation.as_ref().and_then(|track| {
+                Self::sample_vec2_from_state_cached(
+                    track,
+                    self.translation_cursor,
+                    self.translation_segment_time,
+                    self.translation_segment_span,
+                    self.translation_segment_start,
+                    self.translation_segment_slope,
+                    self.translation_segment_cached_index,
+                    self.translation_segment_cache_valid,
+                )
+            });
+            self.translation_sample_dirty = false;
+        }
+    }
+
+    fn ensure_rotation_sample(&mut self) {
+        if !self.rotation_state_current {
+            self.sync_rotation_state_to_time(self.time);
+        }
+        if self.rotation_sample_dirty {
+            self.current_sample.rotation = self.clip.rotation.as_ref().and_then(|track| {
+                Self::sample_scalar_from_state_cached(
+                    track,
+                    self.rotation_cursor,
+                    self.rotation_segment_time,
+                    self.rotation_segment_span,
+                    self.rotation_segment_start,
+                    self.rotation_segment_slope,
+                    self.rotation_segment_cached_index,
+                    self.rotation_segment_cache_valid,
+                )
+            });
+            self.rotation_sample_dirty = false;
+        }
+    }
+
+    fn ensure_scale_sample(&mut self) {
+        if !self.scale_state_current {
+            self.sync_scale_state_to_time(self.time);
+        }
+        if self.scale_sample_dirty {
+            self.current_sample.scale = self.clip.scale.as_ref().and_then(|track| {
+                Self::sample_vec2_from_state_cached(
+                    track,
+                    self.scale_cursor,
+                    self.scale_segment_time,
+                    self.scale_segment_span,
+                    self.scale_segment_start,
+                    self.scale_segment_slope,
+                    self.scale_segment_cached_index,
+                    self.scale_segment_cache_valid,
+                )
+            });
+            self.scale_sample_dirty = false;
+        }
+    }
+
+    fn ensure_tint_sample(&mut self) {
+        if !self.tint_state_current {
+            self.sync_tint_state_to_time(self.time);
+        }
+        if self.tint_sample_dirty {
+            self.current_sample.tint = self.clip.tint.as_ref().and_then(|track| {
+                Self::sample_vec4_from_state_cached(
+                    track,
+                    self.tint_cursor,
+                    self.tint_segment_time,
+                    self.tint_segment_span,
+                    self.tint_segment_start,
+                    self.tint_segment_slope,
+                    self.tint_segment_cached_index,
+                    self.tint_segment_cache_valid,
+                )
+            });
+            self.tint_sample_dirty = false;
         }
     }
 }
@@ -942,33 +1761,28 @@ fn sample_vec2_track_from_state(track: &ClipVec2Track, cursor: usize, segment_ti
         return None;
     }
     let len = frames.len();
-    if len == 1 {
-        return Some(frames[0].value);
+    if len == 1 || cursor >= len - 1 {
+        return Some(unsafe { frames.get_unchecked(len - 1) }.value);
     }
-    let last_index = len - 1;
-    if cursor >= last_index {
-        return Some(frames[last_index].value);
-    }
-    let segment = track.segments.get(cursor);
-    let duration = segment.map(|seg| seg.span).unwrap_or(0.0);
-    let inv = segment.map(|seg| seg.inv_span).unwrap_or(0.0);
+    let start = unsafe { frames.get_unchecked(cursor) };
+    let end = unsafe { frames.get_unchecked(cursor + 1) };
+    let segments = track.segments.as_ref();
+    let segment = segments.get(cursor);
     if matches!(track.interpolation, ClipInterpolation::Step) {
-        let start = &frames[cursor];
-        let end = &frames[cursor + 1];
-        if duration <= 0.0 || segment_time * inv >= 1.0 {
-            return Some(end.value);
+        let (span, inv) =
+            if let Some(seg) = segment { (seg.span.max(0.0), seg.inv_span) } else { (0.0, 0.0) };
+        if span <= 0.0 || segment_time * inv >= 1.0 {
+            Some(end.value)
+        } else {
+            Some(start.value)
         }
-        return Some(start.value);
-    }
-    let start = &frames[cursor];
-    let mut t = segment_time;
-    if duration > 0.0 {
-        t = t.clamp(0.0, duration);
+    } else if let Some(seg) = segment {
+        let span = seg.span.max(0.0);
+        let t = if span > 0.0 { segment_time.clamp(0.0, span) } else { 0.0 };
+        Some(start.value + seg.slope * t)
     } else {
-        t = 0.0;
+        Some(start.value)
     }
-    let slope = segment.map(|seg| seg.slope).unwrap_or(Vec2::ZERO);
-    Some(start.value + slope * t)
 }
 
 #[inline(always)]
@@ -978,33 +1792,28 @@ fn sample_scalar_track_from_state(track: &ClipScalarTrack, cursor: usize, segmen
         return None;
     }
     let len = frames.len();
-    if len == 1 {
-        return Some(frames[0].value);
+    if len == 1 || cursor >= len - 1 {
+        return Some(unsafe { frames.get_unchecked(len - 1) }.value);
     }
-    let last_index = len - 1;
-    if cursor >= last_index {
-        return Some(frames[last_index].value);
-    }
-    let segment = track.segments.get(cursor);
-    let duration = segment.map(|seg| seg.span).unwrap_or(0.0);
-    let inv = segment.map(|seg| seg.inv_span).unwrap_or(0.0);
+    let start = unsafe { frames.get_unchecked(cursor) };
+    let end = unsafe { frames.get_unchecked(cursor + 1) };
+    let segments = track.segments.as_ref();
+    let segment = segments.get(cursor);
     if matches!(track.interpolation, ClipInterpolation::Step) {
-        let start = &frames[cursor];
-        let end = &frames[cursor + 1];
-        if duration <= 0.0 || segment_time * inv >= 1.0 {
-            return Some(end.value);
+        let (span, inv) =
+            if let Some(seg) = segment { (seg.span.max(0.0), seg.inv_span) } else { (0.0, 0.0) };
+        if span <= 0.0 || segment_time * inv >= 1.0 {
+            Some(end.value)
+        } else {
+            Some(start.value)
         }
-        return Some(start.value);
-    }
-    let start = &frames[cursor];
-    let mut t = segment_time;
-   if duration > 0.0 {
-        t = t.clamp(0.0, duration);
+    } else if let Some(seg) = segment {
+        let span = seg.span.max(0.0);
+        let t = if span > 0.0 { segment_time.clamp(0.0, span) } else { 0.0 };
+        Some(start.value + seg.slope * t)
     } else {
-        t = 0.0;
+        Some(start.value)
     }
-    let slope = segment.map(|seg| seg.slope).unwrap_or(0.0);
-    Some(start.value + slope * t)
 }
 
 #[inline(always)]
@@ -1014,33 +1823,28 @@ fn sample_vec4_track_from_state(track: &ClipVec4Track, cursor: usize, segment_ti
         return None;
     }
     let len = frames.len();
-    if len == 1 {
-        return Some(frames[0].value);
+    if len == 1 || cursor >= len - 1 {
+        return Some(unsafe { frames.get_unchecked(len - 1) }.value);
     }
-    let last_index = len - 1;
-    if cursor >= last_index {
-        return Some(frames[last_index].value);
-    }
-    let segment = track.segments.get(cursor);
-    let duration = segment.map(|seg| seg.span).unwrap_or(0.0);
-    let inv = segment.map(|seg| seg.inv_span).unwrap_or(0.0);
+    let start = unsafe { frames.get_unchecked(cursor) };
+    let end = unsafe { frames.get_unchecked(cursor + 1) };
+    let segments = track.segments.as_ref();
+    let segment = segments.get(cursor);
     if matches!(track.interpolation, ClipInterpolation::Step) {
-        let start = &frames[cursor];
-        let end = &frames[cursor + 1];
-        if duration <= 0.0 || segment_time * inv >= 1.0 {
-            return Some(end.value);
+        let (span, inv) =
+            if let Some(seg) = segment { (seg.span.max(0.0), seg.inv_span) } else { (0.0, 0.0) };
+        if span <= 0.0 || segment_time * inv >= 1.0 {
+            Some(end.value)
+        } else {
+            Some(start.value)
         }
-        return Some(start.value);
-    }
-    let start = &frames[cursor];
-    let mut t = segment_time;
-    if duration > 0.0 {
-        t = t.clamp(0.0, duration);
+    } else if let Some(seg) = segment {
+        let span = seg.span.max(0.0);
+        let t = if span > 0.0 { segment_time.clamp(0.0, span) } else { 0.0 };
+        Some(start.value + seg.slope * t)
     } else {
-        t = 0.0;
+        Some(start.value)
     }
-    let slope = segment.map(|seg| seg.slope).unwrap_or(Vec4::ZERO);
-    Some(start.value + slope * t)
 }
 
 fn rebuild_vec2_cursor(track: &ClipVec2Track, clip_time: f32, looped: bool) -> (usize, f32) {
@@ -1053,66 +1857,6 @@ fn rebuild_scalar_cursor(track: &ClipScalarTrack, clip_time: f32, looped: bool) 
 
 fn rebuild_vec4_cursor(track: &ClipVec4Track, clip_time: f32, looped: bool) -> (usize, f32) {
     rebuild_cursor_impl(track.keyframes.as_ref(), track.duration, track.duration_inv, clip_time, looped)
-}
-
-fn advance_vec2_cursor(
-    track: &ClipVec2Track,
-    delta: f32,
-    looped: bool,
-    cursor: &mut usize,
-    segment_time: &mut f32,
-    segment_span: &mut f32,
-) {
-    advance_cursor_impl(
-        track.keyframes.as_ref(),
-        track.duration,
-        track.segments.as_ref(),
-        delta,
-        looped,
-        cursor,
-        segment_time,
-        segment_span,
-    );
-}
-
-fn advance_scalar_cursor(
-    track: &ClipScalarTrack,
-    delta: f32,
-    looped: bool,
-    cursor: &mut usize,
-    segment_time: &mut f32,
-    segment_span: &mut f32,
-) {
-    advance_cursor_impl(
-        track.keyframes.as_ref(),
-        track.duration,
-        track.segments.as_ref(),
-        delta,
-        looped,
-        cursor,
-        segment_time,
-        segment_span,
-    );
-}
-
-fn advance_vec4_cursor(
-    track: &ClipVec4Track,
-    delta: f32,
-    looped: bool,
-    cursor: &mut usize,
-    segment_time: &mut f32,
-    segment_span: &mut f32,
-) {
-    advance_cursor_impl(
-        track.keyframes.as_ref(),
-        track.duration,
-        track.segments.as_ref(),
-        delta,
-        looped,
-        cursor,
-        segment_time,
-        segment_span,
-    );
 }
 
 fn rebuild_cursor_impl<T>(
@@ -1155,173 +1899,6 @@ fn cursor_from_time<T>(frames: &[ClipKeyframe<T>], sample_time: f32) -> (usize, 
     let penultimate = last_index - 1;
     let span = (frames[last_index].time - frames[penultimate].time).max(0.0);
     (penultimate, span)
-}
-
-fn advance_cursor_impl<T, S>(
-    frames: &[ClipKeyframe<T>],
-    duration: f32,
-    segments: &[ClipSegment<S>],
-    mut delta: f32,
-    looped: bool,
-    cursor: &mut usize,
-    segment_time: &mut f32,
-    segment_span: &mut f32,
-) where
-    S: Copy,
-{
-    let len = frames.len();
-    if len <= 1 {
-        *cursor = 0;
-        *segment_time = 0.0;
-        *segment_span = 0.0;
-        return;
-    }
-
-    let max_segment_index = len - 2;
-    let original_index = *cursor;
-    let mut index = if original_index > max_segment_index {
-        max_segment_index
-    } else {
-        original_index
-    };
-    let cursor_clamped = original_index != index;
-    if cursor_clamped {
-        *cursor = index;
-    }
-
-    let cached_span = *segment_span;
-    let cached_time = *segment_time;
-    let cached_span_valid = cached_span.is_finite() && cached_span >= 0.0;
-    let cached_time_valid = cached_time.is_finite()
-        && cached_time >= 0.0
-        && (!cached_span_valid || cached_time <= cached_span);
-
-    if !cursor_clamped && cached_span_valid && cached_time_valid {
-        if delta <= 0.0 {
-            return;
-        }
-
-        if cached_span == 0.0 {
-            if cached_time != 0.0 {
-                *segment_time = 0.0;
-            }
-            return;
-        }
-
-        let remaining = cached_span - cached_time;
-        if delta <= remaining {
-            let updated = cached_time + delta;
-            *segment_time = if updated <= cached_span { updated } else { cached_span };
-            return;
-        }
-    }
-
-    let mut span = if !cursor_clamped && cached_span_valid {
-        cached_span.max(0.0)
-    } else {
-        segments.get(index).map(|segment| segment.span).unwrap_or(0.0).max(0.0)
-    };
-
-    if !span.is_finite() || span < 0.0 {
-        span = 0.0;
-    }
-
-    let mut offset = if !cursor_clamped && cached_time_valid {
-        cached_time.max(0.0)
-    } else {
-        0.0
-    };
-    if span > 0.0 {
-        if offset > span {
-            offset = span;
-        }
-    } else {
-        offset = 0.0;
-    }
-
-    if delta <= 0.0 {
-        *cursor = index;
-        *segment_time = offset;
-        *segment_span = span;
-        return;
-    }
-
-    if looped && duration > 0.0 {
-        let duration_eps = duration.max(std::f32::EPSILON);
-        if delta >= duration_eps {
-            delta = delta.rem_euclid(duration_eps);
-            if delta == 0.0 {
-                *cursor = index;
-                *segment_time = offset;
-                *segment_span = span;
-                return;
-            }
-        }
-    }
-
-    let mut remaining = (span - offset).max(0.0);
-    if delta <= remaining || span <= 0.0 {
-        if span > 0.0 {
-            offset = (offset + delta).min(span);
-        } else {
-            offset = 0.0;
-        }
-        *cursor = index;
-        *segment_time = offset;
-        *segment_span = span;
-        return;
-    }
-
-    delta -= remaining;
-    index += 1;
-
-    #[cfg(feature = "anim_stats")]
-    let mut segment_crosses: u32 = 1;
-
-    loop {
-        if index >= len - 1 {
-            if looped && duration > 0.0 {
-                index = 0;
-                span = segments.get(index).map(|segment| segment.span).unwrap_or(0.0).max(0.0);
-                remaining = span.max(0.0);
-            } else {
-                index = max_segment_index;
-                span = segments.get(index).map(|segment| segment.span).unwrap_or(0.0).max(0.0);
-                offset = span;
-                break;
-            }
-        } else {
-            span = segments.get(index).map(|segment| segment.span).unwrap_or(0.0).max(0.0);
-            remaining = span.max(0.0);
-        }
-
-        if delta <= remaining || span <= 0.0 {
-            if span > 0.0 {
-                offset = delta.min(span);
-            } else {
-                offset = 0.0;
-            }
-            break;
-        }
-
-        delta -= remaining;
-        index += 1;
-        #[cfg(feature = "anim_stats")]
-        {
-            segment_crosses += 1;
-        }
-    }
-
-    *cursor = index;
-    *segment_time = if span > 0.0 { offset.min(span).max(0.0) } else { 0.0 };
-    *segment_span = span;
-
-    #[cfg(feature = "anim_stats")]
-    {
-        if segment_crosses > 0 {
-            record_transform_segment_crosses(segment_crosses as u64);
-        }
-    }
 }
 
 const CLIP_TIME_EPSILON: f32 = 1e-5;
@@ -1764,6 +2341,8 @@ pub struct ParticleEmitter {
     pub end_color: Vec4,
     pub start_size: f32,
     pub end_size: f32,
+    pub atlas: Arc<str>,
+    pub region: Arc<str>,
 }
 #[derive(Component)]
 pub struct Particle {
@@ -1797,6 +2376,11 @@ impl ParticleCaps {
         let spawn = max_spawn_per_frame.min(max_total);
         Self { max_spawn_per_frame: spawn, max_total, max_emitter_backlog: backlog }
     }
+}
+
+#[derive(Resource, Clone, Copy, Default)]
+pub struct ParticleState {
+    pub active_particles: u32,
 }
 
 #[derive(Debug, Clone, Copy, Default)]

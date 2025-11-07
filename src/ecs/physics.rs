@@ -557,6 +557,7 @@ fn aabb_overlap(center_a: Vec2, half_a: Vec2, center_b: Vec2, half_b: Vec2) -> b
 #[derive(Resource, Default)]
 pub struct ParticleContacts {
     pub pairs: HashSet<(Entity, Entity)>,
+    pub previous_pairs: HashSet<(Entity, Entity)>,
 }
 
 fn vec_to_rapier(v: Vec2) -> Vector<Real> {

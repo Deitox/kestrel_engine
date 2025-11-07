@@ -2,7 +2,6 @@ use super::TimeDelta;
 use crate::ecs::profiler::SystemProfiler;
 use crate::ecs::types::*;
 use bevy_ecs::prelude::*;
-use bevy_ecs::query::With;
 use bevy_ecs::system::{Commands, Res};
 use glam::Vec2;
 use rand::Rng;
@@ -12,21 +11,23 @@ pub fn sys_update_emitters(
     mut profiler: ResMut<SystemProfiler>,
     mut commands: Commands,
     mut emitters: Query<(&mut ParticleEmitter, &Transform)>,
-    particles: Query<Entity, With<Particle>>,
     caps: Res<ParticleCaps>,
+    mut particle_state: ResMut<ParticleState>,
     dt: Res<TimeDelta>,
 ) {
     let _span = profiler.scope("sys_update_emitters");
     let mut rng = rand::thread_rng();
-    let existing_particles = particles.iter().count();
-    let max_total = caps.max_total as usize;
-    let max_spawn_per_frame = caps.max_spawn_per_frame as usize;
-    let mut spawn_budget = (max_total.saturating_sub(existing_particles)).min(max_spawn_per_frame) as i32;
+    let max_total = caps.max_total as i32;
+    let max_spawn_per_frame = caps.max_spawn_per_frame as i32;
+    let mut active_particles = particle_state.active_particles.min(caps.max_total) as i32;
+    active_particles = active_particles.clamp(0, max_total);
+    let mut spawn_budget = (max_total - active_particles).min(max_spawn_per_frame);
 
     if spawn_budget <= 0 {
         for (mut emitter, _) in emitters.iter_mut() {
             emitter.accumulator = emitter.accumulator.min(caps.max_emitter_backlog);
         }
+        particle_state.active_particles = active_particles.max(0) as u32;
         return;
     }
 
@@ -42,15 +43,14 @@ pub fn sys_update_emitters(
             continue;
         }
         emitter.accumulator -= to_spawn as f32;
-        spawn_budget -= to_spawn;
-
+        let mut batch = Vec::with_capacity(to_spawn as usize);
         for _ in 0..to_spawn {
             let angle = rng.gen_range(-emitter.spread..=emitter.spread);
             let dir = Vec2::from_angle(std::f32::consts::FRAC_PI_2 + angle);
             let velocity = dir * emitter.speed;
             let lifetime = emitter.lifetime;
             let start_size = emitter.start_size.max(0.01);
-            commands.spawn((
+            batch.push((
                 Transform {
                     translation: transform.translation + dir * 0.05,
                     rotation: 0.0,
@@ -60,7 +60,7 @@ pub fn sys_update_emitters(
                 Velocity(velocity),
                 Force::default(),
                 Mass(0.2),
-                Sprite::uninitialized(Arc::from("main"), Arc::from("green")),
+                Sprite::uninitialized(Arc::clone(&emitter.atlas), Arc::clone(&emitter.region)),
                 Tint(emitter.start_color),
                 Aabb { half: Vec2::splat((start_size * 0.5).max(0.01)) },
                 Particle { lifetime, max_lifetime: lifetime },
@@ -72,11 +72,16 @@ pub fn sys_update_emitters(
                 },
             ));
         }
+        commands.spawn_batch(batch);
+        active_particles = (active_particles + to_spawn).min(max_total);
+        spawn_budget = (max_total - active_particles).min(max_spawn_per_frame);
 
         if spawn_budget <= 0 {
             break;
         }
     }
+
+    particle_state.active_particles = active_particles.max(0) as u32;
 }
 
 pub fn sys_update_particles(
@@ -92,14 +97,17 @@ pub fn sys_update_particles(
         Option<&mut Aabb>,
     )>,
     dt: Res<TimeDelta>,
+    mut particle_state: ResMut<ParticleState>,
 ) {
     let _span = profiler.scope("sys_update_particles");
+    let mut active_particles = 0u32;
     for (entity, mut particle, mut transform, velocity, visual, mut tint, aabb) in &mut particles {
         particle.lifetime -= dt.0;
         if particle.lifetime <= 0.0 {
             commands.entity(entity).despawn();
             continue;
         }
+        active_particles = active_particles.saturating_add(1);
         let life_ratio = (particle.lifetime / particle.max_lifetime).clamp(0.0, 1.0);
         let progress = 1.0 - life_ratio;
         let size = visual.start_size + (visual.end_size - visual.start_size) * progress;
@@ -113,4 +121,5 @@ pub fn sys_update_particles(
             vel.0 *= 0.98;
         }
     }
+    particle_state.active_particles = active_particles;
 }

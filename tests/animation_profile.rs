@@ -28,9 +28,15 @@ fn animation_profile_snapshot() {
         .ok()
         .and_then(|raw| raw.parse::<f32>().ok())
         .unwrap_or(0.08);
+    let use_demo_scene = env_flag("ANIMATION_PROFILE_DEMO_SCENE");
+    let scenario_label = if use_demo_scene { "demo_scene" } else { "sprite_animators" };
 
     let mut world = EcsWorld::new();
-    seed_sprite_animators(&mut world, count, frame_duration);
+    if use_demo_scene {
+        world.spawn_demo_scene();
+    } else {
+        seed_sprite_animators(&mut world, count, frame_duration);
+    }
 
     for _ in 0..warmup {
         world.update(dt);
@@ -95,7 +101,11 @@ fn animation_profile_snapshot() {
     }
 
     let timings = world.system_timings();
-    println!("[animation_profile] animators={count} steps={steps} dt={:.6}", dt);
+    let reported_animators = if use_demo_scene { 0 } else { count };
+    println!(
+        "[animation_profile] scenario={} animators={} steps={} dt={:.6}",
+        scenario_label, reported_animators, steps, dt
+    );
     if timings.is_empty() {
         println!("[animation_profile] no system timings captured");
     } else {
@@ -277,4 +287,16 @@ fn seed_sprite_animators(world: &mut EcsWorld, count: usize, frame_duration: f32
             ),
         ));
     }
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .map(|raw| {
+            let value = raw.trim();
+            value.eq_ignore_ascii_case("true")
+                || value.eq_ignore_ascii_case("yes")
+                || value.eq_ignore_ascii_case("y")
+                || value == "1"
+        })
+        .unwrap_or(false)
 }

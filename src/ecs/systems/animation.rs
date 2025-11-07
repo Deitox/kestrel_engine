@@ -223,14 +223,14 @@ pub(crate) fn record_transform_segment_crosses(count: u64) {
 pub(crate) fn record_transform_segment_crosses(_count: u64) {}
 
 #[cfg(feature = "anim_stats")]
-fn record_transform_advance_time(duration: Duration) {
+pub(crate) fn record_transform_advance_time(duration: Duration) {
     let nanos = duration.as_nanos().min(u64::MAX as u128) as u64;
     TRANSFORM_CLIP_ADVANCE_TIME_NS.fetch_add(nanos, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "anim_stats"))]
 #[allow(dead_code)]
-fn record_transform_advance_time(_duration: std::time::Duration) {}
+pub(crate) fn record_transform_advance_time(_duration: std::time::Duration) {}
 
 #[cfg(feature = "anim_stats")]
 fn record_transform_sample_time(duration: Duration) {
@@ -725,98 +725,74 @@ fn drive_transform_clips(
         if can_fast_path {
             record_transform_fast_path(1);
 
-            #[cfg(feature = "anim_stats")]
-            let advance_timer = Instant::now();
-            let applied = instance.advance_time(scaled);
+            let applied = instance.advance_time_masked(scaled, transform_player, property_player);
             record_transform_advance(1);
             #[cfg(feature = "anim_stats")]
-            {
-                record_transform_advance_time(advance_timer.elapsed());
-                if applied <= 0.0 {
-                    record_transform_zero_delta(1);
-                }
+            if applied <= 0.0 {
+                record_transform_zero_delta(1);
             }
-            #[cfg(not(feature = "legacy_transform_sampling"))]
             if applied <= 0.0 {
                 continue;
             }
-            #[cfg(not(feature = "anim_stats"))]
-            let _ = applied;
 
             #[cfg(feature = "anim_stats")]
             let sample_timer = Instant::now();
-            #[cfg(feature = "legacy_transform_sampling")]
             let sample = instance.sample_cached();
-            #[cfg(not(feature = "legacy_transform_sampling"))]
-            let sample = instance.current_sample_full();
             #[cfg(feature = "anim_stats")]
             record_transform_sample_time(sample_timer.elapsed());
 
             #[cfg(feature = "anim_stats")]
             let apply_timer = Instant::now();
-            {
-                if let Some(transform_component) = transform.as_mut() {
-                    let transform_component = &mut **transform_component;
+            if let Some(transform_component) = transform.as_mut() {
+                let transform_component = &mut **transform_component;
+                if sample.translation != instance.last_translation {
                     if let Some(value) = sample.translation {
-                        if instance.last_translation.map_or(true, |prev| prev != value) {
-                            transform_component.translation = value;
-                        }
+                        transform_component.translation = value;
                     }
+                }
+                if sample.rotation != instance.last_rotation {
                     if let Some(value) = sample.rotation {
-                        if instance.last_rotation.map_or(true, |prev| prev != value) {
-                            transform_component.rotation = value;
-                        }
+                        transform_component.rotation = value;
                     }
+                }
+                if sample.scale != instance.last_scale {
                     if let Some(value) = sample.scale {
-                        if instance.last_scale.map_or(true, |prev| prev != value) {
-                            transform_component.scale = value;
-                        }
+                        transform_component.scale = value;
                     }
                 }
-
-                if wants_tint {
-                    if let (Some(tint_component), Some(value)) = (tint.as_mut(), sample.tint) {
-                        let tint_component = &mut **tint_component;
-                        if instance.last_tint.map_or(true, |prev| prev != value) {
-                            tint_component.0 = value;
-                        }
-                    }
-                }
-
-                instance.last_translation = sample.translation;
-                instance.last_rotation = sample.rotation;
-                instance.last_scale = sample.scale;
-                instance.last_tint = sample.tint;
             }
+
+            if wants_tint {
+                if let (Some(tint_component), Some(value)) = (tint.as_mut(), sample.tint) {
+                    let tint_component = &mut **tint_component;
+                    if sample.tint != instance.last_tint {
+                        tint_component.0 = value;
+                    }
+                }
+            }
+
+            instance.last_translation = sample.translation;
+            instance.last_rotation = sample.rotation;
+            instance.last_scale = sample.scale;
+            instance.last_tint = sample.tint;
             #[cfg(feature = "anim_stats")]
             record_transform_apply_time(apply_timer.elapsed());
             continue;
         }
 
-        #[cfg(feature = "anim_stats")]
-        let advance_timer = Instant::now();
-        let applied = instance.advance_time(scaled);
+        let applied = instance.advance_time_masked(scaled, transform_player, property_player);
         record_transform_advance(1);
         #[cfg(feature = "anim_stats")]
-        {
-            record_transform_advance_time(advance_timer.elapsed());
-            if applied <= 0.0 {
-                record_transform_zero_delta(1);
-            }
+        if applied <= 0.0 {
+            record_transform_zero_delta(1);
         }
-        #[cfg(not(feature = "legacy_transform_sampling"))]
         if applied <= 0.0 {
             record_transform_slow_path(1);
             continue;
         }
-        #[cfg(not(feature = "anim_stats"))]
-        let _ = applied;
         #[cfg(feature = "anim_stats")]
         let sample_timer = Instant::now();
-        #[cfg(feature = "legacy_transform_sampling")]
         let sample = instance.sample_with_masks(transform_player.copied(), property_player.copied());
-        #[cfg(not(feature = "legacy_transform_sampling"))]
-        let sample = instance.current_sample_masked(transform_player, property_player);
         #[cfg(feature = "anim_stats")]
         record_transform_sample_time(sample_timer.elapsed());
         apply_clip_sample(&mut instance, transform_player, property_player, transform, tint, sample);
@@ -836,44 +812,43 @@ fn apply_clip_sample(
     #[cfg(feature = "anim_stats")]
     let apply_timer = Instant::now();
 
+    let translation_changed = sample.translation != instance.last_translation;
+    let rotation_changed = sample.rotation != instance.last_rotation;
+    let scale_changed = sample.scale != instance.last_scale;
+    let tint_changed = sample.tint != instance.last_tint;
+
     if let Some(mut transform) = transform {
         let mask = transform_player.copied().unwrap_or_default();
         if mask.apply_translation && mask.apply_rotation && mask.apply_scale {
-            if let Some(value) = sample.translation {
-                if instance.last_translation.map_or(true, |prev| prev != value) {
+            if translation_changed {
+                if let Some(value) = sample.translation {
                     transform.translation = value;
                 }
             }
-            if let Some(value) = sample.rotation {
-                if instance.last_rotation.map_or(true, |prev| prev != value) {
+            if rotation_changed {
+                if let Some(value) = sample.rotation {
                     transform.rotation = value;
                 }
             }
-            if let Some(value) = sample.scale {
-                if instance.last_scale.map_or(true, |prev| prev != value) {
+            if scale_changed {
+                if let Some(value) = sample.scale {
                     transform.scale = value;
                 }
             }
         } else {
-            if mask.apply_translation {
+            if mask.apply_translation && translation_changed {
                 if let Some(value) = sample.translation {
-                    if instance.last_translation.map_or(true, |prev| prev != value) {
-                        transform.translation = value;
-                    }
+                    transform.translation = value;
                 }
             }
-            if mask.apply_rotation {
+            if mask.apply_rotation && rotation_changed {
                 if let Some(value) = sample.rotation {
-                    if instance.last_rotation.map_or(true, |prev| prev != value) {
-                        transform.rotation = value;
-                    }
+                    transform.rotation = value;
                 }
             }
-            if mask.apply_scale {
+            if mask.apply_scale && scale_changed {
                 if let Some(value) = sample.scale {
-                    if instance.last_scale.map_or(true, |prev| prev != value) {
-                        transform.scale = value;
-                    }
+                    transform.scale = value;
                 }
             }
         }
@@ -881,12 +856,9 @@ fn apply_clip_sample(
 
     if let Some(mut tint_component) = tint {
         let mask = property_player.copied().unwrap_or_default();
-        if mask.apply_tint {
+        if mask.apply_tint && tint_changed {
             if let Some(value) = sample.tint {
-                let changed = instance.last_tint.map_or(true, |prev| prev != value);
-                if changed {
-                    tint_component.0 = value;
-                }
+                tint_component.0 = value;
             }
         }
     }

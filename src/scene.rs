@@ -1261,6 +1261,14 @@ pub struct ColliderData {
     pub half_extents: Vec2Data,
 }
 
+fn default_particle_emitter_atlas() -> String {
+    "main".to_string()
+}
+
+fn default_particle_emitter_region() -> String {
+    "green".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParticleEmitterData {
     pub rate: f32,
@@ -1271,6 +1279,10 @@ pub struct ParticleEmitterData {
     pub end_color: ColorData,
     pub start_size: f32,
     pub end_size: f32,
+    #[serde(default = "default_particle_emitter_atlas")]
+    pub atlas: String,
+    #[serde(default = "default_particle_emitter_region")]
+    pub region: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
