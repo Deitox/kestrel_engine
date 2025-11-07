@@ -5,6 +5,7 @@ use kestrel_engine::ecs::{
 };
 use kestrel_engine::events::GameEvent;
 use kestrel_engine::scene::SceneEntityId;
+use glam::Vec2;
 use serde_json::json;
 use std::sync::Arc;
 use tempfile::NamedTempFile;
@@ -71,6 +72,76 @@ fn sprite_animation_advances_and_resets() {
     ecs.reset_sprite_animation(entity);
     let reset = sprite_region(&ecs, entity);
     assert_eq!(initial, reset, "reset should snap back to first frame");
+}
+
+#[test]
+fn sprite_animation_accumulates_small_updates() {
+    let mut assets = AssetManager::new();
+    assets.retain_atlas("main", Some("assets/images/atlas.json")).expect("load main atlas");
+    let mut ecs = EcsWorld::new();
+    let entity = ecs
+        .world
+        .spawn((
+            Transform::default(),
+            WorldTransform::default(),
+            Sprite::uninitialized(Arc::from("main"), Arc::from("redorb")),
+        ))
+        .id();
+    assert!(ecs.set_sprite_timeline(entity, &assets, Some("demo_cycle")));
+
+    let epsilon = 1e-5;
+    let step = epsilon * 0.5;
+
+    ecs.update(step);
+    {
+        let animation = ecs.world.get::<SpriteAnimation>(entity).expect("animation component");
+        assert!(
+            (animation.pending_small_delta - step).abs() <= f32::EPSILON,
+            "first tiny step should accumulate residual time"
+        );
+    }
+
+    ecs.update(step);
+    {
+        let animation = ecs.world.get::<SpriteAnimation>(entity).expect("animation component");
+        assert!(
+            animation.pending_small_delta.abs() <= f32::EPSILON,
+            "residual should reset once accumulation reaches epsilon"
+        );
+    }
+
+    ecs.update(step);
+    {
+        let animation = ecs.world.get::<SpriteAnimation>(entity).expect("animation component");
+        assert!(
+            (animation.pending_small_delta - step).abs() <= f32::EPSILON,
+            "accumulation restarts after residual is consumed"
+        );
+    }
+}
+
+#[test]
+fn sprite_instances_use_local_transform_when_world_missing() {
+    let mut assets = AssetManager::new();
+    assets.retain_atlas("main", Some("assets/images/atlas.json")).expect("load main atlas");
+    let mut ecs = EcsWorld::new();
+    let _entity = ecs
+        .world
+        .spawn((
+            Transform {
+                translation: Vec2::new(3.0, 4.0),
+                rotation: 0.25,
+                scale: Vec2::new(1.5, 0.5),
+            },
+            Sprite::uninitialized(Arc::from("main"), Arc::from("redorb")),
+        ))
+        .id();
+
+    let instances = ecs.collect_sprite_instances(&assets).expect("collect sprites");
+    assert_eq!(instances.len(), 1, "expected single sprite instance");
+    let model = instances[0].data.model;
+    assert!((model[3][0] - 3.0).abs() < 1e-6, "translation.x should populate last column");
+    assert!((model[3][1] - 4.0).abs() < 1e-6, "translation.y should populate last column");
 }
 
 #[test]

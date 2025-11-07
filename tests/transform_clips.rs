@@ -198,6 +198,40 @@ fn transform_clip_time_seek_applies_sample() {
 }
 
 #[test]
+fn clip_instance_keeps_translation_sample_clean_within_segment() {
+    let mut assets = AssetManager::new();
+    assets.retain_clip("slime", Some("fixtures/animation_clips/slime_bob.json")).expect("load slime clip");
+    let clip_arc = Arc::new(assets.clip("slime").expect("missing clip").clone());
+    let clip_key: Arc<str> = Arc::from("slime");
+    let mut instance = ClipInstance::new(Arc::clone(&clip_key), Arc::clone(&clip_arc));
+
+    let initial = instance.sample_cached();
+    let initial_translation = initial.translation.expect("translation sample at start");
+    assert!(
+        approx_vec2(initial_translation, Vec2::ZERO),
+        "expected clip to start at origin"
+    );
+    assert!(
+        !instance.translation_sample_dirty,
+        "initial translation sample should be clean"
+    );
+
+    let advanced = instance.advance_time(0.01);
+    assert!(advanced > 0.0, "clip should advance for positive delta");
+    assert!(
+        !instance.translation_sample_dirty,
+        "advancing inside a keyframe should keep translation sample clean"
+    );
+
+    let cached_after = instance.current_sample.translation.expect("cached translation");
+    let expected = instance.sample_at(instance.time).translation.expect("reference translation");
+    assert!(
+        approx_vec2(cached_after, expected),
+        "cached translation should match sampled translation"
+    );
+}
+
+#[test]
 fn transform_clip_set_time_handles_extremes() {
     let mut assets = AssetManager::new();
     assets.retain_clip("slime", Some("fixtures/animation_clips/slime_bob.json")).expect("load slime clip");

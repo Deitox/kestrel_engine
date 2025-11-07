@@ -23,6 +23,32 @@ impl Default for Transform {
         Self { translation: Vec2::ZERO, rotation: 0.0, scale: Vec2::splat(1.0) }
     }
 }
+
+impl Transform {
+    #[inline]
+    pub fn to_mat4(&self) -> Mat4 {
+        let (sx, sy) = (self.scale.x, self.scale.y);
+        let (s, c) = self.rotation.sin_cos();
+        Mat4::from_cols_array(&[
+            c * sx,
+            s * sx,
+            0.0,
+            0.0,
+            -s * sy,
+            c * sy,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            self.translation.x,
+            self.translation.y,
+            0.0,
+            1.0,
+        ])
+    }
+}
 #[derive(Component, Clone, Copy, Default)]
 pub struct WorldTransform(pub Mat4);
 #[derive(Component, Clone, Copy, Default)]
@@ -88,6 +114,7 @@ pub struct SpriteAnimation {
     pub current_duration: f32,
     pub frame_index: usize,
     pub elapsed_in_frame: f32,
+    pub pending_small_delta: f32,
     pub playing: bool,
     pub looped: bool,
     pub mode: SpriteAnimationLoopMode,
@@ -125,6 +152,7 @@ impl SpriteAnimation {
             current_duration,
             frame_index: 0,
             elapsed_in_frame: 0.0,
+            pending_small_delta: 0.0,
             playing: true,
             looped: mode.looped(),
             forward: true,
@@ -211,6 +239,21 @@ impl SpriteAnimation {
     pub fn refresh_current_duration(&mut self) {
         self.current_duration = self.frame_durations.get(self.frame_index).copied().unwrap_or(0.0);
     }
+
+    #[inline]
+    pub(crate) fn accumulate_delta(&mut self, delta: f32, epsilon: f32) -> Option<f32> {
+        if delta <= 0.0 {
+            return None;
+        }
+        let total = self.pending_small_delta + delta;
+        if total < epsilon {
+            self.pending_small_delta = total;
+            None
+        } else {
+            self.pending_small_delta = 0.0;
+            Some(total)
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -231,7 +274,7 @@ pub struct ClipSample {
     pub tint: Option<Vec4>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ClipChannelMask {
     translation: bool,
     rotation: bool,
@@ -240,8 +283,12 @@ struct ClipChannelMask {
 }
 
 impl ClipChannelMask {
+    const fn new(translation: bool, rotation: bool, scale: bool, tint: bool) -> Self {
+        Self { translation, rotation, scale, tint }
+    }
+
     const fn all() -> Self {
-        Self { translation: true, rotation: true, scale: true, tint: true }
+        Self::new(true, true, true, true)
     }
 
     fn from_players(
@@ -250,13 +297,39 @@ impl ClipChannelMask {
     ) -> Self {
         let transform_mask = transform.copied().unwrap_or_default();
         let property_mask = property.copied().unwrap_or_default();
-        Self {
-            translation: transform_mask.apply_translation,
-            rotation: transform_mask.apply_rotation,
-            scale: transform_mask.apply_scale,
-            tint: property_mask.apply_tint,
-        }
+        Self::new(
+            transform_mask.apply_translation,
+            transform_mask.apply_rotation,
+            transform_mask.apply_scale,
+            property_mask.apply_tint,
+        )
     }
+
+    fn from_clip(clip: &AnimationClip) -> Self {
+        Self::new(
+            clip.translation.is_some(),
+            clip.rotation.is_some(),
+            clip.scale.is_some(),
+            clip.tint.is_some(),
+        )
+    }
+
+    fn intersect(self, other: Self) -> Self {
+        Self::new(
+            self.translation && other.translation,
+            self.rotation && other.rotation,
+            self.scale && other.scale,
+            self.tint && other.tint,
+        )
+    }
+
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct TrackAdvanceResult {
+    advanced: bool,
+    segment_changed: bool,
+    offset_delta: f32,
 }
 
 #[derive(Component, Clone)]
@@ -312,12 +385,14 @@ pub struct ClipInstance {
     pub rotation_segment_span: f32,
     pub scale_segment_span: f32,
     pub tint_segment_span: f32,
+    clip_channels: ClipChannelMask,
 }
 
 impl ClipInstance {
     pub fn new(clip_key: Arc<str>, clip: Arc<AnimationClip>) -> Self {
         let version = clip.version;
         let looped = clip.looped;
+        let clip_channels = ClipChannelMask::from_clip(clip.as_ref());
         let mut instance = Self {
             clip_key,
             clip,
@@ -370,9 +445,11 @@ impl ClipInstance {
             rotation_segment_span: 0.0,
             scale_segment_span: 0.0,
             tint_segment_span: 0.0,
+            clip_channels,
         };
         instance.rebuild_track_cursors();
-        instance.advance_track_states(0.0, ClipChannelMask::all());
+        let initial_mask = ClipChannelMask::all().intersect(instance.clip_channels);
+        instance.advance_track_states(0.0, initial_mask);
         instance
     }
 
@@ -382,6 +459,7 @@ impl ClipInstance {
         self.clip_key = clip_key;
         self.clip = clip;
         self.clip_version = self.clip.version;
+        self.clip_channels = ClipChannelMask::from_clip(self.clip.as_ref());
         self.looped = self.clip.looped;
         self.time = 0.0;
         self.playing = true;
@@ -412,7 +490,8 @@ impl ClipInstance {
         self.tint_segment_cache_valid = false;
         self.reset_cursors();
         self.rebuild_track_cursors();
-        self.advance_track_states(0.0, ClipChannelMask::all());
+        let initial_mask = ClipChannelMask::all().intersect(self.clip_channels);
+        self.advance_track_states(0.0, initial_mask);
     }
 
     pub fn set_playing(&mut self, playing: bool) {
@@ -445,7 +524,8 @@ impl ClipInstance {
         self.tint_segment_cache_valid = false;
         self.reset_cursors();
         self.rebuild_track_cursors();
-        self.advance_track_states(0.0, ClipChannelMask::all());
+        let initial_mask = ClipChannelMask::all().intersect(self.clip_channels);
+        self.advance_track_states(0.0, initial_mask);
     }
 
     pub fn set_speed(&mut self, speed: f32) {
@@ -502,7 +582,8 @@ impl ClipInstance {
         let duration = self.duration();
         if duration <= 0.0 {
             self.time = 0.0;
-            self.advance_track_states(0.0, channel_mask);
+            let effective_mask = channel_mask.intersect(self.clip_channels);
+            self.advance_track_states(0.0, effective_mask);
             return 0.0;
         }
 
@@ -538,7 +619,8 @@ impl ClipInstance {
             return 0.0;
         }
 
-        self.advance_track_states(applied, channel_mask);
+        let effective_mask = channel_mask.intersect(self.clip_channels);
+        self.advance_track_states(applied, effective_mask);
         applied
     }
 
@@ -566,7 +648,8 @@ impl ClipInstance {
         }
         self.reset_cursors();
         self.rebuild_track_cursors();
-        self.advance_track_states(0.0, ClipChannelMask::all());
+        let reset_mask = ClipChannelMask::all().intersect(self.clip_channels);
+        self.advance_track_states(0.0, reset_mask);
     }
 
     pub fn sample(&self) -> ClipSample {
@@ -799,7 +882,8 @@ impl ClipInstance {
         segment_slope: &mut Vec2,
         cached_index: &mut usize,
         cache_valid: &mut bool,
-    ) {
+    ) -> TrackAdvanceResult {
+        let mut result = TrackAdvanceResult::default();
         let keyframes = track.keyframes.as_ref();
         let segments = track.segments.as_ref();
         let frame_count = keyframes.len();
@@ -809,7 +893,7 @@ impl ClipInstance {
             *segment_span = 0.0;
             *cached_index = usize::MAX;
             *cache_valid = false;
-            return;
+            return result;
         }
         if frame_count == 1 || segments.is_empty() {
             let value = keyframes[0].value;
@@ -820,7 +904,7 @@ impl ClipInstance {
             *segment_slope = Vec2::ZERO;
             *cached_index = 0;
             *cache_valid = true;
-            return;
+            return result;
         }
 
         let segment_count = segments.len();
@@ -850,10 +934,12 @@ impl ClipInstance {
         *segment_span = span;
 
         let mut offset = (*segment_time).clamp(0.0, span);
+        let initial_cursor = index;
+        let initial_offset = offset;
 
         if delta <= 0.0 {
             *segment_time = offset;
-            return;
+            return result;
         }
 
         if looped && track.duration > 0.0 && delta >= track.duration {
@@ -861,10 +947,11 @@ impl ClipInstance {
             delta = delta.rem_euclid(duration_eps);
             if delta <= 0.0 {
                 *segment_time = offset;
-                return;
+                return result;
             }
         }
 
+        result.advanced = true;
         let remaining = if span > offset { span - offset } else { 0.0 };
         if span <= 0.0 || delta <= remaining {
             if span > 0.0 {
@@ -873,7 +960,11 @@ impl ClipInstance {
                 offset = 0.0;
             }
             *segment_time = offset;
-            return;
+            result.segment_changed = index != initial_cursor;
+            if !result.segment_changed {
+                result.offset_delta = offset - initial_offset;
+            }
+            return result;
         }
 
         delta -= remaining;
@@ -930,7 +1021,12 @@ impl ClipInstance {
 
         *cursor = index;
         *segment_span = span;
-        *segment_time = offset.clamp(0.0, span);
+        let clamped = offset.clamp(0.0, span);
+        *segment_time = clamped;
+        result.segment_changed = *cursor != initial_cursor;
+        if !result.segment_changed {
+            result.offset_delta = clamped - initial_offset;
+        }
 
         #[cfg(feature = "anim_stats")]
         {
@@ -939,7 +1035,7 @@ impl ClipInstance {
             }
         }
 
-        return;
+        result
     }
 
     #[inline(always)]
@@ -954,7 +1050,8 @@ impl ClipInstance {
         segment_slope: &mut f32,
         cached_index: &mut usize,
         cache_valid: &mut bool,
-    ) {
+    ) -> TrackAdvanceResult {
+        let mut result = TrackAdvanceResult::default();
         let keyframes = track.keyframes.as_ref();
         let segments = track.segments.as_ref();
         let frame_count = keyframes.len();
@@ -964,7 +1061,7 @@ impl ClipInstance {
             *segment_span = 0.0;
             *cached_index = usize::MAX;
             *cache_valid = false;
-            return;
+            return result;
         }
         if frame_count == 1 || segments.is_empty() {
             let value = keyframes[0].value;
@@ -975,7 +1072,7 @@ impl ClipInstance {
             *segment_slope = 0.0;
             *cached_index = 0;
             *cache_valid = true;
-            return;
+            return result;
         }
 
         let segment_count = segments.len();
@@ -1005,10 +1102,12 @@ impl ClipInstance {
         *segment_span = span;
 
         let mut offset = (*segment_time).clamp(0.0, span);
+        let initial_cursor = index;
+        let initial_offset = offset;
 
         if delta <= 0.0 {
             *segment_time = offset;
-            return;
+            return result;
         }
 
         if looped && track.duration > 0.0 && delta >= track.duration {
@@ -1016,10 +1115,11 @@ impl ClipInstance {
             delta = delta.rem_euclid(duration_eps);
             if delta <= 0.0 {
                 *segment_time = offset;
-                return;
+                return result;
             }
         }
 
+        result.advanced = true;
         let remaining = if span > offset { span - offset } else { 0.0 };
         if span <= 0.0 || delta <= remaining {
             if span > 0.0 {
@@ -1028,7 +1128,11 @@ impl ClipInstance {
                 offset = 0.0;
             }
             *segment_time = offset;
-            return;
+            result.segment_changed = index != initial_cursor;
+            if !result.segment_changed {
+                result.offset_delta = offset - initial_offset;
+            }
+            return result;
         }
 
         delta -= remaining;
@@ -1085,7 +1189,12 @@ impl ClipInstance {
 
         *cursor = index;
         *segment_span = span;
-        *segment_time = offset.clamp(0.0, span);
+        let clamped = offset.clamp(0.0, span);
+        *segment_time = clamped;
+        result.segment_changed = *cursor != initial_cursor;
+        if !result.segment_changed {
+            result.offset_delta = clamped - initial_offset;
+        }
 
         #[cfg(feature = "anim_stats")]
         {
@@ -1094,7 +1203,8 @@ impl ClipInstance {
             }
         }
 
-        return;
+        result
+
     }
 
     #[inline(always)]
@@ -1109,7 +1219,8 @@ impl ClipInstance {
         segment_slope: &mut Vec4,
         cached_index: &mut usize,
         cache_valid: &mut bool,
-    ) {
+    ) -> TrackAdvanceResult {
+        let mut result = TrackAdvanceResult::default();
         let keyframes = track.keyframes.as_ref();
         let segments = track.segments.as_ref();
         let frame_count = keyframes.len();
@@ -1119,7 +1230,7 @@ impl ClipInstance {
             *segment_span = 0.0;
             *cached_index = usize::MAX;
             *cache_valid = false;
-            return;
+            return result;
         }
         if frame_count == 1 || segments.is_empty() {
             let value = keyframes[0].value;
@@ -1130,7 +1241,7 @@ impl ClipInstance {
             *segment_slope = Vec4::ZERO;
             *cached_index = 0;
             *cache_valid = true;
-            return;
+            return result;
         }
 
         let segment_count = segments.len();
@@ -1160,10 +1271,12 @@ impl ClipInstance {
         *segment_span = span;
 
         let mut offset = (*segment_time).clamp(0.0, span);
+        let initial_cursor = index;
+        let initial_offset = offset;
 
         if delta <= 0.0 {
             *segment_time = offset;
-            return;
+            return result;
         }
 
         if looped && track.duration > 0.0 && delta >= track.duration {
@@ -1171,10 +1284,11 @@ impl ClipInstance {
             delta = delta.rem_euclid(duration_eps);
             if delta <= 0.0 {
                 *segment_time = offset;
-                return;
+                return result;
             }
         }
 
+        result.advanced = true;
         let remaining = if span > offset { span - offset } else { 0.0 };
         if span <= 0.0 || delta <= remaining {
             if span > 0.0 {
@@ -1183,7 +1297,11 @@ impl ClipInstance {
                 offset = 0.0;
             }
             *segment_time = offset;
-            return;
+            result.segment_changed = index != initial_cursor;
+            if !result.segment_changed {
+                result.offset_delta = offset - initial_offset;
+            }
+            return result;
         }
 
         delta -= remaining;
@@ -1240,7 +1358,12 @@ impl ClipInstance {
 
         *cursor = index;
         *segment_span = span;
-        *segment_time = offset.clamp(0.0, span);
+        let clamped = offset.clamp(0.0, span);
+        *segment_time = clamped;
+        result.segment_changed = *cursor != initial_cursor;
+        if !result.segment_changed {
+            result.offset_delta = clamped - initial_offset;
+        }
 
         #[cfg(feature = "anim_stats")]
         {
@@ -1249,7 +1372,7 @@ impl ClipInstance {
             }
         }
 
-        return;
+        result
     }
 
     #[inline(always)]
@@ -1383,12 +1506,24 @@ impl ClipInstance {
         let advance_timer = Instant::now();
         let looped = self.looped;
         {
-            if let Some(track) = self.clip.translation.as_ref() {
+            if !self.clip_channels.translation {
+                self.translation_cursor = 0;
+                self.translation_segment_time = 0.0;
+                self.translation_segment_span = 0.0;
+                self.translation_segment_start = Vec2::ZERO;
+                self.translation_segment_slope = Vec2::ZERO;
+                self.translation_segment_cached_index = usize::MAX;
+                self.translation_segment_cache_valid = false;
+                self.translation_state_current = true;
+                self.translation_sample_dirty = true;
+                self.current_sample.translation = None;
+            } else if let Some(track) = self.clip.translation.as_ref() {
                 if mask.translation {
                     if !self.translation_state_current {
                         self.sync_translation_state_to_time(self.time);
                     } else if delta > 0.0 {
-                        Self::advance_vec2_track_state(
+                        let sample_was_clean = !self.translation_sample_dirty;
+                        let result = Self::advance_vec2_track_state(
                             track,
                             delta,
                             looped,
@@ -1400,7 +1535,22 @@ impl ClipInstance {
                             &mut self.translation_segment_cached_index,
                             &mut self.translation_segment_cache_valid,
                         );
-                        self.translation_sample_dirty = true;
+                        if result.advanced {
+                            let mut kept_clean = false;
+                            if sample_was_clean && !result.segment_changed {
+                                if let Some(value) = self.current_sample.translation.as_mut() {
+                                    if matches!(track.interpolation, ClipInterpolation::Step) {
+                                        kept_clean = true;
+                                    } else if result.offset_delta != 0.0 {
+                                        *value += self.translation_segment_slope * result.offset_delta;
+                                        kept_clean = true;
+                                    } else {
+                                        kept_clean = true;
+                                    }
+                                }
+                            }
+                            self.translation_sample_dirty = !kept_clean;
+                        }
                     }
                 } else if delta > 0.0 {
                     self.translation_state_current = false;
@@ -1419,12 +1569,24 @@ impl ClipInstance {
                 self.current_sample.translation = None;
             }
 
-            if let Some(track) = self.clip.rotation.as_ref() {
+            if !self.clip_channels.rotation {
+                self.rotation_cursor = 0;
+                self.rotation_segment_time = 0.0;
+                self.rotation_segment_span = 0.0;
+                self.rotation_segment_start = 0.0;
+                self.rotation_segment_slope = 0.0;
+                self.rotation_segment_cached_index = usize::MAX;
+                self.rotation_segment_cache_valid = false;
+                self.rotation_state_current = true;
+                self.rotation_sample_dirty = true;
+                self.current_sample.rotation = None;
+            } else if let Some(track) = self.clip.rotation.as_ref() {
                 if mask.rotation {
                     if !self.rotation_state_current {
                         self.sync_rotation_state_to_time(self.time);
                     } else if delta > 0.0 {
-                        Self::advance_scalar_track_state(
+                        let sample_was_clean = !self.rotation_sample_dirty;
+                        let result = Self::advance_scalar_track_state(
                             track,
                             delta,
                             looped,
@@ -1436,7 +1598,22 @@ impl ClipInstance {
                             &mut self.rotation_segment_cached_index,
                             &mut self.rotation_segment_cache_valid,
                         );
-                        self.rotation_sample_dirty = true;
+                        if result.advanced {
+                            let mut kept_clean = false;
+                            if sample_was_clean && !result.segment_changed {
+                                if let Some(value) = self.current_sample.rotation.as_mut() {
+                                    if matches!(track.interpolation, ClipInterpolation::Step) {
+                                        kept_clean = true;
+                                    } else if result.offset_delta != 0.0 {
+                                        *value += self.rotation_segment_slope * result.offset_delta;
+                                        kept_clean = true;
+                                    } else {
+                                        kept_clean = true;
+                                    }
+                                }
+                            }
+                            self.rotation_sample_dirty = !kept_clean;
+                        }
                     }
                 } else if delta > 0.0 {
                     self.rotation_state_current = false;
@@ -1455,12 +1632,24 @@ impl ClipInstance {
                 self.current_sample.rotation = None;
             }
 
-            if let Some(track) = self.clip.scale.as_ref() {
+            if !self.clip_channels.scale {
+                self.scale_cursor = 0;
+                self.scale_segment_time = 0.0;
+                self.scale_segment_span = 0.0;
+                self.scale_segment_start = Vec2::ZERO;
+                self.scale_segment_slope = Vec2::ZERO;
+                self.scale_segment_cached_index = usize::MAX;
+                self.scale_segment_cache_valid = false;
+                self.scale_state_current = true;
+                self.scale_sample_dirty = true;
+                self.current_sample.scale = None;
+            } else if let Some(track) = self.clip.scale.as_ref() {
                 if mask.scale {
                     if !self.scale_state_current {
                         self.sync_scale_state_to_time(self.time);
                     } else if delta > 0.0 {
-                        Self::advance_vec2_track_state(
+                        let sample_was_clean = !self.scale_sample_dirty;
+                        let result = Self::advance_vec2_track_state(
                             track,
                             delta,
                             looped,
@@ -1472,7 +1661,22 @@ impl ClipInstance {
                             &mut self.scale_segment_cached_index,
                             &mut self.scale_segment_cache_valid,
                         );
-                        self.scale_sample_dirty = true;
+                        if result.advanced {
+                            let mut kept_clean = false;
+                            if sample_was_clean && !result.segment_changed {
+                                if let Some(value) = self.current_sample.scale.as_mut() {
+                                    if matches!(track.interpolation, ClipInterpolation::Step) {
+                                        kept_clean = true;
+                                    } else if result.offset_delta != 0.0 {
+                                        *value += self.scale_segment_slope * result.offset_delta;
+                                        kept_clean = true;
+                                    } else {
+                                        kept_clean = true;
+                                    }
+                                }
+                            }
+                            self.scale_sample_dirty = !kept_clean;
+                        }
                     }
                 } else if delta > 0.0 {
                     self.scale_state_current = false;
@@ -1491,12 +1695,24 @@ impl ClipInstance {
                 self.current_sample.scale = None;
             }
 
-            if let Some(track) = self.clip.tint.as_ref() {
+            if !self.clip_channels.tint {
+                self.tint_cursor = 0;
+                self.tint_segment_time = 0.0;
+                self.tint_segment_span = 0.0;
+                self.tint_segment_start = Vec4::ZERO;
+                self.tint_segment_slope = Vec4::ZERO;
+                self.tint_segment_cached_index = usize::MAX;
+                self.tint_segment_cache_valid = false;
+                self.tint_state_current = true;
+                self.tint_sample_dirty = true;
+                self.current_sample.tint = None;
+            } else if let Some(track) = self.clip.tint.as_ref() {
                 if mask.tint {
                     if !self.tint_state_current {
                         self.sync_tint_state_to_time(self.time);
                     } else if delta > 0.0 {
-                        Self::advance_vec4_track_state(
+                        let sample_was_clean = !self.tint_sample_dirty;
+                        let result = Self::advance_vec4_track_state(
                             track,
                             delta,
                             looped,
@@ -1508,7 +1724,22 @@ impl ClipInstance {
                             &mut self.tint_segment_cached_index,
                             &mut self.tint_segment_cache_valid,
                         );
-                        self.tint_sample_dirty = true;
+                        if result.advanced {
+                            let mut kept_clean = false;
+                            if sample_was_clean && !result.segment_changed {
+                                if let Some(value) = self.current_sample.tint.as_mut() {
+                                    if matches!(track.interpolation, ClipInterpolation::Step) {
+                                        kept_clean = true;
+                                    } else if result.offset_delta != 0.0 {
+                                        *value += self.tint_segment_slope * result.offset_delta;
+                                        kept_clean = true;
+                                    } else {
+                                        kept_clean = true;
+                                    }
+                                }
+                            }
+                            self.tint_sample_dirty = !kept_clean;
+                        }
                     }
                 } else if delta > 0.0 {
                     self.tint_state_current = false;

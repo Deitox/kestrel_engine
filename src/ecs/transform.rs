@@ -185,24 +185,5 @@ pub fn sys_sync_world3d(
 }
 
 fn mat_from_transform(t: Transform) -> Mat4 {
-    let (sx, sy) = (t.scale.x, t.scale.y);
-    let (s, c) = t.rotation.sin_cos();
-    Mat4::from_cols_array(&[
-        c * sx,
-        s * sx,
-        0.0,
-        0.0,
-        -s * sy,
-        c * sy,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        1.0,
-        0.0,
-        t.translation.x,
-        t.translation.y,
-        0.0,
-        1.0,
-    ])
+    t.to_mat4()
 }

@@ -1418,8 +1418,9 @@ impl EcsWorld {
     }
     pub fn collect_sprite_instances(&mut self, assets: &AssetManager) -> Result<Vec<SpriteInstance>> {
         let mut out = Vec::new();
-        let mut q = self.world.query::<(&WorldTransform, &mut Sprite, Option<&Tint>)>();
-        for (wt, mut sprite, tint) in q.iter_mut(&mut self.world) {
+        let mut q =
+            self.world.query::<(&mut Sprite, Option<&WorldTransform>, Option<&Transform>, Option<&Tint>)>();
+        for (mut sprite, world, local, tint) in q.iter_mut(&mut self.world) {
             let atlas_key = Arc::clone(&sprite.atlas_key);
             let atlas_key_str = atlas_key.as_ref();
             let uv_rect = if sprite.is_initialized() {
@@ -1435,10 +1436,17 @@ impl EcsWorld {
                     sprite.uv
                 }
             };
+            let model_mat = if let Some(wt) = world {
+                wt.0
+            } else if let Some(transform) = local {
+                transform.to_mat4()
+            } else {
+                Mat4::IDENTITY
+            };
             let color = tint.map(|t| t.0.to_array()).unwrap_or([1.0, 1.0, 1.0, 1.0]);
             out.push(SpriteInstance {
                 atlas: atlas_key.to_string(),
-                data: InstanceData { model: wt.0.to_cols_array_2d(), uv_rect, tint: color },
+                data: InstanceData { model: model_mat.to_cols_array_2d(), uv_rect, tint: color },
             });
         }
         Ok(out)

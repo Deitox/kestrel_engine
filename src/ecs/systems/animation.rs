@@ -4,11 +4,12 @@ use crate::assets::{ClipInterpolation, ClipKeyframe};
 use crate::ecs::profiler::SystemProfiler;
 use crate::ecs::{
     BoneTransforms, ClipInstance, ClipSample, PropertyTrackPlayer, SkeletonInstance, Sprite, SpriteAnimation,
-    SpriteAnimationLoopMode, Tint, Transform, TransformTrackPlayer,
+    SpriteAnimationFrame, SpriteAnimationLoopMode, Tint, Transform, TransformTrackPlayer,
 };
 use crate::events::{EventBus, GameEvent};
 use bevy_ecs::prelude::{Entity, Mut, Query, Res, ResMut};
 use glam::{Mat4, Quat, Vec3};
+use smallvec::SmallVec;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::ptr::NonNull;
@@ -1177,6 +1178,8 @@ fn drive_single(
     events: &mut EventBus,
     animations: &mut Query<(Entity, &mut SpriteAnimation, &mut Sprite)>,
 ) {
+    let mut pending_frames: SmallVec<[(NonNull<Sprite>, NonNull<SpriteAnimationFrame>); 64]> =
+        SmallVec::new();
     for (entity, mut animation, mut sprite) in animations.iter_mut() {
         let frame_count = animation.frames.len();
         if frame_count == 0 {
@@ -1207,34 +1210,37 @@ fn drive_single(
         if scaled <= 0.0 {
             continue;
         }
+        let Some(advance_delta) = animation.accumulate_delta(scaled, CLIP_TIME_EPSILON) else {
+            continue;
+        };
 
         let mut sprite_changed = false;
         if animation.fast_loop {
             let current_duration = animation.current_duration;
-            let new_elapsed = animation.elapsed_in_frame + scaled;
+            let new_elapsed = animation.elapsed_in_frame + advance_delta;
             if new_elapsed <= current_duration + CLIP_TIME_EPSILON {
                 animation.elapsed_in_frame = new_elapsed.min(current_duration);
-            } else if advance_animation_loop_no_events(&mut animation, scaled) {
+            } else if advance_animation_loop_no_events(&mut animation, advance_delta) {
                 sprite_changed = true;
             }
         } else if animation.has_events {
             let events_ref = &mut *events;
-            if advance_animation(&mut animation, scaled, entity, Some(events_ref), true) {
+            if advance_animation(&mut animation, advance_delta, entity, Some(events_ref), true) {
                 sprite_changed = true;
             }
-        } else if advance_animation(&mut animation, scaled, entity, None, true) {
+        } else if advance_animation(&mut animation, advance_delta, entity, None, true) {
             sprite_changed = true;
         }
 
         if sprite_changed {
             let frame_ptr = NonNull::from(&animation.frames[animation.frame_index]);
             drop(animation);
-            unsafe {
-                sprite.apply_frame(frame_ptr.as_ref());
-            }
+            let sprite_ptr = NonNull::from(&mut *sprite);
+            pending_frames.push((sprite_ptr, frame_ptr));
             continue;
         }
     }
+    flush_pending_sprite_frames(&mut pending_frames);
 }
 
 fn drive_fixed(
@@ -1245,6 +1251,8 @@ fn drive_fixed(
     events: &mut EventBus,
     animations: &mut Query<(Entity, &mut SpriteAnimation, &mut Sprite)>,
 ) {
+    let mut pending_frames: SmallVec<[(NonNull<Sprite>, NonNull<SpriteAnimationFrame>); 64]> =
+        SmallVec::new();
     for (entity, mut animation, mut sprite) in animations.iter_mut() {
         let frame_count = animation.frames.len();
         if frame_count == 0 {
@@ -1280,32 +1288,47 @@ fn drive_fixed(
         if total_delta <= 0.0 {
             continue;
         }
+        let Some(advance_delta) = animation.accumulate_delta(total_delta, CLIP_TIME_EPSILON) else {
+            continue;
+        };
 
         let mut sprite_changed = false;
         if animation.fast_loop {
             let current_duration = animation.current_duration;
-            let new_elapsed = animation.elapsed_in_frame + total_delta;
+            let new_elapsed = animation.elapsed_in_frame + advance_delta;
             if new_elapsed <= current_duration + CLIP_TIME_EPSILON {
                 animation.elapsed_in_frame = new_elapsed.min(current_duration);
-            } else if advance_animation_loop_no_events(&mut animation, total_delta) {
+            } else if advance_animation_loop_no_events(&mut animation, advance_delta) {
                 sprite_changed = true;
             }
         } else if animation.has_events {
             let events_ref = &mut *events;
-            if advance_animation(&mut animation, total_delta, entity, Some(events_ref), true) {
+            if advance_animation(&mut animation, advance_delta, entity, Some(events_ref), true) {
                 sprite_changed = true;
             }
-        } else if advance_animation(&mut animation, total_delta, entity, None, true) {
+        } else if advance_animation(&mut animation, advance_delta, entity, None, true) {
             sprite_changed = true;
         }
 
         if sprite_changed {
             let frame_ptr = NonNull::from(&animation.frames[animation.frame_index]);
             drop(animation);
-            unsafe {
-                sprite.apply_frame(frame_ptr.as_ref());
-            }
+            let sprite_ptr = NonNull::from(&mut *sprite);
+            pending_frames.push((sprite_ptr, frame_ptr));
             continue;
+        }
+    }
+    flush_pending_sprite_frames(&mut pending_frames);
+}
+
+#[inline]
+fn flush_pending_sprite_frames(
+    pending: &mut SmallVec<[(NonNull<Sprite>, NonNull<SpriteAnimationFrame>); 64]>,
+) {
+    for (sprite_ptr, frame_ptr) in pending.drain(..) {
+        unsafe {
+            let sprite_mut = &mut *sprite_ptr.as_ptr();
+            sprite_mut.apply_frame(frame_ptr.as_ref());
         }
     }
 }

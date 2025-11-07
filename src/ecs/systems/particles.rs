@@ -56,7 +56,6 @@ pub fn sys_update_emitters(
                     rotation: 0.0,
                     scale: Vec2::splat(start_size),
                 },
-                WorldTransform::default(),
                 Velocity(velocity),
                 Force::default(),
                 Mass(0.2),
