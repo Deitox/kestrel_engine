@@ -5,6 +5,7 @@ use serde::Deserialize;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub mod skeletal;
@@ -17,7 +18,7 @@ pub struct AssetManager {
     sampler: Option<wgpu::Sampler>,
     device: Option<wgpu::Device>,
     queue: Option<wgpu::Queue>,
-    texture_cache: HashMap<String, (wgpu::TextureView, (u32, u32))>,
+    texture_cache: HashMap<PathBuf, (wgpu::TextureView, (u32, u32))>,
     atlas_sources: HashMap<String, String>,
     atlas_refs: HashMap<String, usize>,
     clip_sources: HashMap<String, String>,
@@ -235,6 +236,7 @@ fn convert_interpolation(file: ClipInterpolationFile) -> ClipInterpolation {
 #[derive(Clone)]
 pub struct TextureAtlas {
     pub image_key: String,
+    pub image_path: PathBuf,
     pub width: u32,
     pub height: u32,
     pub regions: HashMap<Arc<str>, AtlasRegion>,
@@ -508,6 +510,7 @@ impl AssetManager {
         let bytes = fs::read(json_path)?;
         let af: AtlasFile = serde_json::from_slice(&bytes)?;
         let mut regions = HashMap::new();
+        let image_path = resolve_atlas_image_path(json_path, &af.image);
         for (index, (name, rect)) in af.regions.into_iter().enumerate() {
             let id =
                 u16::try_from(index).map_err(|_| anyhow!("Atlas '{key}' has more than 65535 regions"))?;
@@ -523,6 +526,7 @@ impl AssetManager {
         let animations = Self::parse_timelines(key, &regions, af.animations);
         let atlas = TextureAtlas {
             image_key: af.image.clone(),
+            image_path: image_path.clone(),
             width: af.width,
             height: af.height,
             regions,
@@ -833,8 +837,7 @@ impl AssetManager {
                 if *count == 0 {
                     self.atlas_refs.remove(key);
                     if let Some(atlas) = self.atlases.remove(key) {
-                        let image_path = format!("assets/images/{}", atlas.image_key);
-                        self.texture_cache.remove(&image_path);
+                        self.texture_cache.remove(&atlas.image_path);
                     }
                     self.atlas_sources.remove(key);
                 }
@@ -851,7 +854,7 @@ impl AssetManager {
     }
     fn load_or_reload_view(&mut self, key: &str, force: bool) -> Result<wgpu::TextureView> {
         let atlas = self.atlases.get(key).ok_or_else(|| anyhow!("atlas '{key}' not loaded"))?;
-        let image_path = format!("assets/images/{}", atlas.image_key);
+        let image_path = atlas.image_path.clone();
         if !force {
             if let Some((view, _)) = self.texture_cache.get(&image_path) {
                 return Ok(view.clone());
@@ -940,7 +943,7 @@ impl AssetManager {
             .cloned()
             .ok_or_else(|| anyhow!("Atlas '{key}' has no recorded source; cannot hot-reload"))?;
 
-        let previous_image = self.atlases.get(key).map(|atlas| format!("assets/images/{}", atlas.image_key));
+        let previous_image = self.atlases.get(key).map(|atlas| atlas.image_path.clone());
 
         self.load_atlas_internal(key, &source)?;
 
@@ -948,7 +951,7 @@ impl AssetManager {
             self.texture_cache.remove(&image_path);
         }
         if let Some(current) = self.atlases.get(key) {
-            let image_path = format!("assets/images/{}", current.image_key);
+            let image_path = current.image_path.clone();
             self.texture_cache.remove(&image_path);
             if self.device.is_some() {
                 if let Err(err) = self.load_or_reload_view(key, true) {
@@ -957,5 +960,16 @@ impl AssetManager {
             }
         }
         Ok(())
+    }
+}
+
+fn resolve_atlas_image_path(json_path: &str, image: &str) -> PathBuf {
+    let image_path = Path::new(image);
+    if image_path.is_absolute() {
+        return image_path.to_path_buf();
+    }
+    match Path::new(json_path).parent() {
+        Some(parent) => parent.join(image_path),
+        None => image_path.to_path_buf(),
     }
 }

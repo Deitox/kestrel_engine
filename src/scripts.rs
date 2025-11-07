@@ -187,7 +187,19 @@ impl ScriptWorld {
     }
 
     fn random_range(&mut self, min: f32, max: f32) -> f32 {
-        rand::thread_rng().gen_range(min..max)
+        let mut lo = min;
+        let mut hi = max;
+        if !lo.is_finite() || !hi.is_finite() {
+            self.log("random_range received non-finite bounds; returning 0.0");
+            return 0.0;
+        }
+        if lo > hi {
+            std::mem::swap(&mut lo, &mut hi);
+        }
+        if (hi - lo).abs() <= f32::EPSILON {
+            return lo;
+        }
+        rand::thread_rng().gen_range(lo..hi)
     }
 
     fn log(&mut self, message: &str) {
@@ -558,7 +570,9 @@ fn register_api(engine: &mut Engine) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
     use std::io::Write;
+    use std::rc::Rc;
     use tempfile::NamedTempFile;
 
     fn write_script(contents: &str) -> NamedTempFile {
@@ -588,5 +602,23 @@ mod tests {
         host.eval_repl("world.set_spawn_per_press(7);").expect("repl command");
         let commands = host.drain_commands();
         assert!(matches!(&commands[..], [ScriptCommand::SetSpawnPerPress { count }] if *count == 7));
+    }
+
+    #[test]
+    fn random_range_handles_inverted_bounds() {
+        let state = Rc::new(RefCell::new(SharedState::default()));
+        let mut world = ScriptWorld::new(state);
+        for _ in 0..8 {
+            let value = world.random_range(5.0, -2.0);
+            assert!((-2.0..=5.0).contains(&value), "value {value} should stay within swapped bounds");
+        }
+    }
+
+    #[test]
+    fn random_range_returns_value_for_equal_bounds() {
+        let state = Rc::new(RefCell::new(SharedState::default()));
+        let mut world = ScriptWorld::new(state);
+        let value = world.random_range(3.14, 3.14);
+        assert_eq!(value, 3.14);
     }
 }

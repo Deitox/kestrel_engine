@@ -649,7 +649,8 @@ mod tests {
             "clearing the selection should clear gizmo interaction state"
         );
 
-        let assets = AssetManager::new();
+        let mut assets = AssetManager::new();
+        assets.retain_atlas("main", Some("assets/images/atlas.json")).expect("retain main atlas");
         let scene = world.export_scene(&assets);
         let temp = NamedTempFile::new().expect("temp scene");
         scene.save_to_path(temp.path()).expect("save headless scene");

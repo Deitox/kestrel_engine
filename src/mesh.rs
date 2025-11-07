@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail, Context, Result};
-use glam::{Vec2, Vec3, Vec4};
+use glam::{Mat3, Mat4, Vec2, Vec3, Vec4};
 use gltf::mesh::Mode;
 use std::collections::HashMap;
 use std::path::Path;
@@ -200,9 +200,9 @@ impl Mesh {
         let path_ref = path.as_ref();
         let (document, buffers, images) = gltf::import(path_ref)
             .with_context(|| format!("Failed to import glTF from {}", path_ref.display()))?;
-        let mesh =
-            document.meshes().next().ok_or_else(|| anyhow!("No meshes found in {}", path_ref.display()))?;
-
+        if document.meshes().next().is_none() {
+            return Err(anyhow!("No meshes found in {}", path_ref.display()));
+        }
         let mut textures = Vec::new();
         let mut texture_key_map: HashMap<usize, String> = HashMap::new();
         for texture in document.textures() {
@@ -308,7 +308,73 @@ impl Mesh {
         let mut vertices: Vec<MeshVertex> = Vec::new();
         let mut indices: Vec<u32> = Vec::new();
         let mut subsets: Vec<MeshSubset> = Vec::new();
+        let mut processed_nodes = false;
 
+        for node in document.nodes() {
+            if let Some(mesh) = node.mesh() {
+                let transform = Mat4::from_cols_array_2d(&node.transform().matrix());
+                let normal_matrix = Self::normal_matrix_from_transform(transform);
+                Self::append_mesh_primitives(
+                    &mesh,
+                    node.name(),
+                    transform,
+                    normal_matrix,
+                    &buffers,
+                    &material_key_map,
+                    &default_material_key,
+                    path_ref,
+                    &mut vertices,
+                    &mut indices,
+                    &mut subsets,
+                )?;
+                processed_nodes = true;
+            }
+        }
+
+        if !processed_nodes {
+            for mesh in document.meshes() {
+                Self::append_mesh_primitives(
+                    &mesh,
+                    mesh.name(),
+                    Mat4::IDENTITY,
+                    Mat3::IDENTITY,
+                    &buffers,
+                    &material_key_map,
+                    &default_material_key,
+                    path_ref,
+                    &mut vertices,
+                    &mut indices,
+                    &mut subsets,
+                )?;
+            }
+        }
+
+        compute_tangents(&mut vertices, &indices);
+
+        if subsets.is_empty() {
+            return Err(anyhow!("Mesh in {} contains no triangle primitives", path_ref.display()));
+        }
+
+        let bounds = MeshBounds::from_vertices(&vertices);
+
+        let mesh = Mesh { vertices, indices, subsets, bounds };
+
+        Ok(MeshImport { mesh, materials, textures })
+    }
+
+    fn append_mesh_primitives(
+        mesh: &gltf::Mesh,
+        node_name: Option<&str>,
+        transform: Mat4,
+        normal_matrix: Mat3,
+        buffers: &[gltf::buffer::Data],
+        material_key_map: &HashMap<usize, String>,
+        default_material_key: &str,
+        path_ref: &Path,
+        vertices: &mut Vec<MeshVertex>,
+        indices: &mut Vec<u32>,
+        subsets: &mut Vec<MeshSubset>,
+    ) -> Result<()> {
         for (primitive_index, primitive) in mesh.primitives().enumerate() {
             if primitive.mode() != Mode::Triangles {
                 continue;
@@ -366,10 +432,12 @@ impl Mesh {
             let base_vertex = vertices.len() as u32;
             vertices.extend(positions.iter().enumerate().map(|(i, pos)| {
                 let norm = normals.get(i).copied().unwrap_or(Vec3::Y).normalize_or_zero();
+                let transformed_pos = transform.transform_point3(*pos);
+                let transformed_normal = (normal_matrix * norm).normalize_or_zero();
                 let uv = tex_coords.get(i).copied().unwrap_or(Vec2::ZERO);
                 let joint_indices = joints.get(i).copied().unwrap_or([0; 4]);
                 let weight_values = weights.get(i).copied().unwrap_or([0.0; 4]);
-                MeshVertex::new(*pos, norm, Vec4::new(1.0, 0.0, 0.0, 1.0), uv)
+                MeshVertex::new(transformed_pos, transformed_normal, Vec4::new(1.0, 0.0, 0.0, 1.0), uv)
                     .with_skin(joint_indices, weight_values)
             }));
 
@@ -380,25 +448,39 @@ impl Mesh {
                 .material()
                 .index()
                 .and_then(|idx| material_key_map.get(&idx).cloned())
-                .unwrap_or_else(|| default_material_key.clone());
-            let name = mesh
-                .name()
-                .map(|mesh_name| format!("{}::{}", mesh_name, primitive_index))
-                .or_else(|| Some(format!("primitive_{primitive_index}")));
-            subsets.push(MeshSubset { name, index_offset, index_count, material: Some(material_key) });
+                .unwrap_or_else(|| default_material_key.to_string());
+            let subset_label = Self::subset_name(node_name, mesh.name(), primitive_index);
+            subsets.push(MeshSubset {
+                name: Some(subset_label),
+                index_offset,
+                index_count,
+                material: Some(material_key),
+            });
         }
+        Ok(())
+    }
 
-        compute_tangents(&mut vertices, &indices);
-
-        if subsets.is_empty() {
-            return Err(anyhow!("Mesh in {} contains no triangle primitives", path_ref.display()));
+    fn subset_name(node_name: Option<&str>, mesh_name: Option<&str>, primitive_index: usize) -> String {
+        match (node_name, mesh_name) {
+            (Some(node), Some(mesh)) => format!("{node}::{mesh}::{primitive_index}"),
+            (Some(node), None) => format!("{node}::primitive_{primitive_index}"),
+            (None, Some(mesh)) => format!("{mesh}::{primitive_index}"),
+            (None, None) => format!("primitive_{primitive_index}"),
         }
+    }
 
-        let bounds = MeshBounds::from_vertices(&vertices);
-
-        let mesh = Mesh { vertices, indices, subsets, bounds };
-
-        Ok(MeshImport { mesh, materials, textures })
+    fn normal_matrix_from_transform(transform: Mat4) -> Mat3 {
+        let upper = Mat3::from_cols(
+            transform.x_axis.truncate(),
+            transform.y_axis.truncate(),
+            transform.z_axis.truncate(),
+        );
+        let candidate = upper.inverse().transpose();
+        if candidate.to_cols_array().iter().all(|component| component.is_finite()) {
+            candidate
+        } else {
+            Mat3::IDENTITY
+        }
     }
     pub fn load_gltf(path: impl AsRef<Path>) -> Result<Self> {
         Ok(Self::load_gltf_with_materials(path)?.mesh)
@@ -571,5 +653,70 @@ mod tests {
             let tangent = Vec3::new(vertex.tangent[0], vertex.tangent[1], vertex.tangent[2]);
             assert!(tangent.length_squared() > 0.0);
         }
+    }
+
+    #[test]
+    fn load_gltf_imports_all_nodes() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        const GLTF_JSON: &str = r#"{
+  "asset": { "version": "2.0" },
+  "buffers": [
+    {
+      "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAEAAAACAAAA",
+      "byteLength": 108
+    }
+  ],
+  "bufferViews": [
+    { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+    { "buffer": 0, "byteOffset": 36, "byteLength": 36, "target": 34962 },
+    { "buffer": 0, "byteOffset": 72, "byteLength": 24, "target": 34962 },
+    { "buffer": 0, "byteOffset": 96, "byteLength": 12, "target": 34963 }
+  ],
+  "accessors": [
+    { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 0, 0], "max": [1, 1, 0] },
+    { "bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 0, 1], "max": [0, 0, 1] },
+    { "bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC2", "min": [0, 0], "max": [1, 1] },
+    { "bufferView": 3, "componentType": 5125, "count": 3, "type": "SCALAR", "min": [0], "max": [2] }
+  ],
+  "materials": [
+    {
+      "name": "Simple",
+      "pbrMetallicRoughness": { "baseColorFactor": [1, 1, 1, 1] }
+    }
+  ],
+  "meshes": [
+    {
+      "name": "Tri",
+      "primitives": [
+        {
+          "attributes": { "POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2 },
+          "indices": 3,
+          "material": 0
+        }
+      ]
+    }
+  ],
+  "nodes": [
+    { "mesh": 0, "name": "A", "translation": [0, 0, 0] },
+    { "mesh": 0, "name": "B", "translation": [2, 0, 0] }
+  ],
+  "scenes": [
+    { "nodes": [0, 1] }
+  ],
+  "scene": 0
+}"#;
+
+        let mut gltf_file = NamedTempFile::new().expect("temp gltf file");
+        gltf_file.write_all(GLTF_JSON.as_bytes()).expect("write gltf");
+
+        let mesh = Mesh::load_gltf(gltf_file.path()).expect("load temporary gltf");
+        assert_eq!(mesh.vertices.len(), 6, "each node instance should contribute its vertices");
+        assert!(
+            mesh.vertices.iter().any(|v| v.position[0] > 1.5),
+            "second node translation should be applied"
+        );
+        assert!(mesh.vertices.iter().any(|v| v.position[0] < 0.5), "first node should remain near origin");
     }
 }

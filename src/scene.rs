@@ -652,6 +652,9 @@ impl SceneDependencies {
             if let Some(sprite) = &entity.sprite {
                 set.insert(sprite.atlas.clone());
             }
+            if let Some(emitter) = &entity.particle_emitter {
+                set.insert(emitter.atlas.clone());
+            }
         }
         let mut deps = SceneDependencies {
             atlases: set
@@ -837,6 +840,9 @@ impl SceneDependencies {
         for entity in entities {
             if let Some(sprite) = &entity.sprite {
                 atlas_keys.insert(sprite.atlas.clone());
+            }
+            if let Some(emitter) = &entity.particle_emitter {
+                atlas_keys.insert(emitter.atlas.clone());
             }
             if let Some(clip) = &entity.transform_clip {
                 clip_keys.insert(clip.clip_key.clone());
@@ -1598,6 +1604,59 @@ impl From<QuatData> for glam::Quat {
 impl From<glam::Vec4> for ColorData {
     fn from(value: glam::Vec4) -> Self {
         Self { r: value.x, g: value.y, b: value.z, a: value.w }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::assets::AssetManager;
+    use glam::Vec2;
+
+    fn entity_with_emitter() -> SceneEntity {
+        SceneEntity {
+            id: SceneEntityId::new(),
+            name: None,
+            transform: TransformData::from_components(Vec2::ZERO, 0.0, Vec2::ONE),
+            transform_clip: None,
+            sprite: None,
+            transform3d: None,
+            mesh: None,
+            tint: None,
+            velocity: None,
+            mass: None,
+            collider: None,
+            particle_emitter: Some(ParticleEmitterData {
+                rate: 10.0,
+                spread: 0.5,
+                speed: 1.0,
+                lifetime: 1.0,
+                start_color: ColorData { r: 1.0, g: 0.5, b: 0.2, a: 1.0 },
+                end_color: ColorData { r: 0.2, g: 0.4, b: 1.0, a: 0.0 },
+                start_size: 0.5,
+                end_size: 0.1,
+                atlas: "fx_atlas".to_string(),
+                region: "spark".to_string(),
+            }),
+            orbit: None,
+            spin: None,
+            parent_id: None,
+            parent: None,
+        }
+    }
+
+    #[test]
+    fn dependencies_include_emitter_atlases() {
+        let entity = entity_with_emitter();
+        let assets = AssetManager::new();
+        let deps = SceneDependencies::from_entities(&[entity.clone()], &assets, |_| None, |_| None);
+        assert!(
+            deps.contains_atlas("fx_atlas"),
+            "particle emitter atlases should be recorded as dependencies"
+        );
+
+        let subset = deps.subset_for_entities(&[entity], None);
+        assert!(subset.contains_atlas("fx_atlas"), "subset dependencies should retain emitter atlases");
     }
 }
 
