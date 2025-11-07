@@ -169,9 +169,13 @@ fn scene_roundtrip_preserves_entity_count() {
     let mut new_world = EcsWorld::new();
     let mut new_registry = MeshRegistry::new(&mut material_registry);
     new_world
-        .load_scene_with_mesh(&loaded, &assets, |key, path| {
-            new_registry.ensure_mesh(key, path, &mut material_registry)
-        })
+        .load_scene_with_dependencies(
+            &loaded,
+            &assets,
+            |key, path| new_registry.ensure_mesh(key, path, &mut material_registry),
+            |_, _| Ok(()),
+            |_, _| Ok(()),
+        )
         .expect("scene load into world");
     assert!(
         new_registry.has("test_triangle"),
@@ -211,9 +215,13 @@ fn scene_roundtrip_preserves_entity_count() {
     let mut autoload_assets = AssetManager::new();
     let mut autoload_registry = MeshRegistry::new(&mut material_registry);
     let _autoload_scene = autoload_world
-        .load_scene_from_path_with_mesh(path, &mut autoload_assets, |key, path| {
-            autoload_registry.ensure_mesh(key, path, &mut material_registry)
-        })
+        .load_scene_from_path_with_dependencies(
+            path,
+            &mut autoload_assets,
+            |key, path| autoload_registry.ensure_mesh(key, path, &mut material_registry),
+            |_, _| Ok(()),
+            |_, _| Ok(()),
+        )
         .expect("scene load with auto dependency resolution");
     assert!(autoload_assets.has_atlas("main"), "auto-load should populate required atlases");
     assert!(
@@ -273,6 +281,7 @@ fn scene_roundtrip_preserves_transforms_and_emitters() {
                 end_size: 0.06,
                 atlas: Arc::from("main"),
                 region: Arc::from("green"),
+                source: Some(Arc::from("assets/images/atlas.json")),
             },
         ))
         .id();
@@ -315,9 +324,13 @@ fn scene_roundtrip_preserves_transforms_and_emitters() {
     let mut new_world = EcsWorld::new();
     let mut new_registry = MeshRegistry::new(&mut material_registry);
     new_world
-        .load_scene_with_mesh(&loaded_scene, &assets, |key, path| {
-            new_registry.ensure_mesh(key, path, &mut material_registry)
-        })
+        .load_scene_with_dependencies(
+            &loaded_scene,
+            &assets,
+            |key, path| new_registry.ensure_mesh(key, path, &mut material_registry),
+            |_, _| Ok(()),
+            |_, _| Ok(()),
+        )
         .expect("scene load into world");
     new_world.update(0.016);
     new_world.fixed_step(0.016);
@@ -476,7 +489,13 @@ fn scene_entity_ids_enable_parent_reconstruction() {
 
     let mut reload_world = EcsWorld::new();
     reload_world
-        .load_scene_from_path_with_mesh(temp_file.path(), &mut assets, |_, _| Ok(()))
+        .load_scene_from_path_with_dependencies(
+            temp_file.path(),
+            &mut assets,
+            |_, _| Ok(()),
+            |_, _| Ok(()),
+            |_, _| Ok(()),
+        )
         .expect("scene load should rebuild hierarchy");
 
     let mut parent_query = reload_world.world.query::<&Parent>();
@@ -587,6 +606,7 @@ fn scene_roundtrip_captures_hierarchy_dependencies_and_environment_metadata() {
                 end_size: 0.1,
                 atlas: Arc::from("main"),
                 region: Arc::from("green"),
+                source: Some(Arc::from("assets/images/atlas.json")),
             },
         ))
         .id();
@@ -669,12 +689,18 @@ fn scene_roundtrip_captures_hierarchy_dependencies_and_environment_metadata() {
     let mut mesh_loader_invocations = 0usize;
     let mut reload_world = EcsWorld::new();
     reload_world
-        .load_scene_from_path_with_mesh(temp.path(), &mut reload_assets, |key, path| {
-            mesh_loader_invocations += 1;
-            assert_eq!(key, MESH_KEY);
-            assert_eq!(path, Some(MESH_PATH));
-            Ok(())
-        })
+        .load_scene_from_path_with_dependencies(
+            temp.path(),
+            &mut reload_assets,
+            |key, path| {
+                mesh_loader_invocations += 1;
+                assert_eq!(key, MESH_KEY);
+                assert_eq!(path, Some(MESH_PATH));
+                Ok(())
+            },
+            |_, _| Ok(()),
+            |_, _| Ok(()),
+        )
         .expect("reload scene into ECS world");
     assert_eq!(mesh_loader_invocations, 1, "mesh dependency should be resolved once");
 

@@ -322,7 +322,6 @@ impl ClipChannelMask {
             self.tint && other.tint,
         )
     }
-
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1204,7 +1203,6 @@ impl ClipInstance {
         }
 
         result
-
     }
 
     #[inline(always)]
@@ -2574,6 +2572,7 @@ pub struct ParticleEmitter {
     pub end_size: f32,
     pub atlas: Arc<str>,
     pub region: Arc<str>,
+    pub source: Option<Arc<str>>,
 }
 #[derive(Component)]
 pub struct Particle {

@@ -327,6 +327,7 @@ impl EcsWorld {
                     end_size,
                     atlas: Arc::from("main"),
                     region: Arc::from("green"),
+                    source: None,
                 },
             ))
             .id();
@@ -1939,20 +1940,60 @@ impl EcsWorld {
     where
         F: FnMut(&str, Option<&str>) -> Result<()>,
     {
+        self.load_scene_from_path_with_dependencies(
+            path,
+            assets,
+            mesh_loader,
+            |_key, _path| {
+                Err(anyhow!(
+                    "Scene references materials but no resolver was provided. Use load_scene_from_path_with_dependencies."
+                ))
+            },
+            |_key, _path| {
+                Err(anyhow!(
+                    "Scene references environments but no resolver was provided. Use load_scene_from_path_with_dependencies."
+                ))
+            },
+        )
+    }
+
+    pub fn load_scene_from_path_with_dependencies<F, G, H>(
+        &mut self,
+        path: impl AsRef<Path>,
+        assets: &mut AssetManager,
+        mesh_loader: F,
+        material_loader: G,
+        environment_loader: H,
+    ) -> Result<Scene>
+    where
+        F: FnMut(&str, Option<&str>) -> Result<()>,
+        G: FnMut(&str, Option<&str>) -> Result<()>,
+        H: FnMut(&str, Option<&str>) -> Result<()>,
+    {
         let scene = Scene::load_from_path(path)?;
-        self.ensure_scene_dependencies_with_mesh(&scene, assets, mesh_loader)?;
+        self.ensure_scene_dependencies_with_resolvers(
+            &scene,
+            assets,
+            mesh_loader,
+            material_loader,
+            environment_loader,
+        )?;
         self.load_scene_internal(&scene, assets)?;
         Ok(scene)
     }
 
-    fn ensure_scene_dependencies_with_mesh<F>(
+    fn ensure_scene_dependencies_with_resolvers<F, G, H>(
         &self,
         scene: &Scene,
         assets: &mut AssetManager,
         mut mesh_loader: F,
+        mut material_loader: G,
+        mut environment_loader: H,
     ) -> Result<()>
     where
         F: FnMut(&str, Option<&str>) -> Result<()>,
+        G: FnMut(&str, Option<&str>) -> Result<()>,
+        H: FnMut(&str, Option<&str>) -> Result<()>,
     {
         let mut missing = Vec::new();
         for dep in scene.dependencies.atlas_dependencies() {
@@ -2004,6 +2045,34 @@ impl EcsWorld {
                 mesh_missing.join(", ")
             ));
         }
+
+        let mut material_missing = Vec::new();
+        for dep in scene.dependencies.material_dependencies() {
+            if let Err(err) = material_loader(dep.key(), dep.path()) {
+                let source = dep.path().unwrap_or("no path provided");
+                material_missing.push(format!("{} ({source}) : {err}", dep.key()));
+            }
+        }
+        if !material_missing.is_empty() {
+            return Err(anyhow!(
+                "Scene requires materials that could not be prepared: {}",
+                material_missing.join(", ")
+            ));
+        }
+
+        let mut environment_missing = Vec::new();
+        for dep in scene.dependencies.environment_dependencies() {
+            if let Err(err) = environment_loader(dep.key(), dep.path()) {
+                let source = dep.path().unwrap_or("no path provided");
+                environment_missing.push(format!("{} ({source}) : {err}", dep.key()));
+            }
+        }
+        if !environment_missing.is_empty() {
+            return Err(anyhow!(
+                "Scene requires environments that could not be prepared: {}",
+                environment_missing.join(", ")
+            ));
+        }
         Ok(())
     }
 
@@ -2019,10 +2088,40 @@ impl EcsWorld {
         &mut self,
         scene: &Scene,
         assets: &AssetManager,
-        mut mesh_loader: F,
+        mesh_loader: F,
     ) -> Result<()>
     where
         F: FnMut(&str, Option<&str>) -> Result<()>,
+    {
+        self.load_scene_with_dependencies(
+            scene,
+            assets,
+            mesh_loader,
+            |_key, _path| {
+                Err(anyhow!(
+                    "Scene references materials but no resolver was provided. Use load_scene_with_dependencies."
+                ))
+            },
+            |_key, _path| {
+                Err(anyhow!(
+                    "Scene references environments but no resolver was provided. Use load_scene_with_dependencies."
+                ))
+            },
+        )
+    }
+
+    pub fn load_scene_with_dependencies<F, G, H>(
+        &mut self,
+        scene: &Scene,
+        assets: &AssetManager,
+        mut mesh_loader: F,
+        mut material_loader: G,
+        mut environment_loader: H,
+    ) -> Result<()>
+    where
+        F: FnMut(&str, Option<&str>) -> Result<()>,
+        G: FnMut(&str, Option<&str>) -> Result<()>,
+        H: FnMut(&str, Option<&str>) -> Result<()>,
     {
         for dep in scene.dependencies.atlas_dependencies() {
             if !assets.has_atlas(dep.key()) {
@@ -2049,6 +2148,32 @@ impl EcsWorld {
         }
         if !mesh_missing.is_empty() {
             return Err(anyhow!("Scene requires meshes that are unavailable: {}", mesh_missing.join(", ")));
+        }
+        let mut material_missing = Vec::new();
+        for dep in scene.dependencies.material_dependencies() {
+            if let Err(err) = material_loader(dep.key(), dep.path()) {
+                let source = dep.path().unwrap_or("no path provided");
+                material_missing.push(format!("{} ({source}) : {err}", dep.key()));
+            }
+        }
+        if !material_missing.is_empty() {
+            return Err(anyhow!(
+                "Scene requires materials that are unavailable: {}",
+                material_missing.join(", ")
+            ));
+        }
+        let mut environment_missing = Vec::new();
+        for dep in scene.dependencies.environment_dependencies() {
+            if let Err(err) = environment_loader(dep.key(), dep.path()) {
+                let source = dep.path().unwrap_or("no path provided");
+                environment_missing.push(format!("{} ({source}) : {err}", dep.key()));
+            }
+        }
+        if !environment_missing.is_empty() {
+            return Err(anyhow!(
+                "Scene requires environments that are unavailable: {}",
+                environment_missing.join(", ")
+            ));
         }
         self.load_scene_internal(scene, assets)
     }
@@ -2130,7 +2255,7 @@ impl EcsWorld {
             }
         }
         for root in roots {
-            self.collect_scene_entity(root, None, None, &mut scene.entities);
+            self.collect_scene_entity(root, None, None, assets, &mut scene.entities);
         }
         scene.dependencies =
             SceneDependencies::from_entities(&scene.entities, assets, mesh_source, material_source);
@@ -2142,7 +2267,7 @@ impl EcsWorld {
             return None;
         }
         let mut entities = Vec::new();
-        self.collect_scene_entity(root, None, None, &mut entities);
+        self.collect_scene_entity(root, None, None, assets, &mut entities);
         if entities.is_empty() {
             return None;
         }
@@ -2166,7 +2291,13 @@ impl EcsWorld {
     where
         F: FnMut(&str, Option<&str>) -> Result<()>,
     {
-        self.ensure_scene_dependencies_with_mesh(scene, assets, &mut mesh_loader)?;
+        self.ensure_scene_dependencies_with_resolvers(
+            scene,
+            assets,
+            &mut mesh_loader,
+            |_, _| Ok(()),
+            |_, _| Ok(()),
+        )?;
         self.instantiate_scene_entities(scene, assets)
     }
 
@@ -2288,6 +2419,7 @@ impl EcsWorld {
                 end_size: emitter.end_size,
                 atlas: Arc::from(emitter.atlas.as_str()),
                 region: Arc::from(emitter.region.as_str()),
+                source: emitter.atlas_source.as_deref().map(|path| Arc::from(path)),
             });
         }
         if let Some(orbit) = data.orbit.clone() {
@@ -2408,6 +2540,7 @@ impl EcsWorld {
         entity: Entity,
         parent_index: Option<usize>,
         parent_id: Option<SceneEntityId>,
+        assets: &AssetManager,
         out: &mut Vec<SceneEntity>,
     ) {
         if self.world.get::<Transform>(entity).is_none() {
@@ -2504,6 +2637,11 @@ impl EcsWorld {
                 end_size: emitter.end_size,
                 atlas: emitter.atlas.to_string(),
                 region: emitter.region.to_string(),
+                atlas_source: emitter
+                    .source
+                    .as_ref()
+                    .map(|s| s.as_ref().to_string())
+                    .or_else(|| assets.atlas_source(emitter.atlas.as_ref()).map(|p| p.to_string())),
             }),
             orbit: self.world.get::<OrbitController>(entity).map(|orbit| OrbitControllerData {
                 center: orbit.center.into(),
@@ -2519,7 +2657,7 @@ impl EcsWorld {
 
         if let Some(child_entities) = self.world.get::<Children>(entity).map(|children| children.0.clone()) {
             for child in child_entities {
-                self.collect_scene_entity(child, Some(current_index), Some(entity_id.clone()), out);
+                self.collect_scene_entity(child, Some(current_index), Some(entity_id.clone()), assets, out);
             }
         }
     }

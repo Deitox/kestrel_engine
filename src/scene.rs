@@ -648,19 +648,26 @@ impl SceneDependencies {
         G: Fn(&str) -> Option<String>,
     {
         let mut set = BTreeSet::new();
+        let mut emitter_sources: HashMap<String, String> = HashMap::new();
         for entity in entities {
             if let Some(sprite) = &entity.sprite {
                 set.insert(sprite.atlas.clone());
             }
             if let Some(emitter) = &entity.particle_emitter {
                 set.insert(emitter.atlas.clone());
+                if let Some(path) = emitter.atlas_source.as_ref() {
+                    emitter_sources.entry(emitter.atlas.clone()).or_insert(path.clone());
+                }
             }
         }
         let mut deps = SceneDependencies {
             atlases: set
                 .into_iter()
                 .map(|key| {
-                    let path = assets.atlas_source(&key).map(|p| p.to_string());
+                    let path = assets
+                        .atlas_source(&key)
+                        .map(|p| p.to_string())
+                        .or_else(|| emitter_sources.get(&key).cloned());
                     AtlasDependencyRepr::from(AtlasDependency::new(key, path))
                 })
                 .collect(),
@@ -834,6 +841,7 @@ impl SceneDependencies {
         environment: Option<&SceneEnvironment>,
     ) -> Self {
         let mut atlas_keys = BTreeSet::new();
+        let mut emitter_sources: HashMap<String, String> = HashMap::new();
         let mut clip_keys = BTreeSet::new();
         let mut mesh_keys = BTreeSet::new();
         let mut material_keys = BTreeSet::new();
@@ -843,6 +851,9 @@ impl SceneDependencies {
             }
             if let Some(emitter) = &entity.particle_emitter {
                 atlas_keys.insert(emitter.atlas.clone());
+                if let Some(path) = emitter.atlas_source.as_ref() {
+                    emitter_sources.entry(emitter.atlas.clone()).or_insert(path.clone());
+                }
             }
             if let Some(clip) = &entity.transform_clip {
                 clip_keys.insert(clip.clip_key.clone());
@@ -907,7 +918,7 @@ impl SceneDependencies {
                 let dep = atlas_lookup
                     .get(&key)
                     .cloned()
-                    .unwrap_or_else(|| AtlasDependency::new(key.clone(), None));
+                    .unwrap_or_else(|| AtlasDependency::new(key.clone(), emitter_sources.get(&key).cloned()));
                 AtlasDependencyRepr::from(dep)
             })
             .collect();
@@ -1289,6 +1300,8 @@ pub struct ParticleEmitterData {
     pub atlas: String,
     #[serde(default = "default_particle_emitter_region")]
     pub region: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub atlas_source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1637,6 +1650,7 @@ mod tests {
                 end_size: 0.1,
                 atlas: "fx_atlas".to_string(),
                 region: "spark".to_string(),
+                atlas_source: Some("assets/atlases/fx_atlas.json".to_string()),
             }),
             orbit: None,
             spin: None,

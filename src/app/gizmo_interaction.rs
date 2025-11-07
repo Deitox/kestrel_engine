@@ -658,7 +658,13 @@ mod tests {
         let mut reload_world = EcsWorld::new();
         let mut reload_assets = AssetManager::new();
         reload_world
-            .load_scene_from_path_with_mesh(temp.path(), &mut reload_assets, |_, _| Ok(()))
+            .load_scene_from_path_with_dependencies(
+                temp.path(),
+                &mut reload_assets,
+                |_, _| Ok(()),
+                |_, _| Ok(()),
+                |_, _| Ok(()),
+            )
             .expect("reload scene from disk");
 
         let original_ids = collect_scene_ids(&mut world);

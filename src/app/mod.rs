@@ -2836,27 +2836,33 @@ impl ApplicationHandler for App {
             }
         }
         if actions.load_scene {
-            match self.ecs.load_scene_from_path_with_mesh(
-                &self.ui_scene_path,
-                &mut self.assets,
-                |key, path| self.mesh_registry.ensure_mesh(key, path, &mut self.material_registry),
-            ) {
+            match Scene::load_from_path(&self.ui_scene_path) {
                 Ok(scene) => match self.update_scene_dependencies(&scene.dependencies) {
                     Ok(()) => {
-                        let path = self.ui_scene_path.clone();
-                        self.ui_scene_status = Some(format!("Loaded {}", path));
-                        self.remember_scene_path(&path);
-                        self.apply_scene_metadata(&scene.metadata);
-                        self.selected_entity = None;
-                        self.gizmo_interaction = None;
-                        if let Some(plugin) = self.script_plugin_mut() {
-                            plugin.clear_handles();
+                        if let Err(err) = self.ecs.load_scene_with_dependencies(
+                            &scene,
+                            &self.assets,
+                            |_, _| Ok(()),
+                            |_, _| Ok(()),
+                            |_, _| Ok(()),
+                        ) {
+                            self.ui_scene_status = Some(format!("Load failed: {err}"));
+                        } else {
+                            let path = self.ui_scene_path.clone();
+                            self.ui_scene_status = Some(format!("Loaded {}", path));
+                            self.remember_scene_path(&path);
+                            self.apply_scene_metadata(&scene.metadata);
+                            self.selected_entity = None;
+                            self.gizmo_interaction = None;
+                            if let Some(plugin) = self.script_plugin_mut() {
+                                plugin.clear_handles();
+                            }
+                            if let Some(analytics) = self.analytics_plugin_mut() {
+                                analytics.clear_frame_history();
+                            }
+                            self.sync_emitter_ui();
+                            self.inspector_status = None;
                         }
-                        if let Some(analytics) = self.analytics_plugin_mut() {
-                            analytics.clear_frame_history();
-                        }
-                        self.sync_emitter_ui();
-                        self.inspector_status = None;
                     }
                     Err(err) => {
                         self.ui_scene_status = Some(format!("Load failed: {err}"));
