@@ -10,6 +10,39 @@ pub struct TransformPropagationScratch {
     pub visited: VisitTracker,
 }
 
+#[derive(Resource, Clone, Copy)]
+pub struct TransformPropagationStats {
+    pub mode: TransformPropagationMode,
+    pub total_entities: u32,
+    pub root_entities: u32,
+    pub processed_entities: u32,
+    pub max_stack_size: u32,
+}
+
+impl Default for TransformPropagationStats {
+    fn default() -> Self {
+        Self {
+            mode: TransformPropagationMode::Flat,
+            total_entities: 0,
+            root_entities: 0,
+            processed_entities: 0,
+            max_stack_size: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum TransformPropagationMode {
+    Flat,
+    Hierarchy,
+}
+
+impl Default for TransformPropagationMode {
+    fn default() -> Self {
+        Self::Flat
+    }
+}
+
 #[derive(Default)]
 pub struct VisitTracker {
     marks: Vec<u32>,
@@ -49,7 +82,9 @@ pub fn sys_propagate_scene_transforms(
         &mut WorldTransform,
     )>,
     roots: Query<Entity, (With<WorldTransform>, Without<Parent>)>,
+    parents: Query<(), With<Parent>>,
     mut scratch: ResMut<TransformPropagationScratch>,
+    mut stats: ResMut<TransformPropagationStats>,
 ) {
     let _span = profiler.scope("sys_propagate_scene_transforms");
     fn compose_local(transform2d: Option<&Transform>, transform3d: Option<&Transform3D>) -> Mat4 {
@@ -62,21 +97,43 @@ pub fn sys_propagate_scene_transforms(
         }
     }
 
+    if parents.is_empty() {
+        let mut total = 0u32;
+        for (_entity, transform2d, transform3d, _children, mut world) in nodes.iter_mut() {
+            world.0 = compose_local(transform2d, transform3d);
+            total += 1;
+        }
+        stats.mode = TransformPropagationMode::Flat;
+        stats.total_entities = total;
+        stats.root_entities = total;
+        stats.processed_entities = total;
+        stats.max_stack_size = 0;
+        scratch.stack.clear();
+        scratch.visited.clear();
+        return;
+    }
+
     let mut stack = std::mem::take(&mut scratch.stack);
     let mut visited = std::mem::take(&mut scratch.visited);
 
     stack.clear();
     visited.clear();
+    let mut processed = 0u32;
+    let mut root_count = 0u32;
+    let mut max_stack = 0usize;
 
     for root in roots.iter() {
         if let Ok((entity, transform2d, transform3d, children, mut world)) = nodes.get_mut(root) {
             let local = compose_local(transform2d, transform3d);
             world.0 = local;
             visited.mark(entity);
+            processed += 1;
+            root_count += 1;
             let world_mat = world.0;
             if let Some(children) = children {
                 for &child in children.0.iter().rev() {
                     stack.push((child, world_mat));
+                    max_stack = max_stack.max(stack.len());
                 }
             }
         }
@@ -91,9 +148,11 @@ pub fn sys_propagate_scene_transforms(
             let world_mat = parent_world * local;
             world.0 = world_mat;
             visited.mark(current);
+            processed += 1;
             if let Some(children) = children {
                 for &child in children.0.iter().rev() {
                     stack.push((child, world_mat));
+                    max_stack = max_stack.max(stack.len());
                 }
             }
         }
@@ -108,6 +167,11 @@ pub fn sys_propagate_scene_transforms(
 
     scratch.stack = stack;
     scratch.visited = visited;
+    stats.mode = TransformPropagationMode::Hierarchy;
+    stats.total_entities = processed;
+    stats.root_entities = root_count;
+    stats.processed_entities = processed;
+    stats.max_stack_size = max_stack as u32;
 }
 
 pub fn sys_sync_world3d(

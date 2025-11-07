@@ -1,10 +1,12 @@
+use glam::{Vec2, Vec4};
 #[cfg(feature = "anim_stats")]
 use kestrel_engine::ecs::{
     reset_sprite_animation_stats, reset_transform_clip_stats, sprite_animation_stats_snapshot,
     transform_clip_stats_snapshot, SpriteAnimationStats, TransformClipStats,
 };
 use kestrel_engine::ecs::{
-    EcsWorld, Sprite, SpriteAnimation, SpriteAnimationFrame, SpriteAnimationLoopMode, SystemProfiler,
+    EcsWorld, ParticleCaps, ParticleEmitter, Sprite, SpriteAnimation, SpriteAnimationFrame,
+    SpriteAnimationLoopMode, SystemProfiler, TransformPropagationStats,
 };
 use std::sync::Arc;
 
@@ -28,15 +30,9 @@ fn animation_profile_snapshot() {
         .ok()
         .and_then(|raw| raw.parse::<f32>().ok())
         .unwrap_or(0.08);
-    let use_demo_scene = env_flag("ANIMATION_PROFILE_DEMO_SCENE");
-    let scenario_label = if use_demo_scene { "demo_scene" } else { "sprite_animators" };
-
+    let scenario = profile_scenario_from_env(count, frame_duration);
     let mut world = EcsWorld::new();
-    if use_demo_scene {
-        world.spawn_demo_scene();
-    } else {
-        seed_sprite_animators(&mut world, count, frame_duration);
-    }
+    scenario.apply(&mut world);
 
     for _ in 0..warmup {
         world.update(dt);
@@ -63,11 +59,14 @@ fn animation_profile_snapshot() {
     #[cfg(feature = "anim_stats")]
     let mut prev_transform_stats = transform_clip_stats_snapshot();
 
+    let target_system = std::env::var("ANIMATION_PROFILE_TARGET_SYSTEM")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| scenario.default_system().to_string());
+
     for _ in 0..steps {
         world.update(dt);
-        if let Some(timing) =
-            world.system_timings().into_iter().find(|timing| timing.name == "sys_drive_sprite_animations")
-        {
+        if let Some(timing) = world.system_timings().into_iter().find(|timing| timing.name == target_system) {
             per_step.push(timing.last_ms as f64);
         }
         #[cfg(feature = "anim_stats")]
@@ -101,10 +100,13 @@ fn animation_profile_snapshot() {
     }
 
     let timings = world.system_timings();
-    let reported_animators = if use_demo_scene { 0 } else { count };
     println!(
-        "[animation_profile] scenario={} animators={} steps={} dt={:.6}",
-        scenario_label, reported_animators, steps, dt
+        "[animation_profile] scenario={} animators={} steps={} dt={:.6} system={}",
+        scenario.label(),
+        scenario.reported_animators(),
+        steps,
+        dt,
+        target_system
     );
     if timings.is_empty() {
         println!("[animation_profile] no system timings captured");
@@ -116,6 +118,16 @@ fn animation_profile_snapshot() {
             );
         }
     }
+
+    let transform_stats = *world.world.resource::<TransformPropagationStats>();
+    println!(
+        "[animation_profile] transform_propagation mode={:?} total={} roots={} processed={} stack_max={}",
+        transform_stats.mode,
+        transform_stats.total_entities,
+        transform_stats.root_entities,
+        transform_stats.processed_entities,
+        transform_stats.max_stack_size
+    );
 
     if !per_step.is_empty() {
         let step_count = per_step.len() as f64;
@@ -289,14 +301,110 @@ fn seed_sprite_animators(world: &mut EcsWorld, count: usize, frame_duration: f32
     }
 }
 
-fn env_flag(name: &str) -> bool {
-    std::env::var(name)
-        .map(|raw| {
-            let value = raw.trim();
-            value.eq_ignore_ascii_case("true")
-                || value.eq_ignore_ascii_case("yes")
-                || value.eq_ignore_ascii_case("y")
-                || value == "1"
-        })
-        .unwrap_or(false)
+fn seed_particle_emitters(
+    world: &mut EcsWorld,
+    emitters: usize,
+    rate: f32,
+    spread: f32,
+    speed: f32,
+    lifetime: f32,
+) {
+    let emitters = emitters.max(1);
+    let rate = rate.max(0.0);
+    let lifetime = lifetime.max(0.05);
+    let est_particles_per_emitter = (rate * lifetime * 1.5).max(4.0);
+    let max_total = ((emitters as f32) * est_particles_per_emitter).ceil().max(emitters as f32) as u32;
+    let max_spawn = ((rate * emitters as f32).ceil().max(emitters as f32)) as u32;
+    let backlog = (rate * lifetime * 4.0).max(32.0);
+    world.set_particle_caps(ParticleCaps::new(max_spawn.max(32), max_total.max(max_spawn), backlog));
+
+    let cols = (emitters as f32).sqrt().ceil() as i32;
+    let spacing = 0.35;
+    for idx in 0..emitters {
+        let col = idx as i32 % cols;
+        let row = idx as i32 / cols;
+        let offset = Vec2::new(
+            (col as f32 - (cols as f32 - 1.0) * 0.5) * spacing,
+            (row as f32 - (cols as f32 - 1.0) * 0.5) * spacing,
+        );
+        let entity = world.spawn_particle_emitter(
+            offset,
+            rate,
+            spread,
+            speed,
+            lifetime,
+            Vec4::new(1.0, 0.8, 0.2, 0.9),
+            Vec4::new(1.0, 0.2, 0.1, 0.0),
+            0.12,
+            0.04,
+        );
+        if let Some(mut emitter) = world.world.get_mut::<ParticleEmitter>(entity) {
+            emitter.accumulator = emitter.rate.min(backlog);
+        }
+    }
+}
+
+fn profile_scenario_from_env(count: usize, frame_duration: f32) -> ProfileScenario {
+    match std::env::var("ANIMATION_PROFILE_SCENARIO").ok().map(|s| s.to_ascii_lowercase()) {
+        Some(ref scenario) if scenario == "demo" || scenario == "demo_scene" => ProfileScenario::DemoScene,
+        Some(ref scenario) if scenario == "particles" || scenario == "particle_emitters" => {
+            let emitters = env_usize("ANIMATION_PROFILE_PARTICLE_EMITTERS", 400);
+            let rate = env_f32("ANIMATION_PROFILE_PARTICLE_RATE", 80.0);
+            let spread = env_f32("ANIMATION_PROFILE_PARTICLE_SPREAD", std::f32::consts::FRAC_PI_4);
+            let speed = env_f32("ANIMATION_PROFILE_PARTICLE_SPEED", 1.2);
+            let lifetime = env_f32("ANIMATION_PROFILE_PARTICLE_LIFETIME", 1.5);
+            ProfileScenario::Particles { emitters, rate, spread, speed, lifetime }
+        }
+        _ => ProfileScenario::Sprites { count, frame_duration },
+    }
+}
+
+enum ProfileScenario {
+    Sprites { count: usize, frame_duration: f32 },
+    DemoScene,
+    Particles { emitters: usize, rate: f32, spread: f32, speed: f32, lifetime: f32 },
+}
+
+impl ProfileScenario {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Sprites { .. } => "sprite_animators",
+            Self::DemoScene => "demo_scene",
+            Self::Particles { .. } => "particle_emitters",
+        }
+    }
+
+    fn reported_animators(&self) -> usize {
+        match self {
+            Self::Sprites { count, .. } => *count,
+            _ => 0,
+        }
+    }
+
+    fn apply(&self, world: &mut EcsWorld) {
+        match self {
+            Self::Sprites { count, frame_duration } => seed_sprite_animators(world, *count, *frame_duration),
+            Self::DemoScene => {
+                world.spawn_demo_scene();
+            }
+            Self::Particles { emitters, rate, spread, speed, lifetime } => {
+                seed_particle_emitters(world, *emitters, *rate, *spread, *speed, *lifetime);
+            }
+        }
+    }
+
+    fn default_system(&self) -> &'static str {
+        match self {
+            Self::Particles { .. } => "sys_update_particles",
+            _ => "sys_drive_sprite_animations",
+        }
+    }
+}
+
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name).ok().and_then(|raw| raw.parse::<usize>().ok()).unwrap_or(default)
+}
+
+fn env_f32(name: &str, default: f32) -> f32 {
+    std::env::var(name).ok().and_then(|raw| raw.parse::<f32>().ok()).unwrap_or(default)
 }
