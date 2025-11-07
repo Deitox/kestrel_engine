@@ -318,14 +318,19 @@ impl RapierState {
 pub struct SpatialHash {
     pub cell: f32,
     pub grid: HashMap<(i32, i32), Vec<Entity>>,
+    pub active_cells: Vec<(i32, i32)>,
 }
 
 impl SpatialHash {
     pub fn new(cell: f32) -> Self {
-        Self { cell, grid: HashMap::new() }
+        Self { cell, grid: HashMap::new(), active_cells: Vec::new() }
     }
-    pub fn clear(&mut self) {
-        self.grid.clear();
+    pub fn begin_frame(&mut self) {
+        for key in self.active_cells.drain(..) {
+            if let Some(entries) = self.grid.get_mut(&key) {
+                entries.clear();
+            }
+        }
     }
     pub fn key(&self, p: Vec2) -> (i32, i32) {
         ((p.x / self.cell).floor() as i32, (p.y / self.cell).floor() as i32)
@@ -337,9 +342,18 @@ impl SpatialHash {
         let (kx1, ky1) = self.key(max);
         for ky in ky0..=ky1 {
             for kx in kx0..=kx1 {
-                self.grid.entry((kx, ky)).or_default().push(e);
+                let key = (kx, ky);
+                let list = self.grid.entry(key).or_default();
+                if list.is_empty() {
+                    self.active_cells.push(key);
+                }
+                list.push(e);
             }
         }
+    }
+
+    pub fn occupied_cells(&self) -> usize {
+        self.active_cells.len()
     }
 }
 
@@ -552,6 +566,11 @@ fn node_half(node: &QuadtreeNode) -> Vec2 {
 fn aabb_overlap(center_a: Vec2, half_a: Vec2, center_b: Vec2, half_b: Vec2) -> bool {
     (center_a.x - center_b.x).abs() < (half_a.x + half_b.x)
         && (center_a.y - center_b.y).abs() < (half_a.y + half_b.y)
+}
+
+#[derive(Resource, Default)]
+pub struct SpatialScratch {
+    pub colliders: Vec<(Entity, Vec2, Vec2)>,
 }
 
 #[derive(Resource, Default)]

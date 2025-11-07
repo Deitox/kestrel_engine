@@ -1,7 +1,7 @@
 use super::TimeDelta;
 use crate::ecs::physics::{
     CollisionEventKind, ParticleContacts, PhysicsParams, RapierState, SpatialHash, SpatialIndexConfig,
-    SpatialMetrics, SpatialMode, SpatialQuadtree, WorldBounds,
+    SpatialMetrics, SpatialMode, SpatialQuadtree, SpatialScratch, WorldBounds,
 };
 use crate::ecs::profiler::SystemProfiler;
 use crate::ecs::types::*;
@@ -154,24 +154,28 @@ pub fn sys_build_spatial_hash(
     mut profiler: ResMut<SystemProfiler>,
     mut grid: ResMut<SpatialHash>,
     mut quadtree: ResMut<SpatialQuadtree>,
+    mut scratch: ResMut<SpatialScratch>,
     bounds: Res<WorldBounds>,
     settings: Res<SpatialIndexConfig>,
     mut metrics: ResMut<SpatialMetrics>,
     q: Query<(Entity, &Transform, &Aabb), Without<RapierBody>>,
 ) {
     let _span = profiler.scope("sys_build_spatial_hash");
-    grid.clear();
-    let mut collider_data: Vec<(Entity, Vec2, Vec2)> = Vec::new();
+    grid.begin_frame();
+    scratch.colliders.clear();
+    let collider_data = &mut scratch.colliders;
     for (e, t, a) in &q {
         grid.insert(e, t.translation, a.half);
         collider_data.push((e, t.translation, a.half));
     }
-    let occupied_cells = grid.grid.len();
+    let occupied_cells = grid.occupied_cells();
     let mut total_entries = 0usize;
     let mut max_cell_occupancy = 0usize;
-    for list in grid.grid.values() {
-        total_entries += list.len();
-        max_cell_occupancy = max_cell_occupancy.max(list.len());
+    for key in &grid.active_cells {
+        if let Some(list) = grid.grid.get(key) {
+            total_entries += list.len();
+            max_cell_occupancy = max_cell_occupancy.max(list.len());
+        }
     }
     let average = if occupied_cells > 0 { total_entries as f32 / occupied_cells as f32 } else { 0.0 };
     let use_quadtree = settings.fallback_enabled && average >= settings.density_threshold.max(1.0);

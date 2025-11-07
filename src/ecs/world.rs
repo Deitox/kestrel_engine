@@ -49,6 +49,7 @@ impl EcsWorld {
         world.insert_resource(SpatialQuadtree::new(6, 8));
         world.insert_resource(SpatialIndexConfig::default());
         world.insert_resource(SpatialMetrics::default());
+        world.insert_resource(SpatialScratch::default());
         world.insert_resource(ParticleContacts::default());
         world.insert_resource(ParticleCaps::default());
         world.insert_resource(ParticleState::default());
