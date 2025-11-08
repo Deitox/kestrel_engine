@@ -327,12 +327,12 @@ pub fn sys_drive_sprite_animations(
     match plan {
         AnimationDelta::None => {}
         AnimationDelta::Single(delta) => {
-            if delta > 0.0 {
+            if delta != 0.0 {
                 drive_single(delta, has_group_scales, animation_time_ref, &mut events, &mut animations);
             }
         }
         AnimationDelta::Fixed { step, steps } => {
-            if steps > 0 {
+            if steps > 0 && step != 0.0 {
                 drive_fixed(step, steps, has_group_scales, animation_time_ref, &mut events, &mut animations);
             }
         }
@@ -342,9 +342,11 @@ pub fn sys_drive_sprite_animations(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assets::AnimationClip;
     use crate::assets::skeletal::{load_skeleton_from_gltf, SkeletonAsset};
     use anyhow::Result;
-    use glam::{Mat4, Quat, Vec3};
+    use bevy_ecs::prelude::World;
+    use glam::{Mat4, Quat, Vec2, Vec3};
     use std::path::Path;
     use std::sync::Arc;
 
@@ -435,6 +437,142 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn sprite_animation_emits_initial_frame_events() {
+        use bevy_ecs::system::SystemState;
+        use crate::events::GameEvent;
+
+        let mut world = World::new();
+        world.insert_resource(SystemProfiler::new());
+        world.insert_resource(AnimationPlan { delta: AnimationDelta::Single(0.05) });
+        world.insert_resource(AnimationTime::default());
+        world.insert_resource(EventBus::default());
+
+        let region = Arc::from("frame0");
+        let event_name = Arc::from("spawn");
+        let frame = SpriteAnimationFrame {
+            name: Arc::clone(&region),
+            region: Arc::clone(&region),
+            region_id: 7,
+            duration: 0.1,
+            uv: [0.0; 4],
+            events: Arc::from(vec![event_name]),
+        };
+        let frames = Arc::from(vec![frame].into_boxed_slice());
+        let durations = Arc::from(vec![0.1_f32].into_boxed_slice());
+        let offsets = Arc::from(vec![0.0_f32].into_boxed_slice());
+        let animation = SpriteAnimation::new(
+            Arc::from("timeline"),
+            frames,
+            durations,
+            offsets,
+            0.1,
+            SpriteAnimationLoopMode::Loop,
+        );
+
+        world.spawn((
+            animation,
+            Sprite {
+                atlas_key: Arc::from("atlas"),
+                region: Arc::clone(&region),
+                region_id: 7,
+                uv: [0.0; 4],
+            },
+        ));
+
+        let mut system_state = SystemState::<(
+            ResMut<SystemProfiler>,
+            Res<AnimationPlan>,
+            Res<AnimationTime>,
+            ResMut<EventBus>,
+            Query<(Entity, &mut SpriteAnimation, &mut Sprite)>,
+        )>::new(&mut world);
+        {
+            let (profiler, plan, time, events, animations) = system_state.get_mut(&mut world);
+            sys_drive_sprite_animations(profiler, plan, time, events, animations);
+        }
+        system_state.apply(&mut world);
+
+        let mut bus = world.resource_mut::<EventBus>();
+        let events = bus.drain();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            GameEvent::SpriteAnimationEvent { event, .. } => assert_eq!(event.as_ref(), "spawn"),
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sprite_animation_rewinds_with_negative_delta() {
+        let region = Arc::from("frame");
+        let frames = Arc::from(
+            vec![
+                SpriteAnimationFrame {
+                    name: Arc::clone(&region),
+                    region: Arc::clone(&region),
+                    region_id: 0,
+                    duration: 0.2,
+                    uv: [0.0; 4],
+                    events: Arc::default(),
+                };
+                3
+            ]
+            .into_boxed_slice(),
+        );
+        let durations = Arc::from(vec![0.2_f32, 0.2, 0.2].into_boxed_slice());
+        let offsets = Arc::from(vec![0.0_f32, 0.2, 0.4].into_boxed_slice());
+        let mut animation = SpriteAnimation::new(
+            Arc::from("timeline"),
+            frames,
+            durations,
+            offsets,
+            0.6,
+            SpriteAnimationLoopMode::Loop,
+        );
+        animation.frame_index = 2;
+        animation.elapsed_in_frame = 0.0;
+
+        let changed = advance_animation(&mut animation, -0.25, Entity::from_raw(42), None, true);
+        assert!(changed);
+        assert_eq!(animation.frame_index, 1);
+    }
+
+    #[test]
+    fn clip_sample_waits_for_missing_components() {
+        use crate::ecs::types::ClipInstance;
+
+        let clip = Arc::new(AnimationClip {
+            name: Arc::from("clip"),
+            duration: 1.0,
+            duration_inv: 1.0,
+            translation: None,
+            rotation: None,
+            scale: None,
+            tint: None,
+            looped: true,
+            version: 1,
+        });
+        let mut instance = ClipInstance::new(Arc::from("clip"), clip);
+        instance.last_translation = Some(Vec2::ZERO);
+
+        let mut sample = ClipSample::default();
+        sample.translation = Some(Vec2::new(1.0, 2.0));
+
+        apply_clip_sample(&mut instance, None, None, None, None, sample);
+        assert_eq!(instance.last_translation, Some(Vec2::ZERO));
+
+        let mut world = World::new();
+        let entity = world.spawn(Transform::default()).id();
+        {
+            let mut entity_ref = world.entity_mut(entity);
+            let transform = entity_ref.get_mut::<Transform>().unwrap();
+            apply_clip_sample(&mut instance, None, None, Some(transform), None, sample);
+        }
+
+        let stored = world.entity(entity).get::<Transform>().unwrap();
+        assert_eq!(stored.translation, Vec2::new(1.0, 2.0));
+    }
+
     fn assert_mat4_approx(actual: Mat4, expected: Mat4, label: &str) {
         let actual = actual.to_cols_array();
         let expected = expected.to_cols_array();
@@ -473,7 +611,7 @@ pub fn sys_drive_transform_clips(
         AnimationDelta::Single(amount) => amount,
         AnimationDelta::Fixed { step, steps } => step * steps as f32,
     };
-    if delta <= 0.0 {
+    if delta == 0.0 {
         return;
     }
     drive_transform_clips(delta, has_group_scales, animation_time_ref, &mut clips);
@@ -497,7 +635,7 @@ pub fn sys_drive_skeletal_clips(
         AnimationDelta::Single(amount) => amount,
         AnimationDelta::Fixed { step, steps } => step * steps as f32,
     };
-    if delta <= 0.0 {
+    if delta == 0.0 {
         return;
     }
     drive_skeletal_clips(delta, has_group_scales, animation_time_ref, &mut skeletons);
@@ -541,23 +679,8 @@ fn drive_skeletal_clips(
         }
 
         if instance.playing {
-            let mut next_time = instance.time + scaled;
-            let duration = clip.duration.max(0.0);
-            if duration > 0.0 {
-                if instance.looped {
-                    if next_time >= duration && (next_time - duration).abs() <= CLIP_TIME_EPSILON {
-                        next_time = duration;
-                    } else {
-                        next_time = next_time.rem_euclid(duration.max(std::f32::EPSILON));
-                    }
-                } else if next_time >= duration {
-                    next_time = duration;
-                    instance.playing = false;
-                }
-            } else {
-                next_time = 0.0;
-            }
-            instance.time = next_time;
+            let current_time = instance.time;
+            instance.set_time(current_time + scaled);
         }
 
         let pose_time = instance.time;
@@ -762,7 +885,7 @@ fn drive_transform_clips(
         }
 
         let scaled = delta * playback_rate;
-        if scaled <= 0.0 {
+        if scaled == 0.0 {
             continue;
         }
 
@@ -785,6 +908,37 @@ fn drive_transform_clips(
             && transform_mask.apply_rotation
             && transform_mask.apply_scale
             && tint_available;
+
+        if scaled < 0.0 {
+            #[cfg(feature = "anim_stats")]
+            {
+                stats.slow_path_clips += 1;
+            }
+            let current_time = instance.time;
+            instance.set_time(current_time + scaled);
+            #[cfg(feature = "anim_stats")]
+            let sample_timer = Instant::now();
+            let sample = instance.sample_with_masks(transform_player.copied(), property_player.copied());
+            #[cfg(feature = "anim_stats")]
+            {
+                stats.sample_time += sample_timer.elapsed();
+            }
+            #[cfg(feature = "anim_stats")]
+            let apply_timer = Instant::now();
+            apply_clip_sample(
+                &mut instance,
+                transform_player,
+                property_player,
+                transform,
+                tint,
+                sample,
+            );
+            #[cfg(feature = "anim_stats")]
+            {
+                stats.apply_time += apply_timer.elapsed();
+            }
+            continue;
+        }
 
         if can_fast_path {
             #[cfg(feature = "anim_stats")]
@@ -912,6 +1066,9 @@ fn apply_clip_sample(
     tint: Option<Mut<Tint>>,
     sample: ClipSample,
 ) {
+    let had_transform_component = transform.is_some();
+    let had_tint_component = tint.is_some();
+
     let translation_changed = sample.translation != instance.last_translation;
     let rotation_changed = sample.rotation != instance.last_rotation;
     let scale_changed = sample.scale != instance.last_scale;
@@ -969,16 +1126,16 @@ fn apply_clip_sample(
         }
     }
 
-    if transform_mask.apply_translation {
+    if transform_mask.apply_translation && had_transform_component {
         instance.last_translation = sample.translation;
     }
-    if transform_mask.apply_rotation {
+    if transform_mask.apply_rotation && had_transform_component {
         instance.last_rotation = sample.rotation;
     }
-    if transform_mask.apply_scale {
+    if transform_mask.apply_scale && had_transform_component {
         instance.last_scale = sample.scale;
     }
-    if tint_mask.apply_tint {
+    if tint_mask.apply_tint && had_tint_component {
         instance.last_tint = sample.tint;
     }
 }
@@ -990,7 +1147,9 @@ pub(crate) fn initialize_animation_phase(animation: &mut SpriteAnimation, entity
     animation.frame_index = 0;
     animation.elapsed_in_frame = 0.0;
     animation.forward = true;
+    animation.prev_forward = true;
     animation.refresh_current_duration();
+    animation.refresh_pending_start_events();
 
     let mut offset = animation.start_offset.max(0.0);
     let total = animation.total_duration();
@@ -1011,6 +1170,7 @@ pub(crate) fn initialize_animation_phase(animation: &mut SpriteAnimation, entity
     animation.playing = true;
     let changed = advance_animation(animation, offset, entity, None, false);
     animation.playing = was_playing;
+    animation.refresh_pending_start_events();
     changed
 }
 
@@ -1021,7 +1181,7 @@ pub(crate) fn advance_animation(
     mut events: Option<&mut EventBus>,
     respect_terminal_behavior: bool,
 ) -> bool {
-    if delta <= 0.0 {
+    if delta == 0.0 {
         return false;
     }
     let frames = animation.frames.as_ref();
@@ -1038,85 +1198,209 @@ pub(crate) fn advance_animation(
 
     let len = frames.len();
     let mut frame_changed = false;
-    while delta > 0.0 && animation.playing {
-        let frame_duration = unsafe { *animation.frame_durations.get_unchecked(animation.frame_index) };
-        let time_left = frame_duration - animation.elapsed_in_frame;
-        if delta < time_left {
-            animation.elapsed_in_frame += delta;
-            delta = 0.0;
-            continue;
-        }
+    while animation.playing && delta.abs() > 0.0 {
+        if delta > 0.0 {
+            let frame_duration = unsafe { *animation.frame_durations.get_unchecked(animation.frame_index) };
+            let time_left = frame_duration - animation.elapsed_in_frame;
+            if delta < time_left {
+                animation.elapsed_in_frame += delta;
+                delta = 0.0;
+                continue;
+            }
 
-        delta -= time_left;
-        animation.elapsed_in_frame = 0.0;
-        let mut emit_frame_event = false;
+            delta -= time_left;
+            animation.elapsed_in_frame = 0.0;
+            let mut emit_frame_event = false;
+            let prior_forward = animation.forward;
+            let mut changed_this_step = false;
 
-        match animation.mode {
-            SpriteAnimationLoopMode::Loop => {
-                animation.frame_index = (animation.frame_index + 1) % len;
-                animation.refresh_current_duration();
-                emit_frame_event = true;
-                frame_changed = true;
-            }
-            SpriteAnimationLoopMode::OnceStop => {
-                animation.frame_index = len.saturating_sub(1);
-                animation.refresh_current_duration();
-                frame_changed = true;
-                if let Some(events) = events.as_deref_mut() {
-                    emit_sprite_animation_events(entity, animation, events);
-                }
-                if respect_terminal_behavior {
-                    animation.playing = false;
-                }
-                break;
-            }
-            SpriteAnimationLoopMode::OnceHold => {
-                animation.frame_index = len.saturating_sub(1);
-                animation.refresh_current_duration();
-                if let Some(last) = animation.frame_durations.last() {
-                    animation.elapsed_in_frame = *last;
-                }
-                frame_changed = true;
-                if let Some(events) = events.as_deref_mut() {
-                    emit_sprite_animation_events(entity, animation, events);
-                }
-                if respect_terminal_behavior {
-                    animation.playing = false;
-                }
-                break;
-            }
-            SpriteAnimationLoopMode::PingPong => {
-                if len <= 1 {
-                    animation.forward = true;
+            match animation.mode {
+                SpriteAnimationLoopMode::Loop => {
+                    animation.frame_index = (animation.frame_index + 1) % len;
                     animation.refresh_current_duration();
-                } else if animation.forward {
-                    if animation.frame_index + 1 < len {
-                        animation.frame_index += 1;
-                    } else {
-                        animation.forward = false;
-                        animation.frame_index = (len - 2).min(len - 1);
+                    emit_frame_event = true;
+                    changed_this_step = true;
+                }
+                SpriteAnimationLoopMode::OnceStop => {
+                    animation.frame_index = len.saturating_sub(1);
+                    animation.refresh_current_duration();
+                    frame_changed = true;
+                    animation.prev_forward = prior_forward;
+                    if let Some(events) = events.as_deref_mut() {
+                        emit_sprite_animation_events(entity, animation, events);
                     }
+                    if respect_terminal_behavior {
+                        animation.playing = false;
+                    }
+                    break;
+                }
+                SpriteAnimationLoopMode::OnceHold => {
+                    animation.frame_index = len.saturating_sub(1);
                     animation.refresh_current_duration();
+                    if let Some(last) = animation.frame_durations.last() {
+                        animation.elapsed_in_frame = *last;
+                    }
                     frame_changed = true;
-                    emit_frame_event = true;
-                } else if animation.frame_index > 0 {
-                    animation.frame_index -= 1;
-                    animation.refresh_current_duration();
-                    frame_changed = true;
-                    emit_frame_event = true;
-                } else {
-                    animation.forward = true;
-                    animation.frame_index = 1.min(len - 1);
-                    animation.refresh_current_duration();
-                    frame_changed = len > 1;
-                    emit_frame_event = len > 1;
+                    animation.prev_forward = prior_forward;
+                    if let Some(events) = events.as_deref_mut() {
+                        emit_sprite_animation_events(entity, animation, events);
+                    }
+                    if respect_terminal_behavior {
+                        animation.playing = false;
+                    }
+                    break;
+                }
+                SpriteAnimationLoopMode::PingPong => {
+                    if len <= 1 {
+                        animation.forward = true;
+                        animation.refresh_current_duration();
+                    } else if animation.forward {
+                        if animation.frame_index + 1 < len {
+                            animation.frame_index += 1;
+                        } else {
+                            animation.forward = false;
+                            animation.frame_index = (len - 2).min(len - 1);
+                        }
+                        animation.refresh_current_duration();
+                        changed_this_step = true;
+                        emit_frame_event = true;
+                    } else if animation.frame_index > 0 {
+                        animation.frame_index -= 1;
+                        animation.refresh_current_duration();
+                        changed_this_step = true;
+                        emit_frame_event = true;
+                    } else {
+                        animation.forward = true;
+                        animation.frame_index = 1.min(len - 1);
+                        animation.refresh_current_duration();
+                        changed_this_step = len > 1;
+                        emit_frame_event = len > 1;
+                    }
                 }
             }
-        }
 
-        if emit_frame_event {
-            if let Some(events) = events.as_deref_mut() {
-                emit_sprite_animation_events(entity, animation, events);
+            if changed_this_step {
+                frame_changed = true;
+                animation.prev_forward = prior_forward;
+            }
+
+            if emit_frame_event {
+                if let Some(events) = events.as_deref_mut() {
+                    emit_sprite_animation_events(entity, animation, events);
+                }
+            }
+        } else {
+            let time_spent = animation.elapsed_in_frame;
+            if -delta < time_spent {
+                animation.elapsed_in_frame += delta;
+                delta = 0.0;
+                continue;
+            }
+
+            delta += time_spent;
+            animation.elapsed_in_frame = 0.0;
+            let mut emit_frame_event = false;
+            let prior_prev_forward = animation.prev_forward;
+            let mut changed_this_step = false;
+
+            match animation.mode {
+                SpriteAnimationLoopMode::Loop => {
+                    if len > 1 {
+                        if animation.frame_index == 0 {
+                            animation.frame_index = len - 1;
+                        } else {
+                            animation.frame_index -= 1;
+                        }
+                        animation.refresh_current_duration();
+                        animation.elapsed_in_frame = animation.current_duration;
+                        delta += animation.current_duration;
+                        emit_frame_event = true;
+                        changed_this_step = true;
+                    } else {
+                        animation.refresh_current_duration();
+                        animation.elapsed_in_frame = animation.current_duration;
+                    }
+                }
+                SpriteAnimationLoopMode::OnceStop => {
+                    if animation.frame_index == 0 {
+                        animation.elapsed_in_frame = 0.0;
+                        animation.refresh_current_duration();
+                        if respect_terminal_behavior {
+                            animation.playing = false;
+                        }
+                        delta = 0.0;
+                    } else {
+                        animation.frame_index -= 1;
+                        animation.refresh_current_duration();
+                        animation.elapsed_in_frame = animation.current_duration;
+                        delta += animation.current_duration;
+                        emit_frame_event = true;
+                        changed_this_step = true;
+                    }
+                }
+                SpriteAnimationLoopMode::OnceHold => {
+                    if animation.frame_index == 0 {
+                        animation.elapsed_in_frame = 0.0;
+                        animation.refresh_current_duration();
+                        if respect_terminal_behavior {
+                            animation.playing = false;
+                        }
+                        delta = 0.0;
+                    } else {
+                        animation.frame_index -= 1;
+                        animation.refresh_current_duration();
+                        animation.elapsed_in_frame = animation.current_duration;
+                        delta += animation.current_duration;
+                        emit_frame_event = true;
+                        changed_this_step = true;
+                    }
+                }
+                SpriteAnimationLoopMode::PingPong => {
+                    if len <= 1 {
+                        animation.forward = true;
+                        animation.refresh_current_duration();
+                        animation.elapsed_in_frame = animation.current_duration;
+                    } else {
+                        let bounced = animation.forward != animation.prev_forward;
+                        if bounced {
+                            if animation.forward {
+                                // just bounced from start
+                                animation.forward = animation.prev_forward;
+                                animation.frame_index = 0;
+                            } else {
+                                // just bounced from end
+                                animation.forward = animation.prev_forward;
+                                animation.frame_index = len - 1;
+                            }
+                        } else if animation.forward {
+                            if animation.frame_index > 0 {
+                                animation.frame_index -= 1;
+                            } else {
+                                animation.frame_index = 0;
+                            }
+                        } else if animation.frame_index + 1 < len {
+                            animation.frame_index += 1;
+                        } else {
+                            animation.frame_index = len - 1;
+                        }
+                        animation.refresh_current_duration();
+                        animation.elapsed_in_frame = animation.current_duration;
+                        delta += animation.current_duration;
+                        emit_frame_event = len > 1;
+                        changed_this_step = len > 1;
+                    }
+                }
+            }
+
+            if changed_this_step {
+                frame_changed = true;
+                animation.prev_forward = prior_prev_forward;
+            }
+
+            if emit_frame_event {
+                if let Some(events) = events.as_deref_mut() {
+                    emit_sprite_animation_events(entity, animation, events);
+                }
             }
         }
     }
@@ -1352,6 +1636,13 @@ fn drive_single(
             continue;
         }
 
+        if animation.pending_start_events {
+            if animation.has_events {
+                emit_sprite_animation_events(entity, &animation, events);
+            }
+            animation.pending_start_events = false;
+        }
+
         let playback_rate = if animation.playback_rate_dirty {
             let group_scale =
                 if has_group_scales { animation_time.group_scale(animation.group.as_deref()) } else { 1.0 };
@@ -1365,7 +1656,7 @@ fn drive_single(
         }
 
         let scaled = delta * playback_rate;
-        if scaled <= 0.0 {
+        if scaled == 0.0 {
             continue;
         }
         let Some(advance_delta) = animation.accumulate_delta(scaled, CLIP_TIME_EPSILON) else {
@@ -1373,12 +1664,16 @@ fn drive_single(
         };
 
         let mut sprite_changed = false;
-        if animation.fast_loop {
+        if animation.fast_loop && advance_delta > 0.0 {
             let current_duration = animation.current_duration;
             let new_elapsed = animation.elapsed_in_frame + advance_delta;
             if new_elapsed <= current_duration + CLIP_TIME_EPSILON {
                 animation.elapsed_in_frame = new_elapsed.min(current_duration);
             } else if advance_animation_loop_no_events(&mut animation, advance_delta) {
+                sprite_changed = true;
+            }
+        } else if animation.fast_loop {
+            if advance_animation(&mut animation, advance_delta, entity, None, true) {
                 sprite_changed = true;
             }
         } else if animation.has_events {
@@ -1425,6 +1720,13 @@ fn drive_fixed(
             continue;
         }
 
+        if animation.pending_start_events {
+            if animation.has_events {
+                emit_sprite_animation_events(entity, &animation, events);
+            }
+            animation.pending_start_events = false;
+        }
+
         let playback_rate = if animation.playback_rate_dirty {
             let group_scale =
                 if has_group_scales { animation_time.group_scale(animation.group.as_deref()) } else { 1.0 };
@@ -1438,12 +1740,12 @@ fn drive_fixed(
         }
 
         let scaled_step = step * playback_rate;
-        if scaled_step <= 0.0 {
+        if scaled_step == 0.0 {
             continue;
         }
 
         let total_delta = scaled_step * steps as f32;
-        if total_delta <= 0.0 {
+        if total_delta == 0.0 {
             continue;
         }
         let Some(advance_delta) = animation.accumulate_delta(total_delta, CLIP_TIME_EPSILON) else {
@@ -1451,12 +1753,16 @@ fn drive_fixed(
         };
 
         let mut sprite_changed = false;
-        if animation.fast_loop {
+        if animation.fast_loop && advance_delta > 0.0 {
             let current_duration = animation.current_duration;
             let new_elapsed = animation.elapsed_in_frame + advance_delta;
             if new_elapsed <= current_duration + CLIP_TIME_EPSILON {
                 animation.elapsed_in_frame = new_elapsed.min(current_duration);
             } else if advance_animation_loop_no_events(&mut animation, advance_delta) {
+                sprite_changed = true;
+            }
+        } else if animation.fast_loop {
+            if advance_animation(&mut animation, advance_delta, entity, None, true) {
                 sprite_changed = true;
             }
         } else if animation.has_events {

@@ -1173,7 +1173,7 @@ impl EcsWorld {
     }
 
     pub fn set_animation_time_scale(&mut self, scale: f32) {
-        self.world.resource_mut::<AnimationTime>().scale = scale.max(0.0);
+        self.world.resource_mut::<AnimationTime>().scale = scale;
     }
 
     pub fn set_animation_time_paused(&mut self, paused: bool) {
@@ -1259,6 +1259,7 @@ impl EcsWorld {
             animation.frame_index = target;
             animation.elapsed_in_frame = 0.0;
             animation.refresh_current_duration();
+            animation.refresh_pending_start_events();
             Self::current_frame_snapshot(&animation)
         } else {
             None
@@ -1420,7 +1421,9 @@ impl EcsWorld {
             animation.elapsed_in_frame = 0.0;
             animation.playing = true;
             animation.forward = true;
+            animation.prev_forward = true;
             animation.refresh_current_duration();
+            animation.refresh_pending_start_events();
             let snapshot = Self::current_frame_snapshot(&animation);
             drop(animation);
             self.apply_sprite_snapshot(entity, snapshot);

@@ -54,7 +54,7 @@ impl AnimationTime {
     }
 
     pub fn group_scale(&self, group: Option<&str>) -> f32 {
-        group.and_then(|name| self.group_scales.get(name).copied()).unwrap_or(1.0).max(0.0)
+        group.and_then(|name| self.group_scales.get(name).copied()).unwrap_or(1.0)
     }
 
     pub fn has_group_scales(&self) -> bool {
@@ -72,19 +72,24 @@ impl AnimationTime {
         if raw_dt <= 0.0 || self.paused {
             return AnimationDelta::None;
         }
-        let scaled = (raw_dt * self.scale.max(0.0)).max(0.0);
-        if scaled <= 0.0 {
+        let scaled = raw_dt * self.scale;
+        if scaled == 0.0 {
             return AnimationDelta::None;
         }
         if let Some(step) = self.fixed_step {
             let step = step.max(std::f32::EPSILON);
             self.remainder += scaled;
-            let steps = (self.remainder / step).floor() as u32;
-            if steps == 0 {
+            let produced = if scaled > 0.0 {
+                (self.remainder / step).floor() as i32
+            } else {
+                (self.remainder / step).ceil() as i32
+            };
+            if produced == 0 {
                 return AnimationDelta::None;
             }
-            self.remainder -= step * steps as f32;
-            AnimationDelta::Fixed { step, steps }
+            self.remainder -= step * produced as f32;
+            let step_sign = if produced >= 0 { 1.0 } else { -1.0 };
+            AnimationDelta::Fixed { step: step * step_sign, steps: produced.unsigned_abs() }
         } else {
             self.remainder = 0.0;
             AnimationDelta::Single(scaled)

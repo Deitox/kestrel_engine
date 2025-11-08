@@ -131,6 +131,8 @@ pub struct SpriteAnimation {
     pub playback_rate: f32,
     pub playback_rate_dirty: bool,
     pub fast_loop: bool,
+    pub pending_start_events: bool,
+    pub prev_forward: bool,
 }
 
 impl SpriteAnimation {
@@ -147,7 +149,7 @@ impl SpriteAnimation {
         let fast_loop = !has_events && matches!(mode, SpriteAnimationLoopMode::Loop);
         let current_duration = frame_durations.first().copied().unwrap_or(0.0);
         let current_frame_offset = frame_offsets.first().copied().unwrap_or(0.0);
-        Self {
+        let mut animation = Self {
             timeline,
             frames,
             frame_durations,
@@ -171,14 +173,20 @@ impl SpriteAnimation {
             playback_rate: 0.0,
             playback_rate_dirty: true,
             fast_loop,
-        }
+            pending_start_events: false,
+            prev_forward: true,
+        };
+        animation.refresh_pending_start_events();
+        animation
     }
 
     pub fn set_mode(&mut self, mode: SpriteAnimationLoopMode) {
         self.mode = mode;
         self.looped = mode.looped();
         self.forward = true;
+        self.prev_forward = true;
         self.fast_loop = !self.has_events && matches!(self.mode, SpriteAnimationLoopMode::Loop);
+        self.refresh_pending_start_events();
     }
 
     pub fn set_start_offset(&mut self, offset: f32) {
@@ -227,15 +235,13 @@ impl SpriteAnimation {
     }
 
     pub fn set_speed(&mut self, speed: f32) {
-        self.speed = speed.max(0.0);
+        self.speed = speed;
         self.playback_rate_dirty = true;
     }
 
     pub fn ensure_playback_rate(&mut self, group_scale: f32) -> f32 {
-        let clamped_group = group_scale.max(0.0);
-        let base_speed = self.speed.max(0.0);
         if self.playback_rate_dirty {
-            self.playback_rate = (base_speed * clamped_group).max(0.0);
+            self.playback_rate = self.speed * group_scale;
             self.playback_rate_dirty = false;
         }
         self.playback_rate
@@ -248,12 +254,22 @@ impl SpriteAnimation {
     }
 
     #[inline]
+    pub fn refresh_pending_start_events(&mut self) {
+        self.pending_start_events =
+            self.has_events && self.current_frame().map(|frame| !frame.events.is_empty()).unwrap_or(false);
+    }
+
+    #[inline]
     pub(crate) fn accumulate_delta(&mut self, delta: f32, epsilon: f32) -> Option<f32> {
-        if delta <= 0.0 {
+        if delta == 0.0 {
             return None;
         }
-        let total = self.pending_small_delta + delta;
-        if total < epsilon {
+        let mut pending = self.pending_small_delta;
+        if pending != 0.0 && pending.signum() != delta.signum() {
+            pending = 0.0;
+        }
+        let total = pending + delta;
+        if total.abs() < epsilon {
             self.pending_small_delta = total;
             None
         } else {
@@ -539,7 +555,7 @@ impl ClipInstance {
     }
 
     pub fn set_speed(&mut self, speed: f32) {
-        self.speed = speed.max(0.0);
+        self.speed = speed;
         self.mark_playback_rate_dirty();
     }
 
@@ -563,9 +579,7 @@ impl ClipInstance {
 
     pub fn ensure_playback_rate(&mut self, group_scale: f32) -> f32 {
         if self.playback_rate_dirty {
-            let clamped_group = group_scale.max(0.0);
-            let base_speed = self.speed.max(0.0);
-            self.playback_rate = (base_speed * clamped_group).max(0.0);
+            self.playback_rate = self.speed * group_scale;
             self.playback_rate_dirty = false;
         }
         self.playback_rate
@@ -647,16 +661,19 @@ impl ClipInstance {
         let duration = self.duration();
         if duration > 0.0 {
             if self.looped {
-                if (time - duration).abs() <= CLIP_TIME_EPSILON {
-                    self.time = duration;
-                } else if time >= 0.0 && time < duration {
-                    self.time = time;
-                } else {
-                    let wrapped = wrap_time_looped(time, duration, self.clip.duration_inv);
-                    self.time = wrapped;
+                let step = duration.max(std::f32::EPSILON);
+                let mut wrapped = time.rem_euclid(step);
+                if (wrapped - duration).abs() <= CLIP_TIME_EPSILON || (duration - wrapped).abs() <= CLIP_TIME_EPSILON {
+                    wrapped = duration;
                 }
+                self.time = wrapped;
             } else {
-                self.time = time.clamp(0.0, duration);
+                let mut clamped = time.clamp(0.0, duration);
+                if clamped >= duration - CLIP_TIME_EPSILON {
+                    clamped = duration;
+                    self.playing = false;
+                }
+                self.time = clamped;
             }
         } else {
             self.time = 0.0;
@@ -2494,6 +2511,61 @@ impl SpriteAnimationLoopMode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::assets::AnimationClip;
+    use crate::assets::skeletal::{SkeletonAsset, SkeletonJoint, SkeletalClip};
+
+    #[test]
+    fn clip_instance_set_time_wraps_negative_looped() {
+        let clip = Arc::new(AnimationClip {
+            name: Arc::from("clip"),
+            duration: 1.0,
+            duration_inv: 1.0,
+            translation: None,
+            rotation: None,
+            scale: None,
+            tint: None,
+            looped: true,
+            version: 1,
+        });
+        let mut instance = ClipInstance::new(Arc::from("clip"), clip);
+        instance.set_time(-0.25);
+        assert!((instance.time - 0.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn skeleton_instance_set_time_handles_negative() {
+        let joint = SkeletonJoint {
+            name: Arc::from("root"),
+            parent: None,
+            rest_local: Mat4::IDENTITY,
+            rest_world: Mat4::IDENTITY,
+            rest_translation: Vec3::ZERO,
+            rest_rotation: Quat::IDENTITY,
+            rest_scale: Vec3::ONE,
+            inverse_bind: Mat4::IDENTITY,
+        };
+        let skeleton = Arc::new(SkeletonAsset {
+            name: Arc::from("skel"),
+            joints: Arc::from(vec![joint].into_boxed_slice()),
+            roots: Arc::from(vec![0_u32].into_boxed_slice()),
+        });
+        let mut instance = SkeletonInstance::new(Arc::from("skel"), Arc::clone(&skeleton));
+        let clip = Arc::new(SkeletalClip {
+            name: Arc::from("clip"),
+            skeleton: Arc::from("skel"),
+            duration: 1.0,
+            channels: Arc::new([]),
+            looped: true,
+        });
+        instance.set_active_clip(Some(clip));
+        let time = instance.set_time(-0.4);
+        assert!((time - 0.6).abs() < 1e-6);
+    }
+}
 #[derive(Component, Clone)]
 pub struct MeshRef {
     pub key: String,
@@ -2625,7 +2697,7 @@ impl SkeletonInstance {
     }
 
     pub fn set_speed(&mut self, speed: f32) {
-        self.speed = speed.max(0.0);
+        self.speed = speed;
         self.playback_rate_dirty = true;
     }
 
@@ -2635,14 +2707,19 @@ impl SkeletonInstance {
     }
 
     pub fn set_time(&mut self, time: f32) -> f32 {
-        let mut clamped = time.max(0.0);
+        let mut clamped = time;
         if let Some(clip) = self.active_clip.as_ref() {
             let duration = clip.duration.max(0.0);
             if duration <= 0.0 {
                 clamped = 0.0;
             } else if self.looped {
                 let step = duration.max(std::f32::EPSILON);
-                clamped = clamped.rem_euclid(step);
+                clamped = time.rem_euclid(step);
+                if (step - clamped).abs() <= CLIP_TIME_EPSILON {
+                    clamped = duration;
+                }
+            } else if clamped <= 0.0 {
+                clamped = 0.0;
             } else if clamped >= duration {
                 clamped = duration;
                 self.playing = false;
@@ -2657,9 +2734,7 @@ impl SkeletonInstance {
 
     pub fn ensure_playback_rate(&mut self, group_scale: f32) -> f32 {
         if self.playback_rate_dirty {
-            let clamped_group = group_scale.max(0.0);
-            let base_speed = self.speed.max(0.0);
-            self.playback_rate = (base_speed * clamped_group).max(0.0);
+            self.playback_rate = self.speed * group_scale;
             self.playback_rate_dirty = false;
         }
         self.playback_rate
