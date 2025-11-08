@@ -27,6 +27,7 @@ pub struct SpriteAnimationStats {
     pub fast_loop_calls: u64,
     pub event_calls: u64,
     pub plain_calls: u64,
+    pub fast_loop_binary_searches: u64,
 }
 
 #[cfg(feature = "anim_stats")]
@@ -46,11 +47,56 @@ pub struct TransformClipStats {
 }
 
 #[cfg(feature = "anim_stats")]
+#[derive(Default)]
+struct TransformClipStatAccumulator {
+    advance_calls: u64,
+    zero_delta_calls: u64,
+    skipped_clips: u64,
+    zero_duration_clips: u64,
+    fast_path_clips: u64,
+    slow_path_clips: u64,
+    sample_time: Duration,
+    apply_time: Duration,
+}
+
+#[cfg(feature = "anim_stats")]
+impl TransformClipStatAccumulator {
+    fn flush(self) {
+        if self.advance_calls > 0 {
+            record_transform_advance(self.advance_calls);
+        }
+        if self.zero_delta_calls > 0 {
+            record_transform_zero_delta(self.zero_delta_calls);
+        }
+        if self.skipped_clips > 0 {
+            record_transform_skipped(self.skipped_clips);
+        }
+        if self.zero_duration_clips > 0 {
+            record_transform_zero_duration(self.zero_duration_clips);
+        }
+        if self.fast_path_clips > 0 {
+            record_transform_fast_path(self.fast_path_clips);
+        }
+        if self.slow_path_clips > 0 {
+            record_transform_slow_path(self.slow_path_clips);
+        }
+        if self.sample_time > Duration::ZERO {
+            record_transform_sample_time(self.sample_time);
+        }
+        if self.apply_time > Duration::ZERO {
+            record_transform_apply_time(self.apply_time);
+        }
+    }
+}
+
+#[cfg(feature = "anim_stats")]
 static SPRITE_FAST_LOOP_CALLS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "anim_stats")]
 static SPRITE_EVENT_CALLS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "anim_stats")]
 static SPRITE_PLAIN_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "anim_stats")]
+static SPRITE_FAST_LOOP_BINARY_SEARCHES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "anim_stats")]
 static TRANSFORM_CLIP_ADVANCE_CALLS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "anim_stats")]
@@ -82,6 +128,7 @@ pub fn sprite_animation_stats_snapshot() -> SpriteAnimationStats {
         fast_loop_calls: SPRITE_FAST_LOOP_CALLS.load(Ordering::Relaxed),
         event_calls: SPRITE_EVENT_CALLS.load(Ordering::Relaxed),
         plain_calls: SPRITE_PLAIN_CALLS.load(Ordering::Relaxed),
+        fast_loop_binary_searches: SPRITE_FAST_LOOP_BINARY_SEARCHES.load(Ordering::Relaxed),
     }
 }
 
@@ -90,6 +137,7 @@ pub fn reset_sprite_animation_stats() {
     SPRITE_FAST_LOOP_CALLS.store(0, Ordering::Relaxed);
     SPRITE_EVENT_CALLS.store(0, Ordering::Relaxed);
     SPRITE_PLAIN_CALLS.store(0, Ordering::Relaxed);
+    SPRITE_FAST_LOOP_BINARY_SEARCHES.store(0, Ordering::Relaxed);
 }
 
 #[cfg(feature = "anim_stats")]
@@ -150,6 +198,15 @@ fn record_plain_call(count: u64) {
 #[cfg(not(feature = "anim_stats"))]
 #[allow(dead_code)]
 fn record_plain_call(_count: u64) {}
+
+#[cfg(feature = "anim_stats")]
+fn record_fast_loop_binary_search(count: u64) {
+    SPRITE_FAST_LOOP_BINARY_SEARCHES.fetch_add(count, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "anim_stats"))]
+#[allow(dead_code)]
+fn record_fast_loop_binary_search(_count: u64) {}
 
 #[cfg(feature = "anim_stats")]
 fn record_transform_advance(count: u64) {
@@ -680,12 +737,16 @@ fn drive_transform_clips(
         Option<Mut<Tint>>,
     )>,
 ) {
+    #[cfg(feature = "anim_stats")]
+    let mut stats = TransformClipStatAccumulator::default();
     for (_entity, mut instance, transform_player, property_player, mut transform, mut tint) in
         clips.iter_mut()
     {
         if !instance.playing {
             #[cfg(feature = "anim_stats")]
-            record_transform_skipped(1);
+            {
+                stats.skipped_clips += 1;
+            }
             continue;
         }
 
@@ -707,7 +768,9 @@ fn drive_transform_clips(
 
         if instance.duration() <= 0.0 {
             #[cfg(feature = "anim_stats")]
-            record_transform_zero_duration(1);
+            {
+                stats.zero_duration_clips += 1;
+            }
             instance.time = 0.0;
             continue;
         }
@@ -724,13 +787,18 @@ fn drive_transform_clips(
             && tint_available;
 
         if can_fast_path {
-            record_transform_fast_path(1);
+            #[cfg(feature = "anim_stats")]
+            {
+                stats.fast_path_clips += 1;
+            }
 
             let applied = instance.advance_time_masked(scaled, transform_player, property_player);
-            record_transform_advance(1);
             #[cfg(feature = "anim_stats")]
-            if applied <= 0.0 {
-                record_transform_zero_delta(1);
+            {
+                stats.advance_calls += 1;
+                if applied <= 0.0 {
+                    stats.zero_delta_calls += 1;
+                }
             }
             if applied <= 0.0 {
                 continue;
@@ -740,65 +808,99 @@ fn drive_transform_clips(
             let sample_timer = Instant::now();
             let sample = instance.sample_cached();
             #[cfg(feature = "anim_stats")]
-            record_transform_sample_time(sample_timer.elapsed());
+            {
+                stats.sample_time += sample_timer.elapsed();
+            }
 
             #[cfg(feature = "anim_stats")]
             let apply_timer = Instant::now();
-            if let Some(transform_component) = transform.as_mut() {
-                let transform_component = &mut **transform_component;
-                if sample.translation != instance.last_translation {
-                    if let Some(value) = sample.translation {
-                        transform_component.translation = value;
+            let translation_changed =
+                transform_mask.apply_translation && sample.translation != instance.last_translation;
+            let rotation_changed = transform_mask.apply_rotation && sample.rotation != instance.last_rotation;
+            let scale_changed = transform_mask.apply_scale && sample.scale != instance.last_scale;
+            if (translation_changed || rotation_changed || scale_changed) && transform.is_some() {
+                if let Some(transform_component) = transform.as_mut() {
+                    let transform_component = &mut **transform_component;
+                    if translation_changed {
+                        if let Some(value) = sample.translation {
+                            transform_component.translation = value;
+                        }
                     }
-                }
-                if sample.rotation != instance.last_rotation {
-                    if let Some(value) = sample.rotation {
-                        transform_component.rotation = value;
+                    if rotation_changed {
+                        if let Some(value) = sample.rotation {
+                            transform_component.rotation = value;
+                        }
                     }
-                }
-                if sample.scale != instance.last_scale {
-                    if let Some(value) = sample.scale {
-                        transform_component.scale = value;
+                    if scale_changed {
+                        if let Some(value) = sample.scale {
+                            transform_component.scale = value;
+                        }
                     }
                 }
             }
 
             if wants_tint {
-                if let (Some(tint_component), Some(value)) = (tint.as_mut(), sample.tint) {
-                    let tint_component = &mut **tint_component;
-                    if sample.tint != instance.last_tint {
+                let tint_changed = sample.tint != instance.last_tint;
+                if tint_changed {
+                    if let (Some(tint_component), Some(value)) = (tint.as_mut(), sample.tint) {
+                        let tint_component = &mut **tint_component;
                         tint_component.0 = value;
                     }
                 }
             }
 
-            instance.last_translation = sample.translation;
-            instance.last_rotation = sample.rotation;
-            instance.last_scale = sample.scale;
-            instance.last_tint = sample.tint;
+            if transform_mask.apply_translation {
+                instance.last_translation = sample.translation;
+            }
+            if transform_mask.apply_rotation {
+                instance.last_rotation = sample.rotation;
+            }
+            if transform_mask.apply_scale {
+                instance.last_scale = sample.scale;
+            }
+            if wants_tint {
+                instance.last_tint = sample.tint;
+            }
             #[cfg(feature = "anim_stats")]
-            record_transform_apply_time(apply_timer.elapsed());
+            {
+                stats.apply_time += apply_timer.elapsed();
+            }
             continue;
         }
 
         let applied = instance.advance_time_masked(scaled, transform_player, property_player);
-        record_transform_advance(1);
         #[cfg(feature = "anim_stats")]
-        if applied <= 0.0 {
-            record_transform_zero_delta(1);
+        {
+            stats.advance_calls += 1;
+            if applied <= 0.0 {
+                stats.zero_delta_calls += 1;
+            }
         }
         if applied <= 0.0 {
-            record_transform_slow_path(1);
+            #[cfg(feature = "anim_stats")]
+            {
+                stats.slow_path_clips += 1;
+            }
             continue;
         }
         #[cfg(feature = "anim_stats")]
         let sample_timer = Instant::now();
         let sample = instance.sample_with_masks(transform_player.copied(), property_player.copied());
         #[cfg(feature = "anim_stats")]
-        record_transform_sample_time(sample_timer.elapsed());
+        {
+            stats.sample_time += sample_timer.elapsed();
+        }
+        #[cfg(feature = "anim_stats")]
+        let apply_timer = Instant::now();
         apply_clip_sample(&mut instance, transform_player, property_player, transform, tint, sample);
-        record_transform_slow_path(1);
+        #[cfg(feature = "anim_stats")]
+        {
+            stats.apply_time += apply_timer.elapsed();
+            stats.slow_path_clips += 1;
+        }
     }
+    #[cfg(feature = "anim_stats")]
+    stats.flush();
 }
 
 #[inline(always)]
@@ -810,67 +912,75 @@ fn apply_clip_sample(
     tint: Option<Mut<Tint>>,
     sample: ClipSample,
 ) {
-    #[cfg(feature = "anim_stats")]
-    let apply_timer = Instant::now();
-
     let translation_changed = sample.translation != instance.last_translation;
     let rotation_changed = sample.rotation != instance.last_rotation;
     let scale_changed = sample.scale != instance.last_scale;
     let tint_changed = sample.tint != instance.last_tint;
 
-    if let Some(mut transform) = transform {
-        let mask = transform_player.copied().unwrap_or_default();
-        if mask.apply_translation && mask.apply_rotation && mask.apply_scale {
-            if translation_changed {
-                if let Some(value) = sample.translation {
-                    transform.translation = value;
+    let transform_mask = transform_player.copied().unwrap_or_default();
+    let needs_translation = transform_mask.apply_translation && translation_changed;
+    let needs_rotation = transform_mask.apply_rotation && rotation_changed;
+    let needs_scale = transform_mask.apply_scale && scale_changed;
+    if (needs_translation || needs_rotation || needs_scale) && transform.is_some() {
+        if let Some(mut transform) = transform {
+            if transform_mask.apply_translation && transform_mask.apply_rotation && transform_mask.apply_scale
+            {
+                if needs_translation {
+                    if let Some(value) = sample.translation {
+                        transform.translation = value;
+                    }
                 }
-            }
-            if rotation_changed {
-                if let Some(value) = sample.rotation {
-                    transform.rotation = value;
+                if needs_rotation {
+                    if let Some(value) = sample.rotation {
+                        transform.rotation = value;
+                    }
                 }
-            }
-            if scale_changed {
-                if let Some(value) = sample.scale {
-                    transform.scale = value;
+                if needs_scale {
+                    if let Some(value) = sample.scale {
+                        transform.scale = value;
+                    }
                 }
-            }
-        } else {
-            if mask.apply_translation && translation_changed {
-                if let Some(value) = sample.translation {
-                    transform.translation = value;
+            } else {
+                if needs_translation {
+                    if let Some(value) = sample.translation {
+                        transform.translation = value;
+                    }
                 }
-            }
-            if mask.apply_rotation && rotation_changed {
-                if let Some(value) = sample.rotation {
-                    transform.rotation = value;
+                if needs_rotation {
+                    if let Some(value) = sample.rotation {
+                        transform.rotation = value;
+                    }
                 }
-            }
-            if mask.apply_scale && scale_changed {
-                if let Some(value) = sample.scale {
-                    transform.scale = value;
+                if needs_scale {
+                    if let Some(value) = sample.scale {
+                        transform.scale = value;
+                    }
                 }
             }
         }
     }
 
-    if let Some(mut tint_component) = tint {
-        let mask = property_player.copied().unwrap_or_default();
-        if mask.apply_tint && tint_changed {
+    let tint_mask = property_player.copied().unwrap_or_default();
+    if tint_mask.apply_tint && tint_changed {
+        if let Some(mut tint_component) = tint {
             if let Some(value) = sample.tint {
                 tint_component.0 = value;
             }
         }
     }
 
-    instance.last_translation = sample.translation;
-    instance.last_rotation = sample.rotation;
-    instance.last_scale = sample.scale;
-    instance.last_tint = sample.tint;
-
-    #[cfg(feature = "anim_stats")]
-    record_transform_apply_time(apply_timer.elapsed());
+    if transform_mask.apply_translation {
+        instance.last_translation = sample.translation;
+    }
+    if transform_mask.apply_rotation {
+        instance.last_rotation = sample.rotation;
+    }
+    if transform_mask.apply_scale {
+        instance.last_scale = sample.scale;
+    }
+    if tint_mask.apply_tint {
+        instance.last_tint = sample.tint;
+    }
 }
 
 pub(crate) fn initialize_animation_phase(animation: &mut SpriteAnimation, entity: Entity) -> bool {
@@ -898,6 +1008,7 @@ pub(crate) fn initialize_animation_phase(animation: &mut SpriteAnimation, entity
     }
 
     let was_playing = animation.playing;
+    animation.playing = true;
     let changed = advance_animation(animation, offset, entity, None, false);
     animation.playing = was_playing;
     changed
@@ -943,14 +1054,13 @@ pub(crate) fn advance_animation(
         match animation.mode {
             SpriteAnimationLoopMode::Loop => {
                 animation.frame_index = (animation.frame_index + 1) % len;
-                animation.current_duration =
-                    unsafe { *animation.frame_durations.get_unchecked(animation.frame_index) };
+                animation.refresh_current_duration();
                 emit_frame_event = true;
                 frame_changed = true;
             }
             SpriteAnimationLoopMode::OnceStop => {
                 animation.frame_index = len.saturating_sub(1);
-                animation.current_duration = animation.frame_durations.last().copied().unwrap_or(0.0);
+                animation.refresh_current_duration();
                 frame_changed = true;
                 if let Some(events) = events.as_deref_mut() {
                     emit_sprite_animation_events(entity, animation, events);
@@ -962,7 +1072,7 @@ pub(crate) fn advance_animation(
             }
             SpriteAnimationLoopMode::OnceHold => {
                 animation.frame_index = len.saturating_sub(1);
-                animation.current_duration = animation.frame_durations.last().copied().unwrap_or(0.0);
+                animation.refresh_current_duration();
                 if let Some(last) = animation.frame_durations.last() {
                     animation.elapsed_in_frame = *last;
                 }
@@ -978,7 +1088,7 @@ pub(crate) fn advance_animation(
             SpriteAnimationLoopMode::PingPong => {
                 if len <= 1 {
                     animation.forward = true;
-                    animation.current_duration = animation.frame_durations.first().copied().unwrap_or(0.0);
+                    animation.refresh_current_duration();
                 } else if animation.forward {
                     if animation.frame_index + 1 < len {
                         animation.frame_index += 1;
@@ -986,21 +1096,18 @@ pub(crate) fn advance_animation(
                         animation.forward = false;
                         animation.frame_index = (len - 2).min(len - 1);
                     }
-                    animation.current_duration =
-                        unsafe { *animation.frame_durations.get_unchecked(animation.frame_index) };
+                    animation.refresh_current_duration();
                     frame_changed = true;
                     emit_frame_event = true;
                 } else if animation.frame_index > 0 {
                     animation.frame_index -= 1;
-                    animation.current_duration =
-                        unsafe { *animation.frame_durations.get_unchecked(animation.frame_index) };
+                    animation.refresh_current_duration();
                     frame_changed = true;
                     emit_frame_event = true;
                 } else {
                     animation.forward = true;
                     animation.frame_index = 1.min(len - 1);
-                    animation.current_duration =
-                        animation.frame_durations.get(animation.frame_index).copied().unwrap_or(0.0);
+                    animation.refresh_current_duration();
                     frame_changed = len > 1;
                     emit_frame_event = len > 1;
                 }
@@ -1059,7 +1166,14 @@ fn advance_animation_loop_no_events(animation: &mut SpriteAnimation, delta: f32)
     let durations = animation.frame_durations.as_ref();
     let total_inv = animation.total_duration_inv;
     let index = animation.frame_index.min(frame_count - 1);
-    let frame_start = offsets.get(index).copied().unwrap_or(0.0);
+    let mut frame_start = if animation.current_frame_offset.is_finite() {
+        animation.current_frame_offset
+    } else {
+        offsets.get(index).copied().unwrap_or(0.0)
+    };
+    if frame_start < 0.0 {
+        frame_start = 0.0;
+    }
     let current_offset = frame_start + animation.elapsed_in_frame;
 
     let mut combined = current_offset + delta;
@@ -1074,9 +1188,48 @@ fn advance_animation_loop_no_events(animation: &mut SpriteAnimation, delta: f32)
         combined = 0.0;
     }
 
-    let new_index = locate_frame_index(offsets, combined, frame_count);
-    let new_start = offsets.get(new_index).copied().unwrap_or(0.0);
-    let new_duration = durations.get(new_index).copied().unwrap_or(0.0);
+    let mut new_index = index;
+    let mut new_start = frame_start;
+    let mut new_duration = durations.get(new_index).copied().unwrap_or(0.0);
+    let mut advanced_index = false;
+
+    if frame_count == 1 {
+        new_index = 0;
+        new_start = offsets.first().copied().unwrap_or(0.0);
+        new_duration = durations.first().copied().unwrap_or(0.0);
+    } else if combined < frame_start {
+        new_index = locate_frame_index(offsets, combined, frame_count);
+        new_start = offsets.get(new_index).copied().unwrap_or(0.0);
+        new_duration = durations.get(new_index).copied().unwrap_or(0.0);
+        advanced_index = new_index != animation.frame_index;
+    } else {
+        let mut remaining = frame_count;
+        while remaining > 0 {
+            let segment_duration = new_duration.max(0.0);
+            let segment_end = new_start + segment_duration;
+            if segment_duration <= 0.0 {
+                break;
+            }
+            if combined < segment_end - CLIP_TIME_EPSILON {
+                break;
+            }
+            new_index = (new_index + 1) % frame_count;
+            new_start = offsets.get(new_index).copied().unwrap_or(0.0);
+            new_duration = durations.get(new_index).copied().unwrap_or(0.0);
+            advanced_index = true;
+            remaining -= 1;
+            if combined < new_start {
+                break;
+            }
+        }
+        let segment_duration = new_duration.max(0.0);
+        if combined < new_start || combined >= new_start + segment_duration + CLIP_TIME_EPSILON {
+            new_index = locate_frame_index(offsets, combined, frame_count);
+            new_start = offsets.get(new_index).copied().unwrap_or(0.0);
+            new_duration = durations.get(new_index).copied().unwrap_or(0.0);
+        }
+    }
+
     let mut new_elapsed = (combined - new_start).clamp(0.0, new_duration.max(0.0));
     if new_duration <= 0.0 {
         new_elapsed = 0.0;
@@ -1086,7 +1239,7 @@ fn advance_animation_loop_no_events(animation: &mut SpriteAnimation, delta: f32)
     let threshold = (time_left - CLIP_TIME_EPSILON).max(0.0);
     let mut frame_changed = delta >= threshold;
     if frame_count > 1 {
-        if new_index != animation.frame_index {
+        if advanced_index || new_index != animation.frame_index {
             frame_changed = true;
         }
         if crossed_cycle {
@@ -1097,6 +1250,7 @@ fn advance_animation_loop_no_events(animation: &mut SpriteAnimation, delta: f32)
     animation.frame_index = new_index;
     animation.elapsed_in_frame = new_elapsed;
     animation.current_duration = new_duration;
+    animation.current_frame_offset = new_start;
     frame_changed
 }
 
@@ -1130,11 +1284,15 @@ fn advance_animation_loop_no_events_fallback(animation: &mut SpriteAnimation, mu
     animation.frame_index = index;
     animation.elapsed_in_frame = elapsed;
     animation.current_duration = animation.frame_durations.get(animation.frame_index).copied().unwrap_or(0.0);
+    animation.current_frame_offset =
+        animation.frame_offsets.get(animation.frame_index).copied().unwrap_or(0.0);
     frame_changed
 }
 
 #[inline(always)]
 fn locate_frame_index(offsets: &[f32], target: f32, frame_count: usize) -> usize {
+    #[cfg(feature = "anim_stats")]
+    record_fast_loop_binary_search(1);
     if offsets.is_empty() {
         return 0;
     }

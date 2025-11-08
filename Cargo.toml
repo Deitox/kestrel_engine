@@ -50,3 +50,4 @@ codegen-units = 1
 lto = "fat"
 panic = "abort"
 incremental = false
+debug = true

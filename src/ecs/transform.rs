@@ -1,6 +1,7 @@
 use super::{Children, Parent, Transform, Transform3D, WorldTransform, WorldTransform3D};
 use crate::ecs::profiler::SystemProfiler;
 use bevy_ecs::prelude::*;
+use bevy_ecs::query::Or;
 use glam::Mat4;
 use smallvec::SmallVec;
 
@@ -83,10 +84,23 @@ pub fn sys_propagate_scene_transforms(
     )>,
     roots: Query<Entity, (With<WorldTransform>, Without<Parent>)>,
     parents: Query<(), With<Parent>>,
+    dirty_nodes: Query<(), Or<(Changed<Transform>, Changed<Transform3D>)>>,
+    parent_changes: Query<(), Changed<Parent>>,
+    children_changes: Query<(), Changed<Children>>,
     mut scratch: ResMut<TransformPropagationScratch>,
     mut stats: ResMut<TransformPropagationStats>,
 ) {
     let _span = profiler.scope("sys_propagate_scene_transforms");
+    if dirty_nodes.is_empty() && parent_changes.is_empty() && children_changes.is_empty() {
+        stats.mode = TransformPropagationMode::Flat;
+        stats.total_entities = 0;
+        stats.root_entities = 0;
+        stats.processed_entities = 0;
+        stats.max_stack_size = 0;
+        scratch.stack.clear();
+        scratch.visited.clear();
+        return;
+    }
     fn compose_local(transform2d: Option<&Transform>, transform3d: Option<&Transform3D>) -> Mat4 {
         if let Some(t3d) = transform3d {
             Mat4::from_scale_rotation_translation(t3d.scale, t3d.rotation, t3d.translation)

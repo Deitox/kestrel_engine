@@ -88,7 +88,10 @@ impl Sprite {
     }
 
     pub fn apply_frame(&mut self, frame: &SpriteAnimationFrame) {
-        if self.region_id != frame.region_id || self.region.as_ref() != frame.region.as_ref() {
+        if self.region_id != frame.region_id
+            || self.region_id == Self::UNINITIALIZED_REGION
+            || self.region.as_ref() != frame.region.as_ref()
+        {
             self.region = frame.region.clone();
         }
         self.region_id = frame.region_id;
@@ -112,6 +115,7 @@ pub struct SpriteAnimation {
     pub total_duration: f32,
     pub total_duration_inv: f32,
     pub current_duration: f32,
+    pub current_frame_offset: f32,
     pub frame_index: usize,
     pub elapsed_in_frame: f32,
     pub pending_small_delta: f32,
@@ -142,6 +146,7 @@ impl SpriteAnimation {
         let has_events = frames.iter().any(|frame| !frame.events.is_empty());
         let fast_loop = !has_events && matches!(mode, SpriteAnimationLoopMode::Loop);
         let current_duration = frame_durations.first().copied().unwrap_or(0.0);
+        let current_frame_offset = frame_offsets.first().copied().unwrap_or(0.0);
         Self {
             timeline,
             frames,
@@ -150,6 +155,7 @@ impl SpriteAnimation {
             total_duration,
             total_duration_inv: duration_inv,
             current_duration,
+            current_frame_offset,
             frame_index: 0,
             elapsed_in_frame: 0.0,
             pending_small_delta: 0.0,
@@ -238,6 +244,7 @@ impl SpriteAnimation {
     #[inline]
     pub fn refresh_current_duration(&mut self) {
         self.current_duration = self.frame_durations.get(self.frame_index).copied().unwrap_or(0.0);
+        self.current_frame_offset = self.frame_offsets.get(self.frame_index).copied().unwrap_or(0.0);
     }
 
     #[inline]
@@ -321,6 +328,10 @@ impl ClipChannelMask {
             self.scale && other.scale,
             self.tint && other.tint,
         )
+    }
+
+    fn is_empty(self) -> bool {
+        !(self.translation || self.rotation || self.scale || self.tint)
     }
 }
 
@@ -586,6 +597,7 @@ impl ClipInstance {
             return 0.0;
         }
 
+        let previous_time = self.time;
         let applied = if self.looped {
             let mut next = self.time + delta;
             if !next.is_finite() {
@@ -619,6 +631,10 @@ impl ClipInstance {
         }
 
         let effective_mask = channel_mask.intersect(self.clip_channels);
+        if !effective_mask.is_empty() && self.try_fast_channel_advance(previous_time, applied, effective_mask)
+        {
+            return applied;
+        }
         self.advance_track_states(applied, effective_mask);
         applied
     }
@@ -885,6 +901,7 @@ impl ClipInstance {
         let mut result = TrackAdvanceResult::default();
         let keyframes = track.keyframes.as_ref();
         let segments = track.segments.as_ref();
+        let segment_offsets = track.segment_offsets.as_ref();
         let frame_count = keyframes.len();
         if frame_count == 0 {
             *cursor = 0;
@@ -908,7 +925,7 @@ impl ClipInstance {
 
         let segment_count = segments.len();
         let last_segment = segment_count.saturating_sub(1);
-        let mut index = (*cursor).min(last_segment);
+        let index = (*cursor).min(last_segment);
         *cursor = index;
 
         if !*cache_valid || *cached_index != index {
@@ -966,71 +983,58 @@ impl ClipInstance {
             return result;
         }
 
-        delta -= remaining;
-        #[cfg(feature = "anim_stats")]
-        let mut segment_crosses: u32 = 1;
+        let start_time = segment_offsets
+            .get(index)
+            .copied()
+            .unwrap_or_else(|| keyframes.get(index).map(|kf| kf.time).unwrap_or(0.0));
+        let current_absolute = start_time + offset;
+        let original_delta = delta;
+        let (target_time, target_cycle) = resolve_target_time(
+            current_absolute + original_delta,
+            track.duration,
+            track.duration_inv,
+            looped,
+        );
+        #[cfg(not(feature = "anim_stats"))]
+        let _ = target_cycle;
 
-        loop {
-            if looped {
-                index = if index + 1 >= segment_count { 0 } else { index + 1 };
-            } else {
-                if index + 1 >= segment_count {
-                    index = last_segment;
-                    span = segments.get(index).map(|seg| seg.span).unwrap_or(0.0).max(0.0);
-                    offset = span;
-                    unsafe {
-                        let start_kf = keyframes.get_unchecked(index);
-                        let segment = segments.get_unchecked(index);
-                        *segment_start = start_kf.value;
-                        *segment_slope = segment.slope;
-                    }
-                    *cached_index = index;
-                    *cache_valid = true;
-                    break;
-                }
-                index += 1;
-            }
-
-            span = segments.get(index).map(|seg| seg.span).unwrap_or(0.0).max(0.0);
-            unsafe {
-                let start_kf = keyframes.get_unchecked(index);
-                let segment = segments.get_unchecked(index);
-                *segment_start = start_kf.value;
-                *segment_slope = segment.slope;
-            }
-            *cached_index = index;
-            *cache_valid = true;
-
-            if span <= 0.0 {
-                offset = 0.0;
-                break;
-            }
-
-            if delta <= span {
-                offset = delta.min(span);
-                break;
-            }
-
-            delta -= span;
-            #[cfg(feature = "anim_stats")]
-            {
-                segment_crosses += 1;
-            }
+        let new_index = locate_segment_index(segment_offsets, target_time, last_segment);
+        let new_start = segment_offsets
+            .get(new_index)
+            .copied()
+            .unwrap_or_else(|| keyframes.get(new_index).map(|kf| kf.time).unwrap_or(0.0));
+        let mut new_span = segments.get(new_index).map(|seg| seg.span).unwrap_or(0.0).max(0.0);
+        if !new_span.is_finite() {
+            new_span = 0.0;
+        }
+        let mut new_offset = (target_time - new_start).clamp(0.0, new_span);
+        if new_span <= 0.0 {
+            new_offset = 0.0;
         }
 
-        *cursor = index;
-        *segment_span = span;
-        let clamped = offset.clamp(0.0, span);
-        *segment_time = clamped;
-        result.segment_changed = *cursor != initial_cursor;
+        unsafe {
+            let start_kf = keyframes.get_unchecked(new_index);
+            let segment = segments.get_unchecked(new_index);
+            *segment_start = start_kf.value;
+            *segment_slope = segment.slope;
+        }
+        *cached_index = new_index;
+        *cache_valid = true;
+        *cursor = new_index;
+        *segment_span = new_span;
+        *segment_time = new_offset;
+
+        result.segment_changed = new_index != initial_cursor;
         if !result.segment_changed {
-            result.offset_delta = clamped - initial_offset;
+            result.offset_delta = new_offset - initial_offset;
         }
 
         #[cfg(feature = "anim_stats")]
         {
-            if segment_crosses > 0 {
-                record_transform_segment_crosses(segment_crosses as u64);
+            let crosses =
+                compute_segment_crosses(segment_count, initial_cursor, new_index, target_cycle, looped);
+            if crosses > 0 {
+                record_transform_segment_crosses(crosses);
             }
         }
 
@@ -1053,6 +1057,7 @@ impl ClipInstance {
         let mut result = TrackAdvanceResult::default();
         let keyframes = track.keyframes.as_ref();
         let segments = track.segments.as_ref();
+        let segment_offsets = track.segment_offsets.as_ref();
         let frame_count = keyframes.len();
         if frame_count == 0 {
             *cursor = 0;
@@ -1076,7 +1081,7 @@ impl ClipInstance {
 
         let segment_count = segments.len();
         let last_segment = segment_count.saturating_sub(1);
-        let mut index = (*cursor).min(last_segment);
+        let index = (*cursor).min(last_segment);
         *cursor = index;
 
         if !*cache_valid || *cached_index != index {
@@ -1134,71 +1139,58 @@ impl ClipInstance {
             return result;
         }
 
-        delta -= remaining;
-        #[cfg(feature = "anim_stats")]
-        let mut segment_crosses: u32 = 1;
+        let start_time = segment_offsets
+            .get(index)
+            .copied()
+            .unwrap_or_else(|| keyframes.get(index).map(|kf| kf.time).unwrap_or(0.0));
+        let current_absolute = start_time + offset;
+        let original_delta = delta;
+        let (target_time, target_cycle) = resolve_target_time(
+            current_absolute + original_delta,
+            track.duration,
+            track.duration_inv,
+            looped,
+        );
+        #[cfg(not(feature = "anim_stats"))]
+        let _ = target_cycle;
 
-        loop {
-            if looped {
-                index = if index + 1 >= segment_count { 0 } else { index + 1 };
-            } else {
-                if index + 1 >= segment_count {
-                    index = last_segment;
-                    span = segments.get(index).map(|seg| seg.span).unwrap_or(0.0).max(0.0);
-                    offset = span;
-                    unsafe {
-                        let start_kf = keyframes.get_unchecked(index);
-                        let segment = segments.get_unchecked(index);
-                        *segment_start = start_kf.value;
-                        *segment_slope = segment.slope;
-                    }
-                    *cached_index = index;
-                    *cache_valid = true;
-                    break;
-                }
-                index += 1;
-            }
-
-            span = segments.get(index).map(|seg| seg.span).unwrap_or(0.0).max(0.0);
-            unsafe {
-                let start_kf = keyframes.get_unchecked(index);
-                let segment = segments.get_unchecked(index);
-                *segment_start = start_kf.value;
-                *segment_slope = segment.slope;
-            }
-            *cached_index = index;
-            *cache_valid = true;
-
-            if span <= 0.0 {
-                offset = 0.0;
-                break;
-            }
-
-            if delta <= span {
-                offset = delta.min(span);
-                break;
-            }
-
-            delta -= span;
-            #[cfg(feature = "anim_stats")]
-            {
-                segment_crosses += 1;
-            }
+        let new_index = locate_segment_index(segment_offsets, target_time, last_segment);
+        let new_start = segment_offsets
+            .get(new_index)
+            .copied()
+            .unwrap_or_else(|| keyframes.get(new_index).map(|kf| kf.time).unwrap_or(0.0));
+        let mut new_span = segments.get(new_index).map(|seg| seg.span).unwrap_or(0.0).max(0.0);
+        if !new_span.is_finite() {
+            new_span = 0.0;
+        }
+        let mut new_offset = (target_time - new_start).clamp(0.0, new_span);
+        if new_span <= 0.0 {
+            new_offset = 0.0;
         }
 
-        *cursor = index;
-        *segment_span = span;
-        let clamped = offset.clamp(0.0, span);
-        *segment_time = clamped;
-        result.segment_changed = *cursor != initial_cursor;
+        unsafe {
+            let start_kf = keyframes.get_unchecked(new_index);
+            let segment = segments.get_unchecked(new_index);
+            *segment_start = start_kf.value;
+            *segment_slope = segment.slope;
+        }
+        *cached_index = new_index;
+        *cache_valid = true;
+        *cursor = new_index;
+        *segment_span = new_span;
+        *segment_time = new_offset;
+
+        result.segment_changed = new_index != initial_cursor;
         if !result.segment_changed {
-            result.offset_delta = clamped - initial_offset;
+            result.offset_delta = new_offset - initial_offset;
         }
 
         #[cfg(feature = "anim_stats")]
         {
-            if segment_crosses > 0 {
-                record_transform_segment_crosses(segment_crosses as u64);
+            let crosses =
+                compute_segment_crosses(segment_count, initial_cursor, new_index, target_cycle, looped);
+            if crosses > 0 {
+                record_transform_segment_crosses(crosses);
             }
         }
 
@@ -1221,6 +1213,7 @@ impl ClipInstance {
         let mut result = TrackAdvanceResult::default();
         let keyframes = track.keyframes.as_ref();
         let segments = track.segments.as_ref();
+        let segment_offsets = track.segment_offsets.as_ref();
         let frame_count = keyframes.len();
         if frame_count == 0 {
             *cursor = 0;
@@ -1244,7 +1237,7 @@ impl ClipInstance {
 
         let segment_count = segments.len();
         let last_segment = segment_count.saturating_sub(1);
-        let mut index = (*cursor).min(last_segment);
+        let index = (*cursor).min(last_segment);
         *cursor = index;
 
         if !*cache_valid || *cached_index != index {
@@ -1302,71 +1295,58 @@ impl ClipInstance {
             return result;
         }
 
-        delta -= remaining;
-        #[cfg(feature = "anim_stats")]
-        let mut segment_crosses: u32 = 1;
+        let start_time = segment_offsets
+            .get(index)
+            .copied()
+            .unwrap_or_else(|| keyframes.get(index).map(|kf| kf.time).unwrap_or(0.0));
+        let current_absolute = start_time + offset;
+        let original_delta = delta;
+        let (target_time, target_cycle) = resolve_target_time(
+            current_absolute + original_delta,
+            track.duration,
+            track.duration_inv,
+            looped,
+        );
+        #[cfg(not(feature = "anim_stats"))]
+        let _ = target_cycle;
 
-        loop {
-            if looped {
-                index = if index + 1 >= segment_count { 0 } else { index + 1 };
-            } else {
-                if index + 1 >= segment_count {
-                    index = last_segment;
-                    span = segments.get(index).map(|seg| seg.span).unwrap_or(0.0).max(0.0);
-                    offset = span;
-                    unsafe {
-                        let start_kf = keyframes.get_unchecked(index);
-                        let segment = segments.get_unchecked(index);
-                        *segment_start = start_kf.value;
-                        *segment_slope = segment.slope;
-                    }
-                    *cached_index = index;
-                    *cache_valid = true;
-                    break;
-                }
-                index += 1;
-            }
-
-            span = segments.get(index).map(|seg| seg.span).unwrap_or(0.0).max(0.0);
-            unsafe {
-                let start_kf = keyframes.get_unchecked(index);
-                let segment = segments.get_unchecked(index);
-                *segment_start = start_kf.value;
-                *segment_slope = segment.slope;
-            }
-            *cached_index = index;
-            *cache_valid = true;
-
-            if span <= 0.0 {
-                offset = 0.0;
-                break;
-            }
-
-            if delta <= span {
-                offset = delta.min(span);
-                break;
-            }
-
-            delta -= span;
-            #[cfg(feature = "anim_stats")]
-            {
-                segment_crosses += 1;
-            }
+        let new_index = locate_segment_index(segment_offsets, target_time, last_segment);
+        let new_start = segment_offsets
+            .get(new_index)
+            .copied()
+            .unwrap_or_else(|| keyframes.get(new_index).map(|kf| kf.time).unwrap_or(0.0));
+        let mut new_span = segments.get(new_index).map(|seg| seg.span).unwrap_or(0.0).max(0.0);
+        if !new_span.is_finite() {
+            new_span = 0.0;
+        }
+        let mut new_offset = (target_time - new_start).clamp(0.0, new_span);
+        if new_span <= 0.0 {
+            new_offset = 0.0;
         }
 
-        *cursor = index;
-        *segment_span = span;
-        let clamped = offset.clamp(0.0, span);
-        *segment_time = clamped;
-        result.segment_changed = *cursor != initial_cursor;
+        unsafe {
+            let start_kf = keyframes.get_unchecked(new_index);
+            let segment = segments.get_unchecked(new_index);
+            *segment_start = start_kf.value;
+            *segment_slope = segment.slope;
+        }
+        *cached_index = new_index;
+        *cache_valid = true;
+        *cursor = new_index;
+        *segment_span = new_span;
+        *segment_time = new_offset;
+
+        result.segment_changed = new_index != initial_cursor;
         if !result.segment_changed {
-            result.offset_delta = clamped - initial_offset;
+            result.offset_delta = new_offset - initial_offset;
         }
 
         #[cfg(feature = "anim_stats")]
         {
-            if segment_crosses > 0 {
-                record_transform_segment_crosses(segment_crosses as u64);
+            let crosses =
+                compute_segment_crosses(segment_count, initial_cursor, new_index, target_cycle, looped);
+            if crosses > 0 {
+                record_transform_segment_crosses(crosses);
             }
         }
 
@@ -1764,6 +1744,204 @@ impl ClipInstance {
         record_transform_advance_time(advance_timer.elapsed());
     }
 
+    fn try_fast_channel_advance(&mut self, previous_time: f32, delta: f32, mask: ClipChannelMask) -> bool {
+        if delta <= 0.0 {
+            return true;
+        }
+        if mask.is_empty() {
+            self.invalidate_unmasked_channels(delta, mask);
+            return true;
+        }
+        let duration = self.duration();
+        if duration <= 0.0 {
+            return true;
+        }
+        let target_time = previous_time + delta;
+        if !target_time.is_finite() || target_time >= duration - CLIP_TIME_EPSILON {
+            return false;
+        }
+        if !self.fast_channel_segments_available(mask, delta) {
+            return false;
+        }
+        self.apply_fast_channel_delta(delta, mask);
+        true
+    }
+
+    fn fast_channel_segments_available(&self, mask: ClipChannelMask, delta: f32) -> bool {
+        if mask.translation && self.clip_channels.translation {
+            if !self.translation_state_current
+                || !Self::fast_segment_has_room(
+                    self.translation_segment_span,
+                    self.translation_segment_time,
+                    delta,
+                )
+            {
+                return false;
+            }
+        }
+        if mask.rotation && self.clip_channels.rotation {
+            if !self.rotation_state_current
+                || !Self::fast_segment_has_room(self.rotation_segment_span, self.rotation_segment_time, delta)
+            {
+                return false;
+            }
+        }
+        if mask.scale && self.clip_channels.scale {
+            if !self.scale_state_current
+                || !Self::fast_segment_has_room(self.scale_segment_span, self.scale_segment_time, delta)
+            {
+                return false;
+            }
+        }
+        if mask.tint && self.clip_channels.tint {
+            if !self.tint_state_current
+                || !Self::fast_segment_has_room(self.tint_segment_span, self.tint_segment_time, delta)
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    #[inline(always)]
+    fn fast_segment_has_room(span: f32, time: f32, delta: f32) -> bool {
+        let span = span.max(0.0);
+        if span <= 0.0 {
+            return false;
+        }
+        let offset = time.clamp(0.0, span);
+        let remaining = (span - offset).max(0.0);
+        remaining > CLIP_TIME_EPSILON && delta <= remaining - CLIP_TIME_EPSILON
+    }
+
+    fn apply_fast_channel_delta(&mut self, delta: f32, mask: ClipChannelMask) {
+        if mask.translation && self.clip_channels.translation {
+            self.translation_segment_time =
+                Self::fast_new_offset(self.translation_segment_time, self.translation_segment_span, delta);
+            self.fast_update_translation_value(delta);
+        }
+        if mask.rotation && self.clip_channels.rotation {
+            self.rotation_segment_time =
+                Self::fast_new_offset(self.rotation_segment_time, self.rotation_segment_span, delta);
+            self.fast_update_rotation_value(delta);
+        }
+        if mask.scale && self.clip_channels.scale {
+            self.scale_segment_time =
+                Self::fast_new_offset(self.scale_segment_time, self.scale_segment_span, delta);
+            self.fast_update_scale_value(delta);
+        }
+        if mask.tint && self.clip_channels.tint {
+            self.tint_segment_time =
+                Self::fast_new_offset(self.tint_segment_time, self.tint_segment_span, delta);
+            self.fast_update_tint_value(delta);
+        }
+        self.invalidate_unmasked_channels(delta, mask);
+    }
+
+    fn invalidate_unmasked_channels(&mut self, delta: f32, mask: ClipChannelMask) {
+        if delta <= 0.0 {
+            return;
+        }
+        if self.clip_channels.translation && !mask.translation {
+            self.translation_state_current = false;
+            self.translation_sample_dirty = true;
+        }
+        if self.clip_channels.rotation && !mask.rotation {
+            self.rotation_state_current = false;
+            self.rotation_sample_dirty = true;
+        }
+        if self.clip_channels.scale && !mask.scale {
+            self.scale_state_current = false;
+            self.scale_sample_dirty = true;
+        }
+        if self.clip_channels.tint && !mask.tint {
+            self.tint_state_current = false;
+            self.tint_sample_dirty = true;
+        }
+    }
+
+    #[inline(always)]
+    fn fast_new_offset(current: f32, span: f32, delta: f32) -> f32 {
+        let span = span.max(0.0);
+        if span <= 0.0 {
+            return 0.0;
+        }
+        let offset = current.clamp(0.0, span);
+        (offset + delta).min(span)
+    }
+
+    fn fast_update_translation_value(&mut self, delta: f32) {
+        if self.translation_sample_dirty {
+            return;
+        }
+        let Some(track) = self.clip.translation.as_ref() else {
+            self.translation_sample_dirty = true;
+            return;
+        };
+        if matches!(track.interpolation, ClipInterpolation::Step) {
+            return;
+        }
+        if let Some(value) = self.current_sample.translation.as_mut() {
+            *value += self.translation_segment_slope * delta;
+        } else {
+            self.translation_sample_dirty = true;
+        }
+    }
+
+    fn fast_update_rotation_value(&mut self, delta: f32) {
+        if self.rotation_sample_dirty {
+            return;
+        }
+        let Some(track) = self.clip.rotation.as_ref() else {
+            self.rotation_sample_dirty = true;
+            return;
+        };
+        if matches!(track.interpolation, ClipInterpolation::Step) {
+            return;
+        }
+        if let Some(value) = self.current_sample.rotation.as_mut() {
+            *value += self.rotation_segment_slope * delta;
+        } else {
+            self.rotation_sample_dirty = true;
+        }
+    }
+
+    fn fast_update_scale_value(&mut self, delta: f32) {
+        if self.scale_sample_dirty {
+            return;
+        }
+        let Some(track) = self.clip.scale.as_ref() else {
+            self.scale_sample_dirty = true;
+            return;
+        };
+        if matches!(track.interpolation, ClipInterpolation::Step) {
+            return;
+        }
+        if let Some(value) = self.current_sample.scale.as_mut() {
+            *value += self.scale_segment_slope * delta;
+        } else {
+            self.scale_sample_dirty = true;
+        }
+    }
+
+    fn fast_update_tint_value(&mut self, delta: f32) {
+        if self.tint_sample_dirty {
+            return;
+        }
+        let Some(track) = self.clip.tint.as_ref() else {
+            self.tint_sample_dirty = true;
+            return;
+        };
+        if matches!(track.interpolation, ClipInterpolation::Step) {
+            return;
+        }
+        if let Some(value) = self.current_sample.tint.as_mut() {
+            *value += self.tint_segment_slope * delta;
+        } else {
+            self.tint_sample_dirty = true;
+        }
+    }
+
     #[cfg(debug_assertions)]
     fn debug_verify_current_values(&mut self) {
         let sample = self.current_sample_full();
@@ -2116,21 +2294,83 @@ fn cursor_from_time<T>(frames: &[ClipKeyframe<T>], sample_time: f32) -> (usize, 
     if sample_time <= frames[0].time {
         return (0, 0.0);
     }
-    for index in 0..last_index {
-        let start = &frames[index];
-        let end = &frames[index + 1];
-        if sample_time < end.time {
-            let span = (end.time - start.time).max(0.0);
-            let offset = (sample_time - start.time).clamp(0.0, span);
-            return (index, offset);
-        }
+    let mut insertion = frames.partition_point(|frame| sample_time >= frame.time);
+    if insertion == 0 {
+        insertion = 1;
     }
-    let penultimate = last_index - 1;
-    let span = (frames[last_index].time - frames[penultimate].time).max(0.0);
-    (penultimate, span)
+    if insertion > last_index {
+        insertion = last_index;
+    }
+    let mut index = insertion - 1;
+    if index >= last_index {
+        index = last_index - 1;
+    }
+    let start = &frames[index];
+    let end = &frames[index + 1];
+    let span = (end.time - start.time).max(0.0);
+    let offset = (sample_time - start.time).clamp(0.0, span);
+    (index, offset)
 }
 
 const CLIP_TIME_EPSILON: f32 = 1e-5;
+
+#[inline(always)]
+fn locate_segment_index(offsets: &[f32], target: f32, last_segment: usize) -> usize {
+    if offsets.is_empty() {
+        return 0usize.min(last_segment);
+    }
+    let idx = offsets.partition_point(|start| *start <= target);
+    if idx == 0 {
+        0
+    } else {
+        (idx - 1).min(last_segment)
+    }
+}
+
+#[inline(always)]
+fn resolve_target_time(unwrapped: f32, duration: f32, duration_inv: f32, looped: bool) -> (f32, u64) {
+    if !looped {
+        if duration <= 0.0 {
+            return (0.0, 0);
+        }
+        let mut clamped = unwrapped.clamp(0.0, duration);
+        if clamped >= duration - CLIP_TIME_EPSILON {
+            clamped = duration;
+        }
+        return (clamped, 0);
+    }
+    if duration <= 0.0 {
+        return (0.0, 0);
+    }
+    let mut wrapped = wrap_time_looped(unwrapped, duration, duration_inv);
+    if wrapped <= CLIP_TIME_EPSILON || (duration - wrapped) <= CLIP_TIME_EPSILON {
+        wrapped = 0.0;
+    }
+    let cycles =
+        if unwrapped >= 0.0 && duration > 0.0 { (unwrapped / duration).floor().max(0.0) as u64 } else { 0 };
+    (wrapped, cycles)
+}
+
+#[inline(always)]
+#[cfg(feature = "anim_stats")]
+fn compute_segment_crosses(
+    segment_count: usize,
+    start_index: usize,
+    end_index: usize,
+    target_cycle: u64,
+    looped: bool,
+) -> u64 {
+    if segment_count == 0 {
+        return 0;
+    }
+    let start_ordinal = start_index as u64;
+    let end_ordinal = if looped {
+        target_cycle.saturating_mul(segment_count as u64).saturating_add(end_index as u64)
+    } else {
+        end_index as u64
+    };
+    end_ordinal.saturating_sub(start_ordinal).saturating_sub(1)
+}
 
 #[inline(always)]
 fn wrap_time_looped(time: f32, duration: f32, duration_inv: f32) -> f32 {

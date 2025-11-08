@@ -1189,10 +1189,22 @@ impl EcsWorld {
             let mut animation_time = self.world.resource_mut::<AnimationTime>();
             animation_time.set_group_scale(group, scale);
         }
-        let mut query = self.world.query::<&mut SpriteAnimation>();
-        for mut animation in query.iter_mut(&mut self.world) {
+        let mut sprite_query = self.world.query::<&mut SpriteAnimation>();
+        for mut animation in sprite_query.iter_mut(&mut self.world) {
             if animation.group.as_deref() == Some(group) {
                 animation.mark_playback_rate_dirty();
+            }
+        }
+        let mut clip_query = self.world.query::<&mut ClipInstance>();
+        for mut clip in clip_query.iter_mut(&mut self.world) {
+            if clip.group.as_deref() == Some(group) {
+                clip.mark_playback_rate_dirty();
+            }
+        }
+        let mut skeleton_query = self.world.query::<&mut SkeletonInstance>();
+        for mut skeleton in skeleton_query.iter_mut(&mut self.world) {
+            if skeleton.group.as_deref() == Some(group) {
+                skeleton.playback_rate_dirty = true;
             }
         }
     }

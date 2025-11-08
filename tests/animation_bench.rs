@@ -34,9 +34,9 @@ const DEFAULT_STEPS: u32 = 240; // ~4 seconds at 60 FPS
 const DEFAULT_DT: f32 = 1.0 / 60.0;
 const DEFAULT_WARMUP_STEPS: u32 = 16;
 const DEFAULT_SAMPLES: usize = 5;
-const DEFAULT_ANIMATOR_SWEEP: &[usize] = &[100, 1_000, 5_000, 10_000];
+const DEFAULT_ANIMATOR_SWEEP: &[usize] = &[100, 1_000, 5_000, 8_000, 10_000];
 const CSV_RELATIVE_PATH: &str = "benchmarks/animation_sprite_timelines.csv";
-const BUDGETS_MS: &[(usize, f64)] = &[(10_000, 0.20)];
+const BUDGETS_MS: &[(usize, f64)] = &[(8_000, 0.20)];
 const DEFAULT_TRANSFORM_SWEEP: &[usize] = &[2_000];
 const TRANSFORM_CSV_RELATIVE_PATH: &str = "benchmarks/animation_transform_clips.csv";
 const TRANSFORM_BUDGETS_MS: &[(usize, f64)] = &[(2_000, 0.40)];
@@ -76,10 +76,53 @@ struct BenchResult {
     transform_stats: TransformClipStats,
 }
 
+#[derive(Clone, Copy)]
+struct BenchSuiteMask {
+    sprite: bool,
+    transform: bool,
+    skeletal: bool,
+}
+
+impl BenchSuiteMask {
+    const fn all() -> Self {
+        Self { sprite: true, transform: true, skeletal: true }
+    }
+
+    fn from_env() -> Self {
+        let raw = match env::var("ANIMATION_BENCH_TARGET").ok() {
+            Some(value) if !value.trim().is_empty() => value,
+            _ => return Self::all(),
+        };
+        let mut mask = Self { sprite: false, transform: false, skeletal: false };
+        for token in raw.split(|c: char| matches!(c, ',' | ';' | ' ' | '\t' | '\n' | '\r')) {
+            let trimmed = token.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let lowered = trimmed.to_ascii_lowercase();
+            match lowered.as_str() {
+                "all" => return Self::all(),
+                "sprite" | "sprites" | "timeline" | "timelines" => mask.sprite = true,
+                "transform" | "transforms" | "clip" | "clips" => mask.transform = true,
+                "skeletal" | "skeleton" | "skeletal_clips" | "skeletons" => mask.skeletal = true,
+                other => eprintln!(
+                    "[animation_bench] Ignoring unknown suite '{other}' in ANIMATION_BENCH_TARGET={raw:?}"
+                ),
+            }
+        }
+        if !mask.sprite && !mask.transform && !mask.skeletal {
+            Self::all()
+        } else {
+            mask
+        }
+    }
+}
+
 #[test]
 #[ignore = "benchmark harness - run manually when collecting perf data"]
 fn animation_bench_run() {
     let config = bench_config();
+    let suite_mask = BenchSuiteMask::from_env();
     assert!(
         !config.sweep.is_empty(),
         "no animator counts configured; set ANIMATION_BENCH_SWEEP or use defaults"
@@ -97,32 +140,49 @@ fn animation_bench_run() {
         config.steps, config.warmup_steps, config.samples, config.dt, config.randomize_phase
     );
 
-    run_bench_suite(
-        "sprite_timelines",
-        &config.sweep,
-        &config,
-        BUDGETS_MS,
-        CSV_RELATIVE_PATH,
-        seed_sprite_animators,
+    println!(
+        "[animation_bench] target suites -> sprite={} transform={} skeletal={}",
+        suite_mask.sprite, suite_mask.transform, suite_mask.skeletal
     );
 
-    run_bench_suite(
-        "transform_clips",
-        &config.transform_sweep,
-        &config,
-        TRANSFORM_BUDGETS_MS,
-        TRANSFORM_CSV_RELATIVE_PATH,
-        seed_transform_clips,
-    );
+    if suite_mask.sprite {
+        run_bench_suite(
+            "sprite_timelines",
+            &config.sweep,
+            &config,
+            BUDGETS_MS,
+            CSV_RELATIVE_PATH,
+            seed_sprite_animators,
+        );
+    } else {
+        println!("[animation_bench] skipping sprite_timelines suite per ANIMATION_BENCH_TARGET");
+    }
 
-    run_bench_suite(
-        "skeletal_clips",
-        &config.skeletal_sweep,
-        &config,
-        SKELETAL_BUDGETS_MS,
-        SKELETAL_CSV_RELATIVE_PATH,
-        seed_skeletal_clips,
-    );
+    if suite_mask.transform {
+        run_bench_suite(
+            "transform_clips",
+            &config.transform_sweep,
+            &config,
+            TRANSFORM_BUDGETS_MS,
+            TRANSFORM_CSV_RELATIVE_PATH,
+            seed_transform_clips,
+        );
+    } else {
+        println!("[animation_bench] skipping transform_clips suite per ANIMATION_BENCH_TARGET");
+    }
+
+    if suite_mask.skeletal {
+        run_bench_suite(
+            "skeletal_clips",
+            &config.skeletal_sweep,
+            &config,
+            SKELETAL_BUDGETS_MS,
+            SKELETAL_CSV_RELATIVE_PATH,
+            seed_skeletal_clips,
+        );
+    } else {
+        println!("[animation_bench] skipping skeletal_clips suite per ANIMATION_BENCH_TARGET");
+    }
 }
 
 fn run_bench_suite<F>(
@@ -171,6 +231,7 @@ where
             let sprite_avg_fast = result.sprite_stats.fast_loop_calls as f64 / denom;
             let sprite_avg_event = result.sprite_stats.event_calls as f64 / denom;
             let sprite_avg_plain = result.sprite_stats.plain_calls as f64 / denom;
+            let sprite_avg_binary = result.sprite_stats.fast_loop_binary_searches as f64 / denom;
             let transform_avg_adv = result.transform_stats.advance_calls as f64 / denom;
             let transform_avg_zero = result.transform_stats.zero_delta_calls as f64 / denom;
             let transform_avg_skipped = result.transform_stats.skipped_clips as f64 / denom;
@@ -191,11 +252,12 @@ where
             let transform_avg_segment_cross_per_anim =
                 result.transform_stats.segment_crosses as f64 / denom_per_anim;
             println!(
-                "[animation_bench][{label}]      anim_stats avg/step -> sprite(fast={:.2} event={:.2} plain={:.2}) \
-                 transform(adv={:.2} zero={:.2} skipped={:.2} loop_resume={:.2} zero_duration={:.2} fast={:.2} slow={:.2} segment={:.2})",
+                "[animation_bench][{label}]      anim_stats avg/step -> sprite(fast={:.2} event={:.2} plain={:.2} \
+bsearch={:.2}) transform(adv={:.2} zero={:.2} skipped={:.2} loop_resume={:.2} zero_duration={:.2} fast={:.2} slow={:.2} segment={:.2})",
                 sprite_avg_fast,
                 sprite_avg_event,
                 sprite_avg_plain,
+                sprite_avg_binary,
                 transform_avg_adv,
                 transform_avg_zero,
                 transform_avg_skipped,
@@ -264,6 +326,7 @@ where
             sprite_totals.fast_loop_calls += sprite_stats.fast_loop_calls;
             sprite_totals.event_calls += sprite_stats.event_calls;
             sprite_totals.plain_calls += sprite_stats.plain_calls;
+            sprite_totals.fast_loop_binary_searches += sprite_stats.fast_loop_binary_searches;
 
             let transform_stats = transform_clip_stats_snapshot();
             transform_totals.advance_calls += transform_stats.advance_calls;
@@ -753,7 +816,7 @@ fn write_csv(
     #[cfg(feature = "anim_stats")]
     {
         header.push_str(
-            ",sprite_fast_loop_avg,sprite_event_avg,sprite_plain_avg,transform_advance_avg,transform_zero_delta_avg,transform_skipped_avg,transform_loop_resume_avg,transform_zero_duration_avg,transform_fast_path_avg,transform_slow_path_avg,transform_segment_cross_avg,transform_advance_time_avg_ns,transform_sample_time_avg_ns,transform_apply_time_avg_ns,transform_advance_time_avg_per_anim_ns,transform_sample_time_avg_per_anim_ns,transform_apply_time_avg_per_anim_ns,transform_segment_cross_avg_per_anim",
+            ",sprite_fast_loop_avg,sprite_event_avg,sprite_plain_avg,sprite_binary_search_avg,transform_advance_avg,transform_zero_delta_avg,transform_skipped_avg,transform_loop_resume_avg,transform_zero_duration_avg,transform_fast_path_avg,transform_slow_path_avg,transform_segment_cross_avg,transform_advance_time_avg_ns,transform_sample_time_avg_ns,transform_apply_time_avg_ns,transform_advance_time_avg_per_anim_ns,transform_sample_time_avg_per_anim_ns,transform_apply_time_avg_per_anim_ns,transform_segment_cross_avg_per_anim",
         );
     }
     writeln!(file, "{header}")?;
@@ -771,7 +834,7 @@ fn write_csv(
             writeln!(
                 file,
                 "{},{},{},{:.6},{:.3},{:.3},{:.3},{:.1},{:.3},{},{}\
-,{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.6},{:.6},{:.6},{:.6}",
+,{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.6},{:.6},{:.6},{:.6}",
                 result.animators,
                 result.steps,
                 result.samples,
@@ -786,6 +849,7 @@ fn write_csv(
                 result.sprite_stats.fast_loop_calls as f64 / denom,
                 result.sprite_stats.event_calls as f64 / denom,
                 result.sprite_stats.plain_calls as f64 / denom,
+                result.sprite_stats.fast_loop_binary_searches as f64 / denom,
                 result.transform_stats.advance_calls as f64 / denom,
                 result.transform_stats.zero_delta_calls as f64 / denom,
                 result.transform_stats.skipped_clips as f64 / denom,

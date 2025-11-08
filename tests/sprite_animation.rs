@@ -1,11 +1,11 @@
 use bevy_ecs::prelude::Entity;
+use glam::Vec2;
 use kestrel_engine::assets::AssetManager;
 use kestrel_engine::ecs::{
     EcsWorld, SceneEntityTag, Sprite, SpriteAnimation, SpriteAnimationLoopMode, Transform, WorldTransform,
 };
 use kestrel_engine::events::GameEvent;
 use kestrel_engine::scene::SceneEntityId;
-use glam::Vec2;
 use serde_json::json;
 use std::sync::Arc;
 use tempfile::NamedTempFile;
@@ -128,11 +128,7 @@ fn sprite_instances_use_local_transform_when_world_missing() {
     let _entity = ecs
         .world
         .spawn((
-            Transform {
-                translation: Vec2::new(3.0, 4.0),
-                rotation: 0.25,
-                scale: Vec2::new(1.5, 0.5),
-            },
+            Transform { translation: Vec2::new(3.0, 4.0), rotation: 0.25, scale: Vec2::new(1.5, 0.5) },
             Sprite::uninitialized(Arc::from("main"), Arc::from("redorb")),
         ))
         .id();

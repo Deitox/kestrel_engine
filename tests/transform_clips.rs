@@ -207,14 +207,8 @@ fn clip_instance_keeps_translation_sample_clean_within_segment() {
 
     let initial = instance.sample_cached();
     let initial_translation = initial.translation.expect("translation sample at start");
-    assert!(
-        approx_vec2(initial_translation, Vec2::ZERO),
-        "expected clip to start at origin"
-    );
-    assert!(
-        !instance.translation_sample_dirty,
-        "initial translation sample should be clean"
-    );
+    assert!(approx_vec2(initial_translation, Vec2::ZERO), "expected clip to start at origin");
+    assert!(!instance.translation_sample_dirty, "initial translation sample should be clean");
 
     let advanced = instance.advance_time(0.01);
     assert!(advanced > 0.0, "clip should advance for positive delta");
@@ -225,10 +219,7 @@ fn clip_instance_keeps_translation_sample_clean_within_segment() {
 
     let cached_after = instance.current_sample.translation.expect("cached translation");
     let expected = instance.sample_at(instance.time).translation.expect("reference translation");
-    assert!(
-        approx_vec2(cached_after, expected),
-        "cached translation should match sampled translation"
-    );
+    assert!(approx_vec2(cached_after, expected), "cached translation should match sampled translation");
 }
 
 #[test]

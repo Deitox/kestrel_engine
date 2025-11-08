@@ -76,6 +76,8 @@ fn animation_profile_snapshot() {
                 fast_loop_calls: current_sprite.fast_loop_calls - prev_sprite_stats.fast_loop_calls,
                 event_calls: current_sprite.event_calls - prev_sprite_stats.event_calls,
                 plain_calls: current_sprite.plain_calls - prev_sprite_stats.plain_calls,
+                fast_loop_binary_searches: current_sprite.fast_loop_binary_searches
+                    - prev_sprite_stats.fast_loop_binary_searches,
             });
             prev_sprite_stats = current_sprite;
 
@@ -175,6 +177,7 @@ fn animation_profile_snapshot() {
                 total_sprite.fast_loop_calls += stats.fast_loop_calls;
                 total_sprite.event_calls += stats.event_calls;
                 total_sprite.plain_calls += stats.plain_calls;
+                total_sprite.fast_loop_binary_searches += stats.fast_loop_binary_searches;
             }
 
             let mut total_transform = TransformClipStats::default();
@@ -193,8 +196,11 @@ fn animation_profile_snapshot() {
             }
 
             println!(
-                "[animation_profile] anim_stats sprite totals: fast_loop={} event={} plain={}",
-                total_sprite.fast_loop_calls, total_sprite.event_calls, total_sprite.plain_calls
+                "[animation_profile] anim_stats sprite totals: fast_loop={} event={} plain={} bsearch={}",
+                total_sprite.fast_loop_calls,
+                total_sprite.event_calls,
+                total_sprite.plain_calls,
+                total_sprite.fast_loop_binary_searches
             );
             println!(
                 "[animation_profile] anim_stats transform totals: advance={} zero_delta={} skipped={} loop_resume={} zero_duration={} fast_path={} slow_path={}",
@@ -218,12 +224,13 @@ fn animation_profile_snapshot() {
                 let sprite_step = sprite_stats_per_step.get(index).copied().unwrap_or_default();
                 let transform_step = transform_stats_per_step.get(index).copied().unwrap_or_default();
                 println!(
-                    "[animation_profile]   step {:>4} -> {:>8.4} ms | sprite(fast={} event={} plain={}) transform(adv={} zero={} skipped={} loop_resume={} zero_duration={} fast={} slow={}) time_ns(adv={} sample={} apply={})",
+                    "[animation_profile]   step {:>4} -> {:>8.4} ms | sprite(fast={} event={} plain={} bsearch={}) transform(adv={} zero={} skipped={} loop_resume={} zero_duration={} fast={} slow={}) time_ns(adv={} sample={} apply={})",
                     index,
                     value,
                     sprite_step.fast_loop_calls,
                     sprite_step.event_calls,
                     sprite_step.plain_calls,
+                    sprite_step.fast_loop_binary_searches,
                     transform_step.advance_calls,
                     transform_step.zero_delta_calls,
                     transform_step.skipped_clips,
