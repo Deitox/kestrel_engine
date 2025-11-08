@@ -1,6 +1,6 @@
 use glam::{Vec2, Vec4};
 use kestrel_engine::assets::AssetManager;
-use kestrel_engine::ecs::{ClipInstance, EcsWorld, Tint, Transform, WorldTransform};
+use kestrel_engine::ecs::{ClipInstance, EcsWorld, PropertyTrackPlayer, Tint, Transform, WorldTransform};
 use std::sync::Arc;
 
 fn approx_vec2(a: Vec2, b: Vec2) -> bool {
@@ -195,6 +195,27 @@ fn transform_clip_time_seek_applies_sample() {
     let transform = ecs.world.get::<Transform>(entity).unwrap();
     assert!(approx_vec2(transform.translation, Vec2::ZERO));
     assert!(approx_scalar(transform.rotation, 0.0));
+}
+
+#[test]
+fn transform_clip_adds_tint_component_when_needed() {
+    let mut assets = AssetManager::new();
+    assets.retain_clip("slime", Some("fixtures/animation_clips/slime_bob.json")).expect("load slime clip");
+
+    let mut ecs = EcsWorld::new();
+    let entity = ecs.world.spawn((Transform::default(), WorldTransform::default())).id();
+
+    assert!(ecs.set_transform_clip(entity, &assets, "slime"), "attach clip with tint track");
+
+    let tint = ecs.world.get::<Tint>(entity).expect("tint component should be inserted");
+    let instance = ecs.world.get::<ClipInstance>(entity).expect("clip instance present");
+    let sample_tint = instance.sample().tint.expect("fixture tint missing");
+    assert!(approx_vec4(tint.0, sample_tint), "tint component should reflect sampled value");
+
+    assert!(
+        ecs.world.get::<PropertyTrackPlayer>(entity).is_some(),
+        "tint tracks should ensure property mask exists"
+    );
 }
 
 #[test]

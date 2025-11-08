@@ -655,6 +655,7 @@ impl EcsWorld {
         };
         let clip_arc = Arc::new(clip_data);
         let clip_name: Arc<str> = Arc::from(clip_key.to_string());
+        let clip_requires_tint = clip_arc.tint.is_some();
         let sample = {
             if let Some(mut instance) = self.world.get_mut::<ClipInstance>(entity) {
                 instance.replace_clip(Arc::clone(&clip_name), Arc::clone(&clip_arc));
@@ -667,13 +668,25 @@ impl EcsWorld {
                 if !entity_mut.contains::<TransformTrackPlayer>() {
                     entity_mut.insert(TransformTrackPlayer::default());
                 }
-                if instance.clip.tint.is_some() && !entity_mut.contains::<PropertyTrackPlayer>() {
+                if clip_requires_tint && !entity_mut.contains::<PropertyTrackPlayer>() {
                     entity_mut.insert(PropertyTrackPlayer::default());
+                }
+                if clip_requires_tint && !entity_mut.contains::<Tint>() {
+                    entity_mut.insert(Tint(Vec4::ONE));
                 }
                 entity_mut.insert(instance);
                 sample
             }
         };
+        if clip_requires_tint {
+            let mut entity_mut = self.world.entity_mut(entity);
+            if !entity_mut.contains::<PropertyTrackPlayer>() {
+                entity_mut.insert(PropertyTrackPlayer::default());
+            }
+            if !entity_mut.contains::<Tint>() {
+                entity_mut.insert(Tint(Vec4::ONE));
+            }
+        }
         self.apply_clip_sample_immediate(entity, sample);
         self.sync_clip_instance_last_values(entity, sample);
         true

@@ -585,6 +585,11 @@ impl ClipInstance {
         self.playback_rate
     }
 
+    #[inline]
+    pub fn has_tint_channel(&self) -> bool {
+        self.clip_channels.tint
+    }
+
     pub fn advance_time(&mut self, delta: f32) -> f32 {
         self.advance_time_with_mask(delta, ClipChannelMask::all())
     }

@@ -346,6 +346,7 @@ mod tests {
     use crate::assets::skeletal::{load_skeleton_from_gltf, SkeletonAsset};
     use anyhow::Result;
     use bevy_ecs::prelude::World;
+    use bevy_ecs::system::SystemState;
     use glam::{Mat4, Quat, Vec2, Vec3};
     use std::path::Path;
     use std::sync::Arc;
@@ -433,6 +434,74 @@ mod tests {
         assert_mat4_approx(early.palette[0], late.palette[0], "root palette wrap");
         assert_mat4_approx(early.model_poses[1], late.model_poses[1], "child model wrap");
         assert_mat4_approx(early.palette[1], late.palette[1], "child palette wrap");
+
+        Ok(())
+    }
+
+    #[test]
+    fn skeletal_driver_skips_paused_clean_instances() -> Result<()> {
+        let fixture = SkeletalFixture::load()?;
+        let mut world = World::new();
+        let skeleton_key = Arc::clone(&fixture.skeleton.name);
+        let mut instance = SkeletonInstance::new(skeleton_key, Arc::clone(&fixture.skeleton));
+        instance.set_active_clip(Some(Arc::clone(&fixture.clip)));
+        instance.set_playing(false);
+        instance.clear_dirty();
+
+        let sentinel = Mat4::from_scale(Vec3::splat(3.14));
+        let mut bones = BoneTransforms::new(instance.joint_count());
+        for mat in bones.model.iter_mut() {
+            *mat = sentinel;
+        }
+        for mat in bones.palette.iter_mut() {
+            *mat = sentinel;
+        }
+
+        let entity = world.spawn((instance, bones)).id();
+
+        let mut state: SystemState<Query<(Entity, &mut SkeletonInstance, Option<Mut<BoneTransforms>>)>> =
+            SystemState::new(&mut world);
+        let animation_time = AnimationTime::default();
+
+        {
+            let mut query = state.get_mut(&mut world);
+            drive_skeletal_clips(0.1, false, &animation_time, &mut query);
+        }
+        state.apply(&mut world);
+
+        {
+            let bones_after = world.get::<BoneTransforms>(entity).unwrap();
+            for mat in bones_after.model.iter().chain(bones_after.palette.iter()) {
+                assert_eq!(
+                    mat.to_cols_array(),
+                    sentinel.to_cols_array(),
+                    "paused, clean instance should not rewrite bones"
+                );
+            }
+        }
+
+        {
+            let mut instance = world.get_mut::<SkeletonInstance>(entity).unwrap();
+            instance.set_time(0.5);
+            instance.set_playing(false);
+        }
+        {
+            let mut query = state.get_mut(&mut world);
+            drive_skeletal_clips(0.0, false, &animation_time, &mut query);
+        }
+        state.apply(&mut world);
+
+        {
+            let bones_after = world.get::<BoneTransforms>(entity).unwrap();
+            assert!(
+                bones_after.model.iter().any(|mat| mat.to_cols_array() != sentinel.to_cols_array()),
+                "dirty paused instance should refresh bone transforms"
+            );
+        }
+        {
+            let instance = world.get::<SkeletonInstance>(entity).unwrap();
+            assert!(!instance.dirty, "evaluated instance should clear dirty flag");
+        }
 
         Ok(())
     }
@@ -662,6 +731,10 @@ fn drive_skeletal_clips(
             }
         };
 
+        if !instance.playing && !instance.dirty {
+            continue;
+        }
+
         let group_scale =
             if has_group_scales { animation_time.group_scale(instance.group.as_deref()) } else { 1.0 };
         let playback_rate = if instance.playback_rate_dirty {
@@ -669,16 +742,16 @@ fn drive_skeletal_clips(
         } else {
             instance.playback_rate
         };
-        if playback_rate == 0.0 {
+        if playback_rate == 0.0 && !instance.dirty {
             continue;
         }
 
         let scaled = delta * playback_rate;
-        if scaled == 0.0 {
+        if scaled == 0.0 && !instance.dirty {
             continue;
         }
 
-        if instance.playing {
+        if instance.playing && scaled != 0.0 {
             let current_time = instance.time;
             instance.set_time(current_time + scaled);
         }
@@ -691,6 +764,8 @@ fn drive_skeletal_clips(
             bones.model.copy_from_slice(&instance.model_poses);
             bones.palette.copy_from_slice(&instance.palette);
         }
+
+        instance.clear_dirty();
     }
 }
 
@@ -900,7 +975,8 @@ fn drive_transform_clips(
 
         let transform_mask = transform_player.copied().unwrap_or_default();
         let property_mask = property_player.copied().unwrap_or_default();
-        let wants_tint = property_mask.apply_tint;
+        let clip_has_tint = instance.has_tint_channel();
+        let wants_tint = property_player.is_some() && property_mask.apply_tint && clip_has_tint;
         let transform_available = transform.is_some();
         let tint_available = !wants_tint || tint.is_some();
         let mut sampling_transform_player = transform_mask;
@@ -910,7 +986,9 @@ fn drive_transform_clips(
             sampling_transform_player.apply_scale = false;
         }
         let mut sampling_property_player = property_mask;
-        if wants_tint && tint.is_none() {
+        if !wants_tint {
+            sampling_property_player.apply_tint = false;
+        } else if tint.is_none() {
             sampling_property_player.apply_tint = false;
         }
         let disabled_transform_player = TransformTrackPlayer {
@@ -921,8 +999,11 @@ fn drive_transform_clips(
         let disabled_property_player = PropertyTrackPlayer::new(false);
         let transform_player_for_apply =
             if transform_available { transform_player } else { Some(&disabled_transform_player) };
-        let property_player_for_apply =
-            if wants_tint && tint.is_none() { Some(&disabled_property_player) } else { property_player };
+        let property_player_for_apply = if wants_tint && tint.is_none() {
+            Some(&disabled_property_player)
+        } else {
+            property_player
+        };
         let has_tint_target = wants_tint && tint.is_some();
         if !transform_available && !has_tint_target {
             if instance.playing {
