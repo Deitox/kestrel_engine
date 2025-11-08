@@ -1,3 +1,10 @@
+mod atlas_watch;
+mod editor_ui;
+mod gizmo_interaction;
+mod plugin_host;
+
+use self::atlas_watch::{normalize_path_for_watch, AtlasHotReload};
+use self::plugin_host::{BuiltinPluginFactory, PluginHost};
 use crate::analytics::AnalyticsPlugin;
 use crate::assets::AssetManager;
 use crate::audio::{AudioHealthSnapshot, AudioPlugin};
@@ -13,8 +20,7 @@ use crate::material_registry::{MaterialGpu, MaterialRegistry};
 use crate::mesh_preview::{MeshControlMode, MeshPreviewPlugin};
 use crate::mesh_registry::MeshRegistry;
 use crate::plugins::{
-    apply_manifest_builtin_toggles, apply_manifest_dynamic_toggles, FeatureRegistryHandle,
-    ManifestBuiltinToggle, ManifestDynamicToggle, PluginContext, PluginManager, PluginManifest,
+    FeatureRegistryHandle, ManifestBuiltinToggle, ManifestDynamicToggle, PluginContext, PluginManager,
 };
 use crate::prefab::{PrefabFormat, PrefabLibrary, PrefabStatusKind, PrefabStatusMessage};
 use crate::renderer::{GpuPassTiming, MeshDraw, RenderViewport, Renderer, SpriteBatch};
@@ -24,22 +30,15 @@ use crate::scene::{
 };
 use crate::scripts::{ScriptCommand, ScriptHandle, ScriptPlugin};
 use crate::time::Time;
-mod editor_ui;
-mod gizmo_interaction;
-
 use bevy_ecs::prelude::Entity;
 use glam::{Mat4, Vec2, Vec3, Vec4};
 
 use anyhow::{anyhow, Context, Result};
-use notify::event::ModifyKind;
-use notify::{Config as NotifyConfig, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::mpsc::{channel, Receiver};
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{DeviceEvent, ElementState, KeyEvent, WindowEvent};
@@ -196,143 +195,6 @@ struct GpuTimingFrame {
     timings: Vec<GpuPassTiming>,
 }
 
-struct AtlasWatchEntry {
-    key: String,
-    original: PathBuf,
-}
-
-struct AtlasHotReload {
-    watcher: RecommendedWatcher,
-    rx: Receiver<notify::Result<Event>>,
-    watched: HashMap<PathBuf, AtlasWatchEntry>,
-}
-
-fn normalize_path_for_watch(path: &Path) -> Option<(PathBuf, PathBuf)> {
-    let absolute = if path.is_absolute() { path.to_path_buf() } else { env::current_dir().ok()?.join(path) };
-    let canonical = fs::canonicalize(&absolute).unwrap_or_else(|_| absolute.clone());
-    Some((absolute, canonical))
-}
-
-fn normalize_event_path(path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-    } else if let Ok(cwd) = env::current_dir() {
-        let absolute = cwd.join(path);
-        fs::canonicalize(&absolute).unwrap_or(absolute)
-    } else {
-        PathBuf::from(path)
-    }
-}
-
-impl AtlasHotReload {
-    fn new() -> Result<Self> {
-        let (tx, rx) = channel();
-        let mut watcher = notify::recommended_watcher(move |res| {
-            let _ = tx.send(res);
-        })?;
-        if let Err(err) = watcher.configure(
-            NotifyConfig::default()
-                .with_compare_contents(true)
-                .with_poll_interval(Duration::from_millis(250)),
-        ) {
-            eprintln!("[assets] atlas watcher configuration warning: {err}");
-        }
-        Ok(Self { watcher, rx, watched: HashMap::new() })
-    }
-
-    fn sync(&mut self, desired: &[(PathBuf, PathBuf, String)]) -> Result<()> {
-        let mut desired_map: HashMap<PathBuf, (PathBuf, String)> = HashMap::new();
-        for (original, normalized, key) in desired {
-            desired_map.insert(normalized.clone(), (original.clone(), key.clone()));
-        }
-        for (normalized, (original, key)) in desired_map.iter() {
-            match self.watched.get_mut(normalized) {
-                Some(entry) => {
-                    if entry.key != *key {
-                        entry.key = key.clone();
-                    }
-                }
-                None => {
-                    self.watch_path(original.clone(), normalized.clone(), key.clone())
-                        .map_err(|err| anyhow!("watch failed for '{}': {err}", original.display()))?;
-                }
-            }
-        }
-        let obsolete: Vec<PathBuf> =
-            self.watched.keys().filter(|path| !desired_map.contains_key(*path)).cloned().collect();
-        for normalized in obsolete {
-            self.unwatch_path(&normalized)
-                .map_err(|err| anyhow!("unwatch failed for '{}': {err}", normalized.display()))?;
-        }
-        Ok(())
-    }
-
-    fn drain_keys(&mut self) -> Vec<String> {
-        let mut keys = Vec::new();
-        while let Ok(res) = self.rx.try_recv() {
-            match res {
-                Ok(event) => {
-                    if !Self::is_relevant(&event.kind) {
-                        continue;
-                    }
-                    for path in event.paths {
-                        if let Some(key) = self.resolve_path(&path) {
-                            if !keys.contains(&key) {
-                                keys.push(key);
-                            }
-                        }
-                    }
-                }
-                Err(err) => eprintln!("[assets] Atlas watcher error: {err}"),
-            }
-        }
-        keys
-    }
-
-    fn watch_path(&mut self, original: PathBuf, normalized: PathBuf, key: String) -> notify::Result<()> {
-        self.watcher.watch(&original, RecursiveMode::NonRecursive)?;
-        self.watched.insert(normalized, AtlasWatchEntry { key, original });
-        Ok(())
-    }
-
-    fn unwatch_path(&mut self, normalized: &Path) -> notify::Result<()> {
-        if let Some(entry) = self.watched.remove(normalized) {
-            self.watcher.unwatch(&entry.original)?;
-        }
-        Ok(())
-    }
-
-    fn resolve_path(&self, path: &Path) -> Option<String> {
-        let normalized = normalize_event_path(path);
-        if let Some(entry) = self.watched.get(&normalized) {
-            return Some(entry.key.clone());
-        }
-        let absolute = if path.is_absolute() {
-            path.to_path_buf()
-        } else if let Ok(cwd) = env::current_dir() {
-            cwd.join(path)
-        } else {
-            PathBuf::from(path)
-        };
-        for entry in self.watched.values() {
-            if entry.original == absolute {
-                return Some(entry.key.clone());
-            }
-        }
-        None
-    }
-
-    fn is_relevant(kind: &EventKind) -> bool {
-        match kind {
-            EventKind::Modify(ModifyKind::Data(_))
-            | EventKind::Modify(ModifyKind::Name(_))
-            | EventKind::Modify(ModifyKind::Any)
-            | EventKind::Create(_)
-            | EventKind::Remove(_) => true,
-            _ => false,
-        }
-    }
-}
 pub async fn run() -> Result<()> {
     run_with_overrides(AppConfigOverrides::default()).await
 }
@@ -426,8 +288,7 @@ pub struct App {
     last_reported_script_error: Option<String>,
 
     // Plugins
-    plugins: PluginManager,
-    plugin_manifest: Option<PluginManifest>,
+    plugin_host: PluginHost,
 
     // Camera / selection
     pub(crate) camera: Camera2D,
@@ -599,33 +460,19 @@ impl App {
     }
 
     fn reload_dynamic_plugins(&mut self) {
-        let manifest_opt = match PluginManager::load_manifest(PLUGIN_MANIFEST_PATH) {
-            Ok(data) => data,
+        let result =
+            self.with_plugin_runtime(|host, manager, ctx| host.reload_dynamic_from_disk(manager, ctx));
+        match result {
+            Ok(newly_loaded) => {
+                if newly_loaded.is_empty() {
+                    self.ui_scene_status = Some("Plugin manifest reloaded".to_string());
+                } else {
+                    self.ui_scene_status = Some(format!("Loaded plugins: {}", newly_loaded.join(", ")));
+                }
+            }
             Err(err) => {
-                self.ui_scene_status = Some(format!("Plugin manifest parse failed: {err}"));
-                return;
+                self.ui_scene_status = Some(format!("Plugin reload failed: {err}"));
             }
-        };
-        self.plugin_manifest = manifest_opt.clone();
-        let Some(manifest) = manifest_opt else {
-            self.ui_scene_status = Some("Plugin manifest not found".to_string());
-            return;
-        };
-        let mut reload_error = None;
-        let mut newly_loaded = Vec::new();
-        self.with_plugins(|plugins, ctx| {
-            plugins.clear_dynamic_statuses();
-            match plugins.load_dynamic_from_manifest(&manifest, ctx) {
-                Ok(mut names) => newly_loaded.append(&mut names),
-                Err(err) => reload_error = Some(err),
-            }
-        });
-        if let Some(err) = reload_error {
-            self.ui_scene_status = Some(format!("Plugin reload failed: {err}"));
-        } else if newly_loaded.is_empty() {
-            self.ui_scene_status = Some("Plugin manifest reloaded".to_string());
-        } else {
-            self.ui_scene_status = Some(format!("Loaded plugins: {}", newly_loaded.join(", ")));
         }
     }
 
@@ -633,10 +480,6 @@ impl App {
         if toggles.is_empty() {
             return;
         }
-        let Some(manifest) = self.plugin_manifest.as_mut() else {
-            self.ui_scene_status = Some("Plugin manifest not found.".to_string());
-            return;
-        };
         let mut dynamic_requests = Vec::new();
         let mut builtin_requests = Vec::new();
         for toggle in toggles {
@@ -647,52 +490,53 @@ impl App {
                     .push(ManifestBuiltinToggle { name: toggle.name.clone(), disable: *disable }),
             }
         }
-        let dynamic_outcome = apply_manifest_dynamic_toggles(manifest, &dynamic_requests);
-        let builtin_outcome = apply_manifest_builtin_toggles(manifest, &builtin_requests);
-        if !dynamic_outcome.changed && !builtin_outcome.changed {
-            if !dynamic_outcome.missing.is_empty() {
+        let summary = match self.plugin_host.apply_manifest_toggles(&dynamic_requests, &builtin_requests) {
+            Ok(summary) => summary,
+            Err(err) => {
+                self.ui_scene_status = Some(format!("Plugin manifest update failed: {err}"));
+                if let Err(load_err) = self.plugin_host.reload_manifest_from_disk() {
+                    eprintln!("[plugin] failed to reload manifest after error: {load_err:?}");
+                }
+                return;
+            }
+        };
+        if !summary.changed() {
+            if !summary.dynamic.missing.is_empty() {
                 self.ui_scene_status = Some(format!(
                     "Plugin toggle skipped; missing manifest entr{} {}",
-                    if dynamic_outcome.missing.len() == 1 { "y:" } else { "ies:" },
-                    dynamic_outcome.missing.join(", ")
+                    if summary.dynamic.missing.len() == 1 { "y:" } else { "ies:" },
+                    summary.dynamic.missing.join(", ")
                 ));
-                if let Ok(fresh) = PluginManager::load_manifest(PLUGIN_MANIFEST_PATH) {
-                    self.plugin_manifest = fresh;
+                if let Err(err) = self.plugin_host.reload_manifest_from_disk() {
+                    eprintln!("[plugin] failed to reload manifest after missing entries: {err:?}");
                 }
             } else {
                 self.ui_scene_status = Some("Plugin manifest unchanged.".to_string());
             }
             return;
         }
-        if let Err(err) = manifest.save() {
-            self.ui_scene_status = Some(format!("Plugin manifest save failed: {err}"));
-            if let Ok(fresh) = PluginManager::load_manifest(PLUGIN_MANIFEST_PATH) {
-                self.plugin_manifest = fresh;
-            }
-            return;
-        }
         self.reload_dynamic_plugins();
         let mut parts = Vec::new();
-        if !dynamic_outcome.enabled.is_empty() {
-            parts.push(format!("enabled {}", dynamic_outcome.enabled.join(", ")));
+        if !summary.dynamic.enabled.is_empty() {
+            parts.push(format!("enabled {}", summary.dynamic.enabled.join(", ")));
         }
-        if !dynamic_outcome.disabled.is_empty() {
-            parts.push(format!("disabled {}", dynamic_outcome.disabled.join(", ")));
+        if !summary.dynamic.disabled.is_empty() {
+            parts.push(format!("disabled {}", summary.dynamic.disabled.join(", ")));
         }
-        if !builtin_outcome.enabled.is_empty() {
-            parts.push(format!("enabled built-ins {}", builtin_outcome.enabled.join(", ")));
+        if !summary.builtin.enabled.is_empty() {
+            parts.push(format!("enabled built-ins {}", summary.builtin.enabled.join(", ")));
         }
-        if !builtin_outcome.disabled.is_empty() {
-            parts.push(format!("disabled built-ins {}", builtin_outcome.disabled.join(", ")));
+        if !summary.builtin.disabled.is_empty() {
+            parts.push(format!("disabled built-ins {}", summary.builtin.disabled.join(", ")));
         }
-        if !dynamic_outcome.missing.is_empty() {
+        if !summary.dynamic.missing.is_empty() {
             parts.push(format!(
                 "skipped unknown entr{} {}",
-                if dynamic_outcome.missing.len() == 1 { "y" } else { "ies" },
-                dynamic_outcome.missing.join(", ")
+                if summary.dynamic.missing.len() == 1 { "y" } else { "ies" },
+                summary.dynamic.missing.join(", ")
             ));
         }
-        if builtin_outcome.changed {
+        if summary.builtin.changed {
             parts.push("restart required for built-in changes".to_string());
         }
         if parts.is_empty() {
@@ -777,19 +621,22 @@ impl App {
         // egui context and state
         let egui_ctx = EguiCtx::default();
         let egui_winit = None;
-        let plugin_manifest = match PluginManager::load_manifest(PLUGIN_MANIFEST_PATH) {
-            Ok(data) => data,
-            Err(err) => {
-                eprintln!("[plugin] failed to parse manifest: {err:?}");
-                None
-            }
-        };
-        let disabled_builtins: HashSet<String> = plugin_manifest
-            .as_ref()
-            .map(|manifest| manifest.disabled_builtins().map(|name| name.to_string()).collect())
-            .unwrap_or_default();
-        let mut plugins = PluginManager::default();
+        let mut plugin_host = PluginHost::new(PLUGIN_MANIFEST_PATH);
+        let script_path = PathBuf::from("assets/scripts/main.rhai");
+        let mut builtin_plugins = Vec::new();
+        builtin_plugins
+            .push(BuiltinPluginFactory::new("mesh_preview", || Box::new(MeshPreviewPlugin::new())));
+        builtin_plugins.push(BuiltinPluginFactory::new("analytics", || Box::new(AnalyticsPlugin::default())));
         {
+            let path = script_path.clone();
+            builtin_plugins.push(BuiltinPluginFactory::new("scripts", move || {
+                Box::new(ScriptPlugin::new(path.clone()))
+            }));
+        }
+        builtin_plugins.push(BuiltinPluginFactory::new("audio", || Box::new(AudioPlugin::new(16))));
+        {
+            let mut manager = plugin_host.take_manager();
+            let handle = manager.feature_handle();
             let mut ctx = PluginContext::new(
                 &mut renderer,
                 &mut ecs,
@@ -800,43 +647,16 @@ impl App {
                 &mut environment_registry,
                 &time,
                 Self::emit_event_for_plugin,
-                plugins.feature_handle(),
+                handle,
                 None,
             );
-            if disabled_builtins.contains("mesh_preview") {
-                plugins.record_builtin_disabled("mesh_preview", "disabled via config/plugins.json");
-            } else if let Err(err) = plugins.register(Box::new(MeshPreviewPlugin::new()), &mut ctx) {
-                eprintln!("[plugin] failed to register mesh preview plugin: {err:?}");
-            }
-            if disabled_builtins.contains("analytics") {
-                plugins.record_builtin_disabled("analytics", "disabled via config/plugins.json");
-            } else if let Err(err) = plugins.register(Box::new(AnalyticsPlugin::default()), &mut ctx) {
-                eprintln!("[plugin] failed to register analytics plugin: {err:?}");
-            }
-            if disabled_builtins.contains("scripts") {
-                plugins.record_builtin_disabled("scripts", "disabled via config/plugins.json");
-            } else if let Err(err) =
-                plugins.register(Box::new(ScriptPlugin::new("assets/scripts/main.rhai")), &mut ctx)
-            {
-                eprintln!("[plugin] failed to register script plugin: {err:?}");
-            }
-            if disabled_builtins.contains("audio") {
-                plugins.record_builtin_disabled("audio", "disabled via config/plugins.json");
-            } else if let Err(err) = plugins.register(Box::new(AudioPlugin::new(16)), &mut ctx) {
-                eprintln!("[plugin] failed to register audio plugin: {err:?}");
-            }
-            if let Some(manifest) = plugin_manifest.as_ref() {
-                match plugins.load_dynamic_from_manifest(manifest, &mut ctx) {
-                    Ok(loaded) => {
-                        if !loaded.is_empty() {
-                            println!("[plugin] loaded dynamic plugins: {}", loaded.join(", "));
-                        }
-                    }
-                    Err(err) => eprintln!("[plugin] failed to load dynamic plugins: {err:?}"),
-                }
-            }
+            plugin_host.register_builtins(&mut manager, &mut ctx, &builtin_plugins);
+            drop(ctx);
+            plugin_host.restore_manager(manager);
         }
         if !initial_events.is_empty() {
+            let mut manager = plugin_host.take_manager();
+            let handle = manager.feature_handle();
             let mut ctx = PluginContext::new(
                 &mut renderer,
                 &mut ecs,
@@ -847,10 +667,12 @@ impl App {
                 &mut environment_registry,
                 &time,
                 Self::emit_event_for_plugin,
-                plugins.feature_handle(),
+                handle,
                 None,
             );
-            plugins.handle_events(&mut ctx, &initial_events);
+            manager.handle_events(&mut ctx, &initial_events);
+            drop(ctx);
+            plugin_host.restore_manager(manager);
         }
 
         let atlas_hot_reload = match AtlasHotReload::new() {
@@ -926,8 +748,7 @@ impl App {
             script_repl_history_index: None,
             script_console: VecDeque::with_capacity(SCRIPT_CONSOLE_CAPACITY),
             last_reported_script_error: None,
-            plugins,
-            plugin_manifest,
+            plugin_host,
             camera: Camera2D::new(CAMERA_BASE_HALF_HEIGHT),
             viewport_camera_mode: ViewportCameraMode::default(),
             camera_bookmarks: Vec::new(),
@@ -1189,49 +1010,58 @@ impl App {
         )
     }
 
+    fn with_plugin_runtime<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&mut PluginHost, &mut PluginManager, &mut PluginContext<'_>) -> R,
+    {
+        let mut host = std::mem::replace(&mut self.plugin_host, PluginHost::placeholder());
+        let mut manager = host.take_manager();
+        let handle = manager.feature_handle();
+        let mut ctx = self.plugin_context(handle);
+        let result = f(&mut host, &mut manager, &mut ctx);
+        drop(ctx);
+        host.restore_manager(manager);
+        self.plugin_host = host;
+        result
+    }
+
+    fn with_plugins<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&mut PluginManager, &mut PluginContext<'_>) -> R,
+    {
+        self.with_plugin_runtime(|_, manager, ctx| f(manager, ctx))
+    }
+
     fn emit_event_for_plugin(ecs: &mut EcsWorld, event: GameEvent) {
         ecs.push_event(event);
     }
 
-    fn with_plugins<F>(&mut self, mut f: F)
-    where
-        F: FnMut(&mut PluginManager, &mut PluginContext<'_>),
-    {
-        let mut plugins = std::mem::take(&mut self.plugins);
-        {
-            let handle = plugins.feature_handle();
-            let mut ctx = self.plugin_context(handle);
-            f(&mut plugins, &mut ctx);
-        }
-        self.plugins = plugins;
-    }
-
     fn audio_plugin(&self) -> Option<&AudioPlugin> {
-        self.plugins.get::<AudioPlugin>()
+        self.plugin_host.get::<AudioPlugin>()
     }
 
     fn analytics_plugin(&self) -> Option<&AnalyticsPlugin> {
-        self.plugins.get::<AnalyticsPlugin>()
+        self.plugin_host.get::<AnalyticsPlugin>()
     }
 
     fn analytics_plugin_mut(&mut self) -> Option<&mut AnalyticsPlugin> {
-        self.plugins.get_mut::<AnalyticsPlugin>()
+        self.plugin_host.get_mut::<AnalyticsPlugin>()
     }
 
     fn mesh_preview_plugin(&self) -> Option<&MeshPreviewPlugin> {
-        self.plugins.get::<MeshPreviewPlugin>()
+        self.plugin_host.get::<MeshPreviewPlugin>()
     }
 
     fn mesh_preview_plugin_mut(&mut self) -> Option<&mut MeshPreviewPlugin> {
-        self.plugins.get_mut::<MeshPreviewPlugin>()
+        self.plugin_host.get_mut::<MeshPreviewPlugin>()
     }
 
     fn script_plugin(&self) -> Option<&ScriptPlugin> {
-        self.plugins.get::<ScriptPlugin>()
+        self.plugin_host.get::<ScriptPlugin>()
     }
 
     fn script_plugin_mut(&mut self) -> Option<&mut ScriptPlugin> {
-        self.plugins.get_mut::<ScriptPlugin>()
+        self.plugin_host.get_mut::<ScriptPlugin>()
     }
 
     fn set_mesh_status<S: Into<String>>(&mut self, message: S) {
@@ -3009,25 +2839,7 @@ impl ApplicationHandler for App {
 
 impl Drop for App {
     fn drop(&mut self) {
-        let mut plugins = std::mem::take(&mut self.plugins);
-        {
-            let handle = plugins.feature_handle();
-            let mut ctx = PluginContext::new(
-                &mut self.renderer,
-                &mut self.ecs,
-                &mut self.assets,
-                &mut self.input,
-                &mut self.material_registry,
-                &mut self.mesh_registry,
-                &mut self.environment_registry,
-                &self.time,
-                Self::emit_event_for_plugin,
-                handle,
-                self.selected_entity,
-            );
-            plugins.shutdown(&mut ctx);
-        }
-        // plugins dropped here
+        self.with_plugins(|plugins, ctx| plugins.shutdown(ctx));
     }
 }
 

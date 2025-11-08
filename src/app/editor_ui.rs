@@ -1642,7 +1642,7 @@ impl App {
                     ui.small(
                         "Toggle entries below to update config/plugins.json without leaving the editor.",
                     );
-                    let status_snapshot = self.plugins.statuses().to_vec();
+                    let status_snapshot = self.plugin_host.statuses().to_vec();
                     let mut dynamic_statuses: BTreeMap<String, PluginStatus> = BTreeMap::new();
                     let mut builtin_statuses = Vec::new();
                     for status in status_snapshot {
@@ -1653,7 +1653,7 @@ impl App {
                         }
                     }
                     builtin_statuses.sort_by(|a, b| a.name.cmp(&b.name));
-                    if let Some(manifest) = self.plugin_manifest.as_ref() {
+                    if let Some(manifest) = self.plugin_host.manifest() {
                         if let Some(path) = manifest.path() {
                             ui.small(format!("Manifest: {}", path.display()));
                         }
@@ -1739,7 +1739,7 @@ impl App {
                         if !dynamic_statuses.is_empty() {
                             ui.separator();
                         }
-                        let manifest_ref = self.plugin_manifest.as_ref();
+                        let manifest_ref = self.plugin_host.manifest();
                         for status in builtin_statuses {
                             let mut enabled_flag = manifest_ref
                                 .map(|manifest| !manifest.is_builtin_disabled(&status.name))
@@ -1778,7 +1778,7 @@ impl App {
                         } else {
                             ui.small("Load config/plugins.json to edit built-in toggles.");
                         }
-                    } else if self.plugin_manifest.is_none() && dynamic_statuses.is_empty() {
+                    } else if self.plugin_host.manifest().is_none() && dynamic_statuses.is_empty() {
                         ui.label("No plugins reported");
                     }
 
@@ -1898,7 +1898,7 @@ impl App {
                     });
 
                     ui.separator();
-                    let plugin_present = self.plugins.get::<AudioPlugin>().is_some();
+                    let plugin_present = self.plugin_host.get::<AudioPlugin>().is_some();
                     let parsed_triggers: Vec<ParsedAudioTrigger> =
                         audio_triggers.iter().map(|label| parse_audio_trigger(label)).collect();
                     let mut trigger_counts: BTreeMap<AudioTriggerKind, usize> = BTreeMap::new();
@@ -1952,7 +1952,7 @@ impl App {
                             ui.small(format!("Sample rate: {rate} Hz"));
                         }
                         if ui.checkbox(&mut audio_enabled, "Enable audio triggers").changed() {
-                            if let Some(audio) = self.plugins.get_mut::<AudioPlugin>() {
+                            if let Some(audio) = self.plugin_host.get_mut::<AudioPlugin>() {
                                 audio.set_enabled(audio_enabled);
                             }
                         }
@@ -1988,7 +1988,7 @@ impl App {
                             ui.small(force_text);
                         }
                         if ui.button("Clear audio log").clicked() {
-                            if let Some(audio) = self.plugins.get_mut::<AudioPlugin>() {
+                            if let Some(audio) = self.plugin_host.get_mut::<AudioPlugin>() {
                                 audio.clear();
                             }
                         }

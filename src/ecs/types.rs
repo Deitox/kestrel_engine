@@ -668,7 +668,9 @@ impl ClipInstance {
             if self.looped {
                 let step = duration.max(std::f32::EPSILON);
                 let mut wrapped = time.rem_euclid(step);
-                if (wrapped - duration).abs() <= CLIP_TIME_EPSILON || (duration - wrapped).abs() <= CLIP_TIME_EPSILON {
+                if (wrapped - duration).abs() <= CLIP_TIME_EPSILON
+                    || (duration - wrapped).abs() <= CLIP_TIME_EPSILON
+                {
                     wrapped = duration;
                 }
                 self.time = wrapped;
@@ -2520,8 +2522,8 @@ impl SpriteAnimationLoopMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assets::skeletal::{SkeletalClip, SkeletonAsset, SkeletonJoint};
     use crate::assets::AnimationClip;
-    use crate::assets::skeletal::{SkeletonAsset, SkeletonJoint, SkeletalClip};
 
     #[test]
     fn clip_instance_set_time_wraps_negative_looped() {

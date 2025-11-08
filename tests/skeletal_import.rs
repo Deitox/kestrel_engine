@@ -156,20 +156,14 @@ fn skeletal_clip_supports_negative_speed() -> Result<()> {
     ecs.set_skeleton_clip_speed(entity, -1.0);
     ecs.update(0.25);
 
-    let instance = ecs
-        .world
-        .get::<SkeletonInstance>(entity)
-        .ok_or_else(|| anyhow!("skeleton instance missing"))?;
+    let instance =
+        ecs.world.get::<SkeletonInstance>(entity).ok_or_else(|| anyhow!("skeleton instance missing"))?;
     let duration = instance.clip_duration();
     anyhow::ensure!(duration > 0.0, "clip duration should be positive");
     let mut expected = duration - 0.25;
     if expected < 0.0 {
         expected += duration;
     }
-    assert!(
-        (instance.time - expected).abs() < 1e-4,
-        "expected time near {expected}, got {}",
-        instance.time
-    );
+    assert!((instance.time - expected).abs() < 1e-4, "expected time near {expected}, got {}", instance.time);
     Ok(())
 }

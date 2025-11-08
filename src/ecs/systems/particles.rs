@@ -26,8 +26,7 @@ pub fn sys_update_emitters(
 
     for (mut emitter, transform) in emitters.iter_mut() {
         let spawn_rate = emitter.rate.max(0.0);
-        emitter.accumulator =
-            (emitter.accumulator + spawn_rate * dt.0).min(caps.max_emitter_backlog);
+        emitter.accumulator = (emitter.accumulator + spawn_rate * dt.0).min(caps.max_emitter_backlog);
 
         if frame_budget <= 0 || remaining_headroom <= 0 {
             continue;
@@ -45,8 +44,7 @@ pub fn sys_update_emitters(
         let mut batch = Vec::with_capacity(to_spawn as usize);
         for _ in 0..to_spawn {
             let angle = rng.gen_range(-emitter.spread..=emitter.spread);
-            let dir =
-                Vec2::from_angle(transform.rotation + std::f32::consts::FRAC_PI_2 + angle);
+            let dir = Vec2::from_angle(transform.rotation + std::f32::consts::FRAC_PI_2 + angle);
             let velocity = dir * emitter.speed;
             let lifetime = emitter.lifetime;
             let start_size = emitter.start_size.max(0.01);

@@ -94,26 +94,14 @@ fn sprite_animation_supports_negative_speed() {
     let initial_index = ecs.world.get::<SpriteAnimation>(entity).unwrap().frame_index;
     ecs.update(0.12);
     let animation = ecs.world.get::<SpriteAnimation>(entity).unwrap();
-    assert!(
-        animation.frame_index > initial_index,
-        "negative speed should wrap to the end of the loop"
-    );
-    assert_eq!(
-        sprite_region(&ecs, entity),
-        animation.frames[animation.frame_index].region.as_ref()
-    );
+    assert!(animation.frame_index > initial_index, "negative speed should wrap to the end of the loop");
+    assert_eq!(sprite_region(&ecs, entity), animation.frames[animation.frame_index].region.as_ref());
 
     let first_index = animation.frame_index;
     ecs.update(0.12);
     let animation = ecs.world.get::<SpriteAnimation>(entity).unwrap();
-    assert!(
-        animation.frame_index <= first_index,
-        "frame index should continue moving backward or wrap"
-    );
-    assert_eq!(
-        sprite_region(&ecs, entity),
-        animation.frames[animation.frame_index].region.as_ref()
-    );
+    assert!(animation.frame_index <= first_index, "frame index should continue moving backward or wrap");
+    assert_eq!(sprite_region(&ecs, entity), animation.frames[animation.frame_index].region.as_ref());
 }
 
 #[test]
