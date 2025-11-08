@@ -342,18 +342,54 @@ pub fn sys_drive_sprite_animations(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assets::AnimationClip;
     use crate::assets::skeletal::{load_skeleton_from_gltf, SkeletonAsset};
+    use crate::assets::{AnimationClip, ClipInterpolation, ClipKeyframe, ClipSegment, ClipVec2Track};
     use anyhow::Result;
     use bevy_ecs::prelude::World;
     use bevy_ecs::system::SystemState;
     use glam::{Mat4, Quat, Vec2, Vec3};
     use std::path::Path;
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::Arc;
 
     struct SkeletalFixture {
         skeleton: Arc<SkeletonAsset>,
         clip: Arc<SkeletalClip>,
+    }
+
+    static DRIVE_FIXED_RECORDING: AtomicBool = AtomicBool::new(false);
+    static DRIVE_FIXED_STEP_COUNT: AtomicU32 = AtomicU32::new(0);
+
+    pub(super) fn enable_drive_fixed_step_recording(enabled: bool) {
+        DRIVE_FIXED_RECORDING.store(enabled, Ordering::SeqCst);
+        if enabled {
+            DRIVE_FIXED_STEP_COUNT.store(0, Ordering::SeqCst);
+        }
+    }
+
+    pub(super) fn record_drive_fixed_step_iteration() {
+        if DRIVE_FIXED_RECORDING.load(Ordering::Relaxed) {
+            DRIVE_FIXED_STEP_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub(super) fn drive_fixed_recorded_steps() -> u32 {
+        DRIVE_FIXED_STEP_COUNT.load(Ordering::SeqCst)
+    }
+
+    struct DriveFixedRecorderGuard;
+
+    impl DriveFixedRecorderGuard {
+        fn enable() -> Self {
+            enable_drive_fixed_step_recording(true);
+            DriveFixedRecorderGuard
+        }
+    }
+
+    impl Drop for DriveFixedRecorderGuard {
+        fn drop(&mut self) {
+            enable_drive_fixed_step_recording(false);
+        }
     }
 
     impl SkeletalFixture {
@@ -508,8 +544,8 @@ mod tests {
 
     #[test]
     fn sprite_animation_emits_initial_frame_events() {
-        use bevy_ecs::system::SystemState;
         use crate::events::GameEvent;
+        use bevy_ecs::system::SystemState;
 
         let mut world = World::new();
         world.insert_resource(SystemProfiler::new());
@@ -541,12 +577,7 @@ mod tests {
 
         world.spawn((
             animation,
-            Sprite {
-                atlas_key: Arc::from("atlas"),
-                region: Arc::clone(&region),
-                region_id: 7,
-                uv: [0.0; 4],
-            },
+            Sprite { atlas_key: Arc::from("atlas"), region: Arc::clone(&region), region_id: 7, uv: [0.0; 4] },
         ));
 
         let mut system_state = SystemState::<(
@@ -607,6 +638,110 @@ mod tests {
     }
 
     #[test]
+    fn sprite_animation_ping_pong_rewind_restores_direction() {
+        let region = Arc::from("frame");
+        let frames = Arc::from(
+            vec![
+                SpriteAnimationFrame {
+                    name: Arc::clone(&region),
+                    region: Arc::clone(&region),
+                    region_id: 0,
+                    duration: 0.2,
+                    uv: [0.0; 4],
+                    events: Arc::default(),
+                };
+                3
+            ]
+            .into_boxed_slice(),
+        );
+        let durations = Arc::from(vec![0.2_f32, 0.2, 0.2].into_boxed_slice());
+        let offsets = Arc::from(vec![0.0_f32, 0.2, 0.4].into_boxed_slice());
+        let mut animation = SpriteAnimation::new(
+            Arc::from("timeline"),
+            frames,
+            durations,
+            offsets,
+            0.6,
+            SpriteAnimationLoopMode::PingPong,
+        );
+        animation.frame_index = animation.frames.len().saturating_sub(1);
+        animation.forward = false;
+        animation.prev_forward = true;
+        animation.elapsed_in_frame = 0.0;
+        animation.refresh_current_duration();
+
+        let changed = advance_animation(&mut animation, -0.3, Entity::from_raw(7), None, true);
+        assert!(changed);
+        assert!(animation.forward, "rewinding across the end should restore forward direction");
+    }
+
+    #[test]
+    fn drive_fixed_processes_each_step() {
+        use crate::events::EventBus;
+
+        let mut world = World::new();
+        world.insert_resource(SystemProfiler::new());
+        world.insert_resource(AnimationPlan { delta: AnimationDelta::Fixed { step: 0.1, steps: 3 } });
+        world.insert_resource(AnimationTime::default());
+        world.insert_resource(EventBus::default());
+
+        let region = Arc::from("frame");
+        let frames = Arc::from(
+            vec![
+                SpriteAnimationFrame {
+                    name: Arc::clone(&region),
+                    region: Arc::clone(&region),
+                    region_id: 0,
+                    duration: 0.1,
+                    uv: [0.0; 4],
+                    events: Arc::from(vec![Arc::from("tick")].into_boxed_slice()),
+                },
+                SpriteAnimationFrame {
+                    name: Arc::clone(&region),
+                    region: Arc::clone(&region),
+                    region_id: 1,
+                    duration: 0.1,
+                    uv: [0.0; 4],
+                    events: Arc::default(),
+                },
+            ]
+            .into_boxed_slice(),
+        );
+        let durations = Arc::from(vec![0.1_f32, 0.1].into_boxed_slice());
+        let offsets = Arc::from(vec![0.0_f32, 0.1].into_boxed_slice());
+        let animation = SpriteAnimation::new(
+            Arc::from("timeline"),
+            frames,
+            durations,
+            offsets,
+            0.2,
+            SpriteAnimationLoopMode::Loop,
+        );
+
+        world.spawn((
+            animation,
+            Sprite { atlas_key: Arc::from("atlas"), region: Arc::clone(&region), region_id: 0, uv: [0.0; 4] },
+        ));
+
+        let mut system_state = SystemState::<(
+            ResMut<SystemProfiler>,
+            Res<AnimationPlan>,
+            Res<AnimationTime>,
+            ResMut<EventBus>,
+            Query<(Entity, &mut SpriteAnimation, &mut Sprite)>,
+        )>::new(&mut world);
+
+        let _guard = DriveFixedRecorderGuard::enable();
+        {
+            let (profiler, plan, time, events, animations) = system_state.get_mut(&mut world);
+            sys_drive_sprite_animations(profiler, plan, time, events, animations);
+        }
+        system_state.apply(&mut world);
+
+        assert_eq!(drive_fixed_recorded_steps(), 3);
+    }
+
+    #[test]
     fn clip_sample_waits_for_missing_components() {
         use crate::ecs::types::ClipInstance;
 
@@ -640,6 +775,75 @@ mod tests {
 
         let stored = world.entity(entity).get::<Transform>().unwrap();
         assert_eq!(stored.translation, Vec2::new(1.0, 2.0));
+    }
+
+    #[test]
+    fn zero_duration_transform_clip_applies_sample() {
+        use crate::ecs::types::ClipInstance;
+
+        let clip_translation = Vec2::new(3.0, 4.0);
+        let clip = zero_duration_translation_clip(clip_translation);
+        let mut world = World::new();
+        world.insert_resource(SystemProfiler::new());
+        world.insert_resource(AnimationPlan { delta: AnimationDelta::Single(0.1) });
+        world.insert_resource(AnimationTime::default());
+
+        let entity = world
+            .spawn((
+                ClipInstance::new(Arc::from("clip"), clip),
+                TransformTrackPlayer::default(),
+                Transform::default(),
+            ))
+            .id();
+
+        let mut system_state = SystemState::<(
+            ResMut<SystemProfiler>,
+            Res<AnimationPlan>,
+            Res<AnimationTime>,
+            Query<(
+                Entity,
+                &mut ClipInstance,
+                Option<&TransformTrackPlayer>,
+                Option<&PropertyTrackPlayer>,
+                Option<Mut<Transform>>,
+                Option<Mut<Tint>>,
+            )>,
+        )>::new(&mut world);
+
+        {
+            let (profiler, plan, time, clips) = system_state.get_mut(&mut world);
+            sys_drive_transform_clips(profiler, plan, time, clips);
+        }
+        system_state.apply(&mut world);
+
+        let stored = world.get::<Transform>(entity).expect("transform missing");
+        assert_eq!(stored.translation, clip_translation);
+    }
+
+    fn zero_duration_translation_clip(value: Vec2) -> Arc<AnimationClip> {
+        let keyframes = Arc::from(vec![ClipKeyframe { time: 0.0, value }].into_boxed_slice());
+        let empty_vec2 = Arc::from(Vec::<Vec2>::new().into_boxed_slice());
+        let empty_segments = Arc::from(Vec::<ClipSegment<Vec2>>::new().into_boxed_slice());
+        let empty_offsets = Arc::from(Vec::<f32>::new().into_boxed_slice());
+        Arc::new(AnimationClip {
+            name: Arc::from("zero_duration"),
+            duration: 0.0,
+            duration_inv: 0.0,
+            translation: Some(ClipVec2Track {
+                interpolation: ClipInterpolation::Linear,
+                keyframes,
+                duration: 0.0,
+                duration_inv: 0.0,
+                segment_deltas: empty_vec2,
+                segments: empty_segments,
+                segment_offsets: empty_offsets,
+            }),
+            rotation: None,
+            scale: None,
+            tint: None,
+            looped: false,
+            version: 1,
+        })
     }
 
     fn assert_mat4_approx(actual: Mat4, expected: Mat4, label: &str) {
@@ -964,13 +1168,13 @@ fn drive_transform_clips(
             continue;
         }
 
-        if instance.duration() <= 0.0 {
+        let zero_duration_clip = instance.duration() <= 0.0;
+        if zero_duration_clip {
             #[cfg(feature = "anim_stats")]
             {
                 stats.zero_duration_clips += 1;
             }
             instance.time = 0.0;
-            continue;
         }
 
         let transform_mask = transform_player.copied().unwrap_or_default();
@@ -991,19 +1195,13 @@ fn drive_transform_clips(
         } else if tint.is_none() {
             sampling_property_player.apply_tint = false;
         }
-        let disabled_transform_player = TransformTrackPlayer {
-            apply_translation: false,
-            apply_rotation: false,
-            apply_scale: false,
-        };
+        let disabled_transform_player =
+            TransformTrackPlayer { apply_translation: false, apply_rotation: false, apply_scale: false };
         let disabled_property_player = PropertyTrackPlayer::new(false);
         let transform_player_for_apply =
             if transform_available { transform_player } else { Some(&disabled_transform_player) };
-        let property_player_for_apply = if wants_tint && tint.is_none() {
-            Some(&disabled_property_player)
-        } else {
-            property_player
-        };
+        let property_player_for_apply =
+            if wants_tint && tint.is_none() { Some(&disabled_property_player) } else { property_player };
         let has_tint_target = wants_tint && tint.is_some();
         if !transform_available && !has_tint_target {
             if instance.playing {
@@ -1015,6 +1213,31 @@ fn drive_transform_clips(
             instance.last_scale = None;
             if wants_tint {
                 instance.last_tint = None;
+            }
+            continue;
+        }
+        if zero_duration_clip {
+            #[cfg(feature = "anim_stats")]
+            let sample_timer = Instant::now();
+            let sample =
+                instance.sample_with_masks(Some(sampling_transform_player), Some(sampling_property_player));
+            #[cfg(feature = "anim_stats")]
+            {
+                stats.sample_time += sample_timer.elapsed();
+            }
+            #[cfg(feature = "anim_stats")]
+            let apply_timer = Instant::now();
+            apply_clip_sample(
+                &mut instance,
+                transform_player_for_apply,
+                property_player_for_apply,
+                transform,
+                tint,
+                sample,
+            );
+            #[cfg(feature = "anim_stats")]
+            {
+                stats.apply_time += apply_timer.elapsed();
             }
             continue;
         }
@@ -1033,10 +1256,8 @@ fn drive_transform_clips(
             instance.set_time(current_time + scaled);
             #[cfg(feature = "anim_stats")]
             let sample_timer = Instant::now();
-            let sample = instance.sample_with_masks(
-                Some(sampling_transform_player),
-                Some(sampling_property_player),
-            );
+            let sample =
+                instance.sample_with_masks(Some(sampling_transform_player), Some(sampling_property_player));
             #[cfg(feature = "anim_stats")]
             {
                 stats.sample_time += sample_timer.elapsed();
@@ -1261,22 +1482,30 @@ fn apply_clip_sample(
     }
 
     if transform_mask.apply_translation {
-        instance.last_translation = if had_transform_component { sample.translation } else { None };
+        if had_transform_component {
+            instance.last_translation = sample.translation;
+        }
     } else {
         instance.last_translation = None;
     }
     if transform_mask.apply_rotation {
-        instance.last_rotation = if had_transform_component { sample.rotation } else { None };
+        if had_transform_component {
+            instance.last_rotation = sample.rotation;
+        }
     } else {
         instance.last_rotation = None;
     }
     if transform_mask.apply_scale {
-        instance.last_scale = if had_transform_component { sample.scale } else { None };
+        if had_transform_component {
+            instance.last_scale = sample.scale;
+        }
     } else {
         instance.last_scale = None;
     }
     if tint_mask.apply_tint {
-        instance.last_tint = if had_tint_component { sample.tint } else { None };
+        if had_tint_component {
+            instance.last_tint = sample.tint;
+        }
     } else {
         instance.last_tint = None;
     }
@@ -1442,7 +1671,7 @@ pub(crate) fn advance_animation(
             delta += time_spent;
             animation.elapsed_in_frame = 0.0;
             let mut emit_frame_event = false;
-            let prior_prev_forward = animation.prev_forward;
+            let prior_forward = animation.forward;
             let mut changed_this_step = false;
 
             match animation.mode {
@@ -1536,7 +1765,7 @@ pub(crate) fn advance_animation(
 
             if changed_this_step {
                 frame_changed = true;
-                animation.prev_forward = prior_prev_forward;
+                animation.prev_forward = prior_forward;
             }
 
             if emit_frame_event {
@@ -1877,7 +2106,7 @@ fn drive_fixed(
             animation.playback_rate
         };
 
-        if playback_rate == 0.0 {
+        if playback_rate == 0.0 || steps == 0 {
             continue;
         }
 
@@ -1886,34 +2115,46 @@ fn drive_fixed(
             continue;
         }
 
-        let total_delta = scaled_step * steps as f32;
-        if total_delta == 0.0 {
-            continue;
-        }
-        let Some(advance_delta) = animation.accumulate_delta(total_delta, CLIP_TIME_EPSILON) else {
-            continue;
-        };
-
         let mut sprite_changed = false;
-        if animation.fast_loop && advance_delta > 0.0 {
-            let current_duration = animation.current_duration;
-            let new_elapsed = animation.elapsed_in_frame + advance_delta;
-            if new_elapsed <= current_duration + CLIP_TIME_EPSILON {
-                animation.elapsed_in_frame = new_elapsed.min(current_duration);
-            } else if advance_animation_loop_no_events(&mut animation, advance_delta) {
+        for _ in 0..steps {
+            #[cfg(test)]
+            tests::record_drive_fixed_step_iteration();
+
+            let Some(advance_delta) = animation.accumulate_delta(scaled_step, CLIP_TIME_EPSILON) else {
+                if !animation.playing {
+                    break;
+                }
+                continue;
+            };
+
+            let mut step_changed = false;
+            if animation.fast_loop && advance_delta > 0.0 {
+                let current_duration = animation.current_duration;
+                let new_elapsed = animation.elapsed_in_frame + advance_delta;
+                if new_elapsed <= current_duration + CLIP_TIME_EPSILON {
+                    animation.elapsed_in_frame = new_elapsed.min(current_duration);
+                } else if advance_animation_loop_no_events(&mut animation, advance_delta) {
+                    step_changed = true;
+                }
+            } else if animation.fast_loop {
+                if advance_animation(&mut animation, advance_delta, entity, None, true) {
+                    step_changed = true;
+                }
+            } else if animation.has_events {
+                let events_ref = &mut *events;
+                if advance_animation(&mut animation, advance_delta, entity, Some(events_ref), true) {
+                    step_changed = true;
+                }
+            } else if advance_animation(&mut animation, advance_delta, entity, None, true) {
+                step_changed = true;
+            }
+
+            if step_changed {
                 sprite_changed = true;
             }
-        } else if animation.fast_loop {
-            if advance_animation(&mut animation, advance_delta, entity, None, true) {
-                sprite_changed = true;
+            if !animation.playing {
+                break;
             }
-        } else if animation.has_events {
-            let events_ref = &mut *events;
-            if advance_animation(&mut animation, advance_delta, entity, Some(events_ref), true) {
-                sprite_changed = true;
-            }
-        } else if advance_animation(&mut animation, advance_delta, entity, None, true) {
-            sprite_changed = true;
         }
 
         if sprite_changed {
