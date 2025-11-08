@@ -21,24 +21,23 @@ pub fn sys_update_emitters(
     let max_spawn_per_frame = caps.max_spawn_per_frame as i32;
     let mut active_particles = particle_state.active_particles.min(caps.max_total) as i32;
     active_particles = active_particles.clamp(0, max_total);
-    let mut spawn_budget = (max_total - active_particles).min(max_spawn_per_frame);
-
-    if spawn_budget <= 0 {
-        for (mut emitter, _) in emitters.iter_mut() {
-            emitter.accumulator = emitter.accumulator.min(caps.max_emitter_backlog);
-        }
-        particle_state.active_particles = active_particles.max(0) as u32;
-        return;
-    }
+    let mut remaining_headroom = (max_total - active_particles).max(0);
+    let mut frame_budget = remaining_headroom.min(max_spawn_per_frame);
 
     for (mut emitter, transform) in emitters.iter_mut() {
         let spawn_rate = emitter.rate.max(0.0);
-        emitter.accumulator = (emitter.accumulator + spawn_rate * dt.0).min(caps.max_emitter_backlog);
+        emitter.accumulator =
+            (emitter.accumulator + spawn_rate * dt.0).min(caps.max_emitter_backlog);
+
+        if frame_budget <= 0 || remaining_headroom <= 0 {
+            continue;
+        }
+
         let desired = emitter.accumulator.floor() as i32;
         if desired <= 0 {
             continue;
         }
-        let to_spawn = desired.min(spawn_budget);
+        let to_spawn = desired.min(frame_budget).min(remaining_headroom);
         if to_spawn <= 0 {
             continue;
         }
@@ -46,7 +45,8 @@ pub fn sys_update_emitters(
         let mut batch = Vec::with_capacity(to_spawn as usize);
         for _ in 0..to_spawn {
             let angle = rng.gen_range(-emitter.spread..=emitter.spread);
-            let dir = Vec2::from_angle(std::f32::consts::FRAC_PI_2 + angle);
+            let dir =
+                Vec2::from_angle(transform.rotation + std::f32::consts::FRAC_PI_2 + angle);
             let velocity = dir * emitter.speed;
             let lifetime = emitter.lifetime;
             let start_size = emitter.start_size.max(0.01);
@@ -72,12 +72,9 @@ pub fn sys_update_emitters(
             ));
         }
         commands.spawn_batch(batch);
+        frame_budget -= to_spawn;
+        remaining_headroom -= to_spawn;
         active_particles = (active_particles + to_spawn).min(max_total);
-        spawn_budget = (max_total - active_particles).min(max_spawn_per_frame);
-
-        if spawn_budget <= 0 {
-            break;
-        }
     }
 
     particle_state.active_particles = active_particles.max(0) as u32;
