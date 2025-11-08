@@ -25,6 +25,7 @@ pub struct EnvironmentRegistry {
 
 struct EnvironmentEntry {
     definition: EnvironmentDefinition,
+    maps: Option<EnvironmentMaps>,
     gpu: Option<Arc<EnvironmentGpu>>,
     ref_count: usize,
     permanent: bool,
@@ -35,7 +36,6 @@ pub struct EnvironmentDefinition {
     key: String,
     label: String,
     source: Option<String>,
-    maps: EnvironmentMaps,
 }
 
 #[derive(Clone)]
@@ -90,15 +90,19 @@ pub struct EnvironmentGpu {
 
 impl EnvironmentRegistry {
     pub fn new() -> Self {
-        let mut registry = Self {
-            environments: HashMap::new(),
-            default_key: "environment::default".to_string(),
-            sampler: None,
-        };
-        let default_definition = EnvironmentDefinition::generated_default();
+        let (default_definition, default_maps) = EnvironmentDefinition::generated_default();
+        let default_key = default_definition.key().to_string();
+        let mut registry =
+            Self { environments: HashMap::new(), default_key: default_key.clone(), sampler: None };
         registry.environments.insert(
-            default_definition.key.clone(),
-            EnvironmentEntry { definition: default_definition, gpu: None, ref_count: 1, permanent: true },
+            default_key,
+            EnvironmentEntry {
+                definition: default_definition,
+                maps: Some(default_maps),
+                gpu: None,
+                ref_count: 1,
+                permanent: true,
+            },
         );
         registry
     }
@@ -126,12 +130,12 @@ impl EnvironmentRegistry {
             if self.environments.contains_key(&key) {
                 continue;
             }
-            let definition =
+            let (definition, maps) =
                 EnvironmentDefinition::from_path(key.clone(), source_path.to_string_lossy().into_owned())
                     .with_context(|| format!("processing environment '{}'", source_path.display()))?;
             self.environments.insert(
                 key.clone(),
-                EnvironmentEntry { definition, gpu: None, ref_count: 0, permanent: false },
+                EnvironmentEntry { definition, maps: Some(maps), gpu: None, ref_count: 0, permanent: false },
             );
             loaded.push(key);
         }
@@ -154,18 +158,23 @@ impl EnvironmentRegistry {
         if let Some(entry) = self.environments.get_mut(key) {
             entry.ref_count = entry.ref_count.saturating_add(1);
             if let Some(path) = source {
-                entry.definition.source = Some(path.to_string());
+                let new_source = path.to_string();
+                if entry.definition.source() != Some(new_source.as_str()) {
+                    entry.definition.set_source(Some(new_source));
+                    entry.maps = None;
+                    entry.gpu = None;
+                }
             }
             return Ok(());
         }
         let path = source
             .map(|s| s.to_string())
             .ok_or_else(|| anyhow!("Environment '{key}' not loaded and no source provided."))?;
-        let definition = EnvironmentDefinition::from_path(key.to_string(), path.clone())
+        let (definition, maps) = EnvironmentDefinition::from_path(key.to_string(), path.clone())
             .with_context(|| format!("Failed to load environment '{key}' from {path}"))?;
         self.environments.insert(
             key.to_string(),
-            EnvironmentEntry { definition, gpu: None, ref_count: 1, permanent: false },
+            EnvironmentEntry { definition, maps: Some(maps), gpu: None, ref_count: 1, permanent: false },
         );
         Ok(())
     }
@@ -180,6 +189,7 @@ impl EnvironmentRegistry {
             }
             if entry.ref_count == 0 {
                 entry.gpu = None;
+                entry.maps = None;
             }
             return true;
         }
@@ -191,23 +201,31 @@ impl EnvironmentRegistry {
     }
 
     pub fn ensure_gpu(&mut self, key: &str, renderer: &mut Renderer) -> Result<Arc<EnvironmentGpu>> {
-        let maps = {
+        let sampler = self.ensure_sampler(renderer)?;
+        let gpu = {
             let entry =
                 self.environments.get_mut(key).ok_or_else(|| anyhow!("Environment '{key}' not retained"))?;
             if let Some(gpu) = entry.gpu.as_ref() {
                 return Ok(gpu.clone());
             }
-            entry.definition.maps.clone()
-        };
-        let sampler = self.ensure_sampler(renderer)?;
-        let gpu = EnvironmentGpu::new(renderer, &maps, sampler.clone())
-            .with_context(|| format!("Failed to upload environment '{key}'"))?;
-        let gpu = Arc::new(gpu);
-        if let Some(entry) = self.environments.get_mut(key) {
+            if entry.maps.is_none() {
+                let source = entry
+                    .definition
+                    .source()
+                    .ok_or_else(|| anyhow!("Environment '{key}' has no recorded source; cannot rebuild"))?
+                    .to_string();
+                let maps = EnvironmentMaps::from_path(&source)
+                    .with_context(|| format!("Failed to reload environment '{key}' from {source}"))?;
+                entry.maps = Some(maps);
+            }
+            let maps = entry.maps.as_ref().expect("environment maps should be initialized");
+            let gpu = EnvironmentGpu::new(renderer, maps, sampler.clone())
+                .with_context(|| format!("Failed to upload environment '{key}'"))?;
+            let gpu = Arc::new(gpu);
             entry.gpu = Some(gpu.clone());
-            return Ok(gpu.clone());
-        }
-        Err(anyhow!("Environment '{key}' missing during GPU upload"))
+            gpu
+        };
+        Ok(gpu)
     }
 
     pub fn sampler(&mut self, renderer: &mut Renderer) -> Result<Arc<wgpu::Sampler>> {
@@ -236,26 +254,27 @@ impl EnvironmentRegistry {
 }
 
 impl EnvironmentDefinition {
-    fn generated_default() -> Self {
+    fn generated_default() -> (Self, EnvironmentMaps) {
         let image = generate_default_hdr();
         let maps = EnvironmentMaps::from_hdr(&image);
-        Self {
-            key: "environment::default".to_string(),
-            label: "Neutral Gradient".to_string(),
-            source: None,
+        (
+            Self {
+                key: "environment::default".to_string(),
+                label: "Neutral Gradient".to_string(),
+                source: None,
+            },
             maps,
-        }
+        )
     }
 
-    fn from_path(key: String, path: String) -> Result<Self> {
-        let image = load_hdr_image(&path)?;
-        let maps = EnvironmentMaps::from_hdr(&image);
+    fn from_path(key: String, path: String) -> Result<(Self, EnvironmentMaps)> {
+        let maps = EnvironmentMaps::from_path(&path)?;
         let label = Path::new(&path)
             .file_stem()
             .and_then(|s| s.to_str())
             .map(|s| s.to_string())
             .unwrap_or_else(|| key.clone());
-        Ok(Self { key, label, source: Some(path), maps })
+        Ok((Self { key, label, source: Some(path) }, maps))
     }
 
     pub fn key(&self) -> &str {
@@ -269,6 +288,10 @@ impl EnvironmentDefinition {
     pub fn source(&self) -> Option<&str> {
         self.source.as_deref()
     }
+
+    pub fn set_source(&mut self, source: Option<String>) {
+        self.source = source;
+    }
 }
 
 impl EnvironmentMaps {
@@ -277,6 +300,11 @@ impl EnvironmentMaps {
         let specular = compute_specular_cubemap(image, SPECULAR_BASE_RESOLUTION, SPECULAR_MIP_COUNT);
         let brdf = compute_brdf_lut(BRDF_LUT_SIZE);
         Self { diffuse, specular, brdf }
+    }
+
+    fn from_path(path: &str) -> Result<Self> {
+        let image = load_hdr_image(path)?;
+        Ok(Self::from_hdr(&image))
     }
 }
 
@@ -531,6 +559,34 @@ mod tests {
         let added = registry.load_directory(dir.path()).expect("load directory");
         assert_eq!(added, vec!["environment::studio".to_string()]);
         assert!(registry.definition("environment::studio").is_some());
+    }
+
+    #[test]
+    fn release_drops_cached_maps() {
+        let dir = tempdir().expect("temp dir");
+        let path = dir.path().join("test_env.png");
+        let mut img = RgbImage::new(2, 1);
+        for (x, _, pixel) in img.enumerate_pixels_mut() {
+            *pixel = Rgb([(x as u8).saturating_mul(80), 64, 200]);
+        }
+        img.save(&path).expect("save png");
+
+        let mut registry = EnvironmentRegistry::new();
+        let key = "environment::temp";
+        let path_string = path.to_string_lossy().to_string();
+        registry.retain(key, Some(path_string.as_str())).expect("retain environment");
+        {
+            let entry = registry.environments.get(key).expect("entry");
+            assert_eq!(entry.ref_count, 1);
+            assert!(entry.maps.is_some(), "maps should be cached after retain");
+        }
+        assert!(registry.release(key));
+        {
+            let entry = registry.environments.get(key).expect("entry");
+            assert_eq!(entry.ref_count, 0);
+            assert!(entry.maps.is_none(), "maps should be dropped when refcount reaches zero");
+            assert!(entry.gpu.is_none(), "gpu resources cleared when refcount reaches zero");
+        }
     }
 }
 

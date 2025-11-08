@@ -116,6 +116,7 @@ impl PluginHost {
         ctx: &mut PluginContext<'_>,
     ) -> Result<Vec<String>> {
         let manifest = self.manifest.clone().ok_or_else(|| anyhow!("Plugin manifest not found"))?;
+        manager.unload_dynamic_plugins(ctx);
         manager.clear_dynamic_statuses();
         manager.load_dynamic_from_manifest(&manifest, ctx)
     }

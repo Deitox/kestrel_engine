@@ -109,6 +109,10 @@ impl FeatureRegistry {
         }
     }
 
+    pub fn unregister(&mut self, feature: &str) {
+        self.features.remove(feature);
+    }
+
     pub fn contains(&self, feature: &str) -> bool {
         self.features.contains(feature)
     }
@@ -300,6 +304,7 @@ struct PluginSlot {
     plugin: Box<dyn EnginePlugin>,
     provides: Vec<String>,
     depends_on: Vec<String>,
+    dynamic: bool,
     _library: Option<Library>,
 }
 
@@ -476,6 +481,51 @@ impl PluginManager {
         self.statuses.retain(|status| !status.dynamic);
     }
 
+    pub(crate) fn unload_dynamic_plugins(&mut self, ctx: &mut PluginContext<'_>) {
+        if self.plugins.iter().all(|slot| !slot.dynamic) {
+            self.clear_dynamic_statuses();
+            return;
+        }
+
+        let mut removed_features = Vec::new();
+        let mut retained = Vec::with_capacity(self.plugins.len());
+        for mut slot in self.plugins.drain(..) {
+            if slot.dynamic {
+                if let Err(err) = slot.plugin.shutdown(ctx) {
+                    eprintln!("[plugin:{}] shutdown failed during unload: {err:?}", slot.name);
+                }
+                self.loaded_names.remove(&slot.name);
+                removed_features.extend(slot.provides.clone());
+            } else {
+                retained.push(slot);
+            }
+        }
+        self.plugins = retained;
+
+        if removed_features.is_empty() {
+            self.clear_dynamic_statuses();
+            return;
+        }
+
+        let removed_unique: BTreeSet<String> = removed_features.into_iter().collect();
+        let still_provided: HashSet<String> =
+            self.plugins.iter().flat_map(|slot| slot.provides.iter().cloned()).collect();
+
+        {
+            let mut registry = self.features.borrow_mut();
+            for feature in removed_unique {
+                if DEFAULT_ENGINE_FEATURES.iter().any(|default| *default == feature.as_str()) {
+                    continue;
+                }
+                if !still_provided.contains(&feature) {
+                    registry.unregister(&feature);
+                }
+            }
+        }
+
+        self.clear_dynamic_statuses();
+    }
+
     fn insert_plugin(
         &mut self,
         mut plugin: Box<dyn EnginePlugin>,
@@ -505,7 +555,14 @@ impl PluginManager {
             depends_on: depends.clone(),
             state: PluginState::Loaded,
         });
-        self.plugins.push(PluginSlot { name, plugin, provides, depends_on: depends, _library: library });
+        self.plugins.push(PluginSlot {
+            name,
+            plugin,
+            provides,
+            depends_on: depends,
+            dynamic: is_dynamic,
+            _library: library,
+        });
         Ok(())
     }
 
