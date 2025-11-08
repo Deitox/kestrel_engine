@@ -2,7 +2,9 @@ use anyhow::{anyhow, Context, Result};
 use glam::{Quat, Vec3};
 use kestrel_engine::assets::skeletal::{self, SkeletonImport};
 use kestrel_engine::assets::AssetManager;
-use kestrel_engine::ecs::{BoneTransforms, EcsWorld, SceneEntityTag, Transform, WorldTransform};
+use kestrel_engine::ecs::{
+    BoneTransforms, EcsWorld, SceneEntityTag, SkeletonInstance, Transform, WorldTransform,
+};
 use kestrel_engine::scene::SceneEntityId;
 use std::path::Path;
 
@@ -128,5 +130,46 @@ fn ecs_world_skeleton_helpers_manage_instances() -> Result<()> {
     let cleared = ecs.entity_info(entity).ok_or_else(|| anyhow!("entity info missing after clear"))?;
     assert!(cleared.skeleton.is_none(), "skeleton info should be cleared");
 
+    Ok(())
+}
+
+#[test]
+fn skeletal_clip_supports_negative_speed() -> Result<()> {
+    let mut assets = AssetManager::new();
+    assets
+        .retain_skeleton("slime", Some("fixtures/gltf/skeletons/slime_rig.gltf"))
+        .context("retain slime skeleton")?;
+
+    let mut ecs = EcsWorld::new();
+    let entity = ecs
+        .world
+        .spawn((Transform::default(), WorldTransform::default(), SceneEntityTag::new(SceneEntityId::new())))
+        .id();
+
+    assert!(ecs.set_skeleton(entity, &assets, "slime"), "attach skeleton");
+    let clip_key = assets
+        .skeletal_clip_keys_for("slime")
+        .and_then(|keys| keys.first().cloned())
+        .ok_or_else(|| anyhow!("slime clip key missing"))?;
+    assert!(ecs.set_skeleton_clip(entity, &assets, &clip_key), "assign clip");
+
+    ecs.set_skeleton_clip_speed(entity, -1.0);
+    ecs.update(0.25);
+
+    let instance = ecs
+        .world
+        .get::<SkeletonInstance>(entity)
+        .ok_or_else(|| anyhow!("skeleton instance missing"))?;
+    let duration = instance.clip_duration();
+    anyhow::ensure!(duration > 0.0, "clip duration should be positive");
+    let mut expected = duration - 0.25;
+    if expected < 0.0 {
+        expected += duration;
+    }
+    assert!(
+        (instance.time - expected).abs() < 1e-4,
+        "expected time near {expected}, got {}",
+        instance.time
+    );
     Ok(())
 }

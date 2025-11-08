@@ -361,3 +361,37 @@ fn transform_clip_final_pose_consistent_across_update_chunking() {
         }
     }
 }
+
+#[test]
+fn transform_clip_applies_when_components_added_late() {
+    let mut assets = AssetManager::new();
+    assets.retain_clip("slime", Some("fixtures/animation_clips/slime_bob.json")).expect("load slime clip");
+
+    let mut ecs = EcsWorld::new();
+    let entity = ecs.world.spawn_empty().id();
+
+    assert!(ecs.set_transform_clip(entity, &assets, "slime"), "attach clip without transform");
+
+    // Advance the clip while the entity is missing both Transform and Tint components.
+    ecs.update(0.2);
+
+    ecs.world.entity_mut(entity).insert((Transform::default(), WorldTransform::default(), Tint(Vec4::ONE)));
+
+    // Next update should push the current sample into the newly added components.
+    ecs.update(0.05);
+
+    let instance = ecs.world.get::<ClipInstance>(entity).expect("clip instance");
+    let sample = instance.sample();
+
+    let transform = ecs.world.get::<Transform>(entity).expect("transform after late insert");
+    let sample_translation = sample.translation.expect("translation track missing");
+    assert!(approx_vec2(transform.translation, sample_translation));
+    let sample_rotation = sample.rotation.expect("rotation track missing");
+    assert!(approx_scalar(transform.rotation, sample_rotation));
+    let sample_scale = sample.scale.expect("scale track missing");
+    assert!(approx_vec2(transform.scale, sample_scale));
+
+    let tint = ecs.world.get::<Tint>(entity).expect("tint after late insert").0;
+    let sample_tint = sample.tint.expect("tint track missing");
+    assert!(approx_vec4(tint, sample_tint));
+}

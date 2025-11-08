@@ -669,12 +669,12 @@ fn drive_skeletal_clips(
         } else {
             instance.playback_rate
         };
-        if playback_rate <= 0.0 {
+        if playback_rate == 0.0 {
             continue;
         }
 
         let scaled = delta * playback_rate;
-        if scaled <= 0.0 {
+        if scaled == 0.0 {
             continue;
         }
 
@@ -880,7 +880,7 @@ fn drive_transform_clips(
         } else {
             instance.playback_rate
         };
-        if playback_rate <= 0.0 {
+        if playback_rate == 0.0 {
             continue;
         }
 
@@ -903,6 +903,40 @@ fn drive_transform_clips(
         let wants_tint = property_mask.apply_tint;
         let transform_available = transform.is_some();
         let tint_available = !wants_tint || tint.is_some();
+        let mut sampling_transform_player = transform_mask;
+        if !transform_available {
+            sampling_transform_player.apply_translation = false;
+            sampling_transform_player.apply_rotation = false;
+            sampling_transform_player.apply_scale = false;
+        }
+        let mut sampling_property_player = property_mask;
+        if wants_tint && tint.is_none() {
+            sampling_property_player.apply_tint = false;
+        }
+        let disabled_transform_player = TransformTrackPlayer {
+            apply_translation: false,
+            apply_rotation: false,
+            apply_scale: false,
+        };
+        let disabled_property_player = PropertyTrackPlayer::new(false);
+        let transform_player_for_apply =
+            if transform_available { transform_player } else { Some(&disabled_transform_player) };
+        let property_player_for_apply =
+            if wants_tint && tint.is_none() { Some(&disabled_property_player) } else { property_player };
+        let has_tint_target = wants_tint && tint.is_some();
+        if !transform_available && !has_tint_target {
+            if instance.playing {
+                let current_time = instance.time;
+                instance.set_time(current_time + scaled);
+            }
+            instance.last_translation = None;
+            instance.last_rotation = None;
+            instance.last_scale = None;
+            if wants_tint {
+                instance.last_tint = None;
+            }
+            continue;
+        }
         let can_fast_path = transform_available
             && transform_mask.apply_translation
             && transform_mask.apply_rotation
@@ -918,7 +952,10 @@ fn drive_transform_clips(
             instance.set_time(current_time + scaled);
             #[cfg(feature = "anim_stats")]
             let sample_timer = Instant::now();
-            let sample = instance.sample_with_masks(transform_player.copied(), property_player.copied());
+            let sample = instance.sample_with_masks(
+                Some(sampling_transform_player),
+                Some(sampling_property_player),
+            );
             #[cfg(feature = "anim_stats")]
             {
                 stats.sample_time += sample_timer.elapsed();
@@ -927,8 +964,8 @@ fn drive_transform_clips(
             let apply_timer = Instant::now();
             apply_clip_sample(
                 &mut instance,
-                transform_player,
-                property_player,
+                transform_player_for_apply,
+                property_player_for_apply,
                 transform,
                 tint,
                 sample,
@@ -972,7 +1009,7 @@ fn drive_transform_clips(
                 transform_mask.apply_translation && sample.translation != instance.last_translation;
             let rotation_changed = transform_mask.apply_rotation && sample.rotation != instance.last_rotation;
             let scale_changed = transform_mask.apply_scale && sample.scale != instance.last_scale;
-            if (translation_changed || rotation_changed || scale_changed) && transform.is_some() {
+            if (translation_changed || rotation_changed || scale_changed) && transform_available {
                 if let Some(transform_component) = transform.as_mut() {
                     let transform_component = &mut **transform_component;
                     if translation_changed {
@@ -1004,16 +1041,24 @@ fn drive_transform_clips(
             }
 
             if transform_mask.apply_translation {
-                instance.last_translation = sample.translation;
+                instance.last_translation = if transform_available { sample.translation } else { None };
+            } else {
+                instance.last_translation = None;
             }
             if transform_mask.apply_rotation {
-                instance.last_rotation = sample.rotation;
+                instance.last_rotation = if transform_available { sample.rotation } else { None };
+            } else {
+                instance.last_rotation = None;
             }
             if transform_mask.apply_scale {
-                instance.last_scale = sample.scale;
+                instance.last_scale = if transform_available { sample.scale } else { None };
+            } else {
+                instance.last_scale = None;
             }
             if wants_tint {
-                instance.last_tint = sample.tint;
+                instance.last_tint = if tint.is_some() { sample.tint } else { None };
+            } else {
+                instance.last_tint = None;
             }
             #[cfg(feature = "anim_stats")]
             {
@@ -1039,14 +1084,22 @@ fn drive_transform_clips(
         }
         #[cfg(feature = "anim_stats")]
         let sample_timer = Instant::now();
-        let sample = instance.sample_with_masks(transform_player.copied(), property_player.copied());
+        let sample =
+            instance.sample_with_masks(Some(sampling_transform_player), Some(sampling_property_player));
         #[cfg(feature = "anim_stats")]
         {
             stats.sample_time += sample_timer.elapsed();
         }
         #[cfg(feature = "anim_stats")]
         let apply_timer = Instant::now();
-        apply_clip_sample(&mut instance, transform_player, property_player, transform, tint, sample);
+        apply_clip_sample(
+            &mut instance,
+            transform_player_for_apply,
+            property_player_for_apply,
+            transform,
+            tint,
+            sample,
+        );
         #[cfg(feature = "anim_stats")]
         {
             stats.apply_time += apply_timer.elapsed();
@@ -1126,17 +1179,25 @@ fn apply_clip_sample(
         }
     }
 
-    if transform_mask.apply_translation && had_transform_component {
-        instance.last_translation = sample.translation;
+    if transform_mask.apply_translation {
+        instance.last_translation = if had_transform_component { sample.translation } else { None };
+    } else {
+        instance.last_translation = None;
     }
-    if transform_mask.apply_rotation && had_transform_component {
-        instance.last_rotation = sample.rotation;
+    if transform_mask.apply_rotation {
+        instance.last_rotation = if had_transform_component { sample.rotation } else { None };
+    } else {
+        instance.last_rotation = None;
     }
-    if transform_mask.apply_scale && had_transform_component {
-        instance.last_scale = sample.scale;
+    if transform_mask.apply_scale {
+        instance.last_scale = if had_transform_component { sample.scale } else { None };
+    } else {
+        instance.last_scale = None;
     }
-    if tint_mask.apply_tint && had_tint_component {
-        instance.last_tint = sample.tint;
+    if tint_mask.apply_tint {
+        instance.last_tint = if had_tint_component { sample.tint } else { None };
+    } else {
+        instance.last_tint = None;
     }
 }
 
@@ -1651,7 +1712,7 @@ fn drive_single(
             animation.playback_rate
         };
 
-        if playback_rate <= 0.0 {
+        if playback_rate == 0.0 {
             continue;
         }
 
@@ -1735,7 +1796,7 @@ fn drive_fixed(
             animation.playback_rate
         };
 
-        if playback_rate <= 0.0 {
+        if playback_rate == 0.0 {
             continue;
         }
 

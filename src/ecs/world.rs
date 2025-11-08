@@ -659,19 +659,11 @@ impl EcsWorld {
             if let Some(mut instance) = self.world.get_mut::<ClipInstance>(entity) {
                 instance.replace_clip(Arc::clone(&clip_name), Arc::clone(&clip_arc));
                 let sample = instance.sample_cached();
-                instance.last_translation = sample.translation;
-                instance.last_rotation = sample.rotation;
-                instance.last_scale = sample.scale;
-                instance.last_tint = sample.tint;
                 sample
             } else {
                 let mut entity_mut = self.world.entity_mut(entity);
                 let mut instance = ClipInstance::new(Arc::clone(&clip_name), Arc::clone(&clip_arc));
                 let sample = instance.sample_cached();
-                instance.last_translation = sample.translation;
-                instance.last_rotation = sample.rotation;
-                instance.last_scale = sample.scale;
-                instance.last_tint = sample.tint;
                 if !entity_mut.contains::<TransformTrackPlayer>() {
                     entity_mut.insert(TransformTrackPlayer::default());
                 }
@@ -683,6 +675,7 @@ impl EcsWorld {
             }
         };
         self.apply_clip_sample_immediate(entity, sample);
+        self.sync_clip_instance_last_values(entity, sample);
         true
     }
 
@@ -736,12 +729,9 @@ impl EcsWorld {
         if let Some(mut instance) = self.world.get_mut::<ClipInstance>(entity) {
             instance.set_time(time);
             let sample = instance.sample_cached();
-            instance.last_translation = sample.translation;
-            instance.last_rotation = sample.rotation;
-            instance.last_scale = sample.scale;
-            instance.last_tint = sample.tint;
             drop(instance);
             self.apply_clip_sample_immediate(entity, sample);
+            self.sync_clip_instance_last_values(entity, sample);
             true
         } else {
             false
@@ -752,12 +742,9 @@ impl EcsWorld {
         if let Some(mut instance) = self.world.get_mut::<ClipInstance>(entity) {
             instance.reset();
             let sample = instance.sample_cached();
-            instance.last_translation = sample.translation;
-            instance.last_rotation = sample.rotation;
-            instance.last_scale = sample.scale;
-            instance.last_tint = sample.tint;
             drop(instance);
             self.apply_clip_sample_immediate(entity, sample);
+            self.sync_clip_instance_last_values(entity, sample);
             true
         } else {
             false
@@ -982,6 +969,36 @@ impl EcsWorld {
                 if let Some(value) = sample.tint {
                     tint.0 = value;
                 }
+            }
+        }
+    }
+
+    fn sync_clip_instance_last_values(&mut self, entity: Entity, sample: ClipSample) {
+        let transform_mask = self.world.get::<TransformTrackPlayer>(entity).copied().unwrap_or_default();
+        let property_mask = self.world.get::<PropertyTrackPlayer>(entity).copied().unwrap_or_default();
+        let has_transform = self.world.get::<Transform>(entity).is_some();
+        let has_tint = self.world.get::<Tint>(entity).is_some();
+
+        if let Some(mut instance) = self.world.get_mut::<ClipInstance>(entity) {
+            if transform_mask.apply_translation {
+                instance.last_translation = if has_transform { sample.translation } else { None };
+            } else {
+                instance.last_translation = None;
+            }
+            if transform_mask.apply_rotation {
+                instance.last_rotation = if has_transform { sample.rotation } else { None };
+            } else {
+                instance.last_rotation = None;
+            }
+            if transform_mask.apply_scale {
+                instance.last_scale = if has_transform { sample.scale } else { None };
+            } else {
+                instance.last_scale = None;
+            }
+            if property_mask.apply_tint {
+                instance.last_tint = if has_tint { sample.tint } else { None };
+            } else {
+                instance.last_tint = None;
             }
         }
     }

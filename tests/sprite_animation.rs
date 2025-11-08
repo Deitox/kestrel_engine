@@ -75,6 +75,48 @@ fn sprite_animation_advances_and_resets() {
 }
 
 #[test]
+fn sprite_animation_supports_negative_speed() {
+    let mut assets = AssetManager::new();
+    assets.retain_atlas("main", Some("assets/images/atlas.json")).expect("load main atlas");
+    let mut ecs = EcsWorld::new();
+    let entity = ecs
+        .world
+        .spawn((
+            Transform::default(),
+            WorldTransform::default(),
+            Sprite::uninitialized(Arc::from("main"), Arc::from("redorb")),
+        ))
+        .id();
+
+    assert!(ecs.set_sprite_timeline(entity, &assets, Some("demo_cycle")));
+    ecs.set_sprite_animation_speed(entity, -1.0);
+
+    let initial_index = ecs.world.get::<SpriteAnimation>(entity).unwrap().frame_index;
+    ecs.update(0.12);
+    let animation = ecs.world.get::<SpriteAnimation>(entity).unwrap();
+    assert!(
+        animation.frame_index > initial_index,
+        "negative speed should wrap to the end of the loop"
+    );
+    assert_eq!(
+        sprite_region(&ecs, entity),
+        animation.frames[animation.frame_index].region.as_ref()
+    );
+
+    let first_index = animation.frame_index;
+    ecs.update(0.12);
+    let animation = ecs.world.get::<SpriteAnimation>(entity).unwrap();
+    assert!(
+        animation.frame_index <= first_index,
+        "frame index should continue moving backward or wrap"
+    );
+    assert_eq!(
+        sprite_region(&ecs, entity),
+        animation.frames[animation.frame_index].region.as_ref()
+    );
+}
+
+#[test]
 fn sprite_animation_accumulates_small_updates() {
     let mut assets = AssetManager::new();
     assets.retain_atlas("main", Some("assets/images/atlas.json")).expect("load main atlas");
