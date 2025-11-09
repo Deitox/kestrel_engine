@@ -54,7 +54,8 @@ debug = true
 
 [profile.bench]
 inherits = "release"
-codegen-units = 8
-lto = "thin"
+opt-level = 2
+codegen-units = 16
+lto = false
 incremental = true
 debug = true
