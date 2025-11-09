@@ -836,15 +836,26 @@ impl ClipInstance {
             self.translation_segment_time = offset;
             self.translation_segment_span =
                 track.segments.get(cursor).map(|segment| segment.span).unwrap_or(0.0).max(0.0);
+            self.translation_segment_start =
+                track.keyframes.get(cursor).map(|kf| kf.value).unwrap_or(Vec2::ZERO);
+            if let Some(segment) = track.segments.get(cursor) {
+                self.translation_segment_slope = segment.slope;
+                self.translation_segment_cached_index = cursor;
+                self.translation_segment_cache_valid = true;
+            } else {
+                self.translation_segment_slope = Vec2::ZERO;
+                self.translation_segment_cached_index = usize::MAX;
+                self.translation_segment_cache_valid = false;
+            }
         } else {
             self.translation_cursor = 0;
             self.translation_segment_time = 0.0;
             self.translation_segment_span = 0.0;
+            self.translation_segment_start = Vec2::ZERO;
+            self.translation_segment_slope = Vec2::ZERO;
+            self.translation_segment_cached_index = usize::MAX;
+            self.translation_segment_cache_valid = false;
         }
-        self.translation_segment_start = Vec2::ZERO;
-        self.translation_segment_slope = Vec2::ZERO;
-        self.translation_segment_cached_index = usize::MAX;
-        self.translation_segment_cache_valid = false;
         self.translation_state_current = true;
         self.translation_sample_dirty = true;
     }
@@ -856,15 +867,26 @@ impl ClipInstance {
             self.rotation_segment_time = offset;
             self.rotation_segment_span =
                 track.segments.get(cursor).map(|segment| segment.span).unwrap_or(0.0).max(0.0);
+            self.rotation_segment_start =
+                track.keyframes.get(cursor).map(|kf| kf.value).unwrap_or(0.0);
+            if let Some(segment) = track.segments.get(cursor) {
+                self.rotation_segment_slope = segment.slope;
+                self.rotation_segment_cached_index = cursor;
+                self.rotation_segment_cache_valid = true;
+            } else {
+                self.rotation_segment_slope = 0.0;
+                self.rotation_segment_cached_index = usize::MAX;
+                self.rotation_segment_cache_valid = false;
+            }
         } else {
             self.rotation_cursor = 0;
             self.rotation_segment_time = 0.0;
             self.rotation_segment_span = 0.0;
+            self.rotation_segment_start = 0.0;
+            self.rotation_segment_slope = 0.0;
+            self.rotation_segment_cached_index = usize::MAX;
+            self.rotation_segment_cache_valid = false;
         }
-        self.rotation_segment_start = 0.0;
-        self.rotation_segment_slope = 0.0;
-        self.rotation_segment_cached_index = usize::MAX;
-        self.rotation_segment_cache_valid = false;
         self.rotation_state_current = true;
         self.rotation_sample_dirty = true;
     }
@@ -876,15 +898,25 @@ impl ClipInstance {
             self.scale_segment_time = offset;
             self.scale_segment_span =
                 track.segments.get(cursor).map(|segment| segment.span).unwrap_or(0.0).max(0.0);
+            self.scale_segment_start = track.keyframes.get(cursor).map(|kf| kf.value).unwrap_or(Vec2::ZERO);
+            if let Some(segment) = track.segments.get(cursor) {
+                self.scale_segment_slope = segment.slope;
+                self.scale_segment_cached_index = cursor;
+                self.scale_segment_cache_valid = true;
+            } else {
+                self.scale_segment_slope = Vec2::ZERO;
+                self.scale_segment_cached_index = usize::MAX;
+                self.scale_segment_cache_valid = false;
+            }
         } else {
             self.scale_cursor = 0;
             self.scale_segment_time = 0.0;
             self.scale_segment_span = 0.0;
+            self.scale_segment_start = Vec2::ZERO;
+            self.scale_segment_slope = Vec2::ZERO;
+            self.scale_segment_cached_index = usize::MAX;
+            self.scale_segment_cache_valid = false;
         }
-        self.scale_segment_start = Vec2::ZERO;
-        self.scale_segment_slope = Vec2::ZERO;
-        self.scale_segment_cached_index = usize::MAX;
-        self.scale_segment_cache_valid = false;
         self.scale_state_current = true;
         self.scale_sample_dirty = true;
     }
@@ -896,15 +928,25 @@ impl ClipInstance {
             self.tint_segment_time = offset;
             self.tint_segment_span =
                 track.segments.get(cursor).map(|segment| segment.span).unwrap_or(0.0).max(0.0);
+            self.tint_segment_start = track.keyframes.get(cursor).map(|kf| kf.value).unwrap_or(Vec4::ZERO);
+            if let Some(segment) = track.segments.get(cursor) {
+                self.tint_segment_slope = segment.slope;
+                self.tint_segment_cached_index = cursor;
+                self.tint_segment_cache_valid = true;
+            } else {
+                self.tint_segment_slope = Vec4::ZERO;
+                self.tint_segment_cached_index = usize::MAX;
+                self.tint_segment_cache_valid = false;
+            }
         } else {
             self.tint_cursor = 0;
             self.tint_segment_time = 0.0;
             self.tint_segment_span = 0.0;
+            self.tint_segment_start = Vec4::ZERO;
+            self.tint_segment_slope = Vec4::ZERO;
+            self.tint_segment_cached_index = usize::MAX;
+            self.tint_segment_cache_valid = false;
         }
-        self.tint_segment_start = Vec4::ZERO;
-        self.tint_segment_slope = Vec4::ZERO;
-        self.tint_segment_cached_index = usize::MAX;
-        self.tint_segment_cache_valid = false;
         self.tint_state_current = true;
         self.tint_sample_dirty = true;
     }
@@ -1979,7 +2021,21 @@ impl ClipInstance {
             );
         }
         if let (Some(actual), Some(expected)) = (sample.rotation, reference.rotation) {
-            debug_assert!((actual - expected).abs() <= 1e-5, "rotation mismatch: {} vs {}", actual, expected);
+            debug_assert!(
+                (actual - expected).abs() <= 1e-5,
+                "rotation mismatch: actual={} expected={} time={} cursor={} seg_time={} seg_span={} cache_valid={} cached_index={} dirty={} slope={} start={}",
+                actual,
+                expected,
+                self.time,
+                self.rotation_cursor,
+                self.rotation_segment_time,
+                self.rotation_segment_span,
+                self.rotation_segment_cache_valid,
+                self.rotation_segment_cached_index,
+                self.rotation_sample_dirty,
+                self.rotation_segment_slope,
+                self.rotation_segment_start
+            );
         }
         if let (Some(actual), Some(expected)) = (sample.scale, reference.scale) {
             debug_assert!(
@@ -2523,7 +2579,8 @@ impl SpriteAnimationLoopMode {
 mod tests {
     use super::*;
     use crate::assets::skeletal::{SkeletalClip, SkeletonAsset, SkeletonJoint};
-    use crate::assets::AnimationClip;
+    use crate::assets::{AnimationClip, ClipSegment};
+    use std::f32::consts::TAU;
 
     #[test]
     fn clip_instance_set_time_wraps_negative_looped() {
@@ -2571,6 +2628,64 @@ mod tests {
         instance.set_active_clip(Some(clip));
         let time = instance.set_time(-0.4);
         assert!((time - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn linear_rotation_clip_cached_sample_stays_in_sync() {
+        fn rotation_clip() -> Arc<AnimationClip> {
+            let keyframes: Arc<[ClipKeyframe<f32>]> = Arc::from(
+                vec![
+                    ClipKeyframe { time: 0.0, value: 0.0 },
+                    ClipKeyframe { time: 0.5, value: TAU },
+                ]
+                .into_boxed_slice(),
+            );
+            let span = (keyframes[1].time - keyframes[0].time).max(std::f32::EPSILON);
+            let inv_span = 1.0 / span;
+            let delta = keyframes[1].value - keyframes[0].value;
+            let segments = Arc::from(vec![ClipSegment { slope: delta * inv_span, span, inv_span }].into_boxed_slice());
+            let offsets = Arc::from(vec![keyframes[0].time].into_boxed_slice());
+            let deltas = Arc::from(vec![delta].into_boxed_slice());
+            Arc::new(AnimationClip {
+                name: Arc::from("rotation_bench"),
+                duration: span,
+                duration_inv: inv_span,
+                translation: None,
+                rotation: Some(ClipScalarTrack {
+                    interpolation: ClipInterpolation::Linear,
+                    keyframes,
+                    duration: span,
+                    duration_inv: inv_span,
+                    segment_deltas: deltas,
+                    segments,
+                    segment_offsets: offsets,
+                }),
+                scale: None,
+                tint: None,
+                looped: true,
+                version: 1,
+            })
+        }
+
+        let clip = rotation_clip();
+        let mut instance = ClipInstance::new(Arc::from("clip"), clip);
+        let mask = TransformTrackPlayer::default();
+        let dt = 1.0 / 60.0;
+
+        for step in 0..240 {
+            instance.advance_time_masked(dt, Some(&mask), None);
+            let cached = instance.sample_cached().rotation.unwrap();
+            let reference = instance.sample_at(instance.time).rotation.unwrap();
+            let diff = (cached - reference).abs();
+            assert!(
+                diff <= 1e-5,
+                "post-step mismatch at step {step}: time={} cached={} reference={} diff={}",
+                instance.time,
+                cached,
+                reference,
+                diff
+            );
+        }
     }
 }
 #[derive(Component, Clone)]

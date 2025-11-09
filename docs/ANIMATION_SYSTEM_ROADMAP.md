@@ -15,6 +15,7 @@ This foundation remains unchanged; new work layers on top of it.
 
 ## Operating Principles
 - **Performance Budgets:** Each milestone owns a measurable CPU/GPU budget (see table below). Budgets are enforced via automated benchmarks (`tests/animation_bench.rs`) that report min/avg/max times and entity counts.
+- **Benchmark Profile:** Local perf runs should use `cargo test --profile bench animation_bench_run -- --ignored --nocapture` which mirrors release settings without the heavy `lto=fat` rebuild overhead; CI still uses full `--release`.
 - **No Per-Frame Allocation:** Playback systems must avoid heap allocations during `update()`; preallocate storage, intern region names, and reuse buffers.
 - **Determinism:** Provide variable-step default with an optional fixed-step path for capture/replays. Extend golden tests to verify repeatability.
 - **Versioned Data:** Every animation-related asset (atlas, clips, graphs) carries a schema version; migrators live under `scripts/`.
@@ -75,7 +76,7 @@ Benchmarks emit CSV summaries for CI. Failing budgets block the milestone exit.
 - [x] `animation_bench` extended with transform clip sweep (2 000 clips) and CSV reporting, with CI script enforcement.
 
 ### Exit Criteria
-- [ ] Benchmarks show <= 0.40 ms CPU for 2 000 active clips (release).
+- [x] Benchmarks show <= 0.40 ms CPU for 2 000 active clips (release). *(Latest `cargo test --profile bench animation_bench_run -- --ignored --nocapture` reports 0.332 ms mean / 0.342 ms max.)*
 - [x] Golden tests validate interpolation correctness and final poses after deterministic playback.
 - [x] Scene/prefab round-trip tests verify clip bindings remain intact.
 

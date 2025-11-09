@@ -51,3 +51,10 @@ lto = "fat"
 panic = "abort"
 incremental = false
 debug = true
+
+[profile.bench]
+inherits = "release"
+codegen-units = 8
+lto = "thin"
+incremental = true
+debug = true
