@@ -57,6 +57,7 @@ cargo run
 ## Benchmarks
 - `pwsh scripts/ci/run_animation_bench.ps1 [-OutputDirectory artifacts]` runs the sprite timeline sweep in release mode, prints pass/fail against budget targets, and leaves a CSV in `target/benchmarks/animation_sprite_timelines.csv` (copied to `artifacts` when provided).
 - The harness accepts overrides such as `ANIMATION_BENCH_SWEEP=200,500,2000` or `ANIMATION_BENCH_SAMPLES=10` for CI-specific sweeps.
+- Safety rails clamp overrides to 50k sprite animators, 20k transform clips, 5k skeletal clips, 10k steps, and 100 samples so a typo cannot exhaust a workstation; export `ANIMATION_BENCH_FORCE=1` before invoking the harness if you intentionally need to bypass those limits.
 - Run locally with `cargo test --release animation_bench_run -- --ignored --exact --nocapture` to mirror CI output.
 
 ## Plugins

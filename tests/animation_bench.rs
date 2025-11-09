@@ -44,6 +44,15 @@ const DEFAULT_SKELETAL_SWEEP: &[usize] = &[100];
 const SKELETAL_CSV_RELATIVE_PATH: &str = "benchmarks/animation_skeletal_clips.csv";
 const SKELETAL_BUDGETS_MS: &[(usize, f64)] = &[(100, 1.20)];
 const BENCH_SKELETON_BONES: usize = 10;
+const MAX_SPRITE_ANIMATORS: usize = 50_000;
+const MAX_TRANSFORM_CLIPS: usize = 20_000;
+const MAX_SKELETAL_CLIPS: usize = 5_000;
+const MAX_SWEEP_ENTRIES: usize = 32;
+const MAX_SAMPLES: usize = 100;
+const MAX_STEPS: u32 = 10_000;
+const MAX_WARMUP_STEPS: u32 = 1_000;
+const MAX_WORK_UNITS_PER_CASE: u64 = 100_000_000;
+const FORCE_OVERSUBSCRIBE_ENV: &str = "ANIMATION_BENCH_FORCE";
 
 struct BenchConfig {
     steps: u32,
@@ -54,6 +63,7 @@ struct BenchConfig {
     transform_sweep: Vec<usize>,
     skeletal_sweep: Vec<usize>,
     randomize_phase: bool,
+    allow_oversubscribe: bool,
 }
 
 struct BenchSummary {
@@ -149,10 +159,12 @@ fn animation_bench_run() {
         run_bench_suite(
             "sprite_timelines",
             &config.sweep,
+            "animators",
             &config,
             BUDGETS_MS,
             CSV_RELATIVE_PATH,
             seed_sprite_animators,
+            MAX_SPRITE_ANIMATORS,
         );
     } else {
         println!("[animation_bench] skipping sprite_timelines suite per ANIMATION_BENCH_TARGET");
@@ -162,10 +174,12 @@ fn animation_bench_run() {
         run_bench_suite(
             "transform_clips",
             &config.transform_sweep,
+            "clips",
             &config,
             TRANSFORM_BUDGETS_MS,
             TRANSFORM_CSV_RELATIVE_PATH,
             seed_transform_clips,
+            MAX_TRANSFORM_CLIPS,
         );
     } else {
         println!("[animation_bench] skipping transform_clips suite per ANIMATION_BENCH_TARGET");
@@ -175,10 +189,12 @@ fn animation_bench_run() {
         run_bench_suite(
             "skeletal_clips",
             &config.skeletal_sweep,
+            "clips",
             &config,
             SKELETAL_BUDGETS_MS,
             SKELETAL_CSV_RELATIVE_PATH,
             seed_skeletal_clips,
+            MAX_SKELETAL_CLIPS,
         );
     } else {
         println!("[animation_bench] skipping skeletal_clips suite per ANIMATION_BENCH_TARGET");
@@ -188,10 +204,12 @@ fn animation_bench_run() {
 fn run_bench_suite<F>(
     label: &str,
     counts: &[usize],
+    unit_label: &str,
     config: &BenchConfig,
     budgets: &[(usize, f64)],
     csv_path: &str,
     mut seed_fn: F,
+    per_case_cap: usize,
 ) -> Vec<BenchResult>
 where
     F: FnMut(&mut EcsWorld, usize, bool),
@@ -203,6 +221,7 @@ where
 
     let mut results = Vec::with_capacity(counts.len());
     for &count in counts {
+        enforce_case_limits(label, unit_label, count, per_case_cap, config);
         let result = run_bench_case(count, config, &mut seed_fn);
         let budget = budget_for(count, budgets);
         let summary = &result.summary;
@@ -287,6 +306,39 @@ bsearch={:.2}) transform(adv={:.2} zero={:.2} skipped={:.2} loop_resume={:.2} ze
     }
 
     results
+}
+
+fn enforce_case_limits(
+    label: &str,
+    unit_label: &str,
+    count: usize,
+    per_case_cap: usize,
+    config: &BenchConfig,
+) {
+    if config.allow_oversubscribe {
+        return;
+    }
+    if count > per_case_cap {
+        panic!(
+            "[animation_bench][{label}] Requested {count} {unit_label} exceeds the safe cap ({per_case_cap}). \
+             Reduce the sweep or set {FORCE_OVERSUBSCRIBE_ENV}=1 if you truly need this scale."
+        );
+    }
+    let work_units = estimate_work_units(count, config);
+    if work_units > MAX_WORK_UNITS_PER_CASE {
+        panic!(
+            "[animation_bench][{label}] Requested workload ({work_units} work units) exceeds the \
+             safety limit of {MAX_WORK_UNITS_PER_CASE}. Lower steps/samples/counts or set {FORCE_OVERSUBSCRIBE_ENV}=1."
+        );
+    }
+}
+
+fn estimate_work_units(count: usize, config: &BenchConfig) -> u64 {
+    let steps = u64::from(config.steps.max(1));
+    let warmup = u64::from(config.warmup_steps);
+    let per_sample = steps.saturating_add(warmup);
+    let samples = config.samples.max(1) as u64;
+    per_sample.saturating_mul(samples).saturating_mul(count as u64)
 }
 
 fn run_bench_case<F>(animator_count: usize, config: &BenchConfig, seed_fn: &mut F) -> BenchResult
@@ -393,18 +445,118 @@ fn compute_summary(animators: usize, steps: u32, sample_elapsed: &[Duration]) ->
 }
 
 fn bench_config() -> BenchConfig {
-    let steps = parse_env::<u32>("ANIMATION_BENCH_STEPS").unwrap_or(DEFAULT_STEPS).max(1);
-    let warmup_steps = parse_env::<u32>("ANIMATION_BENCH_WARMUP_STEPS").unwrap_or(DEFAULT_WARMUP_STEPS);
+    let allow_oversubscribe = parse_env_bool(FORCE_OVERSUBSCRIBE_ENV).unwrap_or(false);
+    if allow_oversubscribe {
+        println!(
+            "[animation_bench] {}=1 -> disabling benchmark guardrails; runs may saturate system resources.",
+            FORCE_OVERSUBSCRIBE_ENV
+        );
+    }
+
+    let steps_raw = parse_env::<u32>("ANIMATION_BENCH_STEPS").unwrap_or(DEFAULT_STEPS).max(1);
+    let warmup_raw = parse_env::<u32>("ANIMATION_BENCH_WARMUP_STEPS").unwrap_or(DEFAULT_WARMUP_STEPS);
     let dt = parse_env::<f32>("ANIMATION_BENCH_DT").unwrap_or(DEFAULT_DT);
-    let samples = parse_env::<usize>("ANIMATION_BENCH_SAMPLES").unwrap_or(DEFAULT_SAMPLES).max(1);
-    let sweep = parse_sweep("ANIMATION_BENCH_SWEEP").unwrap_or_else(|| DEFAULT_ANIMATOR_SWEEP.to_vec());
-    let transform_sweep =
+    let samples_raw = parse_env::<usize>("ANIMATION_BENCH_SAMPLES").unwrap_or(DEFAULT_SAMPLES).max(1);
+    let sweep_raw = parse_sweep("ANIMATION_BENCH_SWEEP").unwrap_or_else(|| DEFAULT_ANIMATOR_SWEEP.to_vec());
+    let transform_raw =
         parse_sweep("ANIMATION_BENCH_TRANSFORM_SWEEP").unwrap_or_else(|| DEFAULT_TRANSFORM_SWEEP.to_vec());
-    let skeletal_sweep =
+    let skeletal_raw =
         parse_sweep("ANIMATION_BENCH_SKELETAL_SWEEP").unwrap_or_else(|| DEFAULT_SKELETAL_SWEEP.to_vec());
     let randomize_phase = parse_env_bool("ANIMATION_BENCH_RANDOMIZE_PHASES").unwrap_or(true);
 
-    BenchConfig { steps, dt, warmup_steps, samples, sweep, transform_sweep, skeletal_sweep, randomize_phase }
+    let steps = clamp_u32("ANIMATION_BENCH_STEPS", steps_raw, MAX_STEPS, allow_oversubscribe);
+    let warmup_steps =
+        clamp_u32("ANIMATION_BENCH_WARMUP_STEPS", warmup_raw, MAX_WARMUP_STEPS, allow_oversubscribe);
+    let samples = clamp_usize("ANIMATION_BENCH_SAMPLES", samples_raw, MAX_SAMPLES, allow_oversubscribe);
+    let sweep = sanitize_suite_counts(
+        "sprite_timelines",
+        "ANIMATION_BENCH_SWEEP",
+        "animators",
+        sweep_raw,
+        MAX_SPRITE_ANIMATORS,
+        allow_oversubscribe,
+    );
+    let transform_sweep = sanitize_suite_counts(
+        "transform_clips",
+        "ANIMATION_BENCH_TRANSFORM_SWEEP",
+        "clips",
+        transform_raw,
+        MAX_TRANSFORM_CLIPS,
+        allow_oversubscribe,
+    );
+    let skeletal_sweep = sanitize_suite_counts(
+        "skeletal_clips",
+        "ANIMATION_BENCH_SKELETAL_SWEEP",
+        "clips",
+        skeletal_raw,
+        MAX_SKELETAL_CLIPS,
+        allow_oversubscribe,
+    );
+
+    BenchConfig {
+        steps,
+        dt,
+        warmup_steps,
+        samples,
+        sweep,
+        transform_sweep,
+        skeletal_sweep,
+        randomize_phase,
+        allow_oversubscribe,
+    }
+}
+
+fn clamp_u32(key: &str, value: u32, max_allowed: u32, allow_unbounded: bool) -> u32 {
+    clamp_value(key, value, max_allowed, allow_unbounded)
+}
+
+fn clamp_usize(key: &str, value: usize, max_allowed: usize, allow_unbounded: bool) -> usize {
+    clamp_value(key, value, max_allowed, allow_unbounded)
+}
+
+fn clamp_value<T>(key: &str, value: T, max_allowed: T, allow_unbounded: bool) -> T
+where
+    T: Ord + Copy + std::fmt::Display,
+{
+    if allow_unbounded || value <= max_allowed {
+        value
+    } else {
+        eprintln!(
+            "[animation_bench] Clamping {key} from {value} to {max_allowed} to avoid runaway workloads. \
+             Set {FORCE_OVERSUBSCRIBE_ENV}=1 if you intentionally need a larger run."
+        );
+        max_allowed
+    }
+}
+
+fn sanitize_suite_counts(
+    label: &str,
+    source: &str,
+    unit_label: &str,
+    mut counts: Vec<usize>,
+    per_case_cap: usize,
+    allow_unbounded: bool,
+) -> Vec<usize> {
+    if allow_unbounded {
+        return counts;
+    }
+    if counts.len() > MAX_SWEEP_ENTRIES {
+        eprintln!(
+            "[animation_bench][{label}] {source} requested {} entries; truncating to {MAX_SWEEP_ENTRIES} to protect CI nodes.",
+            counts.len()
+        );
+        counts.truncate(MAX_SWEEP_ENTRIES);
+    }
+    for count in counts.iter_mut() {
+        if *count > per_case_cap {
+            eprintln!(
+                "[animation_bench][{label}] Clamping {source} {unit_label} value {count} to {per_case_cap}. \
+                 Set {FORCE_OVERSUBSCRIBE_ENV}=1 to bypass this safety rail."
+            );
+            *count = per_case_cap;
+        }
+    }
+    counts
 }
 
 fn budget_for(animators: usize, budgets: &[(usize, f64)]) -> Option<f64> {
