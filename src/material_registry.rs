@@ -33,6 +33,7 @@ pub struct MaterialDefinition {
 pub struct MaterialRegistry {
     materials: HashMap<String, MaterialEntry>,
     textures: HashMap<String, TextureEntry>,
+    texture_material_refs: HashMap<String, usize>,
     default_material: String,
     default_textures: Option<DefaultTextures>,
     sampler: Option<Arc<wgpu::Sampler>>,
@@ -84,6 +85,7 @@ impl MaterialRegistry {
         let mut registry = Self {
             materials: HashMap::new(),
             textures: HashMap::new(),
+            texture_material_refs: HashMap::new(),
             default_material: default_material.clone(),
             default_textures: None,
             sampler: None,
@@ -140,6 +142,7 @@ impl MaterialRegistry {
                 emissive_texture: material.emissive_texture.clone(),
                 source: material.source.clone(),
             };
+            self.bump_texture_refs(&definition, 1);
             self.materials.insert(
                 material.key.clone(),
                 MaterialEntry { definition, gpu: None, ref_count: 0, permanent: false },
@@ -170,9 +173,21 @@ impl MaterialRegistry {
     }
 
     pub fn release(&mut self, key: &str) {
+        let mut remove_entry = false;
         if let Some(entry) = self.materials.get_mut(key) {
             if entry.ref_count > 0 {
                 entry.ref_count -= 1;
+            }
+            if entry.ref_count == 0 {
+                entry.gpu = None;
+                if !entry.permanent {
+                    remove_entry = true;
+                }
+            }
+        }
+        if remove_entry {
+            if let Some(entry) = self.materials.remove(key) {
+                self.bump_texture_refs(&entry.definition, -1);
             }
         }
     }
@@ -411,6 +426,52 @@ impl MaterialRegistry {
         let gpu_texture = Arc::new(GpuTexture::new(texture, view, srgb));
         *cache = Some(gpu_texture.clone());
         Ok(gpu_texture)
+    }
+
+    fn bump_texture_refs(&mut self, definition: &MaterialDefinition, delta: isize) {
+        if delta == 0 {
+            return;
+        }
+        for binding in Self::texture_bindings(definition) {
+            self.adjust_texture_ref(&binding.texture_key, delta);
+        }
+    }
+
+    fn texture_bindings<'a>(
+        definition: &'a MaterialDefinition,
+    ) -> impl Iterator<Item = &'a MaterialTextureBinding> {
+        [
+            definition.base_color_texture.as_ref(),
+            definition.metallic_roughness_texture.as_ref(),
+            definition.normal_texture.as_ref(),
+            definition.emissive_texture.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+    }
+
+    fn adjust_texture_ref(&mut self, key: &str, delta: isize) {
+        if delta == 0 {
+            return;
+        }
+        if delta > 0 {
+            let entry = self.texture_material_refs.entry(key.to_string()).or_insert(0);
+            *entry = entry.saturating_add(delta as usize);
+        } else {
+            let dec = (-delta) as usize;
+            let mut remove_entry = false;
+            if let Some(entry) = self.texture_material_refs.get_mut(key) {
+                if *entry <= dec {
+                    remove_entry = true;
+                } else {
+                    *entry -= dec;
+                }
+            }
+            if remove_entry {
+                self.texture_material_refs.remove(key);
+                self.textures.remove(key);
+            }
+        }
     }
 }
 

@@ -305,6 +305,7 @@ pub struct App {
 
     scene_atlas_refs: HashSet<String>,
     persistent_atlases: HashSet<String>,
+    scene_clip_refs: HashSet<String>,
     scene_mesh_refs: HashSet<String>,
     pub(crate) scene_material_refs: HashSet<String>,
 
@@ -617,6 +618,7 @@ impl App {
         let mut material_registry = MaterialRegistry::new();
         let mut mesh_registry = MeshRegistry::new(&mut material_registry);
         let scene_material_refs = HashSet::new();
+        let scene_clip_refs = HashSet::new();
 
         // egui context and state
         let egui_ctx = EguiCtx::default();
@@ -759,6 +761,7 @@ impl App {
             gizmo_interaction: None,
             scene_atlas_refs: HashSet::new(),
             persistent_atlases: HashSet::new(),
+            scene_clip_refs,
             scene_mesh_refs: HashSet::new(),
             scene_material_refs,
             material_registry,
@@ -1365,6 +1368,25 @@ impl App {
         }
         self.scene_atlas_refs = next;
 
+        let previous_clips = self.scene_clip_refs.clone();
+        let mut next_clips = HashSet::new();
+        for dep in deps.clip_dependencies() {
+            let key = dep.key().to_string();
+            if next_clips.insert(key.clone()) {
+                if !previous_clips.contains(&key) {
+                    self.assets
+                        .retain_clip(dep.key(), dep.path())
+                        .with_context(|| format!("Failed to retain clip '{}'", dep.key()))?;
+                }
+            }
+        }
+        for key in previous_clips {
+            if !next_clips.contains(&key) {
+                self.assets.release_clip(&key);
+            }
+        }
+        self.scene_clip_refs = next_clips;
+
         let previous_mesh = self.scene_mesh_refs.clone();
         let mut next_mesh = HashSet::new();
         let mut newly_required: Vec<String> = Vec::new();
@@ -1569,6 +1591,17 @@ impl App {
             self.material_registry.release(key);
         }
         self.scene_material_refs = persistent_materials;
+        self.clear_scene_clips();
+    }
+
+    fn clear_scene_clips(&mut self) {
+        if self.scene_clip_refs.is_empty() {
+            return;
+        }
+        let clips: Vec<String> = self.scene_clip_refs.drain().collect();
+        for key in clips {
+            self.assets.release_clip(&key);
+        }
     }
 
     fn viewport_physical_size(&self) -> PhysicalSize<u32> {
@@ -2164,6 +2197,7 @@ impl ApplicationHandler for App {
         let scene_history_list: Vec<String> = self.scene_history.iter().cloned().collect();
         let atlas_snapshot: Vec<String> = self.scene_atlas_refs.iter().cloned().collect();
         let mesh_snapshot: Vec<String> = self.scene_mesh_refs.iter().cloned().collect();
+        let clip_snapshot: Vec<String> = self.scene_clip_refs.iter().cloned().collect();
         let environment_options: Vec<(String, String)> = self
             .environment_registry
             .keys()
@@ -2269,6 +2303,7 @@ impl ApplicationHandler for App {
             scene_history_list,
             atlas_snapshot,
             mesh_snapshot,
+            clip_snapshot,
             recent_events,
             audio_triggers,
             audio_enabled,
@@ -2541,6 +2576,17 @@ impl ApplicationHandler for App {
                 }
             }
         }
+        for (key, path) in actions.retain_clips {
+            match self.assets.retain_clip(&key, path.as_deref()) {
+                Ok(()) => {
+                    self.scene_clip_refs.insert(key.clone());
+                    self.ui_scene_status = Some(format!("Retained clip {}", key));
+                }
+                Err(err) => {
+                    self.ui_scene_status = Some(format!("Clip retain failed: {err}"));
+                }
+            }
+        }
         for request in actions.sprite_atlas_requests {
             let entity = request.entity;
             let atlas = request.atlas;
@@ -2698,6 +2744,7 @@ impl ApplicationHandler for App {
                         self.ui_scene_status = Some(format!("Load failed: {err}"));
                         self.ecs.clear_world();
                         self.clear_scene_atlases();
+                        self.clear_scene_clips();
                         self.selected_entity = None;
                         self.gizmo_interaction = None;
                         if let Some(plugin) = self.script_plugin_mut() {
@@ -2763,6 +2810,7 @@ impl ApplicationHandler for App {
         if actions.reset_world {
             self.ecs.clear_world();
             self.clear_scene_atlases();
+            self.clear_scene_clips();
             self.selected_entity = None;
             self.gizmo_interaction = None;
             if let Some(plugin) = self.script_plugin_mut() {

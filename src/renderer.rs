@@ -25,6 +25,7 @@ struct Globals {
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const MAX_SKIN_JOINTS: usize = 256;
+const SKINNING_CACHE_HEADROOM: usize = 4;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -1449,6 +1450,12 @@ impl Renderer {
             pass.draw_indexed(0..draw.mesh.index_count, 0, 0..1);
         }
 
+        Self::trim_skinning_cache(
+            &mut self.mesh_pass.skinning_palette_buffers,
+            &mut self.mesh_pass.skinning_palette_bind_groups,
+            self.mesh_pass.skinning_cursor,
+        );
+
         Ok(())
     }
 
@@ -1881,6 +1888,12 @@ impl Renderer {
             }
         }
 
+        Self::trim_skinning_cache(
+            &mut self.shadow_pass.skinning_palette_buffers,
+            &mut self.shadow_pass.skinning_palette_bind_groups,
+            self.shadow_pass.skinning_cursor,
+        );
+
         Ok(())
     }
 
@@ -2051,6 +2064,20 @@ impl Renderer {
 
     pub fn invalidate_sprite_bind_group(&mut self, atlas: &str) {
         self.sprite_bind_cache.remove(atlas);
+    }
+
+    fn trim_skinning_cache(
+        buffers: &mut Vec<wgpu::Buffer>,
+        bind_groups: &mut Vec<wgpu::BindGroup>,
+        active_slots: usize,
+    ) {
+        let desired = active_slots.saturating_add(SKINNING_CACHE_HEADROOM);
+        if buffers.len() > desired {
+            buffers.truncate(desired);
+        }
+        if bind_groups.len() > desired {
+            bind_groups.truncate(desired);
+        }
     }
 
     fn create_depth_texture(

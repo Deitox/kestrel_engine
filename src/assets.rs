@@ -498,6 +498,7 @@ impl AssetManager {
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         }));
+        self.texture_cache.clear();
     }
     pub fn default_sampler(&self) -> &wgpu::Sampler {
         self.sampler.as_ref().expect("sampler")

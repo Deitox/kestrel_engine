@@ -238,6 +238,7 @@ pub(super) struct UiActions {
     pub load_scene: bool,
     pub spawn_mesh: Option<String>,
     pub retain_atlases: Vec<(String, Option<String>)>,
+    pub retain_clips: Vec<(String, Option<String>)>,
     pub retain_meshes: Vec<(String, Option<String>)>,
     pub retain_environments: Vec<(String, Option<String>)>,
     pub sprite_atlas_requests: Vec<SpriteAtlasRequest>,
@@ -343,6 +344,7 @@ pub(super) struct EditorUiParams {
     pub scene_history_list: Vec<String>,
     pub atlas_snapshot: Vec<String>,
     pub mesh_snapshot: Vec<String>,
+    pub clip_snapshot: Vec<String>,
     pub recent_events: Vec<GameEvent>,
     pub audio_triggers: Vec<String>,
     pub audio_enabled: bool,
@@ -465,6 +467,7 @@ impl App {
             scene_history_list,
             atlas_snapshot,
             mesh_snapshot,
+            clip_snapshot,
             recent_events,
             audio_triggers,
             mut audio_enabled,
@@ -1334,6 +1337,41 @@ impl App {
                                     if !loaded {
                                         if ui.button("Retain").clicked() {
                                             actions.retain_meshes.push((mesh_key.clone(), path_opt.clone()));
+                                        }
+                                        if path_opt.is_none() {
+                                            ui.small("no recorded path");
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                        if clip_snapshot.is_empty() {
+                            ui.small("Clips: none retained");
+                        } else {
+                            ui.separator();
+                            ui.label(format!("Clips retained: {}", clip_snapshot.len()));
+                            for clip_key in &clip_snapshot {
+                                let loaded = self.assets.clip(clip_key).is_some();
+                                let color = if loaded {
+                                    egui::Color32::LIGHT_GREEN
+                                } else {
+                                    egui::Color32::from_rgb(220, 120, 120)
+                                };
+                                let status_label = if loaded { "loaded" } else { "missing" };
+                                let path_opt = self.scene_dependencies.as_ref().and_then(|deps| {
+                                    deps.clip_dependencies()
+                                        .find(|dep| dep.key() == clip_key.as_str())
+                                        .and_then(|dep| dep.path().map(|p| p.to_string()))
+                                });
+                                let path_display = path_opt.as_deref().unwrap_or("n/a");
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(
+                                        color,
+                                        format!("- {} ({}, path={})", clip_key, status_label, path_display),
+                                    );
+                                    if !loaded {
+                                        if ui.button("Retain").clicked() {
+                                            actions.retain_clips.push((clip_key.clone(), path_opt.clone()));
                                         }
                                         if path_opt.is_none() {
                                             ui.small("no recorded path");
