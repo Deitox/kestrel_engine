@@ -88,10 +88,9 @@ impl Sprite {
     }
 
     pub fn apply_frame(&mut self, frame: &SpriteAnimationFrame) {
-        if self.region_id != frame.region_id
-            || self.region_id == Self::UNINITIALIZED_REGION
-            || self.region.as_ref() != frame.region.as_ref()
-        {
+        if self.region_id == Self::UNINITIALIZED_REGION {
+            // Keep the human-readable region name in sync the first time we touch the sprite.
+            // Subsequent animation-driven updates only mutate `region_id`/`uv` to avoid an Arc clone per frame.
             self.region = frame.region.clone();
         }
         self.region_id = frame.region_id;
@@ -258,6 +257,7 @@ impl SpriteAnimation {
         self.pending_start_events =
             self.has_events && self.current_frame().map(|frame| !frame.events.is_empty()).unwrap_or(false);
     }
+
 
     #[inline]
     pub(crate) fn accumulate_delta(&mut self, delta: f32, epsilon: f32) -> Option<f32> {

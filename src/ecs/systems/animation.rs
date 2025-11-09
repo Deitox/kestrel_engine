@@ -676,6 +676,114 @@ mod tests {
     }
 
     #[test]
+    fn fast_loop_advances_multiple_frames() {
+        let region = Arc::from("frame");
+        let frames = Arc::from(
+            vec![
+                SpriteAnimationFrame {
+                    name: Arc::clone(&region),
+                    region: Arc::clone(&region),
+                    region_id: 0,
+                    duration: 0.08,
+                    uv: [0.0; 4],
+                    events: Arc::default(),
+                },
+                SpriteAnimationFrame {
+                    name: Arc::clone(&region),
+                    region: Arc::clone(&region),
+                    region_id: 1,
+                    duration: 0.08,
+                    uv: [0.0; 4],
+                    events: Arc::default(),
+                },
+                SpriteAnimationFrame {
+                    name: Arc::clone(&region),
+                    region: Arc::clone(&region),
+                    region_id: 2,
+                    duration: 0.08,
+                    uv: [0.0; 4],
+                    events: Arc::default(),
+                },
+            ]
+            .into_boxed_slice(),
+        );
+        let durations = Arc::from(vec![0.08_f32, 0.08, 0.08].into_boxed_slice());
+        let offsets = Arc::from(vec![0.0_f32, 0.08, 0.16].into_boxed_slice());
+        let mut animation = SpriteAnimation::new(
+            Arc::from("timeline"),
+            frames,
+            durations,
+            offsets,
+            0.24,
+            SpriteAnimationLoopMode::Loop,
+        );
+        animation.frame_index = 1;
+        animation.elapsed_in_frame = 0.06;
+        animation.refresh_current_duration();
+
+        let changed = advance_animation_loop_no_events(&mut animation, 0.05);
+        assert!(changed, "fast loop should report a change when advancing past the current frame");
+        assert_eq!(animation.frame_index, 2);
+        assert!(
+            (animation.elapsed_in_frame - 0.03).abs() < 1e-4,
+            "expected ~0.03s elapsed in frame, got {}",
+            animation.elapsed_in_frame
+        );
+    }
+
+    #[test]
+    fn fast_loop_large_delta_wraps_phase() {
+        let region = Arc::from("frame");
+        let frames = Arc::from(
+            vec![
+                SpriteAnimationFrame {
+                    name: Arc::clone(&region),
+                    region: Arc::clone(&region),
+                    region_id: 0,
+                    duration: 0.08,
+                    uv: [0.0; 4],
+                    events: Arc::default(),
+                },
+                SpriteAnimationFrame {
+                    name: Arc::clone(&region),
+                    region: Arc::clone(&region),
+                    region_id: 1,
+                    duration: 0.12,
+                    uv: [0.0; 4],
+                    events: Arc::default(),
+                },
+            ]
+            .into_boxed_slice(),
+        );
+        let durations = Arc::from(vec![0.08_f32, 0.12].into_boxed_slice());
+        let offsets = Arc::from(vec![0.0_f32, 0.08].into_boxed_slice());
+        let mut animation = SpriteAnimation::new(
+            Arc::from("timeline"),
+            frames,
+            durations,
+            offsets,
+            0.20,
+            SpriteAnimationLoopMode::Loop,
+        );
+        animation.frame_index = 0;
+        animation.elapsed_in_frame = 0.02;
+        animation.refresh_current_duration();
+
+        let delta = animation.total_duration * 3.0 + 0.05;
+        let changed = advance_animation_loop_no_events(&mut animation, delta);
+        assert!(changed, "wrapping multiple cycles should still flag a change");
+        assert_eq!(
+            animation.frame_index, 0,
+            "wrapping an integer number of cycles plus delta should land back in frame 0"
+        );
+        assert!(
+            (animation.elapsed_in_frame - 0.07).abs() < 1e-4,
+            "expected ~0.07s elapsed after wrapping, got {}",
+            animation.elapsed_in_frame
+        );
+    }
+
+    #[test]
     fn drive_fixed_processes_each_step() {
         use crate::events::EventBus;
 
@@ -1800,7 +1908,7 @@ fn stable_random_fraction(entity: Entity, timeline: &str) -> f32 {
     (bits as f64 * SCALE) as f32
 }
 #[inline(always)]
-fn advance_animation_loop_no_events(animation: &mut SpriteAnimation, delta: f32) -> bool {
+fn advance_animation_loop_no_events(animation: &mut SpriteAnimation, mut delta: f32) -> bool {
     if delta <= 0.0 || !animation.playing {
         return false;
     }
@@ -1812,176 +1920,76 @@ fn advance_animation_loop_no_events(animation: &mut SpriteAnimation, delta: f32)
     #[cfg(feature = "anim_stats")]
     record_fast_loop_call(1);
 
-    let total_duration = animation.total_duration;
-    let offsets = animation.frame_offsets.as_ref();
-    if total_duration <= 0.0 || offsets.is_empty() || offsets.len() != frame_count {
-        return advance_animation_loop_no_events_fallback(animation, delta);
-    }
-
     let durations = animation.frame_durations.as_ref();
+    let offsets = animation.frame_offsets.as_ref();
+    let mut index = animation.frame_index.min(frame_count - 1);
+    let mut current_duration = durations.get(index).copied().unwrap_or(animation.current_duration);
+    if current_duration < 0.0 {
+        current_duration = 0.0;
+    }
+    let mut elapsed = animation.elapsed_in_frame.clamp(0.0, current_duration);
+    let total_duration = animation.total_duration.max(0.0);
     let total_inv = animation.total_duration_inv;
-    let index = animation.frame_index.min(frame_count - 1);
-    let mut frame_start = if animation.current_frame_offset.is_finite() {
-        animation.current_frame_offset
-    } else {
-        offsets.get(index).copied().unwrap_or(0.0)
-    };
-    if frame_start < 0.0 {
-        frame_start = 0.0;
-    }
-    let current_offset = frame_start + animation.elapsed_in_frame;
+    let mut frame_advanced = false;
 
-    let mut combined = current_offset + delta;
-    let mut crossed_cycle = false;
-    if total_inv > 0.0 {
-        let base_cycles = (current_offset * total_inv).floor();
-        let post_cycles = (combined * total_inv).floor();
-        crossed_cycle = post_cycles - base_cycles >= 1.0;
-    }
-    combined = wrap_time_looped(combined, total_duration, total_inv);
-    if combined <= CLIP_TIME_EPSILON || (total_duration - combined) <= CLIP_TIME_EPSILON {
-        combined = 0.0;
+    if total_duration > 0.0 && delta >= total_duration {
+        let divisor = if total_inv > 0.0 { total_inv } else { 1.0 / total_duration };
+        let loops = (delta * divisor).floor();
+        if loops >= 1.0 {
+            frame_advanced = true;
+            delta -= loops * total_duration;
+            if delta < 0.0 {
+                delta = 0.0;
+            }
+            #[cfg(feature = "anim_stats")]
+            record_fast_loop_binary_search(1);
+        }
+        if delta >= total_duration {
+            delta = delta.rem_euclid(total_duration.max(std::f32::EPSILON));
+        }
     }
 
-    let mut new_index = index;
-    let mut new_start = frame_start;
-    let mut new_duration = durations.get(new_index).copied().unwrap_or(0.0);
-    let mut advanced_index = false;
-
-    if frame_count == 1 {
-        new_index = 0;
-        new_start = offsets.first().copied().unwrap_or(0.0);
-        new_duration = durations.first().copied().unwrap_or(0.0);
-    } else if combined < frame_start {
-        new_index = locate_frame_index(offsets, combined, frame_count);
-        new_start = offsets.get(new_index).copied().unwrap_or(0.0);
-        new_duration = durations.get(new_index).copied().unwrap_or(0.0);
-        advanced_index = new_index != animation.frame_index;
-    } else {
-        let mut remaining = frame_count;
-        while remaining > 0 {
-            let segment_duration = new_duration.max(0.0);
-            let segment_end = new_start + segment_duration;
-            if segment_duration <= 0.0 {
+    let guard_limit = frame_count.max(1) * 2;
+    let mut guard = 0usize;
+    while delta > 0.0 && guard < guard_limit {
+        guard += 1;
+        let time_left = (current_duration - elapsed).max(0.0);
+        if time_left <= CLIP_TIME_EPSILON {
+            if frame_count == 1 {
                 break;
             }
-            if combined < segment_end - CLIP_TIME_EPSILON {
-                break;
+            frame_advanced = true;
+            elapsed = 0.0;
+            index += 1;
+            if index == frame_count {
+                index = 0;
             }
-            new_index = (new_index + 1) % frame_count;
-            new_start = offsets.get(new_index).copied().unwrap_or(0.0);
-            new_duration = durations.get(new_index).copied().unwrap_or(0.0);
-            advanced_index = true;
-            remaining -= 1;
-            if combined < new_start {
-                break;
-            }
+            current_duration = durations.get(index).copied().unwrap_or(0.0);
+            continue;
         }
-        let segment_duration = new_duration.max(0.0);
-        if combined < new_start || combined >= new_start + segment_duration + CLIP_TIME_EPSILON {
-            new_index = locate_frame_index(offsets, combined, frame_count);
-            new_start = offsets.get(new_index).copied().unwrap_or(0.0);
-            new_duration = durations.get(new_index).copied().unwrap_or(0.0);
-        }
-    }
 
-    let mut new_elapsed = (combined - new_start).clamp(0.0, new_duration.max(0.0));
-    if new_duration <= 0.0 {
-        new_elapsed = 0.0;
-    }
-
-    let time_left = (animation.current_duration - animation.elapsed_in_frame).max(0.0);
-    let threshold = (time_left - CLIP_TIME_EPSILON).max(0.0);
-    let mut frame_changed = delta >= threshold;
-    if frame_count > 1 {
-        if advanced_index || new_index != animation.frame_index {
-            frame_changed = true;
-        }
-        if crossed_cycle {
-            frame_changed = true;
-        }
-    }
-
-    animation.frame_index = new_index;
-    animation.elapsed_in_frame = new_elapsed;
-    animation.current_duration = new_duration;
-    animation.current_frame_offset = new_start;
-    frame_changed
-}
-
-#[inline(always)]
-fn advance_animation_loop_no_events_fallback(animation: &mut SpriteAnimation, mut delta: f32) -> bool {
-    let len = animation.frame_durations.len();
-    if len == 0 {
-        return false;
-    }
-    let mut index = animation.frame_index.min(len - 1);
-    let mut elapsed = animation.elapsed_in_frame;
-    let mut frame_changed = false;
-
-    while delta > 0.0 {
-        let frame_duration = unsafe { *animation.frame_durations.get_unchecked(index) };
-        let time_left = frame_duration - elapsed;
-        if delta <= time_left {
-            elapsed += delta;
+        let threshold = (time_left - CLIP_TIME_EPSILON).max(0.0);
+        if delta <= threshold {
+            elapsed = (elapsed + delta).min(current_duration);
             break;
         }
 
         delta -= time_left;
         elapsed = 0.0;
+        frame_advanced = true;
         index += 1;
-        if index == len {
+        if index == frame_count {
             index = 0;
         }
-        frame_changed = true;
+        current_duration = durations.get(index).copied().unwrap_or(0.0);
     }
 
     animation.frame_index = index;
-    animation.elapsed_in_frame = elapsed;
-    animation.current_duration = animation.frame_durations.get(animation.frame_index).copied().unwrap_or(0.0);
-    animation.current_frame_offset =
-        animation.frame_offsets.get(animation.frame_index).copied().unwrap_or(0.0);
-    frame_changed
-}
+    animation.elapsed_in_frame = elapsed.min(current_duration.max(0.0));
+    animation.current_duration = current_duration;
+    animation.current_frame_offset = offsets.get(index).copied().unwrap_or(0.0);
 
-#[inline(always)]
-fn locate_frame_index(offsets: &[f32], target: f32, frame_count: usize) -> usize {
-    #[cfg(feature = "anim_stats")]
-    record_fast_loop_binary_search(1);
-    if offsets.is_empty() {
-        return 0;
-    }
-    let idx = offsets.partition_point(|start| *start <= target);
-    if idx == 0 {
-        0
-    } else {
-        (idx - 1).min(frame_count.saturating_sub(1))
-    }
-}
-
-#[inline(always)]
-fn wrap_time_looped(time: f32, duration: f32, duration_inv: f32) -> f32 {
-    if !time.is_finite() || duration <= 0.0 {
-        return 0.0;
-    }
-    let duration_eps = duration.max(std::f32::EPSILON);
-    if duration_inv > 0.0 {
-        let loops = (time * duration_inv).floor();
-        let mut wrapped = time - loops * duration;
-        if wrapped < 0.0 {
-            wrapped += duration_eps;
-        }
-        if wrapped >= duration_eps {
-            wrapped -= duration_eps;
-        }
-        wrapped
-    } else {
-        let mut wrapped = time.rem_euclid(duration_eps);
-        if wrapped < 0.0 {
-            wrapped += duration_eps;
-        }
-        wrapped
-    }
+    frame_advanced
 }
 
 fn drive_single(

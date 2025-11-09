@@ -1434,6 +1434,7 @@ impl EcsWorld {
             animation.set_speed(prev_speed);
 
             if let Some(frame) = animation.current_frame() {
+                sprite.region = Arc::clone(&frame.region);
                 sprite.apply_frame(frame);
             }
 
@@ -1796,7 +1797,6 @@ impl EcsWorld {
         });
         let sprite = if let Some(sprite) = self.world.get::<Sprite>(entity) {
             let atlas = sprite.atlas_key.to_string();
-            let region = sprite.region.to_string();
             let animation = self.world.get::<SpriteAnimation>(entity).map(|anim| {
                 let frame = anim.frames.get(anim.frame_index);
                 let frame_region = frame.map(|frame| frame.region.as_ref().to_string());
@@ -1825,6 +1825,10 @@ impl EcsWorld {
                     group: anim.group.clone(),
                 }
             });
+            let region = animation
+                .as_ref()
+                .and_then(|anim| anim.frame_region.clone())
+                .unwrap_or_else(|| sprite.region.to_string());
             Some(SpriteInfo { atlas, region, animation })
         } else {
             None
