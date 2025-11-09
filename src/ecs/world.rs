@@ -74,7 +74,9 @@ impl EcsWorld {
             sys_update_particles,
             sys_drive_transform_clips,
             sys_drive_skeletal_clips,
+            sys_init_sprite_frame_state,
             sys_drive_sprite_animations,
+            sys_apply_sprite_frame_states,
         ));
 
         let mut schedule_fixed = Schedule::default();
@@ -92,6 +94,36 @@ impl EcsWorld {
         Self { world, schedule_var, schedule_fixed }
     }
 
+    fn ensure_sprite_frame_state(&mut self, entity: Entity) {
+        if self.world.get::<SpriteFrameState>(entity).is_some() {
+            return;
+        }
+        let initial = if let Some(sprite) = self.world.get::<Sprite>(entity) {
+            SpriteFrameState::from_sprite(sprite)
+        } else {
+            SpriteFrameState::new_uninitialized()
+        };
+        self.world.entity_mut(entity).insert(initial);
+    }
+
+    fn sync_sprite_frame_state(&mut self, entity: Entity) {
+        let Some(sprite_snapshot) = self
+            .world
+            .get::<Sprite>(entity)
+            .map(|sprite| (sprite.region_id, sprite.uv, sprite.is_initialized()))
+        else {
+            return;
+        };
+        if let Some(mut state) = self.world.get_mut::<SpriteFrameState>(entity) {
+            state.region_id = sprite_snapshot.0;
+            state.uv = sprite_snapshot.1;
+            state.region_initialized = sprite_snapshot.2;
+            if state.region_initialized {
+                state.pending_region = None;
+            }
+        }
+    }
+
     fn emit(&mut self, event: GameEvent) {
         self.world.resource_mut::<EventBus>().push(event);
     }
@@ -106,10 +138,17 @@ impl EcsWorld {
 
     fn apply_sprite_snapshot(&mut self, entity: Entity, snapshot: Option<(Arc<str>, u16, [f32; 4])>) {
         if let Some((region, region_id, uv)) = snapshot {
-            if let Some(mut sprite) = self.world.get_mut::<Sprite>(entity) {
-                sprite.region = region;
-                sprite.region_id = region_id;
-                sprite.uv = uv;
+            let mut updated = false;
+            {
+                if let Some(mut sprite) = self.world.get_mut::<Sprite>(entity) {
+                    sprite.region = region;
+                    sprite.region_id = region_id;
+                    sprite.uv = uv;
+                    updated = true;
+                }
+            }
+            if updated {
+                self.sync_sprite_frame_state(entity);
             }
         }
     }
@@ -1135,6 +1174,7 @@ impl EcsWorld {
                     loop_mode,
                 );
                 self.world.entity_mut(entity).insert(component);
+                self.ensure_sprite_frame_state(entity);
                 if let Some(mut animation) = self.world.get_mut::<SpriteAnimation>(entity) {
                     if let Some((offset, random, group)) = previous_config {
                         animation.start_offset = offset;
@@ -1301,8 +1341,9 @@ impl EcsWorld {
 
     pub fn refresh_sprite_animations_for_atlas(&mut self, atlas_key: &str, assets: &AssetManager) -> usize {
         let mut updated = 0usize;
-        let mut query = self.world.query::<(Entity, &mut Sprite, &mut SpriteAnimation)>();
-        for (entity, mut sprite, mut animation) in query.iter_mut(&mut self.world) {
+        let mut query =
+            self.world.query::<(Entity, &mut Sprite, &mut SpriteAnimation, Option<&mut SpriteFrameState>)>();
+        for (entity, mut sprite, mut animation, mut frame_state) in query.iter_mut(&mut self.world) {
             if sprite.atlas_key.as_ref() != atlas_key {
                 continue;
             }
@@ -1436,6 +1477,11 @@ impl EcsWorld {
             if let Some(frame) = animation.current_frame() {
                 sprite.region = Arc::clone(&frame.region);
                 sprite.apply_frame(frame);
+                if let Some(state) = frame_state.as_deref_mut() {
+                    state.sync_from_sprite(&sprite);
+                }
+            } else if let Some(state) = frame_state.as_deref_mut() {
+                state.sync_from_sprite(&sprite);
             }
 
             updated += 1;

@@ -18,7 +18,8 @@ use kestrel_engine::ecs::{
 };
 use kestrel_engine::ecs::{
     BoneTransforms, ClipInstance, EcsWorld, PropertyTrackPlayer, SkeletonInstance, Sprite, SpriteAnimation,
-    SpriteAnimationFrame, SpriteAnimationLoopMode, Tint, Transform, TransformTrackPlayer, WorldTransform,
+    SpriteAnimationFrame, SpriteAnimationLoopMode, SpriteFrameState, Tint, Transform, TransformTrackPlayer,
+    WorldTransform,
 };
 use std::collections::hash_map::DefaultHasher;
 use std::env;
@@ -625,8 +626,9 @@ fn seed_sprite_animators(world: &mut EcsWorld, count: usize, randomize_phase: bo
         if let Some(frame) = animation.current_frame() {
             sprite.apply_frame(frame);
         }
+        let frame_state = SpriteFrameState::from_sprite(&sprite);
 
-        world.world.spawn((sprite, animation));
+        world.world.spawn((sprite, frame_state, animation));
     }
 }
 

@@ -4,15 +4,14 @@ use crate::assets::{ClipInterpolation, ClipKeyframe};
 use crate::ecs::profiler::SystemProfiler;
 use crate::ecs::{
     BoneTransforms, ClipInstance, ClipSample, PropertyTrackPlayer, SkeletonInstance, Sprite, SpriteAnimation,
-    SpriteAnimationFrame, SpriteAnimationLoopMode, Tint, Transform, TransformTrackPlayer,
+    SpriteAnimationLoopMode, SpriteFrameState, Tint, Transform, TransformTrackPlayer,
 };
 use crate::events::{EventBus, GameEvent};
-use bevy_ecs::prelude::{Entity, Mut, Query, Res, ResMut};
+use bevy_ecs::prelude::{Commands, Entity, Mut, Query, Res, ResMut, Without};
+use bevy_ecs::query::{Added, Changed, Or};
 use glam::{Mat4, Quat, Vec3};
-use smallvec::SmallVec;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::ptr::NonNull;
 use std::sync::Arc;
 
 #[cfg(feature = "anim_stats")]
@@ -315,7 +314,7 @@ pub fn sys_drive_sprite_animations(
     animation_plan: Res<AnimationPlan>,
     animation_time: Res<AnimationTime>,
     mut events: ResMut<EventBus>,
-    mut animations: Query<(Entity, &mut SpriteAnimation, &mut Sprite)>,
+    mut animations: Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState)>,
 ) {
     let _span = profiler.scope("sys_drive_sprite_animations");
     let plan = animation_plan.delta;
@@ -336,6 +335,16 @@ pub fn sys_drive_sprite_animations(
                 drive_fixed(step, steps, has_group_scales, animation_time_ref, &mut events, &mut animations);
             }
         }
+    }
+}
+
+pub fn sys_init_sprite_frame_state(
+    mut commands: Commands,
+    sprites: Query<(Entity, &Sprite), Without<SpriteFrameState>>,
+) {
+    for (entity, sprite) in sprites.iter() {
+        let state = SpriteFrameState::from_sprite(sprite);
+        commands.entity(entity).insert(state);
     }
 }
 
@@ -575,17 +584,17 @@ mod tests {
             SpriteAnimationLoopMode::Loop,
         );
 
-        world.spawn((
-            animation,
-            Sprite { atlas_key: Arc::from("atlas"), region: Arc::clone(&region), region_id: 7, uv: [0.0; 4] },
-        ));
+        let sprite =
+            Sprite { atlas_key: Arc::from("atlas"), region: Arc::clone(&region), region_id: 7, uv: [0.0; 4] };
+        let frame_state = SpriteFrameState::from_sprite(&sprite);
+        world.spawn((animation, sprite, frame_state));
 
         let mut system_state = SystemState::<(
             ResMut<SystemProfiler>,
             Res<AnimationPlan>,
             Res<AnimationTime>,
             ResMut<EventBus>,
-            Query<(Entity, &mut SpriteAnimation, &mut Sprite)>,
+            Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState)>,
         )>::new(&mut world);
         {
             let (profiler, plan, time, events, animations) = system_state.get_mut(&mut world);
@@ -826,17 +835,17 @@ mod tests {
             SpriteAnimationLoopMode::Loop,
         );
 
-        world.spawn((
-            animation,
-            Sprite { atlas_key: Arc::from("atlas"), region: Arc::clone(&region), region_id: 0, uv: [0.0; 4] },
-        ));
+        let sprite =
+            Sprite { atlas_key: Arc::from("atlas"), region: Arc::clone(&region), region_id: 0, uv: [0.0; 4] };
+        let frame_state = SpriteFrameState::from_sprite(&sprite);
+        world.spawn((animation, sprite, frame_state));
 
         let mut system_state = SystemState::<(
             ResMut<SystemProfiler>,
             Res<AnimationPlan>,
             Res<AnimationTime>,
             ResMut<EventBus>,
-            Query<(Entity, &mut SpriteAnimation, &mut Sprite)>,
+            Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState)>,
         )>::new(&mut world);
 
         let _guard = DriveFixedRecorderGuard::enable();
@@ -1997,11 +2006,9 @@ fn drive_single(
     has_group_scales: bool,
     animation_time: &AnimationTime,
     events: &mut EventBus,
-    animations: &mut Query<(Entity, &mut SpriteAnimation, &mut Sprite)>,
+    animations: &mut Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState)>,
 ) {
-    let mut pending_frames: SmallVec<[(NonNull<Sprite>, NonNull<SpriteAnimationFrame>); 64]> =
-        SmallVec::new();
-    for (entity, mut animation, mut sprite) in animations.iter_mut() {
+    for (entity, mut animation, mut sprite_state) in animations.iter_mut() {
         let frame_count = animation.frames.len();
         if frame_count == 0 {
             continue;
@@ -2065,14 +2072,12 @@ fn drive_single(
         }
 
         if sprite_changed {
-            let frame_ptr = NonNull::from(&animation.frames[animation.frame_index]);
-            drop(animation);
-            let sprite_ptr = NonNull::from(&mut *sprite);
-            pending_frames.push((sprite_ptr, frame_ptr));
+            if let Some(frame) = animation.frames.get(animation.frame_index) {
+                sprite_state.update_from_frame(frame);
+            }
             continue;
         }
     }
-    flush_pending_sprite_frames(&mut pending_frames);
 }
 
 fn drive_fixed(
@@ -2081,11 +2086,9 @@ fn drive_fixed(
     has_group_scales: bool,
     animation_time: &AnimationTime,
     events: &mut EventBus,
-    animations: &mut Query<(Entity, &mut SpriteAnimation, &mut Sprite)>,
+    animations: &mut Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState)>,
 ) {
-    let mut pending_frames: SmallVec<[(NonNull<Sprite>, NonNull<SpriteAnimationFrame>); 64]> =
-        SmallVec::new();
-    for (entity, mut animation, mut sprite) in animations.iter_mut() {
+    for (entity, mut animation, mut sprite_state) in animations.iter_mut() {
         let frame_count = animation.frames.len();
         if frame_count == 0 {
             continue;
@@ -2166,24 +2169,26 @@ fn drive_fixed(
         }
 
         if sprite_changed {
-            let frame_ptr = NonNull::from(&animation.frames[animation.frame_index]);
-            drop(animation);
-            let sprite_ptr = NonNull::from(&mut *sprite);
-            pending_frames.push((sprite_ptr, frame_ptr));
+            if let Some(frame) = animation.frames.get(animation.frame_index) {
+                sprite_state.update_from_frame(frame);
+            }
             continue;
         }
     }
-    flush_pending_sprite_frames(&mut pending_frames);
 }
 
-#[inline]
-fn flush_pending_sprite_frames(
-    pending: &mut SmallVec<[(NonNull<Sprite>, NonNull<SpriteAnimationFrame>); 64]>,
+pub fn sys_apply_sprite_frame_states(
+    mut sprites: Query<
+        (&mut Sprite, &mut SpriteFrameState),
+        Or<(Changed<SpriteFrameState>, Added<SpriteFrameState>)>,
+    >,
 ) {
-    for (sprite_ptr, frame_ptr) in pending.drain(..) {
-        unsafe {
-            let sprite_mut = &mut *sprite_ptr.as_ptr();
-            sprite_mut.apply_frame(frame_ptr.as_ref());
+    for (mut sprite, mut state) in sprites.iter_mut() {
+        if let Some(region) = state.pending_region.take() {
+            sprite.region = region;
+            state.region_initialized = true;
         }
+        sprite.region_id = state.region_id;
+        sprite.uv = state.uv;
     }
 }

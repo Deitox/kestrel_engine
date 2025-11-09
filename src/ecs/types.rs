@@ -106,6 +106,51 @@ impl Sprite {
 }
 
 #[derive(Component, Clone)]
+pub struct SpriteFrameState {
+    pub region_id: u16,
+    pub uv: [f32; 4],
+    pub pending_region: Option<Arc<str>>,
+    pub region_initialized: bool,
+}
+
+impl SpriteFrameState {
+    pub fn new_uninitialized() -> Self {
+        Self {
+            region_id: Sprite::UNINITIALIZED_REGION,
+            uv: [0.0; 4],
+            pending_region: None,
+            region_initialized: false,
+        }
+    }
+
+    pub fn from_sprite(sprite: &Sprite) -> Self {
+        Self {
+            region_id: sprite.region_id,
+            uv: sprite.uv,
+            pending_region: None,
+            region_initialized: sprite.is_initialized(),
+        }
+    }
+
+    pub fn update_from_frame(&mut self, frame: &SpriteAnimationFrame) {
+        self.region_id = frame.region_id;
+        self.uv = frame.uv;
+        if !self.region_initialized {
+            self.pending_region = Some(frame.region.clone());
+        }
+    }
+
+    pub fn sync_from_sprite(&mut self, sprite: &Sprite) {
+        self.region_id = sprite.region_id;
+        self.uv = sprite.uv;
+        self.region_initialized = sprite.is_initialized();
+        if self.region_initialized {
+            self.pending_region = None;
+        }
+    }
+}
+
+#[derive(Component, Clone)]
 pub struct SpriteAnimation {
     pub timeline: Arc<str>,
     pub frames: Arc<[SpriteAnimationFrame]>,
@@ -257,7 +302,6 @@ impl SpriteAnimation {
         self.pending_start_events =
             self.has_events && self.current_frame().map(|frame| !frame.events.is_empty()).unwrap_or(false);
     }
-
 
     #[inline]
     pub(crate) fn accumulate_delta(&mut self, delta: f32, epsilon: f32) -> Option<f32> {
@@ -867,8 +911,7 @@ impl ClipInstance {
             self.rotation_segment_time = offset;
             self.rotation_segment_span =
                 track.segments.get(cursor).map(|segment| segment.span).unwrap_or(0.0).max(0.0);
-            self.rotation_segment_start =
-                track.keyframes.get(cursor).map(|kf| kf.value).unwrap_or(0.0);
+            self.rotation_segment_start = track.keyframes.get(cursor).map(|kf| kf.value).unwrap_or(0.0);
             if let Some(segment) = track.segments.get(cursor) {
                 self.rotation_segment_slope = segment.slope;
                 self.rotation_segment_cached_index = cursor;
@@ -2634,16 +2677,14 @@ mod tests {
     fn linear_rotation_clip_cached_sample_stays_in_sync() {
         fn rotation_clip() -> Arc<AnimationClip> {
             let keyframes: Arc<[ClipKeyframe<f32>]> = Arc::from(
-                vec![
-                    ClipKeyframe { time: 0.0, value: 0.0 },
-                    ClipKeyframe { time: 0.5, value: TAU },
-                ]
-                .into_boxed_slice(),
+                vec![ClipKeyframe { time: 0.0, value: 0.0 }, ClipKeyframe { time: 0.5, value: TAU }]
+                    .into_boxed_slice(),
             );
             let span = (keyframes[1].time - keyframes[0].time).max(std::f32::EPSILON);
             let inv_span = 1.0 / span;
             let delta = keyframes[1].value - keyframes[0].value;
-            let segments = Arc::from(vec![ClipSegment { slope: delta * inv_span, span, inv_span }].into_boxed_slice());
+            let segments =
+                Arc::from(vec![ClipSegment { slope: delta * inv_span, span, inv_span }].into_boxed_slice());
             let offsets = Arc::from(vec![keyframes[0].time].into_boxed_slice());
             let deltas = Arc::from(vec![delta].into_boxed_slice());
             Arc::new(AnimationClip {
