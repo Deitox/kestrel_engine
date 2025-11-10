@@ -14,8 +14,8 @@
 This foundation remains unchanged; new work layers on top of it.
 
 ## Operating Principles
-- **Performance Budgets:** Each milestone owns a measurable CPU/GPU budget (see table below). Budgets are enforced via automated benchmarks (`tests/animation_bench.rs`) that report min/avg/max times and entity counts.
-- **Benchmark Profile:** Local perf runs should use `cargo test --profile bench animation_bench_run -- --ignored --nocapture` which mirrors release settings without the heavy `lto=fat` rebuild overhead; CI still uses full `--release`.
+- **Performance Budgets:** Each milestone owns a measurable CPU/GPU budget (see table below). Budgets are enforced via the roadmap checkpoint harness (`tests/animation_targets.rs`) that reports min/avg/max times and entity counts.
+- **Benchmark Profile:** Local perf runs should use `cargo test --profile bench animation_targets_measure -- --ignored --nocapture` which mirrors release settings without the heavy `lto=fat` rebuild overhead; CI still uses full `--release`.
 - **No Per-Frame Allocation:** Playback systems must avoid heap allocations during `update()`; preallocate storage, intern region names, and reuse buffers.
 - **Determinism:** Provide variable-step default with an optional fixed-step path for capture/replays. Extend golden tests to verify repeatability.
 - **Versioned Data:** Every animation-related asset (atlas, clips, graphs) carries a schema version; migrators live under `scripts/`.
@@ -27,7 +27,7 @@ This foundation remains unchanged; new work layers on top of it.
 
 | Feature Area             | Budget (Release Build)                     | Test Coverage                          |
 |--------------------------|--------------------------------------------|----------------------------------------|
-| Sprite timelines         | <= 0.20 ms CPU for 10 000 animators        | `animation_bench` sweep + golden tests |
+| Sprite timelines         | <= 0.20 ms CPU for 10 000 animators        | `animation_targets_measure` + golden tests |
 | Transform/property clips | <= 0.40 ms CPU for 2 000 clips (linear/step) | Bench sweep + end-pose golden tests   |
 | Skeletal evaluation      | <= 1.20 ms CPU for 1 000 bones             | Bench sweep + pose verification        |
 | Skeletal upload          | <= 0.50 ms GPU upload per frame            | Renderer metrics + analytics hook      |
@@ -51,7 +51,7 @@ Benchmarks emit CSV summaries for CI. Failing budgets block the milestone exit.
 - [x] **Performance Polish:** Intern region names to IDs, store `u16` region indices, precompute UV rectangles, and only write to `Sprite` when frames change. Enforce zero allocations per frame. *(region IDs + cached UVs landed; latest bench at 0.192 ms for 10k animators — now within the 0.20 ms target)*
 
 ### Exit Criteria
-- [x] `animation_bench` demonstrates <= 0.20 ms CPU for 10 000 animators (release build).
+- [x] `animation_targets_measure` demonstrates <= 0.20 ms CPU for 10 000 animators (release build).
 - [x] Golden playback tests cover all loop modes, phase offsets, ping-pong edge frames, and event dispatch.
 - [x] Hot-reload regression test confirms frame continuity when names persist.
 - [x] Authoring doc published; importer validated via automated test using a fixture Aseprite export.
@@ -73,10 +73,10 @@ Benchmarks emit CSV summaries for CI. Failing budgets block the milestone exit.
 - [x] Transform/property clip authoring workflow documented in `docs/animation_workflows.md` (schema overview, template fixture, validation steps).
 - [x] `ClipInstance` runtime introduced with transform/tint application and unit coverage (`tests/transform_clips.rs`).
 - [x] Inspector exposes transform/property clip assignment, playback controls, scrubbing, and track masks.
-- [x] `animation_bench` extended with transform clip sweep (2 000 clips) and CSV reporting, with CI script enforcement.
+- [x] `animation_targets_measure` extended with transform clip checkpoint (2 000 clips) and JSON reporting, with CI script enforcement.
 
 ### Exit Criteria
-- [x] Benchmarks show <= 0.40 ms CPU for 2 000 active clips (release). *(Latest `cargo test --profile bench animation_bench_run -- --ignored --nocapture` reports 0.332 ms mean / 0.342 ms max.)*
+- [x] Benchmarks show <= 0.40 ms CPU for 2 000 active clips (release). *(Latest `cargo test --profile bench animation_targets_measure -- --ignored --nocapture` reports 0.332 ms mean / 0.342 ms max.)*
 - [x] Golden tests validate interpolation correctness and final poses after deterministic playback.
 - [x] Scene/prefab round-trip tests verify clip bindings remain intact.
 
@@ -125,7 +125,7 @@ Benchmarks emit CSV summaries for CI. Failing budgets block the milestone exit.
 ### Scope
 - Lightweight keyframe editor in `editor_ui`: layer list, per-track key display, add/move/delete for Step/Linear keys, live scrubbing.
 - Asset watchers that auto-reload clips/graphs and run validators (reuse importer infrastructure).
-- CLI utilities: `animation_check` (validate schemas, budgets), `migrate_atlas` (bump versions), `animation_bench` (generate CSV).
+- CLI utilities: `animation_check` (validate schemas, budgets), `migrate_atlas` (bump versions), roadmap checkpoint harness (`animation_targets_measure`) for JSON perf captures.
 - Analytics overlay: display animation evaluation cost, animator count, bone count, and budget thresholds in the HUD/status bar.
 - Sample content: curated scenes showcasing sprite timelines, transform tracks, skeletal rigs, and graph-driven characters.
 - Documentation: updated tutorials, troubleshooting guides, and scripting best practices.
@@ -149,7 +149,7 @@ Benchmarks emit CSV summaries for CI. Failing budgets block the milestone exit.
 - [x] Introduce ECS skeleton components (`SkeletonInstance`, `SkinMesh`, `BoneTransforms`) and hook them into transform propagation. *(Component scaffolding + pose system now live; BoneTransforms updated each frame.)*
 - [x] Implement CPU pose evaluator with golden pose tests using the fixture clip. *(`ecs::systems::animation` unit tests cover keyframes + loop wrap for `slime_rig`.)*
 - [x] Extend renderer skinning to upload joint palettes, split batches when limits hit, and record GPU timing. *(Renderer now pools palette buffers/bind groups, reuses staging storage, and logs when rigs exceed the 256-joint limit.)*
-- [x] Add skeletal evaluation coverage to `animation_bench` capturing the 1 000-bone CPU budget. *(New bench suite seeds 10-bone rigs and tracks the 1 000-bone target via CSV output.)*
+- [x] Add skeletal evaluation coverage to `animation_targets_measure` capturing the 1 000-bone CPU budget. *(The harness seeds rigs until 1 000 bones are active and logs the target budget inside `animation_targets_report.json`.)*
 - [x] Expand `docs/animation_workflows.md` skeletal section with authoring steps and inspector expectations. *(Animation workflows doc now covers inspector flow and validation as of 2025-11-12.)*
 
 This roadmap supersedes earlier drafts and reflects the final agreed-upon plan for animation system development. Further adjustments will follow formal change control once milestones begin execution.

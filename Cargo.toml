@@ -46,9 +46,16 @@ opt-level = 1
 
 [profile.release]
 opt-level = 3
+codegen-units = 8
+lto = "thin"
+panic = "abort"
+incremental = false
+debug = true
+
+[profile.release-fat]
+inherits = "release"
 codegen-units = 1
 lto = "fat"
-panic = "abort"
 incremental = false
 debug = true
 

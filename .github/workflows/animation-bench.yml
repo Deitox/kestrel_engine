@@ -1,4 +1,4 @@
-name: Animation Bench
+name: Animation Targets
 
 on:
   pull_request:
@@ -8,7 +8,7 @@ on:
 
 jobs:
   bench:
-    name: Sprite Timeline Benchmark
+    name: Animation Target Measurement
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,14 +27,14 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Run animation benchmark
+      - name: Run animation target measurement
         shell: pwsh
         run: |
-          ./scripts/ci/run_animation_bench.ps1 -OutputDirectory artifacts
+          ./scripts/ci/run_animation_targets.ps1 -OutputDirectory artifacts
 
-      - name: Upload benchmark CSV
+      - name: Upload target report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: animation-bench
-          path: artifacts/animation_sprite_timelines.csv
+          name: animation-targets
+          path: artifacts/animation_targets_report.json

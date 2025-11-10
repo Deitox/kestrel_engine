@@ -1,0 +1,593 @@
+//! Animation performance checkpoints aligned with the roadmap budgets.
+//! Invoke with `cargo test --release animation_targets_measure -- --ignored --nocapture`.
+
+use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
+use kestrel_engine::assets::skeletal::{
+    JointCurve, JointQuatTrack, JointVec3Track, SkeletalClip, SkeletonAsset, SkeletonJoint,
+};
+use kestrel_engine::assets::{
+    AnimationClip, ClipInterpolation, ClipKeyframe, ClipScalarTrack, ClipSegment, ClipVec2Track,
+    ClipVec4Track,
+};
+use kestrel_engine::ecs::{
+    BoneTransforms, ClipInstance, EcsWorld, PropertyTrackPlayer, SkeletonInstance, Sprite, SpriteAnimation,
+    SpriteAnimationFrame, SpriteAnimationLoopMode, SpriteFrameState, Tint, Transform, TransformTrackPlayer,
+    WorldTransform,
+};
+use serde::Serialize;
+use std::fs::{create_dir_all, File};
+use std::hint::black_box;
+use std::io::Write;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+const DT: f32 = 1.0 / 60.0;
+const STEPS: u32 = 240;
+const WARMUP_STEPS: u32 = 16;
+const SAMPLES: usize = 5;
+const BONES_PER_RIG: usize = 10;
+
+#[derive(Clone, Copy)]
+struct BudgetCase {
+    label: &'static str,
+    units: &'static str,
+    count: usize,
+    budget_ms: f64,
+    kind: CaseKind,
+}
+
+#[derive(Clone, Copy)]
+enum CaseKind {
+    Sprite,
+    Transform,
+    Skeletal { bones_per_rig: usize },
+}
+
+#[derive(Serialize)]
+struct CaseReport {
+    label: &'static str,
+    units: &'static str,
+    count: usize,
+    steps: u32,
+    samples: usize,
+    dt: f32,
+    budget_ms: f64,
+    summary: TimingSummary,
+    status: TargetStatus,
+}
+
+#[derive(Serialize)]
+struct TimingSummary {
+    mean_step_ms: f64,
+    min_step_ms: f64,
+    max_step_ms: f64,
+    total_elapsed_ms: f64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum TargetStatus {
+    WithinBudget,
+    OverBudget,
+}
+
+const CASES: &[BudgetCase] = &[
+    BudgetCase {
+        label: "sprite_timelines",
+        units: "animators",
+        count: 10_000,
+        budget_ms: 0.20,
+        kind: CaseKind::Sprite,
+    },
+    BudgetCase {
+        label: "transform_clips",
+        units: "clips",
+        count: 2_000,
+        budget_ms: 0.40,
+        kind: CaseKind::Transform,
+    },
+    BudgetCase {
+        label: "skeletal_clips",
+        units: "bones",
+        count: 1_000,
+        budget_ms: 1.20,
+        kind: CaseKind::Skeletal { bones_per_rig: BONES_PER_RIG },
+    },
+];
+
+#[test]
+#[ignore = "perf harness - run manually when collecting animation targets"]
+fn animation_targets_measure() {
+    println!(
+        "[animation_targets] steps={} warmup={} samples={} dt={:.6}",
+        STEPS, WARMUP_STEPS, SAMPLES, DT
+    );
+
+    let mut reports = Vec::with_capacity(CASES.len());
+    for case in CASES {
+        let report = run_case(case);
+        let status_str = match report.status {
+            TargetStatus::WithinBudget => "PASS",
+            TargetStatus::OverBudget => "WARN",
+        };
+        println!(
+            "[animation_targets][{label}] {status} | count={count} {units} | mean={mean:.3} ms | \
+             min={min:.3} ms | max={max:.3} ms | budget={budget:.2} ms",
+            label = case.label,
+            status = status_str,
+            count = case.count,
+            units = case.units,
+            mean = report.summary.mean_step_ms,
+            min = report.summary.min_step_ms,
+            max = report.summary.max_step_ms,
+            budget = case.budget_ms
+        );
+        reports.push(report);
+    }
+
+    if let Err(err) = write_report(&reports) {
+        eprintln!("[animation_targets] Failed to write report: {err}");
+    }
+}
+
+fn run_case(case: &BudgetCase) -> CaseReport {
+    let mut elapsed = Vec::with_capacity(SAMPLES);
+    for _ in 0..SAMPLES {
+        let mut world = EcsWorld::new();
+        seed_world(case, &mut world);
+
+        for _ in 0..WARMUP_STEPS {
+            world.update(DT);
+        }
+
+        let start = Instant::now();
+        for _ in 0..STEPS {
+            world.update(black_box(DT));
+        }
+        elapsed.push(start.elapsed());
+        black_box(&world);
+    }
+
+    let summary = summarize(&elapsed);
+    let status = if summary.mean_step_ms <= case.budget_ms {
+        TargetStatus::WithinBudget
+    } else {
+        TargetStatus::OverBudget
+    };
+
+    CaseReport {
+        label: case.label,
+        units: case.units,
+        count: case.count,
+        steps: STEPS,
+        samples: SAMPLES,
+        dt: DT,
+        budget_ms: case.budget_ms,
+        summary,
+        status,
+    }
+}
+
+fn seed_world(case: &BudgetCase, world: &mut EcsWorld) {
+    match case.kind {
+        CaseKind::Sprite => seed_sprite_animators(world, case.count, true),
+        CaseKind::Transform => seed_transform_clips(world, case.count, true),
+        CaseKind::Skeletal { bones_per_rig } => {
+            let rigs = ((case.count + bones_per_rig - 1) / bones_per_rig).max(1);
+            seed_skeletal_clips(world, rigs, bones_per_rig, true);
+        }
+    }
+}
+
+fn summarize(samples: &[Duration]) -> TimingSummary {
+    let steps_f64 = f64::from(STEPS.max(1));
+    let mut mean_acc = 0.0;
+    let mut min_ms = f64::INFINITY;
+    let mut max_ms = 0.0;
+    let mut total_elapsed_ms = 0.0;
+
+    for elapsed in samples {
+        let elapsed_ms = elapsed.as_secs_f64() * 1_000.0;
+        total_elapsed_ms += elapsed_ms;
+        let per_step = elapsed_ms / steps_f64;
+        mean_acc += per_step;
+        if per_step < min_ms {
+            min_ms = per_step;
+        }
+        if per_step > max_ms {
+            max_ms = per_step;
+        }
+    }
+
+    let sample_count = samples.len().max(1) as f64;
+    TimingSummary {
+        mean_step_ms: mean_acc / sample_count,
+        min_step_ms: min_ms,
+        max_step_ms: max_ms,
+        total_elapsed_ms,
+    }
+}
+
+fn write_report(reports: &[CaseReport]) -> std::io::Result<()> {
+    if reports.is_empty() {
+        return Ok(());
+    }
+    let path = target_dir();
+    if let Some(parent) = path.as_path().parent() {
+        create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(reports).expect("serialize report");
+    let mut file = File::create(&path)?;
+    file.write_all(json.as_bytes())?;
+    println!("[animation_targets] Report written to {}", path.display());
+    Ok(())
+}
+
+fn target_dir() -> PathBuf {
+    let mut dir = if let Ok(raw) = std::env::var("CARGO_TARGET_DIR") {
+        PathBuf::from(raw)
+    } else {
+        PathBuf::from("target")
+    };
+    dir.push("animation_targets_report.json");
+    dir
+}
+
+fn seed_sprite_animators(world: &mut EcsWorld, count: usize, randomize_phase: bool) {
+    let empty_events: Arc<[Arc<str>]> = Arc::from(Vec::<Arc<str>>::new());
+    let frame_template: Arc<[SpriteAnimationFrame]> = Arc::from(vec![
+        SpriteAnimationFrame {
+            name: Arc::from("frame_a"),
+            region: Arc::from("frame_a"),
+            region_id: 0,
+            duration: 0.08,
+            uv: [0.0; 4],
+            events: Arc::clone(&empty_events),
+        },
+        SpriteAnimationFrame {
+            name: Arc::from("frame_b"),
+            region: Arc::from("frame_b"),
+            region_id: 1,
+            duration: 0.08,
+            uv: [0.0; 4],
+            events: Arc::clone(&empty_events),
+        },
+        SpriteAnimationFrame {
+            name: Arc::from("frame_c"),
+            region: Arc::from("frame_c"),
+            region_id: 2,
+            duration: 0.08,
+            uv: [0.0; 4],
+            events: Arc::clone(&empty_events),
+        },
+    ]);
+    let frame_durations: Arc<[f32]> =
+        Arc::from(frame_template.iter().map(|frame| frame.duration).collect::<Vec<_>>());
+    let frame_offsets: Arc<[f32]> = {
+        let mut offsets = Vec::with_capacity(frame_template.len());
+        let mut accumulated = 0.0_f32;
+        for frame in frame_template.iter() {
+            offsets.push(accumulated);
+            accumulated += frame.duration;
+        }
+        Arc::from(offsets.into_boxed_slice())
+    };
+    let timeline_name = Arc::from("bench_cycle");
+    let atlas_key = Arc::from("bench");
+    let total_duration: f32 = frame_durations.iter().copied().sum();
+
+    for index in 0..count {
+        let mut animation = SpriteAnimation::new(
+            Arc::clone(&timeline_name),
+            Arc::clone(&frame_template),
+            Arc::clone(&frame_durations),
+            Arc::clone(&frame_offsets),
+            total_duration,
+            SpriteAnimationLoopMode::Loop,
+        );
+        if randomize_phase {
+            apply_phase_offset(&mut animation, stable_phase_fraction(index as u64, timeline_name.as_ref()));
+        }
+        let mut sprite = Sprite::uninitialized(Arc::clone(&atlas_key), Arc::clone(&frame_template[0].region));
+        if let Some(frame) = animation.current_frame() {
+            sprite.apply_frame(frame);
+        }
+        let frame_state = SpriteFrameState::from_sprite(&sprite);
+        world.world.spawn((sprite, frame_state, animation));
+    }
+}
+
+fn seed_transform_clips(world: &mut EcsWorld, count: usize, randomize_phase: bool) {
+    let clip = bench_transform_clip();
+    let clip_key: Arc<str> = Arc::from("bench_transform");
+    for index in 0..count {
+        let mut instance = ClipInstance::new(Arc::clone(&clip_key), Arc::clone(&clip));
+        let duration = instance.duration();
+        if randomize_phase && duration > 0.0 {
+            let fraction = stable_phase_fraction(index as u64, clip_key.as_ref());
+            instance.set_time(fraction * duration);
+        }
+        let sample = instance.sample_cached();
+        instance.last_translation = sample.translation;
+        instance.last_rotation = sample.rotation;
+        instance.last_scale = sample.scale;
+        instance.last_tint = sample.tint;
+        let transform = Transform {
+            translation: sample.translation.unwrap_or(Vec2::ZERO),
+            rotation: sample.rotation.unwrap_or(0.0),
+            scale: sample.scale.unwrap_or(Vec2::splat(1.0)),
+        };
+        let tint = Tint(sample.tint.unwrap_or(Vec4::ONE));
+        world.world.spawn((
+            transform,
+            WorldTransform::default(),
+            instance,
+            TransformTrackPlayer::default(),
+            PropertyTrackPlayer::default(),
+            tint,
+        ));
+    }
+}
+
+fn seed_skeletal_clips(world: &mut EcsWorld, rigs: usize, bone_count: usize, randomize_phase: bool) {
+    let skeleton_key: Arc<str> = Arc::from("bench_skeleton");
+    let skeleton = bench_skeleton_asset(bone_count);
+    let clip = bench_skeletal_clip(Arc::clone(&skeleton_key), bone_count);
+    for index in 0..rigs {
+        let mut instance = SkeletonInstance::new(Arc::clone(&skeleton_key), Arc::clone(&skeleton));
+        instance.set_active_clip(Some(Arc::clone(&clip)));
+        if randomize_phase {
+            let duration = instance.clip_duration();
+            if duration > 0.0 {
+                let fraction = stable_phase_fraction(index as u64, skeleton_key.as_ref());
+                instance.time = fraction * duration;
+            }
+        }
+        instance.ensure_capacity();
+        instance.mark_dirty();
+
+        let mut bone_transforms = BoneTransforms::new(instance.joint_count());
+        bone_transforms.ensure_joint_count(instance.joint_count());
+        world.world.spawn((instance, bone_transforms));
+    }
+}
+
+fn bench_transform_clip() -> Arc<AnimationClip> {
+    let translation_keys: Arc<[ClipKeyframe<Vec2>]> = Arc::from(
+        vec![
+            ClipKeyframe { time: 0.0, value: Vec2::ZERO },
+            ClipKeyframe { time: 0.25, value: Vec2::new(0.0, 4.0) },
+            ClipKeyframe { time: 0.5, value: Vec2::ZERO },
+        ]
+        .into_boxed_slice(),
+    );
+    let rotation_keys: Arc<[ClipKeyframe<f32>]> = Arc::from(
+        vec![
+            ClipKeyframe { time: 0.0, value: 0.0 },
+            ClipKeyframe { time: 0.5, value: std::f32::consts::TAU },
+        ]
+        .into_boxed_slice(),
+    );
+    let scale_keys: Arc<[ClipKeyframe<Vec2>]> = Arc::from(
+        vec![
+            ClipKeyframe { time: 0.0, value: Vec2::splat(1.0) },
+            ClipKeyframe { time: 0.5, value: Vec2::new(1.2, 0.8) },
+        ]
+        .into_boxed_slice(),
+    );
+    let tint_keys: Arc<[ClipKeyframe<Vec4>]> = Arc::from(
+        vec![
+            ClipKeyframe { time: 0.0, value: Vec4::ONE },
+            ClipKeyframe { time: 0.5, value: Vec4::new(0.6, 0.9, 1.0, 1.0) },
+        ]
+        .into_boxed_slice(),
+    );
+    let (translation_delta, translation_segments, translation_offsets) =
+        build_segment_cache_from_keys(translation_keys.as_ref(), |window| window[1].value - window[0].value);
+    let (rotation_delta, rotation_segments, rotation_offsets) =
+        build_segment_cache_from_keys(rotation_keys.as_ref(), |window| window[1].value - window[0].value);
+    let (scale_delta, scale_segments, scale_offsets) =
+        build_segment_cache_from_keys(scale_keys.as_ref(), |window| window[1].value - window[0].value);
+    let (tint_delta, tint_segments, tint_offsets) =
+        build_segment_cache_from_keys(tint_keys.as_ref(), |window| window[1].value - window[0].value);
+
+    Arc::new(AnimationClip {
+        name: Arc::from("bench_transform"),
+        duration: 0.5,
+        duration_inv: 2.0,
+        translation: Some(ClipVec2Track {
+            interpolation: ClipInterpolation::Linear,
+            keyframes: translation_keys,
+            duration: 0.5,
+            duration_inv: 2.0,
+            segment_deltas: translation_delta,
+            segments: translation_segments,
+            segment_offsets: translation_offsets,
+        }),
+        rotation: Some(ClipScalarTrack {
+            interpolation: ClipInterpolation::Linear,
+            keyframes: rotation_keys,
+            duration: 0.5,
+            duration_inv: 2.0,
+            segment_deltas: rotation_delta,
+            segments: rotation_segments,
+            segment_offsets: rotation_offsets,
+        }),
+        scale: Some(ClipVec2Track {
+            interpolation: ClipInterpolation::Step,
+            keyframes: scale_keys,
+            duration: 0.5,
+            duration_inv: 2.0,
+            segment_deltas: scale_delta,
+            segments: scale_segments,
+            segment_offsets: scale_offsets,
+        }),
+        tint: Some(ClipVec4Track {
+            interpolation: ClipInterpolation::Linear,
+            keyframes: tint_keys,
+            duration: 0.5,
+            duration_inv: 2.0,
+            segment_deltas: tint_delta,
+            segments: tint_segments,
+            segment_offsets: tint_offsets,
+        }),
+        looped: true,
+        version: 1,
+    })
+}
+
+fn build_segment_cache_from_keys<T, F>(
+    frames: &[ClipKeyframe<T>],
+    mut delta_fn: F,
+) -> (Arc<[T]>, Arc<[ClipSegment<T>]>, Arc<[f32]>)
+where
+    T: Copy + std::ops::Mul<f32, Output = T>,
+    F: FnMut(&[ClipKeyframe<T>]) -> T,
+{
+    if frames.len() < 2 {
+        return (Arc::from([]), Arc::from([]), Arc::from([]));
+    }
+    let mut deltas = Vec::with_capacity(frames.len() - 1);
+    let mut segments = Vec::with_capacity(frames.len() - 1);
+    let mut offsets = Vec::with_capacity(frames.len() - 1);
+    for window in frames.windows(2) {
+        offsets.push(window[0].time);
+        let span = (window[1].time - window[0].time).max(std::f32::EPSILON);
+        let inv_span = 1.0 / span;
+        let delta = delta_fn(window);
+        segments.push(ClipSegment { slope: delta * inv_span, span, inv_span });
+        deltas.push(delta);
+    }
+    (
+        Arc::from(deltas.into_boxed_slice()),
+        Arc::from(segments.into_boxed_slice()),
+        Arc::from(offsets.into_boxed_slice()),
+    )
+}
+
+fn bench_skeleton_asset(bone_count: usize) -> Arc<SkeletonAsset> {
+    let mut joints: Vec<SkeletonJoint> = Vec::with_capacity(bone_count);
+    for index in 0..bone_count {
+        let parent = if index == 0 { None } else { Some((index - 1) as u32) };
+        let rest_translation = if index == 0 { Vec3::ZERO } else { Vec3::new(0.0, 1.0, 0.0) };
+        let rest_rotation = Quat::IDENTITY;
+        let rest_scale = Vec3::ONE;
+        let rest_local = Mat4::from_scale_rotation_translation(rest_scale, rest_rotation, rest_translation);
+        let rest_world = if let Some(parent_index) = parent {
+            joints[parent_index as usize].rest_world * rest_local
+        } else {
+            rest_local
+        };
+        let inverse_bind = rest_world.inverse();
+        joints.push(SkeletonJoint {
+            name: Arc::from(format!("bone_{index}")),
+            parent,
+            rest_local,
+            rest_world,
+            rest_translation,
+            rest_rotation,
+            rest_scale,
+            inverse_bind,
+        });
+    }
+    let roots = Arc::from(vec![0_u32].into_boxed_slice());
+    Arc::new(SkeletonAsset {
+        name: Arc::from("bench_skeleton"),
+        joints: Arc::from(joints.into_boxed_slice()),
+        roots,
+    })
+}
+
+fn bench_skeletal_clip(skeleton_key: Arc<str>, bone_count: usize) -> Arc<SkeletalClip> {
+    let mut curves = Vec::with_capacity(bone_count);
+    for joint_index in 0..bone_count {
+        let base_height = joint_index as f32;
+        let translation_keys = Arc::from(
+            vec![
+                ClipKeyframe { time: 0.0, value: Vec3::new(0.0, base_height, 0.0) },
+                ClipKeyframe { time: 0.5, value: Vec3::new(0.0, base_height + 0.2, 0.0) },
+                ClipKeyframe { time: 1.0, value: Vec3::new(0.0, base_height, 0.0) },
+            ]
+            .into_boxed_slice(),
+        );
+        let translation =
+            Some(JointVec3Track { interpolation: ClipInterpolation::Linear, keyframes: translation_keys });
+
+        let rotation = if joint_index % 2 == 0 {
+            let rotation_keys = Arc::from(
+                vec![
+                    ClipKeyframe { time: 0.0, value: Quat::IDENTITY },
+                    ClipKeyframe { time: 0.5, value: Quat::from_axis_angle(Vec3::Z, 0.5) },
+                    ClipKeyframe { time: 1.0, value: Quat::IDENTITY },
+                ]
+                .into_boxed_slice(),
+            );
+            Some(JointQuatTrack { interpolation: ClipInterpolation::Linear, keyframes: rotation_keys })
+        } else {
+            None
+        };
+
+        let scale = if joint_index % 3 == 0 {
+            let scale_keys = Arc::from(
+                vec![
+                    ClipKeyframe { time: 0.0, value: Vec3::ONE },
+                    ClipKeyframe { time: 0.5, value: Vec3::new(1.1, 0.9, 1.0) },
+                    ClipKeyframe { time: 1.0, value: Vec3::ONE },
+                ]
+                .into_boxed_slice(),
+            );
+            Some(JointVec3Track { interpolation: ClipInterpolation::Linear, keyframes: scale_keys })
+        } else {
+            None
+        };
+
+        curves.push(JointCurve { joint_index: joint_index as u32, translation, rotation, scale });
+    }
+
+    Arc::new(SkeletalClip {
+        name: Arc::from("bench_skeletal"),
+        skeleton: skeleton_key,
+        duration: 1.0,
+        channels: Arc::from(curves.into_boxed_slice()),
+        looped: true,
+    })
+}
+
+fn apply_phase_offset(animation: &mut SpriteAnimation, random_seed: f32) {
+    if animation.frames.is_empty() {
+        animation.frame_index = 0;
+        animation.elapsed_in_frame = 0.0;
+        animation.refresh_current_duration();
+        return;
+    }
+    let total = animation.total_duration().max(std::f32::EPSILON);
+    let offset = (random_seed * total).rem_euclid(total);
+    animation.frame_index = 0;
+    animation.elapsed_in_frame = 0.0;
+    animation.refresh_current_duration();
+
+    let mut accumulated = 0.0;
+    for (index, duration) in animation.frame_durations.iter().copied().enumerate() {
+        let duration = duration.max(std::f32::EPSILON);
+        if offset < accumulated + duration {
+            animation.frame_index = index;
+            animation.elapsed_in_frame = (offset - accumulated).clamp(0.0, duration);
+            animation.refresh_current_duration();
+            return;
+        }
+        accumulated += duration;
+    }
+    animation.frame_index = animation.frame_durations.len().saturating_sub(1);
+    animation.elapsed_in_frame = 0.0;
+    animation.refresh_current_duration();
+}
+
+fn stable_phase_fraction(seed: u64, timeline: &str) -> f32 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    seed.hash(&mut hasher);
+    timeline.hash(&mut hasher);
+    const SCALE: f64 = 1.0 / (u64::MAX as f64 + 1.0);
+    (hasher.finish() as f64 * SCALE) as f32
+}

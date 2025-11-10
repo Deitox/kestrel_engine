@@ -353,6 +353,7 @@ mod tests {
     use super::*;
     use crate::assets::skeletal::{load_skeleton_from_gltf, SkeletonAsset};
     use crate::assets::{AnimationClip, ClipInterpolation, ClipKeyframe, ClipSegment, ClipVec2Track};
+    use crate::ecs::SpriteAnimationFrame;
     use anyhow::Result;
     use bevy_ecs::prelude::World;
     use bevy_ecs::system::SystemState;
@@ -788,6 +789,63 @@ mod tests {
         assert!(
             (animation.elapsed_in_frame - 0.07).abs() < 1e-4,
             "expected ~0.07s elapsed after wrapping, got {}",
+            animation.elapsed_in_frame
+        );
+    }
+
+    #[test]
+    fn fast_loop_rewinds_frames() {
+        let region = Arc::from("frame");
+        let frames = Arc::from(
+            vec![
+                SpriteAnimationFrame {
+                    name: Arc::clone(&region),
+                    region: Arc::clone(&region),
+                    region_id: 0,
+                    duration: 0.08,
+                    uv: [0.0; 4],
+                    events: Arc::default(),
+                },
+                SpriteAnimationFrame {
+                    name: Arc::clone(&region),
+                    region: Arc::clone(&region),
+                    region_id: 1,
+                    duration: 0.08,
+                    uv: [0.0; 4],
+                    events: Arc::default(),
+                },
+                SpriteAnimationFrame {
+                    name: Arc::clone(&region),
+                    region: Arc::clone(&region),
+                    region_id: 2,
+                    duration: 0.08,
+                    uv: [0.0; 4],
+                    events: Arc::default(),
+                },
+            ]
+            .into_boxed_slice(),
+        );
+        let durations = Arc::from(vec![0.08_f32, 0.08, 0.08].into_boxed_slice());
+        let offsets = Arc::from(vec![0.0_f32, 0.08, 0.16].into_boxed_slice());
+        let mut animation = SpriteAnimation::new(
+            Arc::from("timeline"),
+            frames,
+            durations,
+            offsets,
+            0.24,
+            SpriteAnimationLoopMode::Loop,
+        );
+        animation.frame_index = 1;
+        animation.elapsed_in_frame = 0.02;
+        animation.refresh_current_duration();
+
+        let delta = -0.05;
+        let changed = advance_animation_loop_no_events(&mut animation, delta);
+        assert!(changed, "rewinding past the current frame should report a change");
+        assert_eq!(animation.frame_index, 0);
+        assert!(
+            (animation.elapsed_in_frame - 0.05).abs() < 1e-4,
+            "expected ~0.05s elapsed after rewind, got {}",
             animation.elapsed_in_frame
         );
     }
@@ -1917,8 +1975,8 @@ fn stable_random_fraction(entity: Entity, timeline: &str) -> f32 {
     (bits as f64 * SCALE) as f32
 }
 #[inline(always)]
-fn advance_animation_loop_no_events(animation: &mut SpriteAnimation, mut delta: f32) -> bool {
-    if delta <= 0.0 || !animation.playing {
+fn advance_animation_loop_no_events(animation: &mut SpriteAnimation, delta: f32) -> bool {
+    if delta == 0.0 || !animation.playing {
         return false;
     }
     let frame_count = animation.frame_durations.len();
@@ -1929,76 +1987,86 @@ fn advance_animation_loop_no_events(animation: &mut SpriteAnimation, mut delta: 
     #[cfg(feature = "anim_stats")]
     record_fast_loop_call(1);
 
-    let durations = animation.frame_durations.as_ref();
-    let offsets = animation.frame_offsets.as_ref();
-    let mut index = animation.frame_index.min(frame_count - 1);
-    let mut current_duration = durations.get(index).copied().unwrap_or(animation.current_duration);
-    if current_duration < 0.0 {
-        current_duration = 0.0;
-    }
-    let mut elapsed = animation.elapsed_in_frame.clamp(0.0, current_duration);
     let total_duration = animation.total_duration.max(0.0);
-    let total_inv = animation.total_duration_inv;
-    let mut frame_advanced = false;
+    if total_duration <= 0.0 {
+        return false;
+    }
 
-    if total_duration > 0.0 && delta >= total_duration {
-        let divisor = if total_inv > 0.0 { total_inv } else { 1.0 / total_duration };
-        let loops = (delta * divisor).floor();
-        if loops >= 1.0 {
-            frame_advanced = true;
-            delta -= loops * total_duration;
-            if delta < 0.0 {
-                delta = 0.0;
-            }
-            #[cfg(feature = "anim_stats")]
-            record_fast_loop_binary_search(1);
+    let total = total_duration.max(std::f32::EPSILON);
+    let current_duration = animation.current_duration.max(0.0);
+    let current_elapsed = animation.elapsed_in_frame;
+    let current_offset = animation.current_frame_offset;
+
+    if delta > 0.0 {
+        let new_elapsed = current_elapsed + delta;
+        if new_elapsed <= current_duration + CLIP_TIME_EPSILON {
+            animation.elapsed_in_frame = new_elapsed.min(current_duration);
+            return false;
         }
-        if delta >= total_duration {
-            delta = delta.rem_euclid(total_duration.max(std::f32::EPSILON));
+    } else if delta < 0.0 {
+        let new_elapsed = current_elapsed + delta;
+        if new_elapsed >= -CLIP_TIME_EPSILON {
+            animation.elapsed_in_frame = new_elapsed.max(0.0);
+            return false;
         }
     }
 
-    let guard_limit = frame_count.max(1) * 2;
-    let mut guard = 0usize;
-    while delta > 0.0 && guard < guard_limit {
-        guard += 1;
-        let time_left = (current_duration - elapsed).max(0.0);
-        if time_left <= CLIP_TIME_EPSILON {
-            if frame_count == 1 {
-                break;
-            }
-            frame_advanced = true;
-            elapsed = 0.0;
-            index += 1;
-            if index == frame_count {
-                index = 0;
-            }
-            current_duration = durations.get(index).copied().unwrap_or(0.0);
-            continue;
-        }
+    let raw_position = current_offset + current_elapsed + delta;
+    let mut normalized = raw_position.rem_euclid(total);
+    if normalized.is_nan() {
+        normalized = 0.0;
+    } else if normalized >= total {
+        normalized = total - std::f32::EPSILON;
+    } else if normalized < 0.0 {
+        normalized = 0.0;
+    }
 
-        let threshold = (time_left - CLIP_TIME_EPSILON).max(0.0);
-        if delta <= threshold {
-            elapsed = (elapsed + delta).min(current_duration);
-            break;
-        }
+    let wrapped = raw_position < 0.0 || raw_position >= total;
 
-        delta -= time_left;
+    #[cfg(feature = "anim_stats")]
+    if wrapped {
+        record_fast_loop_binary_search(1);
+    }
+
+    let offsets = animation.frame_offsets.as_ref();
+    let durations = animation.frame_durations.as_ref();
+
+    let mut index = if frame_count == 1 {
+        0
+    } else {
+        match offsets
+            .binary_search_by(|start| start.partial_cmp(&normalized).unwrap_or(std::cmp::Ordering::Less))
+        {
+            Ok(idx) => idx,
+            Err(idx) => idx.saturating_sub(1),
+        }
+    };
+
+    if index >= frame_count {
+        index = frame_count - 1;
+    }
+
+    let current_start = offsets.get(index).copied().unwrap_or(0.0);
+    let mut new_duration = durations.get(index).copied().unwrap_or(current_duration);
+    if new_duration < 0.0 {
+        new_duration = 0.0;
+    }
+
+    let mut elapsed = normalized - current_start;
+    if elapsed < 0.0 {
         elapsed = 0.0;
-        frame_advanced = true;
-        index += 1;
-        if index == frame_count {
-            index = 0;
-        }
-        current_duration = durations.get(index).copied().unwrap_or(0.0);
+    } else if elapsed > new_duration {
+        elapsed = new_duration;
     }
+
+    let previous_index = animation.frame_index.min(frame_count - 1);
 
     animation.frame_index = index;
-    animation.elapsed_in_frame = elapsed.min(current_duration.max(0.0));
-    animation.current_duration = current_duration;
-    animation.current_frame_offset = offsets.get(index).copied().unwrap_or(0.0);
+    animation.elapsed_in_frame = elapsed;
+    animation.current_duration = new_duration;
+    animation.current_frame_offset = current_start;
 
-    frame_advanced
+    wrapped || index != previous_index
 }
 
 fn drive_single(
@@ -2050,17 +2118,22 @@ fn drive_single(
         };
 
         let mut sprite_changed = false;
-        if animation.fast_loop && advance_delta > 0.0 {
-            let current_duration = animation.current_duration;
-            let new_elapsed = animation.elapsed_in_frame + advance_delta;
-            if new_elapsed <= current_duration + CLIP_TIME_EPSILON {
-                animation.elapsed_in_frame = new_elapsed.min(current_duration);
-            } else if advance_animation_loop_no_events(&mut animation, advance_delta) {
-                sprite_changed = true;
-            }
-        } else if animation.fast_loop {
-            if advance_animation(&mut animation, advance_delta, entity, None, true) {
-                sprite_changed = true;
+        if animation.fast_loop {
+            if advance_delta > 0.0 {
+                let current_duration = animation.current_duration;
+                let new_elapsed = animation.elapsed_in_frame + advance_delta;
+                if new_elapsed <= current_duration + CLIP_TIME_EPSILON {
+                    animation.elapsed_in_frame = new_elapsed.min(current_duration);
+                } else if advance_animation_loop_no_events(&mut animation, advance_delta) {
+                    sprite_changed = true;
+                }
+            } else if advance_delta < 0.0 {
+                let new_elapsed = animation.elapsed_in_frame + advance_delta;
+                if new_elapsed >= -CLIP_TIME_EPSILON {
+                    animation.elapsed_in_frame = new_elapsed.max(0.0);
+                } else if advance_animation_loop_no_events(&mut animation, advance_delta) {
+                    sprite_changed = true;
+                }
             }
         } else if animation.has_events {
             let events_ref = &mut *events;
@@ -2139,17 +2212,22 @@ fn drive_fixed(
             };
 
             let mut step_changed = false;
-            if animation.fast_loop && advance_delta > 0.0 {
-                let current_duration = animation.current_duration;
-                let new_elapsed = animation.elapsed_in_frame + advance_delta;
-                if new_elapsed <= current_duration + CLIP_TIME_EPSILON {
-                    animation.elapsed_in_frame = new_elapsed.min(current_duration);
-                } else if advance_animation_loop_no_events(&mut animation, advance_delta) {
-                    step_changed = true;
-                }
-            } else if animation.fast_loop {
-                if advance_animation(&mut animation, advance_delta, entity, None, true) {
-                    step_changed = true;
+            if animation.fast_loop {
+                if advance_delta > 0.0 {
+                    let current_duration = animation.current_duration;
+                    let new_elapsed = animation.elapsed_in_frame + advance_delta;
+                    if new_elapsed <= current_duration + CLIP_TIME_EPSILON {
+                        animation.elapsed_in_frame = new_elapsed.min(current_duration);
+                    } else if advance_animation_loop_no_events(&mut animation, advance_delta) {
+                        step_changed = true;
+                    }
+                } else if advance_delta < 0.0 {
+                    let new_elapsed = animation.elapsed_in_frame + advance_delta;
+                    if new_elapsed >= -CLIP_TIME_EPSILON {
+                        animation.elapsed_in_frame = new_elapsed.max(0.0);
+                    } else if advance_animation_loop_no_events(&mut animation, advance_delta) {
+                        step_changed = true;
+                    }
                 }
             } else if animation.has_events {
                 let events_ref = &mut *events;

@@ -87,7 +87,7 @@
     - Loader errors such as `Clip keyframe time cannot be negative` or `Clip keyframe contains non-finite rotation value` point directly at the offending keyframe index.
     - If a clip fails to appear in the inspector list, confirm the asset was retained (`AssetManager::retain_clip`) and that the scene/prefab dependency points at the JSON path.
     - Scene and prefab exports automatically record transform clip dependencies; when moving clip JSON files, update the retained path so round-trip loads can resolve them without manual fixes.
-    - Performance budget for this milestone is <= 0.40 ms CPU for 2 000 active clips; once the transform track benchmark lands, trigger it from the `animation_bench` suite to track regressions.
+    - Performance budget for this milestone is <= 0.40 ms CPU for 2 000 active clips; trigger `cargo test --release animation_targets_measure -- --ignored --nocapture` when you need a fresh measurement.
 
 ## Skeletal Animation Pipeline
 - **Authoring prerequisites**
@@ -115,7 +115,7 @@
   - The **Skinning** panel manages `SkinMesh` bindings: add/remove the component, assign a skeleton by `SceneEntityId`, sync joint counts from the target rig, and manually override joint budgets when debugging stray meshes.
   - Mesh inspector entries show whether a `SkinMesh` resolved a palette; the renderer truncates excess joints but keeps the entity visible so you can spot mismatches quickly.
 - **Benchmarks & validation**
-  - `cargo test --release animation_bench_run -- --ignored --nocapture` generates `benchmarks/animation_skeletal_clips.csv`, tracking the <= 1.20 ms CPU budget for 1 000 bones.
+- `cargo test --release animation_targets_measure -- --ignored --nocapture` reports the <= 1.20 ms CPU budget for 1 000 bones and writes `target/animation_targets_report.json`.
   - Frame-by-frame palette uploads are covered by the GPU timer described below; keep `Mesh` and `Shadow` passes <= 0.50 ms combined.
 - **Troubleshooting**
   - Missing skin weights trigger importer warnings; re-export the mesh with normalized weight channels.
@@ -128,15 +128,15 @@
 ## Testing Checklist
 - Hot-reload sanity steps.
 - Golden playback verification.
-- Benchmark invocation (`cargo test --release --features anim_stats animation_bench_run -- --ignored --exact --nocapture`).
+- Benchmark invocation (`cargo test --release --features anim_stats animation_targets_measure -- --ignored --exact --nocapture`).
 - GPU timing capture (`Export GPU CSV` in the Stats panel, see below).
 
 ## anim_stats Profiling
 - Enable the counters with `--features anim_stats` when running either profiling harness:  
   - `cargo test --release --features anim_stats --test animation_profile animation_profile_snapshot -- --ignored --exact --nocapture` (per-frame traces).  
-  - `cargo test --release --features anim_stats animation_bench_run -- --ignored --exact --nocapture` (CI automation).
+  - `cargo test --release --features anim_stats animation_targets_measure -- --ignored --exact --nocapture` (roadmap checkpoints).
 - `animation_profile` logs per-step sprite counters in the format `sprite(fast=… event=… plain=…)` and transform clip counters `transform(adv=… zero=… skipped=… loop_resume=… zero_duration=…)`, aligned with the heaviest timing samples so you can spot whether spikes come from the fast-loop path or event/paused branches.
-- `animation_bench` emits the same counters averaged per step and appends them to the CSV outputs (`animation_sprite_timelines.csv`, `animation_transform_clips.csv`). CI dashboards can now ingest both timing and path mix data from a single artifact.
+- `animation_targets_measure` captures the roadmap checkpoints, printing PASS/WARN summaries and writing per-case timing data to `target/animation_targets_report.json` for CI dashboards.
 - Call `reset_sprite_animation_stats()` / `reset_transform_clip_stats()` between custom runs if you are inspecting counters from scripts or the REPL; the helpers are re-exported under `kestrel_engine::ecs::*`.
 
 ## GPU Timing Capture
