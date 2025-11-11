@@ -26,16 +26,21 @@ impl SpriteFrameApplyQueue {
         self.entities.push(entity);
     }
 
-    pub fn drain(&mut self) -> std::vec::Drain<'_, Entity> {
-        self.entities.drain(..)
-    }
-
     pub fn is_empty(&self) -> bool {
         self.entities.is_empty()
     }
 
     pub fn len(&self) -> usize {
         self.entities.len()
+    }
+
+    pub fn take(&mut self) -> Vec<Entity> {
+        std::mem::take(&mut self.entities)
+    }
+
+    pub fn restore(&mut self, mut entities: Vec<Entity>) {
+        entities.clear();
+        self.entities = entities;
     }
 }
 
@@ -2869,14 +2874,19 @@ pub fn sys_apply_sprite_frame_states(
     mut frame_updates: ResMut<SpriteFrameApplyQueue>,
     mut sprites: Query<(&mut Sprite, &mut SpriteFrameState)>,
 ) {
-    if frame_updates.is_empty() {
+    let pending = frame_updates.take();
+    if pending.is_empty() {
+        frame_updates.restore(pending);
         return;
     }
+
     let _span = profiler.scope("sys_apply_sprite_frame_states");
     #[cfg(feature = "anim_stats")]
     let mut applied = 0_u64;
-    for entity in frame_updates.drain() {
-        if let Ok((mut sprite, mut state)) = sprites.get_mut(entity) {
+
+    {
+        let mut iter = sprites.iter_many_mut(pending.iter());
+        while let Some((mut sprite, mut state)) = iter.fetch_next() {
             if let Some(region) = state.pending_region.take() {
                 sprite.region = region;
                 state.region_initialized = true;
@@ -2890,6 +2900,9 @@ pub fn sys_apply_sprite_frame_states(
             }
         }
     }
+
     #[cfg(feature = "anim_stats")]
     record_sprite_frame_applies(applied);
+
+    frame_updates.restore(pending);
 }

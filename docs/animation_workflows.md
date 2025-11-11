@@ -87,7 +87,7 @@
     - Loader errors such as `Clip keyframe time cannot be negative` or `Clip keyframe contains non-finite rotation value` point directly at the offending keyframe index.
     - If a clip fails to appear in the inspector list, confirm the asset was retained (`AssetManager::retain_clip`) and that the scene/prefab dependency points at the JSON path.
     - Scene and prefab exports automatically record transform clip dependencies; when moving clip JSON files, update the retained path so round-trip loads can resolve them without manual fixes.
-    - Performance budget for this milestone is <= 0.40 ms CPU for 2 000 active clips; trigger `cargo test --release animation_targets_measure -- --ignored --nocapture` when you need a fresh measurement. Use `python scripts/sprite_bench.py --label clips_baseline --runs 3` to capture the three-run summary + JSON artefact without hanging on to the full console logs.
+    - Performance budget for this milestone is <= 0.40 ms CPU for 2 000 active clips; trigger `cargo test --release animation_targets_measure -- --ignored --nocapture` when you need a fresh measurement. Use `python scripts/capture_sprite_perf.py --label clips_baseline --runs 3` to gather both the averaged bench artefacts and the anim_stats per-step log/JSON pair for later comparison.
 
 ## Skeletal Animation Pipeline
 - **Authoring prerequisites**
@@ -115,7 +115,7 @@
   - The **Skinning** panel manages `SkinMesh` bindings: add/remove the component, assign a skeleton by `SceneEntityId`, sync joint counts from the target rig, and manually override joint budgets when debugging stray meshes.
   - Mesh inspector entries show whether a `SkinMesh` resolved a palette; the renderer truncates excess joints but keeps the entity visible so you can spot mismatches quickly.
 - **Benchmarks & validation**
-- `cargo test --release animation_targets_measure -- --ignored --nocapture` reports the <= 1.20 ms CPU budget for 1 000 bones and writes `target/animation_targets_report.json`. For multi-run captures, prefer `python scripts/sprite_bench.py --label skeletal_baseline --runs 3` so the aggregated stats land in `perf/`.
+- `cargo test --release animation_targets_measure -- --ignored --nocapture` reports the <= 1.20 ms CPU budget for 1 000 bones and writes `target/animation_targets_report.json`. For multi-run captures (plus anim_stats traces), prefer `python scripts/capture_sprite_perf.py --label skeletal_baseline --runs 3` so the aggregated stats land in `perf/`.
   - Frame-by-frame palette uploads are covered by the GPU timer described below; keep `Mesh` and `Shadow` passes <= 0.50 ms combined.
 - **Troubleshooting**
   - Missing skin weights trigger importer warnings; re-export the mesh with normalized weight channels.
@@ -135,7 +135,7 @@
 - Enable the counters with `--features anim_stats` when running either profiling harness:  
   - `cargo test --release --features anim_stats --test animation_profile animation_profile_snapshot -- --ignored --exact --nocapture` (per-frame traces).  
   - `cargo test --release --features anim_stats animation_targets_measure -- --ignored --exact --nocapture` (roadmap checkpoints).
-- Sprite metrics now expose hot-path coverage: `fast_bucket_entities`, `general_bucket_entities`, their frame counts, plus `frame_apply_count` so we can match GPU uploads to actual hot-loop work.
+- Sprite metrics now expose hot-path coverage: `fast_bucket_entities`, `general_bucket_entities`, their frame counts, plus `frame_apply_count` so we can match GPU uploads to actual hot-loop work. `capture_sprite_perf.py` stores these stats alongside the run metadata each time it invokes `animation_profile_snapshot`.
 - `animation_profile` logs per-step sprite counters in the format `sprite(fast=… event=… plain=…)` and transform clip counters `transform(adv=… zero=… skipped=… loop_resume=… zero_duration=…)`, aligned with the heaviest timing samples so you can spot whether spikes come from the fast-loop path or event/paused branches.
 - `animation_targets_measure` captures the roadmap checkpoints, printing PASS/WARN summaries and writing per-case timing data to `target/animation_targets_report.json` for CI dashboards.
 - Call `reset_sprite_animation_stats()` / `reset_transform_clip_stats()` between custom runs if you are inspecting counters from scripts or the REPL; the helpers are re-exported under `kestrel_engine::ecs::*`.

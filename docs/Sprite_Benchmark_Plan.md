@@ -40,11 +40,11 @@
 
 **Goal:** Reproducible, noise-reduced numbers.
 
-- [x] Capture the baseline with the helper script so we only store light artefacts:
+- [x] Capture the baseline (sprite bench + anim_stats per-step stats) with the helper script so we only store light artefacts:
   ```bash
-  python scripts/sprite_bench.py --label before_phase0 --runs 3
+  python scripts/capture_sprite_perf.py --label before_phase0 --runs 3
   ```
-  This writes `perf/before_phase0.txt` (human summary) and `perf/before_phase0.json` (machine readable).
+  This writes `perf/before_phase0.txt` / `.json` plus `perf/before_phase0_profile.{log,json}` for the anim_stats breakdown.
 - [ ] Pin CPU governor / disable turbo if needed (Windows: High performance power plan).
 - [x] Use fixed env for bench (the script above sets these automatically; manual invocation still documented for reference):
   ```powershell
@@ -104,7 +104,7 @@ Artifacts: `perf/before_phase0.txt`, `perf/before_phase0.json`
 **Why:** We already have `anim_stats` plus `tests/animation_profile.rs`; the plan relies on those tools to prove improvements and guard against regressions.
 
 **Tasks:**
-- [x] Document the workflow in README/docs (bench command is listed above; keep examples up to date) – `python scripts/sprite_bench.py --label <phase>` is now the canonical path.
+- [x] Document the workflow in README/docs (bench command is listed above; keep examples up to date) – `python scripts/capture_sprite_perf.py --label <phase> --runs 3` is now the canonical path for capturing both the averaged bench numbers and the anim_stats per-step logs.
 - [ ] Capture before/after CSVs from `animation_profile_snapshot` with `ANIMATION_PROFILE_TARGET_SYSTEM="sys_drive_sprite_animations"` so the bucket split’s impact is visible.
 - [ ] Add a lightweight CI check (or scheduled job) that runs the profile with `anim_stats` enabled at least once per milestone.
 
@@ -253,12 +253,12 @@ idx.as_array().iter().enumerate().for_each(|(k,&v)| frame_idx[i+k]=v);
 ## Bench Protocol & Reporting
 
 1. **Warmup:** `ANIMATION_PROFILE_WARMUP=16`
-2. **3 measured runs** per phase. Record: mean, stddev, commit hash, flags. `python scripts/sprite_bench.py --label after_phase1 --runs 3` automates this and drops both `.txt` and `.json` summaries.
+2. **3 measured runs** per phase. Record: mean, stddev, commit hash, flags. `python scripts/capture_sprite_perf.py --label after_phase1 --runs 3` runs both the sprite bench sweep and `animation_profile_snapshot` so every phase gets averaged totals plus per-step anim_stats logs/JSON.
 3. **Artifact files:**
-   - `perf/before_phase0.{txt,json}`
-   - `perf/after_phase1.{txt,json}`
-   - `perf/after_phase2.{txt,json}`
-   - `perf/final.{txt,json}`
+   - `perf/before_phase0.{txt,json}` + `perf/before_phase0_profile.{log,json}`
+   - `perf/after_phase1.{txt,json}` + `perf/after_phase1_profile.{log,json}`
+   - `perf/after_phase2.{txt,json}` + `perf/after_phase2_profile.{log,json}`
+   - `perf/final.{txt,json}` + `perf/final_profile.{log,json}`
 4. **Graph (optional):** simple CSV and plot of ms vs animators (can be derived from the JSON summaries if needed).
 
 ---

@@ -11,6 +11,7 @@
 
 # Plugin build artifacts
 /plugins/**/target/
+/perf/
 
 # OS-specific junk
 .DS_Store
