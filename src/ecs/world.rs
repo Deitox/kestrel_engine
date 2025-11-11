@@ -3,7 +3,7 @@ use crate::assets::AssetManager;
 #[cfg(feature = "anim_stats")]
 use crate::ecs::systems::record_transform_looped_resume;
 use crate::ecs::systems::{
-    initialize_animation_phase, AnimationDelta, AnimationPlan, AnimationTime, TimeDelta,
+    initialize_animation_phase, AnimationDelta, AnimationPlan, AnimationTime, SpriteFrameApplyQueue, TimeDelta,
 };
 use crate::events::{EventBus, GameEvent};
 use crate::mesh_registry::MeshRegistry;
@@ -64,6 +64,7 @@ impl EcsWorld {
         world.insert_resource(EventBus::default());
         world.insert_resource(TransformPropagationScratch::default());
         world.insert_resource(SystemProfiler::new());
+        world.insert_resource(SpriteFrameApplyQueue::default());
 
         let mut schedule_var = Schedule::default();
         schedule_var.add_systems((

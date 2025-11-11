@@ -1,0 +1,50 @@
+[
+  {
+    "label": "sprite_timelines",
+    "units": "animators",
+    "count": 10000,
+    "steps": 240,
+    "samples": 5,
+    "dt": 0.016666668,
+    "budget_ms": 0.2,
+    "summary": {
+      "mean_step_ms": 0.2712266666666666,
+      "min_step_ms": 0.2513995833333333,
+      "max_step_ms": 0.28168125,
+      "total_elapsed_ms": 325.472
+    },
+    "status": "over_budget"
+  },
+  {
+    "label": "transform_clips",
+    "units": "clips",
+    "count": 2000,
+    "steps": 240,
+    "samples": 5,
+    "dt": 0.016666668,
+    "budget_ms": 0.4,
+    "summary": {
+      "mean_step_ms": 0.25548766666666667,
+      "min_step_ms": 0.25325416666666667,
+      "max_step_ms": 0.25727666666666665,
+      "total_elapsed_ms": 306.5852
+    },
+    "status": "within_budget"
+  },
+  {
+    "label": "skeletal_clips",
+    "units": "bones",
+    "count": 1000,
+    "steps": 240,
+    "samples": 5,
+    "dt": 0.016666668,
+    "budget_ms": 1.2,
+    "summary": {
+      "mean_step_ms": 0.10829033333333334,
+      "min_step_ms": 0.10582083333333332,
+      "max_step_ms": 0.11213041666666666,
+      "total_elapsed_ms": 129.9484
+    },
+    "status": "within_budget"
+  }
+]

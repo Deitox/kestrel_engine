@@ -7,12 +7,30 @@ use crate::ecs::{
     SpriteAnimationLoopMode, SpriteFrameState, Tint, Transform, TransformTrackPlayer,
 };
 use crate::events::{EventBus, GameEvent};
-use bevy_ecs::prelude::{Commands, Entity, Mut, Query, Res, ResMut, Without};
-use bevy_ecs::query::{Added, Changed, Or};
+use bevy_ecs::prelude::{Commands, Entity, Mut, Query, Res, ResMut, Resource, Without};
 use glam::{Mat4, Quat, Vec3};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+
+#[derive(Default, Resource)]
+pub struct SpriteFrameApplyQueue {
+    entities: Vec<Entity>,
+}
+
+impl SpriteFrameApplyQueue {
+    pub fn push(&mut self, entity: Entity) {
+        self.entities.push(entity);
+    }
+
+    pub fn drain(&mut self) -> std::vec::Drain<'_, Entity> {
+        self.entities.drain(..)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entities.is_empty()
+    }
+}
 
 #[cfg(feature = "anim_stats")]
 use std::time::{Duration, Instant};
@@ -314,6 +332,7 @@ pub fn sys_drive_sprite_animations(
     animation_plan: Res<AnimationPlan>,
     animation_time: Res<AnimationTime>,
     mut events: ResMut<EventBus>,
+    mut frame_updates: ResMut<SpriteFrameApplyQueue>,
     mut animations: Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState)>,
 ) {
     let _span = profiler.scope("sys_drive_sprite_animations");
@@ -327,12 +346,27 @@ pub fn sys_drive_sprite_animations(
         AnimationDelta::None => {}
         AnimationDelta::Single(delta) => {
             if delta != 0.0 {
-                drive_single(delta, has_group_scales, animation_time_ref, &mut events, &mut animations);
+                drive_single(
+                    delta,
+                    has_group_scales,
+                    animation_time_ref,
+                    &mut events,
+                    frame_updates.as_mut(),
+                    &mut animations,
+                );
             }
         }
         AnimationDelta::Fixed { step, steps } => {
             if steps > 0 && step != 0.0 {
-                drive_fixed(step, steps, has_group_scales, animation_time_ref, &mut events, &mut animations);
+                drive_fixed(
+                    step,
+                    steps,
+                    has_group_scales,
+                    animation_time_ref,
+                    &mut events,
+                    frame_updates.as_mut(),
+                    &mut animations,
+                );
             }
         }
     }
@@ -353,7 +387,7 @@ mod tests {
     use super::*;
     use crate::assets::skeletal::{load_skeleton_from_gltf, SkeletonAsset};
     use crate::assets::{AnimationClip, ClipInterpolation, ClipKeyframe, ClipSegment, ClipVec2Track};
-    use crate::ecs::SpriteAnimationFrame;
+    use crate::ecs::{Sprite, SpriteAnimationFrame};
     use anyhow::Result;
     use bevy_ecs::prelude::World;
     use bevy_ecs::system::SystemState;
@@ -562,6 +596,7 @@ mod tests {
         world.insert_resource(AnimationPlan { delta: AnimationDelta::Single(0.05) });
         world.insert_resource(AnimationTime::default());
         world.insert_resource(EventBus::default());
+        world.insert_resource(SpriteFrameApplyQueue::default());
 
         let region = Arc::from("frame0");
         let event_name = Arc::from("spawn");
@@ -595,11 +630,12 @@ mod tests {
             Res<AnimationPlan>,
             Res<AnimationTime>,
             ResMut<EventBus>,
+            ResMut<SpriteFrameApplyQueue>,
             Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState)>,
         )>::new(&mut world);
         {
-            let (profiler, plan, time, events, animations) = system_state.get_mut(&mut world);
-            sys_drive_sprite_animations(profiler, plan, time, events, animations);
+            let (profiler, plan, time, events, frame_updates, animations) = system_state.get_mut(&mut world);
+            sys_drive_sprite_animations(profiler, plan, time, events, frame_updates, animations);
         }
         system_state.apply(&mut world);
 
@@ -859,6 +895,7 @@ mod tests {
         world.insert_resource(AnimationPlan { delta: AnimationDelta::Fixed { step: 0.1, steps: 3 } });
         world.insert_resource(AnimationTime::default());
         world.insert_resource(EventBus::default());
+        world.insert_resource(SpriteFrameApplyQueue::default());
 
         let region = Arc::from("frame");
         let frames = Arc::from(
@@ -903,13 +940,14 @@ mod tests {
             Res<AnimationPlan>,
             Res<AnimationTime>,
             ResMut<EventBus>,
+            ResMut<SpriteFrameApplyQueue>,
             Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState)>,
         )>::new(&mut world);
 
         let _guard = DriveFixedRecorderGuard::enable();
         {
-            let (profiler, plan, time, events, animations) = system_state.get_mut(&mut world);
-            sys_drive_sprite_animations(profiler, plan, time, events, animations);
+            let (profiler, plan, time, events, frame_updates, animations) = system_state.get_mut(&mut world);
+            sys_drive_sprite_animations(profiler, plan, time, events, frame_updates, animations);
         }
         system_state.apply(&mut world);
 
@@ -2069,11 +2107,92 @@ fn advance_animation_loop_no_events(animation: &mut SpriteAnimation, delta: f32)
     wrapped || index != previous_index
 }
 
+#[inline(always)]
+fn advance_animation_fast_loop(animation: &mut SpriteAnimation, delta: f32) -> bool {
+    if delta == 0.0 || !animation.playing {
+        return false;
+    }
+    let frame_count = animation.frame_durations.len();
+    if frame_count == 0 {
+        return false;
+    }
+
+    #[cfg(feature = "anim_stats")]
+    record_fast_loop_call(1);
+
+    let total_duration = animation.total_duration.max(std::f32::EPSILON);
+    if delta.abs() >= total_duration * 4.0 {
+        return advance_animation_loop_no_events(animation, delta);
+    }
+
+    let durations = animation.frame_durations.as_ref();
+    let offsets = animation.frame_offsets.as_ref();
+    let mut index = animation.frame_index % frame_count;
+    let mut current_duration = animation.current_duration;
+    let mut current_offset = animation.current_frame_offset;
+
+    if delta > 0.0 {
+        let mut remaining = animation.elapsed_in_frame + delta;
+        let mut threshold = current_duration.max(CLIP_TIME_EPSILON);
+        if remaining <= threshold {
+            animation.elapsed_in_frame = remaining.min(current_duration);
+            animation.current_frame_offset = current_offset;
+            return false;
+        }
+        remaining -= threshold;
+        loop {
+            index += 1;
+            if index == frame_count {
+                index = 0;
+            }
+            unsafe {
+                current_duration = *durations.get_unchecked(index);
+                current_offset = *offsets.get_unchecked(index);
+            }
+            threshold = current_duration.max(CLIP_TIME_EPSILON);
+            if remaining <= threshold {
+                animation.frame_index = index;
+                animation.current_duration = current_duration;
+                animation.current_frame_offset = current_offset;
+                animation.elapsed_in_frame = remaining.min(current_duration);
+                return true;
+            }
+            remaining -= threshold;
+        }
+    } else {
+        let mut remaining = animation.elapsed_in_frame + delta;
+        if remaining >= -CLIP_TIME_EPSILON {
+            animation.elapsed_in_frame = remaining.max(0.0);
+            animation.current_frame_offset = current_offset;
+            return false;
+        }
+        remaining = -remaining;
+        loop {
+            index = if index == 0 { frame_count - 1 } else { index - 1 };
+            unsafe {
+                current_duration = *durations.get_unchecked(index);
+                current_offset = *offsets.get_unchecked(index);
+            }
+            let threshold = current_duration.max(CLIP_TIME_EPSILON);
+            if remaining <= threshold {
+                animation.frame_index = index;
+                animation.current_duration = current_duration;
+                animation.current_frame_offset = current_offset;
+                let new_elapsed = current_duration - remaining;
+                animation.elapsed_in_frame = new_elapsed.max(0.0);
+                return true;
+            }
+            remaining -= threshold;
+        }
+    }
+}
+
 fn drive_single(
     delta: f32,
     has_group_scales: bool,
     animation_time: &AnimationTime,
     events: &mut EventBus,
+    frame_updates: &mut SpriteFrameApplyQueue,
     animations: &mut Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState)>,
 ) {
     for (entity, mut animation, mut sprite_state) in animations.iter_mut() {
@@ -2119,21 +2238,8 @@ fn drive_single(
 
         let mut sprite_changed = false;
         if animation.fast_loop {
-            if advance_delta > 0.0 {
-                let current_duration = animation.current_duration;
-                let new_elapsed = animation.elapsed_in_frame + advance_delta;
-                if new_elapsed <= current_duration + CLIP_TIME_EPSILON {
-                    animation.elapsed_in_frame = new_elapsed.min(current_duration);
-                } else if advance_animation_loop_no_events(&mut animation, advance_delta) {
-                    sprite_changed = true;
-                }
-            } else if advance_delta < 0.0 {
-                let new_elapsed = animation.elapsed_in_frame + advance_delta;
-                if new_elapsed >= -CLIP_TIME_EPSILON {
-                    animation.elapsed_in_frame = new_elapsed.max(0.0);
-                } else if advance_animation_loop_no_events(&mut animation, advance_delta) {
-                    sprite_changed = true;
-                }
+            if advance_animation_fast_loop(&mut animation, advance_delta) {
+                sprite_changed = true;
             }
         } else if animation.has_events {
             let events_ref = &mut *events;
@@ -2147,6 +2253,7 @@ fn drive_single(
         if sprite_changed {
             if let Some(frame) = animation.frames.get(animation.frame_index) {
                 sprite_state.update_from_frame(frame);
+                frame_updates.push(entity);
             }
             continue;
         }
@@ -2159,6 +2266,7 @@ fn drive_fixed(
     has_group_scales: bool,
     animation_time: &AnimationTime,
     events: &mut EventBus,
+    frame_updates: &mut SpriteFrameApplyQueue,
     animations: &mut Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState)>,
 ) {
     for (entity, mut animation, mut sprite_state) in animations.iter_mut() {
@@ -2213,21 +2321,8 @@ fn drive_fixed(
 
             let mut step_changed = false;
             if animation.fast_loop {
-                if advance_delta > 0.0 {
-                    let current_duration = animation.current_duration;
-                    let new_elapsed = animation.elapsed_in_frame + advance_delta;
-                    if new_elapsed <= current_duration + CLIP_TIME_EPSILON {
-                        animation.elapsed_in_frame = new_elapsed.min(current_duration);
-                    } else if advance_animation_loop_no_events(&mut animation, advance_delta) {
-                        step_changed = true;
-                    }
-                } else if advance_delta < 0.0 {
-                    let new_elapsed = animation.elapsed_in_frame + advance_delta;
-                    if new_elapsed >= -CLIP_TIME_EPSILON {
-                        animation.elapsed_in_frame = new_elapsed.max(0.0);
-                    } else if advance_animation_loop_no_events(&mut animation, advance_delta) {
-                        step_changed = true;
-                    }
+                if advance_animation_fast_loop(&mut animation, advance_delta) {
+                    step_changed = true;
                 }
             } else if animation.has_events {
                 let events_ref = &mut *events;
@@ -2249,6 +2344,7 @@ fn drive_fixed(
         if sprite_changed {
             if let Some(frame) = animation.frames.get(animation.frame_index) {
                 sprite_state.update_from_frame(frame);
+                frame_updates.push(entity);
             }
             continue;
         }
@@ -2256,17 +2352,20 @@ fn drive_fixed(
 }
 
 pub fn sys_apply_sprite_frame_states(
-    mut sprites: Query<
-        (&mut Sprite, &mut SpriteFrameState),
-        Or<(Changed<SpriteFrameState>, Added<SpriteFrameState>)>,
-    >,
+    mut frame_updates: ResMut<SpriteFrameApplyQueue>,
+    mut sprites: Query<(&mut Sprite, &mut SpriteFrameState)>,
 ) {
-    for (mut sprite, mut state) in sprites.iter_mut() {
-        if let Some(region) = state.pending_region.take() {
-            sprite.region = region;
-            state.region_initialized = true;
+    if frame_updates.is_empty() {
+        return;
+    }
+    for entity in frame_updates.drain() {
+        if let Ok((mut sprite, mut state)) = sprites.get_mut(entity) {
+            if let Some(region) = state.pending_region.take() {
+                sprite.region = region;
+                state.region_initialized = true;
+            }
+            sprite.region_id = state.region_id;
+            sprite.uv = state.uv;
         }
-        sprite.region_id = state.region_id;
-        sprite.uv = state.uv;
     }
 }
