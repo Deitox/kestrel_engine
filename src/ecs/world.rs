@@ -1162,6 +1162,7 @@ impl EcsWorld {
                     return false;
                 }
                 let frames = Arc::clone(&definition.frames);
+                let hot_frames = Arc::clone(&definition.hot_frames);
                 let durations = Arc::clone(&definition.durations);
                 let offsets = Arc::clone(&definition.frame_offsets);
                 let total_duration = definition.total_duration;
@@ -1169,6 +1170,7 @@ impl EcsWorld {
                 let component = SpriteAnimation::new(
                     Arc::clone(&definition.name),
                     frames,
+                    hot_frames,
                     durations,
                     offsets,
                     total_duration,

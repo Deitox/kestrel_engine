@@ -1,4 +1,4 @@
-use crate::ecs::{SpriteAnimationFrame, SpriteAnimationLoopMode};
+use crate::ecs::{SpriteAnimationFrame, SpriteAnimationLoopMode, SpriteFrameHotData};
 use anyhow::{anyhow, Result};
 use glam::{Vec2, Vec4};
 use serde::Deserialize;
@@ -256,6 +256,7 @@ pub struct SpriteTimeline {
     pub looped: bool,
     pub loop_mode: SpriteAnimationLoopMode,
     pub frames: Arc<[SpriteAnimationFrame]>,
+    pub hot_frames: Arc<[SpriteFrameHotData]>,
     pub durations: Arc<[f32]>,
     pub frame_offsets: Arc<[f32]>,
     pub total_duration: f32,
@@ -546,6 +547,7 @@ impl AssetManager {
         let mut animations = HashMap::new();
         for (timeline_key, mut data) in raw {
             let mut frames = Vec::new();
+            let mut hot_frames = Vec::new();
             let mut durations = Vec::new();
             let mut offsets = Vec::new();
             let mut event_map: HashMap<usize, Vec<String>> = HashMap::new();
@@ -576,6 +578,7 @@ impl AssetManager {
                     uv: region_info.uv,
                     events: Arc::from(events),
                 });
+                hot_frames.push(SpriteFrameHotData { region_id: region_info.id, uv: region_info.uv });
                 durations.push(duration);
                 accumulated += duration;
             }
@@ -608,6 +611,7 @@ impl AssetManager {
                     looped,
                     loop_mode: mode_enum,
                     frames: Arc::from(frames),
+                    hot_frames: Arc::from(hot_frames),
                     durations: Arc::from(durations),
                     frame_offsets: Arc::from(offsets.into_boxed_slice()),
                     total_duration: accumulated,

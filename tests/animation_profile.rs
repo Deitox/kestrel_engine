@@ -6,7 +6,7 @@ use kestrel_engine::ecs::{
 };
 use kestrel_engine::ecs::{
     EcsWorld, ParticleCaps, ParticleEmitter, Sprite, SpriteAnimation, SpriteAnimationFrame,
-    SpriteAnimationLoopMode, SpriteFrameState, SystemProfiler, TransformPropagationStats,
+    SpriteAnimationLoopMode, SpriteFrameHotData, SpriteFrameState, SystemProfiler, TransformPropagationStats,
 };
 use std::sync::Arc;
 
@@ -287,6 +287,13 @@ fn seed_sprite_animators(world: &mut EcsWorld, count: usize, frame_duration: f32
         Arc::from(offsets.into_boxed_slice())
     };
     let total_duration = frame_duration * frame_template.len() as f32;
+    let frame_hot_data: Arc<[SpriteFrameHotData]> = Arc::from(
+        frame_template
+            .iter()
+            .map(|frame| SpriteFrameHotData { region_id: frame.region_id, uv: frame.uv })
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    );
 
     for _ in 0..count {
         let sprite = Sprite {
@@ -302,6 +309,7 @@ fn seed_sprite_animators(world: &mut EcsWorld, count: usize, frame_duration: f32
             SpriteAnimation::new(
                 Arc::clone(&timeline_name),
                 Arc::clone(&frame_template),
+                Arc::clone(&frame_hot_data),
                 Arc::clone(&frame_durations),
                 Arc::clone(&frame_offsets),
                 total_duration,

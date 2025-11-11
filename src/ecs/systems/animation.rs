@@ -387,7 +387,7 @@ mod tests {
     use super::*;
     use crate::assets::skeletal::{load_skeleton_from_gltf, SkeletonAsset};
     use crate::assets::{AnimationClip, ClipInterpolation, ClipKeyframe, ClipSegment, ClipVec2Track};
-    use crate::ecs::{Sprite, SpriteAnimationFrame};
+    use crate::ecs::{Sprite, SpriteAnimationFrame, SpriteFrameHotData};
     use anyhow::Result;
     use bevy_ecs::prelude::World;
     use bevy_ecs::system::SystemState;
@@ -403,6 +403,12 @@ mod tests {
 
     static DRIVE_FIXED_RECORDING: AtomicBool = AtomicBool::new(false);
     static DRIVE_FIXED_STEP_COUNT: AtomicU32 = AtomicU32::new(0);
+
+    fn hot_frames_from(frames: &[SpriteAnimationFrame]) -> Arc<[SpriteFrameHotData]> {
+        let data: Vec<SpriteFrameHotData> =
+            frames.iter().map(|frame| SpriteFrameHotData { region_id: frame.region_id, uv: frame.uv }).collect();
+        Arc::from(data.into_boxed_slice())
+    }
 
     pub(super) fn enable_drive_fixed_step_recording(enabled: bool) {
         DRIVE_FIXED_RECORDING.store(enabled, Ordering::SeqCst);
@@ -608,12 +614,14 @@ mod tests {
             uv: [0.0; 4],
             events: Arc::from(vec![event_name]),
         };
-        let frames = Arc::from(vec![frame].into_boxed_slice());
+        let frames: Arc<[SpriteAnimationFrame]> = Arc::from(vec![frame].into_boxed_slice());
+        let hot_frames = hot_frames_from(frames.as_ref());
         let durations = Arc::from(vec![0.1_f32].into_boxed_slice());
         let offsets = Arc::from(vec![0.0_f32].into_boxed_slice());
         let animation = SpriteAnimation::new(
             Arc::from("timeline"),
             frames,
+            hot_frames,
             durations,
             offsets,
             0.1,
@@ -651,7 +659,7 @@ mod tests {
     #[test]
     fn sprite_animation_rewinds_with_negative_delta() {
         let region = Arc::from("frame");
-        let frames = Arc::from(
+        let frames: Arc<[SpriteAnimationFrame]> = Arc::from(
             vec![
                 SpriteAnimationFrame {
                     name: Arc::clone(&region),
@@ -665,11 +673,13 @@ mod tests {
             ]
             .into_boxed_slice(),
         );
+        let hot_frames = hot_frames_from(frames.as_ref());
         let durations = Arc::from(vec![0.2_f32, 0.2, 0.2].into_boxed_slice());
         let offsets = Arc::from(vec![0.0_f32, 0.2, 0.4].into_boxed_slice());
         let mut animation = SpriteAnimation::new(
             Arc::from("timeline"),
             frames,
+            hot_frames,
             durations,
             offsets,
             0.6,
@@ -686,7 +696,7 @@ mod tests {
     #[test]
     fn sprite_animation_ping_pong_rewind_restores_direction() {
         let region = Arc::from("frame");
-        let frames = Arc::from(
+        let frames: Arc<[SpriteAnimationFrame]> = Arc::from(
             vec![
                 SpriteAnimationFrame {
                     name: Arc::clone(&region),
@@ -700,11 +710,13 @@ mod tests {
             ]
             .into_boxed_slice(),
         );
+        let hot_frames = hot_frames_from(frames.as_ref());
         let durations = Arc::from(vec![0.2_f32, 0.2, 0.2].into_boxed_slice());
         let offsets = Arc::from(vec![0.0_f32, 0.2, 0.4].into_boxed_slice());
         let mut animation = SpriteAnimation::new(
             Arc::from("timeline"),
             frames,
+            hot_frames,
             durations,
             offsets,
             0.6,
@@ -724,7 +736,7 @@ mod tests {
     #[test]
     fn fast_loop_advances_multiple_frames() {
         let region = Arc::from("frame");
-        let frames = Arc::from(
+        let frames: Arc<[SpriteAnimationFrame]> = Arc::from(
             vec![
                 SpriteAnimationFrame {
                     name: Arc::clone(&region),
@@ -753,11 +765,13 @@ mod tests {
             ]
             .into_boxed_slice(),
         );
+        let hot_frames = hot_frames_from(frames.as_ref());
         let durations = Arc::from(vec![0.08_f32, 0.08, 0.08].into_boxed_slice());
         let offsets = Arc::from(vec![0.0_f32, 0.08, 0.16].into_boxed_slice());
         let mut animation = SpriteAnimation::new(
             Arc::from("timeline"),
             frames,
+            hot_frames,
             durations,
             offsets,
             0.24,
@@ -780,7 +794,7 @@ mod tests {
     #[test]
     fn fast_loop_large_delta_wraps_phase() {
         let region = Arc::from("frame");
-        let frames = Arc::from(
+        let frames: Arc<[SpriteAnimationFrame]> = Arc::from(
             vec![
                 SpriteAnimationFrame {
                     name: Arc::clone(&region),
@@ -801,11 +815,13 @@ mod tests {
             ]
             .into_boxed_slice(),
         );
+        let hot_frames = hot_frames_from(frames.as_ref());
         let durations = Arc::from(vec![0.08_f32, 0.12].into_boxed_slice());
         let offsets = Arc::from(vec![0.0_f32, 0.08].into_boxed_slice());
         let mut animation = SpriteAnimation::new(
             Arc::from("timeline"),
             frames,
+            hot_frames,
             durations,
             offsets,
             0.20,
@@ -832,7 +848,7 @@ mod tests {
     #[test]
     fn fast_loop_rewinds_frames() {
         let region = Arc::from("frame");
-        let frames = Arc::from(
+        let frames: Arc<[SpriteAnimationFrame]> = Arc::from(
             vec![
                 SpriteAnimationFrame {
                     name: Arc::clone(&region),
@@ -861,11 +877,13 @@ mod tests {
             ]
             .into_boxed_slice(),
         );
+        let hot_frames = hot_frames_from(frames.as_ref());
         let durations = Arc::from(vec![0.08_f32, 0.08, 0.08].into_boxed_slice());
         let offsets = Arc::from(vec![0.0_f32, 0.08, 0.16].into_boxed_slice());
         let mut animation = SpriteAnimation::new(
             Arc::from("timeline"),
             frames,
+            hot_frames,
             durations,
             offsets,
             0.24,
@@ -898,7 +916,7 @@ mod tests {
         world.insert_resource(SpriteFrameApplyQueue::default());
 
         let region = Arc::from("frame");
-        let frames = Arc::from(
+        let frames: Arc<[SpriteAnimationFrame]> = Arc::from(
             vec![
                 SpriteAnimationFrame {
                     name: Arc::clone(&region),
@@ -919,11 +937,13 @@ mod tests {
             ]
             .into_boxed_slice(),
         );
+        let hot_frames = hot_frames_from(frames.as_ref());
         let durations = Arc::from(vec![0.1_f32, 0.1].into_boxed_slice());
         let offsets = Arc::from(vec![0.0_f32, 0.1].into_boxed_slice());
         let animation = SpriteAnimation::new(
             Arc::from("timeline"),
             frames,
+            hot_frames,
             durations,
             offsets,
             0.2,
@@ -1800,14 +1820,13 @@ pub(crate) fn advance_animation(
 
             match animation.mode {
                 SpriteAnimationLoopMode::Loop => {
-                    animation.frame_index = (animation.frame_index + 1) % len;
-                    animation.refresh_current_duration();
+                    let next = if len > 0 { (animation.frame_index + 1) % len } else { 0 };
+                    animation.set_frame_metrics_unchecked(next);
                     emit_frame_event = true;
                     changed_this_step = true;
                 }
                 SpriteAnimationLoopMode::OnceStop => {
-                    animation.frame_index = len.saturating_sub(1);
-                    animation.refresh_current_duration();
+                    animation.set_frame_metrics_unchecked(len.saturating_sub(1));
                     frame_changed = true;
                     animation.prev_forward = prior_forward;
                     if let Some(events) = events.as_deref_mut() {
@@ -1819,11 +1838,8 @@ pub(crate) fn advance_animation(
                     break;
                 }
                 SpriteAnimationLoopMode::OnceHold => {
-                    animation.frame_index = len.saturating_sub(1);
-                    animation.refresh_current_duration();
-                    if let Some(last) = animation.frame_durations.last() {
-                        animation.elapsed_in_frame = *last;
-                    }
+                    animation.set_frame_metrics_unchecked(len.saturating_sub(1));
+                    animation.elapsed_in_frame = animation.current_duration;
                     frame_changed = true;
                     animation.prev_forward = prior_forward;
                     if let Some(events) = events.as_deref_mut() {
@@ -1837,26 +1853,26 @@ pub(crate) fn advance_animation(
                 SpriteAnimationLoopMode::PingPong => {
                     if len <= 1 {
                         animation.forward = true;
-                        animation.refresh_current_duration();
+                        animation.set_frame_metrics_unchecked(0);
                     } else if animation.forward {
-                        if animation.frame_index + 1 < len {
-                            animation.frame_index += 1;
+                        let next = if animation.frame_index + 1 < len {
+                            animation.frame_index + 1
                         } else {
                             animation.forward = false;
-                            animation.frame_index = (len - 2).min(len - 1);
-                        }
-                        animation.refresh_current_duration();
+                            (len - 2).min(len - 1)
+                        };
+                        animation.set_frame_metrics_unchecked(next);
                         changed_this_step = true;
                         emit_frame_event = true;
                     } else if animation.frame_index > 0 {
-                        animation.frame_index -= 1;
-                        animation.refresh_current_duration();
+                        let prev = animation.frame_index - 1;
+                        animation.set_frame_metrics_unchecked(prev);
                         changed_this_step = true;
                         emit_frame_event = true;
                     } else {
                         animation.forward = true;
-                        animation.frame_index = 1.min(len - 1);
-                        animation.refresh_current_duration();
+                        let next = if len > 1 { 1 } else { 0 };
+                        animation.set_frame_metrics_unchecked(next);
                         changed_this_step = len > 1;
                         emit_frame_event = len > 1;
                     }
@@ -1890,34 +1906,32 @@ pub(crate) fn advance_animation(
             match animation.mode {
                 SpriteAnimationLoopMode::Loop => {
                     if len > 1 {
-                        if animation.frame_index == 0 {
-                            animation.frame_index = len - 1;
-                        } else {
-                            animation.frame_index -= 1;
-                        }
-                        animation.refresh_current_duration();
-                        animation.elapsed_in_frame = animation.current_duration;
-                        delta += animation.current_duration;
+                        let prev = if animation.frame_index == 0 { len - 1 } else { animation.frame_index - 1 };
+                        animation.set_frame_metrics_unchecked(prev);
+                        let duration = animation.current_duration;
+                        animation.elapsed_in_frame = duration;
+                        delta += duration;
                         emit_frame_event = true;
                         changed_this_step = true;
                     } else {
-                        animation.refresh_current_duration();
+                        animation.set_frame_metrics_unchecked(0);
                         animation.elapsed_in_frame = animation.current_duration;
                     }
                 }
                 SpriteAnimationLoopMode::OnceStop => {
                     if animation.frame_index == 0 {
                         animation.elapsed_in_frame = 0.0;
-                        animation.refresh_current_duration();
+                        animation.set_frame_metrics_unchecked(0);
                         if respect_terminal_behavior {
                             animation.playing = false;
                         }
                         delta = 0.0;
                     } else {
-                        animation.frame_index -= 1;
-                        animation.refresh_current_duration();
-                        animation.elapsed_in_frame = animation.current_duration;
-                        delta += animation.current_duration;
+                        let prev = animation.frame_index - 1;
+                        animation.set_frame_metrics_unchecked(prev);
+                        let duration = animation.current_duration;
+                        animation.elapsed_in_frame = duration;
+                        delta += duration;
                         emit_frame_event = true;
                         changed_this_step = true;
                     }
@@ -1925,16 +1939,17 @@ pub(crate) fn advance_animation(
                 SpriteAnimationLoopMode::OnceHold => {
                     if animation.frame_index == 0 {
                         animation.elapsed_in_frame = 0.0;
-                        animation.refresh_current_duration();
+                        animation.set_frame_metrics_unchecked(0);
                         if respect_terminal_behavior {
                             animation.playing = false;
                         }
                         delta = 0.0;
                     } else {
-                        animation.frame_index -= 1;
-                        animation.refresh_current_duration();
-                        animation.elapsed_in_frame = animation.current_duration;
-                        delta += animation.current_duration;
+                        let prev = animation.frame_index - 1;
+                        animation.set_frame_metrics_unchecked(prev);
+                        let duration = animation.current_duration;
+                        animation.elapsed_in_frame = duration;
+                        delta += duration;
                         emit_frame_event = true;
                         changed_this_step = true;
                     }
@@ -1942,7 +1957,7 @@ pub(crate) fn advance_animation(
                 SpriteAnimationLoopMode::PingPong => {
                     if len <= 1 {
                         animation.forward = true;
-                        animation.refresh_current_duration();
+                        animation.set_frame_metrics_unchecked(0);
                         animation.elapsed_in_frame = animation.current_duration;
                     } else {
                         let bounced = animation.forward != animation.prev_forward;
@@ -1950,26 +1965,26 @@ pub(crate) fn advance_animation(
                             if animation.forward {
                                 // just bounced from start
                                 animation.forward = animation.prev_forward;
-                                animation.frame_index = 0;
+                                animation.set_frame_metrics_unchecked(0);
                             } else {
                                 // just bounced from end
                                 animation.forward = animation.prev_forward;
-                                animation.frame_index = len - 1;
+                                animation.set_frame_metrics_unchecked(len - 1);
                             }
                         } else if animation.forward {
                             if animation.frame_index > 0 {
-                                animation.frame_index -= 1;
+                                animation.set_frame_metrics_unchecked(animation.frame_index - 1);
                             } else {
-                                animation.frame_index = 0;
+                                animation.set_frame_metrics_unchecked(0);
                             }
                         } else if animation.frame_index + 1 < len {
-                            animation.frame_index += 1;
+                            animation.set_frame_metrics_unchecked(animation.frame_index + 1);
                         } else {
-                            animation.frame_index = len - 1;
+                            animation.set_frame_metrics_unchecked(len - 1);
                         }
-                        animation.refresh_current_duration();
-                        animation.elapsed_in_frame = animation.current_duration;
-                        delta += animation.current_duration;
+                        let duration = animation.current_duration;
+                        animation.elapsed_in_frame = duration;
+                        delta += duration;
                         emit_frame_event = len > 1;
                         changed_this_step = len > 1;
                     }
@@ -2251,10 +2266,17 @@ fn drive_single(
         }
 
         if sprite_changed {
-            if let Some(frame) = animation.frames.get(animation.frame_index) {
-                sprite_state.update_from_frame(frame);
-                frame_updates.push(entity);
-            }
+            debug_assert_eq!(animation.frames.len(), animation.frame_hot_data.len());
+            // SAFETY: frame_index already validated against frame_count earlier in the loop.
+            let hot = unsafe { animation.frame_hot_data.get_unchecked(animation.frame_index) };
+            let region = if sprite_state.region_initialized {
+                None
+            } else {
+                let frame = unsafe { animation.frames.get_unchecked(animation.frame_index) };
+                Some(&frame.region)
+            };
+            sprite_state.update_from_hot_frame(hot, region);
+            frame_updates.push(entity);
             continue;
         }
     }
@@ -2342,22 +2364,30 @@ fn drive_fixed(
         }
 
         if sprite_changed {
-            if let Some(frame) = animation.frames.get(animation.frame_index) {
-                sprite_state.update_from_frame(frame);
-                frame_updates.push(entity);
-            }
+            debug_assert_eq!(animation.frames.len(), animation.frame_hot_data.len());
+            let hot = unsafe { animation.frame_hot_data.get_unchecked(animation.frame_index) };
+            let region = if sprite_state.region_initialized {
+                None
+            } else {
+                let frame = unsafe { animation.frames.get_unchecked(animation.frame_index) };
+                Some(&frame.region)
+            };
+            sprite_state.update_from_hot_frame(hot, region);
+            frame_updates.push(entity);
             continue;
         }
     }
 }
 
 pub fn sys_apply_sprite_frame_states(
+    mut profiler: ResMut<SystemProfiler>,
     mut frame_updates: ResMut<SpriteFrameApplyQueue>,
     mut sprites: Query<(&mut Sprite, &mut SpriteFrameState)>,
 ) {
     if frame_updates.is_empty() {
         return;
     }
+    let _span = profiler.scope("sys_apply_sprite_frame_states");
     for entity in frame_updates.drain() {
         if let Ok((mut sprite, mut state)) = sprites.get_mut(entity) {
             if let Some(region) = state.pending_region.take() {

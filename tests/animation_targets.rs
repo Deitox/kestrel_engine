@@ -11,8 +11,8 @@ use kestrel_engine::assets::{
 };
 use kestrel_engine::ecs::{
     BoneTransforms, ClipInstance, EcsWorld, PropertyTrackPlayer, SkeletonInstance, Sprite, SpriteAnimation,
-    SpriteAnimationFrame, SpriteAnimationLoopMode, SpriteFrameState, Tint, Transform, TransformTrackPlayer,
-    WorldTransform,
+    SpriteAnimationFrame, SpriteAnimationLoopMode, SpriteFrameHotData, SpriteFrameState, Tint, Transform,
+    TransformTrackPlayer, WorldTransform,
 };
 use serde::Serialize;
 use std::fs::{create_dir_all, File};
@@ -276,11 +276,19 @@ fn seed_sprite_animators(world: &mut EcsWorld, count: usize, randomize_phase: bo
     let timeline_name = Arc::from("bench_cycle");
     let atlas_key = Arc::from("bench");
     let total_duration: f32 = frame_durations.iter().copied().sum();
+    let frame_hot_data: Arc<[SpriteFrameHotData]> = Arc::from(
+        frame_template
+            .iter()
+            .map(|frame| SpriteFrameHotData { region_id: frame.region_id, uv: frame.uv })
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    );
 
     for index in 0..count {
         let mut animation = SpriteAnimation::new(
             Arc::clone(&timeline_name),
             Arc::clone(&frame_template),
+            Arc::clone(&frame_hot_data),
             Arc::clone(&frame_durations),
             Arc::clone(&frame_offsets),
             total_duration,

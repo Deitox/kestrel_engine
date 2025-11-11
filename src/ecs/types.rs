@@ -140,6 +140,16 @@ impl SpriteFrameState {
         }
     }
 
+    pub fn update_from_hot_frame(&mut self, frame: &SpriteFrameHotData, region: Option<&Arc<str>>) {
+        self.region_id = frame.region_id;
+        self.uv = frame.uv;
+        if !self.region_initialized {
+            if let Some(region) = region {
+                self.pending_region = Some(Arc::clone(region));
+            }
+        }
+    }
+
     pub fn sync_from_sprite(&mut self, sprite: &Sprite) {
         self.region_id = sprite.region_id;
         self.uv = sprite.uv;
@@ -154,6 +164,7 @@ impl SpriteFrameState {
 pub struct SpriteAnimation {
     pub timeline: Arc<str>,
     pub frames: Arc<[SpriteAnimationFrame]>,
+    pub frame_hot_data: Arc<[SpriteFrameHotData]>,
     pub frame_durations: Arc<[f32]>,
     pub frame_offsets: Arc<[f32]>,
     pub total_duration: f32,
@@ -183,6 +194,7 @@ impl SpriteAnimation {
     pub fn new(
         timeline: Arc<str>,
         frames: Arc<[SpriteAnimationFrame]>,
+        frame_hot_data: Arc<[SpriteFrameHotData]>,
         frame_durations: Arc<[f32]>,
         frame_offsets: Arc<[f32]>,
         total_duration: f32,
@@ -196,6 +208,7 @@ impl SpriteAnimation {
         let mut animation = Self {
             timeline,
             frames,
+            frame_hot_data,
             frame_durations,
             frame_offsets,
             total_duration,
@@ -293,8 +306,22 @@ impl SpriteAnimation {
 
     #[inline]
     pub fn refresh_current_duration(&mut self) {
-        self.current_duration = self.frame_durations.get(self.frame_index).copied().unwrap_or(0.0);
-        self.current_frame_offset = self.frame_offsets.get(self.frame_index).copied().unwrap_or(0.0);
+        if self.frame_index < self.frame_durations.len() {
+            self.set_frame_metrics_unchecked(self.frame_index);
+        } else {
+            self.current_duration = 0.0;
+            self.current_frame_offset = 0.0;
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn set_frame_metrics_unchecked(&mut self, index: usize) {
+        debug_assert!(index < self.frame_durations.len());
+        self.frame_index = index;
+        unsafe {
+            self.current_duration = *self.frame_durations.get_unchecked(index);
+            self.current_frame_offset = *self.frame_offsets.get_unchecked(index);
+        }
     }
 
     #[inline]
@@ -331,6 +358,12 @@ pub struct SpriteAnimationFrame {
     pub duration: f32,
     pub uv: [f32; 4],
     pub events: Arc<[Arc<str>]>,
+}
+
+#[derive(Clone, Copy)]
+pub struct SpriteFrameHotData {
+    pub region_id: u16,
+    pub uv: [f32; 4],
 }
 
 #[derive(Clone, Copy, Default)]
