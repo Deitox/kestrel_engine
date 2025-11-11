@@ -1,0 +1,61 @@
+{
+  "label": "before_phase0",
+  "timestamp": "2025-11-11T11:18:54",
+  "commit": "5e2e244a34102cea4d375835bdb1cb5a7b51a6be",
+  "command": [
+    "cargo",
+    "test",
+    "--release",
+    "animation_targets_measure",
+    "--",
+    "--ignored",
+    "--nocapture"
+  ],
+  "env": {
+    "ANIMATION_PROFILE_COUNT": "10000",
+    "ANIMATION_PROFILE_DT": "0.016666667",
+    "ANIMATION_PROFILE_STEPS": "240",
+    "ANIMATION_PROFILE_WARMUP": "16"
+  },
+  "systems": [
+    {
+      "label": "skeletal_clips",
+      "units": "bones",
+      "count": 1000,
+      "budget_ms": 1.2,
+      "runs": [
+        0.17657708333333333,
+        0.16090633333333332,
+        0.160208
+      ],
+      "mean_ms": 0.16589713888888888,
+      "stddev_ms": 0.007557240561802348
+    },
+    {
+      "label": "sprite_timelines",
+      "units": "animators",
+      "count": 10000,
+      "budget_ms": 0.2,
+      "runs": [
+        0.4969431666666667,
+        0.4496831666666667,
+        0.4911013333333333
+      ],
+      "mean_ms": 0.47924255555555556,
+      "stddev_ms": 0.02103726626389523
+    },
+    {
+      "label": "transform_clips",
+      "units": "clips",
+      "count": 2000,
+      "budget_ms": 0.4,
+      "runs": [
+        0.4024448333333333,
+        0.37806724999999997,
+        0.39491899999999996
+      ],
+      "mean_ms": 0.39181036111111106,
+      "stddev_ms": 0.010191969685313928
+    }
+  ]
+}

@@ -111,6 +111,7 @@ pub struct SpriteFrameState {
     pub uv: [f32; 4],
     pub pending_region: Option<Arc<str>>,
     pub region_initialized: bool,
+    pub queued_for_apply: bool,
 }
 
 impl SpriteFrameState {
@@ -120,6 +121,7 @@ impl SpriteFrameState {
             uv: [0.0; 4],
             pending_region: None,
             region_initialized: false,
+            queued_for_apply: false,
         }
     }
 
@@ -129,6 +131,7 @@ impl SpriteFrameState {
             uv: sprite.uv,
             pending_region: None,
             region_initialized: sprite.is_initialized(),
+            queued_for_apply: false,
         }
     }
 
@@ -157,6 +160,7 @@ impl SpriteFrameState {
         if self.region_initialized {
             self.pending_region = None;
         }
+        self.queued_for_apply = false;
     }
 }
 
@@ -189,6 +193,10 @@ pub struct SpriteAnimation {
     pub pending_start_events: bool,
     pub prev_forward: bool,
 }
+
+/// Marker used to route animators through the fast-path update loop.
+#[derive(Component, Default)]
+pub struct FastSpriteAnimator;
 
 impl SpriteAnimation {
     pub fn new(

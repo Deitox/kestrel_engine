@@ -3,7 +3,8 @@ use crate::assets::AssetManager;
 #[cfg(feature = "anim_stats")]
 use crate::ecs::systems::record_transform_looped_resume;
 use crate::ecs::systems::{
-    initialize_animation_phase, AnimationDelta, AnimationPlan, AnimationTime, SpriteFrameApplyQueue, TimeDelta,
+    initialize_animation_phase, sys_flag_fast_sprite_animators, AnimationDelta, AnimationPlan, AnimationTime,
+    SpriteFrameApplyQueue, TimeDelta,
 };
 use crate::events::{EventBus, GameEvent};
 use crate::mesh_registry::MeshRegistry;
@@ -76,6 +77,7 @@ impl EcsWorld {
             sys_drive_transform_clips,
             sys_drive_skeletal_clips,
             sys_init_sprite_frame_state,
+            sys_flag_fast_sprite_animators,
             sys_drive_sprite_animations,
             sys_apply_sprite_frame_states,
         ));
@@ -122,6 +124,7 @@ impl EcsWorld {
             if state.region_initialized {
                 state.pending_region = None;
             }
+            state.queued_for_apply = false;
         }
     }
 

@@ -99,10 +99,7 @@ const CASES: &[BudgetCase] = &[
 #[test]
 #[ignore = "perf harness - run manually when collecting animation targets"]
 fn animation_targets_measure() {
-    println!(
-        "[animation_targets] steps={} warmup={} samples={} dt={:.6}",
-        STEPS, WARMUP_STEPS, SAMPLES, DT
-    );
+    println!("[animation_targets] steps={} warmup={} samples={} dt={:.6}", STEPS, WARMUP_STEPS, SAMPLES, DT);
 
     let mut reports = Vec::with_capacity(CASES.len());
     for case in CASES {

@@ -78,6 +78,14 @@ fn animation_profile_snapshot() {
                 plain_calls: current_sprite.plain_calls - prev_sprite_stats.plain_calls,
                 fast_loop_binary_searches: current_sprite.fast_loop_binary_searches
                     - prev_sprite_stats.fast_loop_binary_searches,
+                fast_bucket_entities: current_sprite.fast_bucket_entities
+                    - prev_sprite_stats.fast_bucket_entities,
+                general_bucket_entities: current_sprite.general_bucket_entities
+                    - prev_sprite_stats.general_bucket_entities,
+                fast_bucket_frames: current_sprite.fast_bucket_frames - prev_sprite_stats.fast_bucket_frames,
+                general_bucket_frames: current_sprite.general_bucket_frames
+                    - prev_sprite_stats.general_bucket_frames,
+                frame_apply_count: current_sprite.frame_apply_count - prev_sprite_stats.frame_apply_count,
             });
             prev_sprite_stats = current_sprite;
 
@@ -178,6 +186,11 @@ fn animation_profile_snapshot() {
                 total_sprite.event_calls += stats.event_calls;
                 total_sprite.plain_calls += stats.plain_calls;
                 total_sprite.fast_loop_binary_searches += stats.fast_loop_binary_searches;
+                total_sprite.fast_bucket_entities += stats.fast_bucket_entities;
+                total_sprite.general_bucket_entities += stats.general_bucket_entities;
+                total_sprite.fast_bucket_frames += stats.fast_bucket_frames;
+                total_sprite.general_bucket_frames += stats.general_bucket_frames;
+                total_sprite.frame_apply_count += stats.frame_apply_count;
             }
 
             let mut total_transform = TransformClipStats::default();
@@ -196,12 +209,31 @@ fn animation_profile_snapshot() {
             }
 
             println!(
-                "[animation_profile] anim_stats sprite totals: fast_loop={} event={} plain={} bsearch={}",
+                "[animation_profile] anim_stats sprite totals: fast_loop={} event={} plain={} bsearch={} fast_bucket={} general_bucket={} applies={}",
                 total_sprite.fast_loop_calls,
                 total_sprite.event_calls,
                 total_sprite.plain_calls,
-                total_sprite.fast_loop_binary_searches
+                total_sprite.fast_loop_binary_searches,
+                total_sprite.fast_bucket_entities,
+                total_sprite.general_bucket_entities,
+                total_sprite.frame_apply_count
             );
+            if total_sprite.fast_bucket_frames > 0 || total_sprite.general_bucket_frames > 0 {
+                let fast_avg = if total_sprite.fast_bucket_frames > 0 {
+                    total_sprite.fast_bucket_entities as f64 / total_sprite.fast_bucket_frames as f64
+                } else {
+                    0.0
+                };
+                let general_avg = if total_sprite.general_bucket_frames > 0 {
+                    total_sprite.general_bucket_entities as f64 / total_sprite.general_bucket_frames as f64
+                } else {
+                    0.0
+                };
+                println!(
+                    "[animation_profile] anim_stats sprite bucket avg: fast={:.1} entities/frame general={:.1} entities/frame",
+                    fast_avg, general_avg
+                );
+            }
             println!(
                 "[animation_profile] anim_stats transform totals: advance={} zero_delta={} skipped={} loop_resume={} zero_duration={} fast_path={} slow_path={}",
                 total_transform.advance_calls,
@@ -224,13 +256,16 @@ fn animation_profile_snapshot() {
                 let sprite_step = sprite_stats_per_step.get(index).copied().unwrap_or_default();
                 let transform_step = transform_stats_per_step.get(index).copied().unwrap_or_default();
                 println!(
-                    "[animation_profile]   step {:>4} -> {:>8.4} ms | sprite(fast={} event={} plain={} bsearch={}) transform(adv={} zero={} skipped={} loop_resume={} zero_duration={} fast={} slow={}) time_ns(adv={} sample={} apply={})",
+                    "[animation_profile]   step {:>4} -> {:>8.4} ms | sprite(fast={} event={} plain={} bsearch={} fast_bucket={} general_bucket={} applies={}) transform(adv={} zero={} skipped={} loop_resume={} zero_duration={} fast={} slow={}) time_ns(adv={} sample={} apply={})",
                     index,
                     value,
                     sprite_step.fast_loop_calls,
                     sprite_step.event_calls,
                     sprite_step.plain_calls,
                     sprite_step.fast_loop_binary_searches,
+                    sprite_step.fast_bucket_entities,
+                    sprite_step.general_bucket_entities,
+                    sprite_step.frame_apply_count,
                     transform_step.advance_calls,
                     transform_step.zero_delta_calls,
                     transform_step.skipped_clips,

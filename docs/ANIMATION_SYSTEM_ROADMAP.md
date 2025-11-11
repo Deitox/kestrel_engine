@@ -15,7 +15,7 @@ This foundation remains unchanged; new work layers on top of it.
 
 ## Operating Principles
 - **Performance Budgets:** Each milestone owns a measurable CPU/GPU budget (see table below). Budgets are enforced via the roadmap checkpoint harness (`tests/animation_targets.rs`) that reports min/avg/max times and entity counts.
-- **Benchmark Profile:** Local perf runs should use `cargo test --profile bench animation_targets_measure -- --ignored --nocapture` which mirrors release settings without the heavy `lto=fat` rebuild overhead; CI still uses full `--release`.
+- **Benchmark Profile:** Local perf runs should use `cargo test --profile bench animation_targets_measure -- --ignored --nocapture` which mirrors release settings without the heavy `lto=fat` rebuild overhead; CI still uses full `--release`. The helper `python scripts/sprite_bench.py --label <phase> --runs 3` wraps this command, exports summaries to `perf/`, and avoids storing bulky console logs.
 - **No Per-Frame Allocation:** Playback systems must avoid heap allocations during `update()`; preallocate storage, intern region names, and reuse buffers.
 - **Determinism:** Provide variable-step default with an optional fixed-step path for capture/replays. Extend golden tests to verify repeatability.
 - **Versioned Data:** Every animation-related asset (atlas, clips, graphs) carries a schema version; migrators live under `scripts/`.

@@ -3,11 +3,14 @@ use crate::assets::skeletal::{JointQuatTrack, JointVec3Track, SkeletalClip};
 use crate::assets::{ClipInterpolation, ClipKeyframe};
 use crate::ecs::profiler::SystemProfiler;
 use crate::ecs::{
-    BoneTransforms, ClipInstance, ClipSample, PropertyTrackPlayer, SkeletonInstance, Sprite, SpriteAnimation,
-    SpriteAnimationLoopMode, SpriteFrameState, Tint, Transform, TransformTrackPlayer,
+    BoneTransforms, ClipInstance, ClipSample, FastSpriteAnimator, PropertyTrackPlayer, SkeletonInstance,
+    Sprite, SpriteAnimation, SpriteAnimationLoopMode, SpriteFrameState, Tint, Transform,
+    TransformTrackPlayer,
 };
 use crate::events::{EventBus, GameEvent};
-use bevy_ecs::prelude::{Commands, Entity, Mut, Query, Res, ResMut, Resource, Without};
+use bevy_ecs::prelude::{
+    Added, Changed, Commands, Entity, Mut, Or, Query, Res, ResMut, Resource, With, Without,
+};
 use glam::{Mat4, Quat, Vec3};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -30,6 +33,10 @@ impl SpriteFrameApplyQueue {
     pub fn is_empty(&self) -> bool {
         self.entities.is_empty()
     }
+
+    pub fn len(&self) -> usize {
+        self.entities.len()
+    }
 }
 
 #[cfg(feature = "anim_stats")]
@@ -45,6 +52,11 @@ pub struct SpriteAnimationStats {
     pub event_calls: u64,
     pub plain_calls: u64,
     pub fast_loop_binary_searches: u64,
+    pub fast_bucket_entities: u64,
+    pub general_bucket_entities: u64,
+    pub fast_bucket_frames: u64,
+    pub general_bucket_frames: u64,
+    pub frame_apply_count: u64,
 }
 
 #[cfg(feature = "anim_stats")]
@@ -115,6 +127,16 @@ static SPRITE_PLAIN_CALLS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "anim_stats")]
 static SPRITE_FAST_LOOP_BINARY_SEARCHES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "anim_stats")]
+static SPRITE_FAST_BUCKET_ENTITIES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "anim_stats")]
+static SPRITE_GENERAL_BUCKET_ENTITIES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "anim_stats")]
+static SPRITE_FAST_BUCKET_FRAMES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "anim_stats")]
+static SPRITE_GENERAL_BUCKET_FRAMES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "anim_stats")]
+static SPRITE_FRAME_APPLY_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "anim_stats")]
 static TRANSFORM_CLIP_ADVANCE_CALLS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "anim_stats")]
 static TRANSFORM_CLIP_ZERO_DELTA_CALLS: AtomicU64 = AtomicU64::new(0);
@@ -146,6 +168,11 @@ pub fn sprite_animation_stats_snapshot() -> SpriteAnimationStats {
         event_calls: SPRITE_EVENT_CALLS.load(Ordering::Relaxed),
         plain_calls: SPRITE_PLAIN_CALLS.load(Ordering::Relaxed),
         fast_loop_binary_searches: SPRITE_FAST_LOOP_BINARY_SEARCHES.load(Ordering::Relaxed),
+        fast_bucket_entities: SPRITE_FAST_BUCKET_ENTITIES.load(Ordering::Relaxed),
+        general_bucket_entities: SPRITE_GENERAL_BUCKET_ENTITIES.load(Ordering::Relaxed),
+        fast_bucket_frames: SPRITE_FAST_BUCKET_FRAMES.load(Ordering::Relaxed),
+        general_bucket_frames: SPRITE_GENERAL_BUCKET_FRAMES.load(Ordering::Relaxed),
+        frame_apply_count: SPRITE_FRAME_APPLY_COUNT.load(Ordering::Relaxed),
     }
 }
 
@@ -155,6 +182,11 @@ pub fn reset_sprite_animation_stats() {
     SPRITE_EVENT_CALLS.store(0, Ordering::Relaxed);
     SPRITE_PLAIN_CALLS.store(0, Ordering::Relaxed);
     SPRITE_FAST_LOOP_BINARY_SEARCHES.store(0, Ordering::Relaxed);
+    SPRITE_FAST_BUCKET_ENTITIES.store(0, Ordering::Relaxed);
+    SPRITE_GENERAL_BUCKET_ENTITIES.store(0, Ordering::Relaxed);
+    SPRITE_FAST_BUCKET_FRAMES.store(0, Ordering::Relaxed);
+    SPRITE_GENERAL_BUCKET_FRAMES.store(0, Ordering::Relaxed);
+    SPRITE_FRAME_APPLY_COUNT.store(0, Ordering::Relaxed);
 }
 
 #[cfg(feature = "anim_stats")]
@@ -224,6 +256,35 @@ fn record_fast_loop_binary_search(count: u64) {
 #[cfg(not(feature = "anim_stats"))]
 #[allow(dead_code)]
 fn record_fast_loop_binary_search(_count: u64) {}
+
+#[cfg(feature = "anim_stats")]
+fn record_fast_bucket_sample(count: u64) {
+    SPRITE_FAST_BUCKET_ENTITIES.fetch_add(count, Ordering::Relaxed);
+    SPRITE_FAST_BUCKET_FRAMES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "anim_stats"))]
+#[allow(dead_code)]
+fn record_fast_bucket_sample(_count: u64) {}
+
+#[cfg(feature = "anim_stats")]
+fn record_general_bucket_sample(count: u64) {
+    SPRITE_GENERAL_BUCKET_ENTITIES.fetch_add(count, Ordering::Relaxed);
+    SPRITE_GENERAL_BUCKET_FRAMES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "anim_stats"))]
+#[allow(dead_code)]
+fn record_general_bucket_sample(_count: u64) {}
+
+#[cfg(feature = "anim_stats")]
+fn record_sprite_frame_applies(count: u64) {
+    SPRITE_FRAME_APPLY_COUNT.fetch_add(count, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "anim_stats"))]
+#[allow(dead_code)]
+fn record_sprite_frame_applies(_count: u64) {}
 
 #[cfg(feature = "anim_stats")]
 fn record_transform_advance(count: u64) {
@@ -333,9 +394,21 @@ pub fn sys_drive_sprite_animations(
     animation_time: Res<AnimationTime>,
     mut events: ResMut<EventBus>,
     mut frame_updates: ResMut<SpriteFrameApplyQueue>,
-    mut animations: Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState)>,
+    mut fast_animations: Query<
+        (Entity, &mut SpriteAnimation, &mut SpriteFrameState),
+        With<FastSpriteAnimator>,
+    >,
+    mut general_animations: Query<
+        (Entity, &mut SpriteAnimation, &mut SpriteFrameState),
+        Without<FastSpriteAnimator>,
+    >,
 ) {
     let _span = profiler.scope("sys_drive_sprite_animations");
+    debug_assert!(
+        frame_updates.is_empty(),
+        "SpriteFrameApplyQueue should be empty before driving animations (pending {} entries)",
+        frame_updates.len()
+    );
     let plan = animation_plan.delta;
     if !plan.has_steps() {
         return;
@@ -346,26 +419,41 @@ pub fn sys_drive_sprite_animations(
         AnimationDelta::None => {}
         AnimationDelta::Single(delta) => {
             if delta != 0.0 {
-                drive_single(
+                drive_fast_single(
+                    delta,
+                    has_group_scales,
+                    animation_time_ref,
+                    frame_updates.as_mut(),
+                    &mut fast_animations,
+                );
+                drive_general_single(
                     delta,
                     has_group_scales,
                     animation_time_ref,
                     &mut events,
                     frame_updates.as_mut(),
-                    &mut animations,
+                    &mut general_animations,
                 );
             }
         }
         AnimationDelta::Fixed { step, steps } => {
             if steps > 0 && step != 0.0 {
-                drive_fixed(
+                drive_fast_fixed(
+                    step,
+                    steps,
+                    has_group_scales,
+                    animation_time_ref,
+                    frame_updates.as_mut(),
+                    &mut fast_animations,
+                );
+                drive_general_fixed(
                     step,
                     steps,
                     has_group_scales,
                     animation_time_ref,
                     &mut events,
                     frame_updates.as_mut(),
-                    &mut animations,
+                    &mut general_animations,
                 );
             }
         }
@@ -379,6 +467,24 @@ pub fn sys_init_sprite_frame_state(
     for (entity, sprite) in sprites.iter() {
         let state = SpriteFrameState::from_sprite(sprite);
         commands.entity(entity).insert(state);
+    }
+}
+
+pub fn sys_flag_fast_sprite_animators(
+    mut commands: Commands,
+    animations: Query<
+        (Entity, &SpriteAnimation, Option<&FastSpriteAnimator>),
+        Or<(Added<SpriteAnimation>, Changed<SpriteAnimation>)>,
+    >,
+) {
+    for (entity, animation, marker) in animations.iter() {
+        if animation.fast_loop {
+            if marker.is_none() {
+                commands.entity(entity).insert(FastSpriteAnimator);
+            }
+        } else if marker.is_some() {
+            commands.entity(entity).remove::<FastSpriteAnimator>();
+        }
     }
 }
 
@@ -405,8 +511,10 @@ mod tests {
     static DRIVE_FIXED_STEP_COUNT: AtomicU32 = AtomicU32::new(0);
 
     fn hot_frames_from(frames: &[SpriteAnimationFrame]) -> Arc<[SpriteFrameHotData]> {
-        let data: Vec<SpriteFrameHotData> =
-            frames.iter().map(|frame| SpriteFrameHotData { region_id: frame.region_id, uv: frame.uv }).collect();
+        let data: Vec<SpriteFrameHotData> = frames
+            .iter()
+            .map(|frame| SpriteFrameHotData { region_id: frame.region_id, uv: frame.uv })
+            .collect();
         Arc::from(data.into_boxed_slice())
     }
 
@@ -639,11 +747,21 @@ mod tests {
             Res<AnimationTime>,
             ResMut<EventBus>,
             ResMut<SpriteFrameApplyQueue>,
-            Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState)>,
+            Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState), With<FastSpriteAnimator>>,
+            Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState), Without<FastSpriteAnimator>>,
         )>::new(&mut world);
         {
-            let (profiler, plan, time, events, frame_updates, animations) = system_state.get_mut(&mut world);
-            sys_drive_sprite_animations(profiler, plan, time, events, frame_updates, animations);
+            let (profiler, plan, time, events, frame_updates, fast_animations, general_animations) =
+                system_state.get_mut(&mut world);
+            sys_drive_sprite_animations(
+                profiler,
+                plan,
+                time,
+                events,
+                frame_updates,
+                fast_animations,
+                general_animations,
+            );
         }
         system_state.apply(&mut world);
 
@@ -654,6 +772,222 @@ mod tests {
             GameEvent::SpriteAnimationEvent { event, .. } => assert_eq!(event.as_ref(), "spawn"),
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[test]
+    fn fast_sprite_animators_receive_marker() {
+        use bevy_ecs::system::SystemState;
+
+        let mut world = World::new();
+        let region = Arc::from("frame");
+        let frames: Arc<[SpriteAnimationFrame]> = Arc::from(
+            vec![SpriteAnimationFrame {
+                name: Arc::clone(&region),
+                region: Arc::clone(&region),
+                region_id: 1,
+                duration: 0.1,
+                uv: [0.0; 4],
+                events: Arc::default(),
+            }]
+            .into_boxed_slice(),
+        );
+        let hot_frames = hot_frames_from(frames.as_ref());
+        let durations = Arc::from(vec![0.1_f32].into_boxed_slice());
+        let offsets = Arc::from(vec![0.0_f32].into_boxed_slice());
+        let animation = SpriteAnimation::new(
+            Arc::from("timeline"),
+            frames,
+            hot_frames,
+            durations,
+            offsets,
+            0.1,
+            SpriteAnimationLoopMode::Loop,
+        );
+        assert!(animation.fast_loop);
+
+        let entity = world.spawn(animation).id();
+
+        let mut system_state = SystemState::<(
+            Commands,
+            Query<
+                (Entity, &SpriteAnimation, Option<&FastSpriteAnimator>),
+                Or<(Added<SpriteAnimation>, Changed<SpriteAnimation>)>,
+            >,
+        )>::new(&mut world);
+        {
+            let (commands, animations) = system_state.get_mut(&mut world);
+            sys_flag_fast_sprite_animators(commands, animations);
+        }
+        system_state.apply(&mut world);
+
+        assert!(world.get::<FastSpriteAnimator>(entity).is_some());
+    }
+
+    #[test]
+    fn queue_sprite_updates_deduplicate_entities() {
+        let region = Arc::from("frame");
+        let frames: Arc<[SpriteAnimationFrame]> = Arc::from(
+            vec![SpriteAnimationFrame {
+                name: Arc::clone(&region),
+                region: Arc::clone(&region),
+                region_id: 5,
+                duration: 0.1,
+                uv: [0.0; 4],
+                events: Arc::default(),
+            }]
+            .into_boxed_slice(),
+        );
+        let hot_frames = hot_frames_from(frames.as_ref());
+        let durations = Arc::from(vec![0.1_f32].into_boxed_slice());
+        let offsets = Arc::from(vec![0.0_f32].into_boxed_slice());
+        let animation = SpriteAnimation::new(
+            Arc::from("timeline"),
+            frames,
+            hot_frames,
+            durations,
+            offsets,
+            0.1,
+            SpriteAnimationLoopMode::Loop,
+        );
+
+        let entity = Entity::from_raw(42);
+        let mut sprite_state = SpriteFrameState::new_uninitialized();
+        let mut frame_updates = SpriteFrameApplyQueue::default();
+
+        queue_sprite_frame_update(entity, &animation, &mut sprite_state, &mut frame_updates);
+        assert_eq!(frame_updates.len(), 1);
+        assert!(sprite_state.queued_for_apply);
+
+        // Second enqueue should collapse into the existing pending update while still mutating the frame state.
+        queue_sprite_frame_update(entity, &animation, &mut sprite_state, &mut frame_updates);
+        assert_eq!(frame_updates.len(), 1);
+    }
+
+    #[test]
+    fn sprite_frame_queue_flag_clears_after_apply() {
+        let mut world = World::new();
+        world.insert_resource(SystemProfiler::new());
+        world.insert_resource(SpriteFrameApplyQueue::default());
+
+        let region = Arc::from("frame");
+        let frames: Arc<[SpriteAnimationFrame]> = Arc::from(
+            vec![
+                SpriteAnimationFrame {
+                    name: Arc::clone(&region),
+                    region: Arc::clone(&region),
+                    region_id: 1,
+                    duration: 0.05,
+                    uv: [0.0; 4],
+                    events: Arc::default(),
+                },
+                SpriteAnimationFrame {
+                    name: Arc::from("frame1"),
+                    region: Arc::from("frame1"),
+                    region_id: 2,
+                    duration: 0.05,
+                    uv: [0.0; 4],
+                    events: Arc::default(),
+                },
+            ]
+            .into_boxed_slice(),
+        );
+        let hot_frames = hot_frames_from(frames.as_ref());
+        let durations = Arc::from(vec![0.05_f32, 0.05_f32].into_boxed_slice());
+        let offsets = Arc::from(vec![0.0_f32, 0.05_f32].into_boxed_slice());
+        let animation = SpriteAnimation::new(
+            Arc::from("timeline"),
+            frames,
+            hot_frames,
+            durations,
+            offsets,
+            0.1,
+            SpriteAnimationLoopMode::Loop,
+        );
+        let sprite = Sprite {
+            atlas_key: Arc::from("atlas"),
+            region: Arc::clone(&region),
+            region_id: Sprite::UNINITIALIZED_REGION,
+            uv: [0.0; 4],
+        };
+        let frame_state = SpriteFrameState::new_uninitialized();
+
+        let entity = world.spawn((animation, sprite, frame_state)).id();
+
+        let animation_snapshot = world.get::<SpriteAnimation>(entity).unwrap().clone();
+        let mut pending_queue = SpriteFrameApplyQueue::default();
+        {
+            let mut state_ref = world.get_mut::<SpriteFrameState>(entity).unwrap();
+            queue_sprite_frame_update(entity, &animation_snapshot, &mut state_ref, &mut pending_queue);
+        }
+        *world.resource_mut::<SpriteFrameApplyQueue>() = pending_queue;
+
+        let state_after_drive = world.get::<SpriteFrameState>(entity).unwrap();
+        assert!(state_after_drive.queued_for_apply);
+        assert!(!world.resource::<SpriteFrameApplyQueue>().is_empty());
+
+        {
+            let mut apply_state = bevy_ecs::system::SystemState::<(
+                ResMut<SystemProfiler>,
+                ResMut<SpriteFrameApplyQueue>,
+                Query<(&mut Sprite, &mut SpriteFrameState)>,
+            )>::new(&mut world);
+            let (profiler, frame_updates, sprites) = apply_state.get_mut(&mut world);
+            sys_apply_sprite_frame_states(profiler, frame_updates, sprites);
+        }
+
+        let state_after_apply = world.get::<SpriteFrameState>(entity).unwrap();
+        assert!(!state_after_apply.queued_for_apply);
+        assert!(world.resource::<SpriteFrameApplyQueue>().is_empty());
+    }
+
+    #[test]
+    fn evented_animators_drop_stale_fast_markers() {
+        use bevy_ecs::system::SystemState;
+
+        let mut world = World::new();
+        let region = Arc::from("frame");
+        let event = Arc::from("spawn");
+        let frames: Arc<[SpriteAnimationFrame]> = Arc::from(
+            vec![SpriteAnimationFrame {
+                name: Arc::clone(&region),
+                region: Arc::clone(&region),
+                region_id: 1,
+                duration: 0.1,
+                uv: [0.0; 4],
+                events: Arc::from(vec![Arc::clone(&event)].into_boxed_slice()),
+            }]
+            .into_boxed_slice(),
+        );
+        let hot_frames = hot_frames_from(frames.as_ref());
+        let durations = Arc::from(vec![0.1_f32].into_boxed_slice());
+        let offsets = Arc::from(vec![0.0_f32].into_boxed_slice());
+        let animation = SpriteAnimation::new(
+            Arc::from("timeline"),
+            frames,
+            hot_frames,
+            durations,
+            offsets,
+            0.1,
+            SpriteAnimationLoopMode::Loop,
+        );
+        assert!(!animation.fast_loop);
+
+        let entity = world.spawn((animation, FastSpriteAnimator)).id();
+
+        let mut system_state = SystemState::<(
+            Commands,
+            Query<
+                (Entity, &SpriteAnimation, Option<&FastSpriteAnimator>),
+                Or<(Added<SpriteAnimation>, Changed<SpriteAnimation>)>,
+            >,
+        )>::new(&mut world);
+        {
+            let (commands, animations) = system_state.get_mut(&mut world);
+            sys_flag_fast_sprite_animators(commands, animations);
+        }
+        system_state.apply(&mut world);
+
+        assert!(world.get::<FastSpriteAnimator>(entity).is_none());
     }
 
     #[test]
@@ -961,13 +1295,23 @@ mod tests {
             Res<AnimationTime>,
             ResMut<EventBus>,
             ResMut<SpriteFrameApplyQueue>,
-            Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState)>,
+            Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState), With<FastSpriteAnimator>>,
+            Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState), Without<FastSpriteAnimator>>,
         )>::new(&mut world);
 
         let _guard = DriveFixedRecorderGuard::enable();
         {
-            let (profiler, plan, time, events, frame_updates, animations) = system_state.get_mut(&mut world);
-            sys_drive_sprite_animations(profiler, plan, time, events, frame_updates, animations);
+            let (profiler, plan, time, events, frame_updates, fast_animations, general_animations) =
+                system_state.get_mut(&mut world);
+            sys_drive_sprite_animations(
+                profiler,
+                plan,
+                time,
+                events,
+                frame_updates,
+                fast_animations,
+                general_animations,
+            );
         }
         system_state.apply(&mut world);
 
@@ -1906,7 +2250,8 @@ pub(crate) fn advance_animation(
             match animation.mode {
                 SpriteAnimationLoopMode::Loop => {
                     if len > 1 {
-                        let prev = if animation.frame_index == 0 { len - 1 } else { animation.frame_index - 1 };
+                        let prev =
+                            if animation.frame_index == 0 { len - 1 } else { animation.frame_index - 1 };
                         animation.set_frame_metrics_unchecked(prev);
                         let duration = animation.current_duration;
                         animation.elapsed_in_frame = duration;
@@ -2202,25 +2547,65 @@ fn advance_animation_fast_loop(animation: &mut SpriteAnimation, delta: f32) -> b
     }
 }
 
-fn drive_single(
+fn drive_fast_single(
+    delta: f32,
+    has_group_scales: bool,
+    animation_time: &AnimationTime,
+    frame_updates: &mut SpriteFrameApplyQueue,
+    animations: &mut Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState), With<FastSpriteAnimator>>,
+) {
+    #[cfg(feature = "anim_stats")]
+    let mut processed = 0_u64;
+
+    for (entity, mut animation, mut sprite_state) in animations.iter_mut() {
+        let frame_count = animation.frames.len();
+        if !prepare_animation(&mut animation, frame_count) {
+            continue;
+        }
+
+        let Some(playback_rate) = resolve_playback_rate(&mut animation, has_group_scales, animation_time)
+        else {
+            continue;
+        };
+        let scaled = delta * playback_rate;
+        if scaled == 0.0 {
+            continue;
+        }
+        let Some(advance_delta) = animation.accumulate_delta(scaled, CLIP_TIME_EPSILON) else {
+            continue;
+        };
+
+        debug_assert!(animation.fast_loop);
+        if advance_animation_fast_loop(&mut animation, advance_delta) {
+            queue_sprite_frame_update(entity, &animation, &mut sprite_state, frame_updates);
+        }
+        #[cfg(feature = "anim_stats")]
+        {
+            processed += 1;
+        }
+    }
+
+    #[cfg(feature = "anim_stats")]
+    record_fast_bucket_sample(processed);
+}
+
+fn drive_general_single(
     delta: f32,
     has_group_scales: bool,
     animation_time: &AnimationTime,
     events: &mut EventBus,
     frame_updates: &mut SpriteFrameApplyQueue,
-    animations: &mut Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState)>,
+    animations: &mut Query<
+        (Entity, &mut SpriteAnimation, &mut SpriteFrameState),
+        Without<FastSpriteAnimator>,
+    >,
 ) {
+    #[cfg(feature = "anim_stats")]
+    let mut processed = 0_u64;
+
     for (entity, mut animation, mut sprite_state) in animations.iter_mut() {
         let frame_count = animation.frames.len();
-        if frame_count == 0 {
-            continue;
-        }
-        if animation.frame_index >= frame_count {
-            animation.frame_index = 0;
-            animation.elapsed_in_frame = 0.0;
-            animation.refresh_current_duration();
-        }
-        if !animation.playing {
+        if !prepare_animation(&mut animation, frame_count) {
             continue;
         }
 
@@ -2231,18 +2616,10 @@ fn drive_single(
             animation.pending_start_events = false;
         }
 
-        let playback_rate = if animation.playback_rate_dirty {
-            let group_scale =
-                if has_group_scales { animation_time.group_scale(animation.group.as_deref()) } else { 1.0 };
-            animation.ensure_playback_rate(group_scale)
-        } else {
-            animation.playback_rate
-        };
-
-        if playback_rate == 0.0 {
+        let Some(playback_rate) = resolve_playback_rate(&mut animation, has_group_scales, animation_time)
+        else {
             continue;
-        }
-
+        };
         let scaled = delta * playback_rate;
         if scaled == 0.0 {
             continue;
@@ -2266,42 +2643,107 @@ fn drive_single(
         }
 
         if sprite_changed {
-            debug_assert_eq!(animation.frames.len(), animation.frame_hot_data.len());
-            // SAFETY: frame_index already validated against frame_count earlier in the loop.
-            let hot = unsafe { animation.frame_hot_data.get_unchecked(animation.frame_index) };
-            let region = if sprite_state.region_initialized {
-                None
-            } else {
-                let frame = unsafe { animation.frames.get_unchecked(animation.frame_index) };
-                Some(&frame.region)
-            };
-            sprite_state.update_from_hot_frame(hot, region);
-            frame_updates.push(entity);
-            continue;
+            queue_sprite_frame_update(entity, &animation, &mut sprite_state, frame_updates);
+        }
+        #[cfg(feature = "anim_stats")]
+        {
+            processed += 1;
         }
     }
+
+    #[cfg(feature = "anim_stats")]
+    record_general_bucket_sample(processed);
 }
 
-fn drive_fixed(
+fn drive_fast_fixed(
+    step: f32,
+    steps: u32,
+    has_group_scales: bool,
+    animation_time: &AnimationTime,
+    frame_updates: &mut SpriteFrameApplyQueue,
+    animations: &mut Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState), With<FastSpriteAnimator>>,
+) {
+    #[cfg(feature = "anim_stats")]
+    let mut processed = 0_u64;
+
+    if steps == 0 {
+        #[cfg(feature = "anim_stats")]
+        record_fast_bucket_sample(0);
+        return;
+    }
+
+    for (entity, mut animation, mut sprite_state) in animations.iter_mut() {
+        let frame_count = animation.frames.len();
+        if !prepare_animation(&mut animation, frame_count) {
+            continue;
+        }
+
+        let Some(playback_rate) = resolve_playback_rate(&mut animation, has_group_scales, animation_time)
+        else {
+            continue;
+        };
+        let scaled_step = step * playback_rate;
+        if scaled_step == 0.0 {
+            continue;
+        }
+
+        let mut sprite_changed = false;
+        for _ in 0..steps {
+            #[cfg(test)]
+            tests::record_drive_fixed_step_iteration();
+
+            let Some(advance_delta) = animation.accumulate_delta(scaled_step, CLIP_TIME_EPSILON) else {
+                if !animation.playing {
+                    break;
+                }
+                continue;
+            };
+
+            if advance_animation_fast_loop(&mut animation, advance_delta) {
+                sprite_changed = true;
+            }
+            if !animation.playing {
+                break;
+            }
+        }
+
+        if sprite_changed {
+            queue_sprite_frame_update(entity, &animation, &mut sprite_state, frame_updates);
+        }
+        #[cfg(feature = "anim_stats")]
+        {
+            processed += 1;
+        }
+    }
+
+    #[cfg(feature = "anim_stats")]
+    record_fast_bucket_sample(processed);
+}
+
+fn drive_general_fixed(
     step: f32,
     steps: u32,
     has_group_scales: bool,
     animation_time: &AnimationTime,
     events: &mut EventBus,
     frame_updates: &mut SpriteFrameApplyQueue,
-    animations: &mut Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState)>,
+    animations: &mut Query<
+        (Entity, &mut SpriteAnimation, &mut SpriteFrameState),
+        Without<FastSpriteAnimator>,
+    >,
 ) {
+    #[cfg(feature = "anim_stats")]
+    let mut processed = 0_u64;
+
+    if steps == 0 {
+        #[cfg(feature = "anim_stats")]
+        record_general_bucket_sample(0);
+        return;
+    }
+
     for (entity, mut animation, mut sprite_state) in animations.iter_mut() {
         let frame_count = animation.frames.len();
-        if frame_count == 0 {
-            continue;
-        }
-        if animation.frame_index >= frame_count {
-            animation.frame_index = 0;
-            animation.elapsed_in_frame = 0.0;
-            animation.refresh_current_duration();
-        }
-        if !animation.playing {
+        if !prepare_animation(&mut animation, frame_count) {
             continue;
         }
 
@@ -2312,18 +2754,10 @@ fn drive_fixed(
             animation.pending_start_events = false;
         }
 
-        let playback_rate = if animation.playback_rate_dirty {
-            let group_scale =
-                if has_group_scales { animation_time.group_scale(animation.group.as_deref()) } else { 1.0 };
-            animation.ensure_playback_rate(group_scale)
-        } else {
-            animation.playback_rate
-        };
-
-        if playback_rate == 0.0 || steps == 0 {
+        let Some(playback_rate) = resolve_playback_rate(&mut animation, has_group_scales, animation_time)
+        else {
             continue;
-        }
-
+        };
         let scaled_step = step * playback_rate;
         if scaled_step == 0.0 {
             continue;
@@ -2364,19 +2798,70 @@ fn drive_fixed(
         }
 
         if sprite_changed {
-            debug_assert_eq!(animation.frames.len(), animation.frame_hot_data.len());
-            let hot = unsafe { animation.frame_hot_data.get_unchecked(animation.frame_index) };
-            let region = if sprite_state.region_initialized {
-                None
-            } else {
-                let frame = unsafe { animation.frames.get_unchecked(animation.frame_index) };
-                Some(&frame.region)
-            };
-            sprite_state.update_from_hot_frame(hot, region);
-            frame_updates.push(entity);
-            continue;
+            queue_sprite_frame_update(entity, &animation, &mut sprite_state, frame_updates);
+        }
+        #[cfg(feature = "anim_stats")]
+        {
+            processed += 1;
         }
     }
+
+    #[cfg(feature = "anim_stats")]
+    record_general_bucket_sample(processed);
+}
+
+fn prepare_animation(animation: &mut SpriteAnimation, frame_count: usize) -> bool {
+    if frame_count == 0 {
+        return false;
+    }
+    if animation.frame_index >= frame_count {
+        animation.frame_index = 0;
+        animation.elapsed_in_frame = 0.0;
+        animation.refresh_current_duration();
+    }
+    animation.playing
+}
+
+fn resolve_playback_rate(
+    animation: &mut SpriteAnimation,
+    has_group_scales: bool,
+    animation_time: &AnimationTime,
+) -> Option<f32> {
+    let playback_rate = if animation.playback_rate_dirty {
+        let group_scale =
+            if has_group_scales { animation_time.group_scale(animation.group.as_deref()) } else { 1.0 };
+        animation.ensure_playback_rate(group_scale)
+    } else {
+        animation.playback_rate
+    };
+    if playback_rate == 0.0 {
+        None
+    } else {
+        Some(playback_rate)
+    }
+}
+
+fn queue_sprite_frame_update(
+    entity: Entity,
+    animation: &SpriteAnimation,
+    sprite_state: &mut SpriteFrameState,
+    frame_updates: &mut SpriteFrameApplyQueue,
+) {
+    debug_assert_eq!(animation.frames.len(), animation.frame_hot_data.len());
+    // SAFETY: frame_index already validated against frame_count earlier in the loop.
+    let hot = unsafe { animation.frame_hot_data.get_unchecked(animation.frame_index) };
+    let region = if sprite_state.region_initialized {
+        None
+    } else {
+        let frame = unsafe { animation.frames.get_unchecked(animation.frame_index) };
+        Some(&frame.region)
+    };
+    sprite_state.update_from_hot_frame(hot, region);
+    if sprite_state.queued_for_apply {
+        return;
+    }
+    sprite_state.queued_for_apply = true;
+    frame_updates.push(entity);
 }
 
 pub fn sys_apply_sprite_frame_states(
@@ -2388,6 +2873,8 @@ pub fn sys_apply_sprite_frame_states(
         return;
     }
     let _span = profiler.scope("sys_apply_sprite_frame_states");
+    #[cfg(feature = "anim_stats")]
+    let mut applied = 0_u64;
     for entity in frame_updates.drain() {
         if let Ok((mut sprite, mut state)) = sprites.get_mut(entity) {
             if let Some(region) = state.pending_region.take() {
@@ -2396,6 +2883,13 @@ pub fn sys_apply_sprite_frame_states(
             }
             sprite.region_id = state.region_id;
             sprite.uv = state.uv;
+            state.queued_for_apply = false;
+            #[cfg(feature = "anim_stats")]
+            {
+                applied += 1;
+            }
         }
     }
+    #[cfg(feature = "anim_stats")]
+    record_sprite_frame_applies(applied);
 }
