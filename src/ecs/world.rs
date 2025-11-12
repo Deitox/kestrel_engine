@@ -6,6 +6,8 @@ use crate::ecs::systems::{
     initialize_animation_phase, sys_flag_fast_sprite_animators, AnimationDelta, AnimationPlan, AnimationTime,
     SpriteFrameApplyQueue, TimeDelta,
 };
+#[cfg(feature = "sprite_anim_soa")]
+use crate::ecs::systems::{sys_cleanup_sprite_animator_soa, SpriteAnimatorSoa};
 use crate::events::{EventBus, GameEvent};
 use crate::mesh_registry::MeshRegistry;
 use crate::scene::{
@@ -66,6 +68,8 @@ impl EcsWorld {
         world.insert_resource(TransformPropagationScratch::default());
         world.insert_resource(SystemProfiler::new());
         world.insert_resource(SpriteFrameApplyQueue::default());
+        #[cfg(feature = "sprite_anim_soa")]
+        world.insert_resource(SpriteAnimatorSoa::default());
 
         let mut schedule_var = Schedule::default();
         schedule_var.add_systems((
@@ -81,6 +85,8 @@ impl EcsWorld {
             sys_drive_sprite_animations,
             sys_apply_sprite_frame_states,
         ));
+        #[cfg(feature = "sprite_anim_soa")]
+        schedule_var.add_systems((sys_cleanup_sprite_animator_soa,));
 
         let mut schedule_fixed = Schedule::default();
         schedule_fixed.add_systems((

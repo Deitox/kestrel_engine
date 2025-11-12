@@ -4,14 +4,17 @@ use crate::assets::{ClipInterpolation, ClipKeyframe};
 use crate::ecs::profiler::SystemProfiler;
 use crate::ecs::{
     BoneTransforms, ClipInstance, ClipSample, FastSpriteAnimator, PropertyTrackPlayer, SkeletonInstance,
-    Sprite, SpriteAnimation, SpriteAnimationLoopMode, SpriteFrameState, Tint, Transform,
-    TransformTrackPlayer,
+    Sprite, SpriteAnimation, SpriteAnimationLoopMode, SpriteFrameState, Tint, Transform, TransformTrackPlayer,
 };
+#[cfg(feature = "sprite_anim_soa")]
+use crate::ecs::{SpriteAnimationFrame, SpriteFrameHotData};
 use crate::events::{EventBus, GameEvent};
 use bevy_ecs::prelude::{
     Added, Changed, Commands, Entity, Mut, Or, Query, Res, ResMut, Resource, With, Without,
 };
 use glam::{Mat4, Quat, Vec3};
+#[cfg(feature = "sprite_anim_soa")]
+use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -44,6 +47,300 @@ impl SpriteFrameApplyQueue {
     }
 }
 
+#[cfg(feature = "sprite_anim_soa")]
+#[derive(Default, Resource)]
+pub struct SpriteAnimatorSoa {
+    entities: Vec<Entity>,
+    frame_index: Vec<u32>,
+    elapsed_in_frame: Vec<f32>,
+    current_duration: Vec<f32>,
+    current_frame_offset: Vec<f32>,
+    #[cfg(feature = "sprite_anim_fixed_point")]
+    elapsed_in_frame_fp: Vec<u32>,
+    #[cfg(feature = "sprite_anim_fixed_point")]
+    current_duration_fp: Vec<u32>,
+    #[cfg(feature = "sprite_anim_fixed_point")]
+    current_frame_offset_fp: Vec<u32>,
+    pending_delta: Vec<f32>,
+    playback_rate: Vec<f32>,
+    speed: Vec<f32>,
+    total_duration: Vec<f32>,
+    #[cfg(feature = "sprite_anim_fixed_point")]
+    total_duration_fp: Vec<u32>,
+    total_duration_inv: Vec<f32>,
+    frames: Vec<Arc<[SpriteAnimationFrame]>>,
+    frame_hot_data: Vec<Arc<[SpriteFrameHotData]>>,
+    frame_durations: Vec<Arc<[f32]>>,
+    frame_offsets: Vec<Arc<[f32]>>,
+    #[cfg(feature = "sprite_anim_fixed_point")]
+    frame_durations_fp: Vec<Arc<[u32]>>,
+    #[cfg(feature = "sprite_anim_fixed_point")]
+    frame_offsets_fp: Vec<Arc<[u32]>>,
+    group: Vec<Option<Arc<str>>>,
+    flags: Vec<SpriteAnimatorFlags>,
+    entity_to_slot: HashMap<Entity, u32>,
+}
+
+#[cfg(feature = "sprite_anim_soa")]
+type SpriteStateUpdate = (Entity, usize);
+
+#[cfg(feature = "sprite_anim_soa")]
+impl SpriteAnimatorSoa {
+    pub fn len(&self) -> usize {
+        self.entities.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entities.is_empty()
+    }
+
+    pub fn contains(&self, entity: Entity) -> bool {
+        self.entity_to_slot.contains_key(&entity)
+    }
+
+    pub fn slot_index(&self, entity: Entity) -> Option<usize> {
+        self.entity_to_slot.get(&entity).copied().map(|slot| slot as usize)
+    }
+
+    pub fn entity(&self, slot: usize) -> Entity {
+        self.entities[slot]
+    }
+
+    pub fn upsert(&mut self, entity: Entity, animation: &SpriteAnimation) {
+        if let Some(slot) = self.slot_index(entity) {
+            self.write_slot(slot, animation);
+        } else {
+            self.push_slot(entity, animation);
+        }
+    }
+
+    pub fn remove(&mut self, entity: Entity) -> bool {
+        let Some(slot) = self.entity_to_slot.remove(&entity) else {
+            return false;
+        };
+        self.swap_remove_slot(slot as usize);
+        true
+    }
+
+    pub fn retain_entities<F>(&mut self, mut keep: F)
+    where
+        F: FnMut(Entity) -> bool,
+    {
+        let mut idx = 0;
+        while idx < self.entities.len() {
+            let entity = self.entities[idx];
+            if keep(entity) {
+                idx += 1;
+            } else {
+                self.remove(entity);
+            }
+        }
+    }
+
+    fn push_slot(&mut self, entity: Entity, animation: &SpriteAnimation) {
+        let slot = self.entities.len() as u32;
+        self.entity_to_slot.insert(entity, slot);
+        self.entities.push(entity);
+        self.frame_index.push(animation.frame_index as u32);
+        self.elapsed_in_frame.push(animation.elapsed_in_frame);
+        self.current_duration.push(animation.current_duration);
+        self.current_frame_offset.push(animation.current_frame_offset);
+        #[cfg(feature = "sprite_anim_fixed_point")]
+        {
+            self.elapsed_in_frame_fp.push(fp_from_f32(animation.elapsed_in_frame));
+            self.current_duration_fp.push(fp_from_f32(animation.current_duration));
+            self.current_frame_offset_fp.push(fp_from_f32(animation.current_frame_offset));
+            self.total_duration_fp.push(fp_from_f32(animation.total_duration));
+            self.frame_durations_fp.push(convert_slice_to_fp(animation.frame_durations.as_ref()));
+            self.frame_offsets_fp.push(convert_slice_to_fp(animation.frame_offsets.as_ref()));
+        }
+        self.pending_delta.push(animation.pending_small_delta);
+        self.playback_rate.push(animation.playback_rate);
+        self.speed.push(animation.speed);
+        self.total_duration.push(animation.total_duration);
+        self.total_duration_inv.push(animation.total_duration_inv);
+        self.frames.push(Arc::clone(&animation.frames));
+        self.frame_hot_data.push(Arc::clone(&animation.frame_hot_data));
+        self.frame_durations.push(Arc::clone(&animation.frame_durations));
+        self.frame_offsets.push(Arc::clone(&animation.frame_offsets));
+        self.group.push(animation.group.as_ref().map(|g| Arc::<str>::from(g.as_str())));
+        self.flags.push(SpriteAnimatorFlags::from_animation(animation));
+    }
+
+    fn write_slot(&mut self, slot: usize, animation: &SpriteAnimation) {
+        self.frame_index[slot] = animation.frame_index as u32;
+        self.elapsed_in_frame[slot] = animation.elapsed_in_frame;
+        self.current_duration[slot] = animation.current_duration;
+        self.current_frame_offset[slot] = animation.current_frame_offset;
+        #[cfg(feature = "sprite_anim_fixed_point")]
+        {
+            self.elapsed_in_frame_fp[slot] = fp_from_f32(animation.elapsed_in_frame);
+            self.current_duration_fp[slot] = fp_from_f32(animation.current_duration);
+            self.current_frame_offset_fp[slot] = fp_from_f32(animation.current_frame_offset);
+            self.total_duration_fp[slot] = fp_from_f32(animation.total_duration);
+            self.frame_durations_fp[slot] = convert_slice_to_fp(animation.frame_durations.as_ref());
+            self.frame_offsets_fp[slot] = convert_slice_to_fp(animation.frame_offsets.as_ref());
+        }
+        self.pending_delta[slot] = animation.pending_small_delta;
+        self.playback_rate[slot] = animation.playback_rate;
+        self.speed[slot] = animation.speed;
+        self.total_duration[slot] = animation.total_duration;
+        self.total_duration_inv[slot] = animation.total_duration_inv;
+        self.frames[slot] = Arc::clone(&animation.frames);
+        self.frame_hot_data[slot] = Arc::clone(&animation.frame_hot_data);
+        self.frame_durations[slot] = Arc::clone(&animation.frame_durations);
+        self.frame_offsets[slot] = Arc::clone(&animation.frame_offsets);
+        self.group[slot] = animation.group.as_ref().map(|g| Arc::<str>::from(g.as_str()));
+        self.flags[slot] = SpriteAnimatorFlags::from_animation(animation);
+    }
+
+    fn swap_remove_slot(&mut self, slot: usize) {
+        if self.entities.is_empty() {
+            return;
+        }
+        debug_assert!(slot < self.entities.len());
+        let last = self.entities.len() - 1;
+        if slot != last {
+            self.entities.swap(slot, last);
+            self.frame_index.swap(slot, last);
+            self.elapsed_in_frame.swap(slot, last);
+            self.current_duration.swap(slot, last);
+            self.current_frame_offset.swap(slot, last);
+            #[cfg(feature = "sprite_anim_fixed_point")]
+            {
+                self.elapsed_in_frame_fp.swap(slot, last);
+                self.current_duration_fp.swap(slot, last);
+                self.current_frame_offset_fp.swap(slot, last);
+                self.total_duration_fp.swap(slot, last);
+                self.frame_durations_fp.swap(slot, last);
+                self.frame_offsets_fp.swap(slot, last);
+            }
+            self.pending_delta.swap(slot, last);
+            self.playback_rate.swap(slot, last);
+            self.flags.swap(slot, last);
+            self.speed.swap(slot, last);
+            self.total_duration.swap(slot, last);
+            self.total_duration_inv.swap(slot, last);
+            self.frames.swap(slot, last);
+            self.frame_hot_data.swap(slot, last);
+            self.frame_durations.swap(slot, last);
+            self.frame_offsets.swap(slot, last);
+            self.group.swap(slot, last);
+            if let Some(entry) = self.entity_to_slot.get_mut(&self.entities[slot]) {
+                *entry = slot as u32;
+            }
+        }
+        self.entities.pop();
+        self.frame_index.pop();
+        self.elapsed_in_frame.pop();
+        self.current_duration.pop();
+        self.current_frame_offset.pop();
+        #[cfg(feature = "sprite_anim_fixed_point")]
+        {
+            self.elapsed_in_frame_fp.pop();
+            self.current_duration_fp.pop();
+            self.current_frame_offset_fp.pop();
+            self.total_duration_fp.pop();
+            self.frame_durations_fp.pop();
+            self.frame_offsets_fp.pop();
+        }
+        self.pending_delta.pop();
+        self.playback_rate.pop();
+        self.flags.pop();
+        self.speed.pop();
+        self.total_duration.pop();
+        self.total_duration_inv.pop();
+        self.frames.pop();
+        self.frame_hot_data.pop();
+        self.frame_durations.pop();
+        self.frame_offsets.pop();
+        self.group.pop();
+    }
+}
+
+#[cfg(feature = "sprite_anim_soa")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct SpriteAnimatorFlags(u16);
+
+#[cfg(feature = "sprite_anim_soa")]
+impl SpriteAnimatorFlags {
+    const PLAYING: u16 = 1 << 0;
+    const LOOPED: u16 = 1 << 1;
+    const FORWARD: u16 = 1 << 2;
+    const PREV_FORWARD: u16 = 1 << 3;
+    const PENDING_START: u16 = 1 << 4;
+    const PLAYBACK_DIRTY: u16 = 1 << 5;
+
+    fn set_bit(&mut self, mask: u16, enabled: bool) {
+        if enabled {
+            self.0 |= mask;
+        } else {
+            self.0 &= !mask;
+        }
+    }
+
+    fn from_animation(animation: &SpriteAnimation) -> Self {
+        let mut flags = Self::default();
+        flags.set_bit(Self::PLAYING, animation.playing);
+        flags.set_bit(Self::LOOPED, animation.looped);
+        flags.set_bit(Self::FORWARD, animation.forward);
+        flags.set_bit(Self::PREV_FORWARD, animation.prev_forward);
+        flags.set_bit(Self::PENDING_START, animation.pending_start_events);
+        flags.set_bit(Self::PLAYBACK_DIRTY, animation.playback_rate_dirty);
+        flags
+    }
+
+    fn playing(self) -> bool {
+        self.0 & Self::PLAYING != 0
+    }
+
+    fn playback_dirty(self) -> bool {
+        self.0 & Self::PLAYBACK_DIRTY != 0
+    }
+
+    fn set_playback_dirty(&mut self, value: bool) {
+        self.set_bit(Self::PLAYBACK_DIRTY, value);
+    }
+}
+
+#[cfg(feature = "sprite_anim_fixed_point")]
+const FP_SHIFT: u32 = 16;
+#[cfg(feature = "sprite_anim_fixed_point")]
+const FP_ONE: u32 = 1 << FP_SHIFT;
+#[cfg(feature = "sprite_anim_fixed_point")]
+const FP_CLIP_EPSILON: u32 = 1;
+#[cfg(feature = "sprite_anim_simd")]
+const SPRITE_SIMD_WIDTH: usize = 8;
+
+#[cfg(feature = "sprite_anim_fixed_point")]
+#[inline]
+fn fp_from_f32(value: f32) -> u32 {
+    if value <= 0.0 {
+        0
+    } else {
+        (value * FP_ONE as f32).round()
+            .max(0.0)
+            .min(u32::MAX as f32) as u32
+    }
+}
+
+#[cfg(feature = "sprite_anim_fixed_point")]
+#[inline]
+fn f32_from_fp(value: u32) -> f32 {
+    (value as f32) / (FP_ONE as f32)
+}
+
+#[cfg(feature = "sprite_anim_fixed_point")]
+fn convert_slice_to_fp(values: &[f32]) -> Arc<[u32]> {
+    Arc::from(
+        values
+            .iter()
+            .map(|&v| fp_from_f32(v))
+            .collect::<Vec<u32>>()
+            .into_boxed_slice(),
+    )
+}
+
 #[cfg(feature = "anim_stats")]
 use std::time::{Duration, Instant};
 
@@ -62,6 +359,10 @@ pub struct SpriteAnimationStats {
     pub fast_bucket_frames: u64,
     pub general_bucket_frames: u64,
     pub frame_apply_count: u64,
+    pub state_flush_calls: u64,
+    pub state_flush_entities: u64,
+    pub frame_apply_queue_drains: u64,
+    pub frame_apply_queue_len: u64,
 }
 
 #[cfg(feature = "anim_stats")]
@@ -142,6 +443,14 @@ static SPRITE_GENERAL_BUCKET_FRAMES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "anim_stats")]
 static SPRITE_FRAME_APPLY_COUNT: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "anim_stats")]
+static SPRITE_STATE_FLUSH_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "anim_stats")]
+static SPRITE_STATE_FLUSH_ENTITIES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "anim_stats")]
+static SPRITE_FRAME_QUEUE_DRAINS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "anim_stats")]
+static SPRITE_FRAME_QUEUE_LEN: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "anim_stats")]
 static TRANSFORM_CLIP_ADVANCE_CALLS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "anim_stats")]
 static TRANSFORM_CLIP_ZERO_DELTA_CALLS: AtomicU64 = AtomicU64::new(0);
@@ -178,6 +487,10 @@ pub fn sprite_animation_stats_snapshot() -> SpriteAnimationStats {
         fast_bucket_frames: SPRITE_FAST_BUCKET_FRAMES.load(Ordering::Relaxed),
         general_bucket_frames: SPRITE_GENERAL_BUCKET_FRAMES.load(Ordering::Relaxed),
         frame_apply_count: SPRITE_FRAME_APPLY_COUNT.load(Ordering::Relaxed),
+        state_flush_calls: SPRITE_STATE_FLUSH_CALLS.load(Ordering::Relaxed),
+        state_flush_entities: SPRITE_STATE_FLUSH_ENTITIES.load(Ordering::Relaxed),
+        frame_apply_queue_drains: SPRITE_FRAME_QUEUE_DRAINS.load(Ordering::Relaxed),
+        frame_apply_queue_len: SPRITE_FRAME_QUEUE_LEN.load(Ordering::Relaxed),
     }
 }
 
@@ -192,6 +505,10 @@ pub fn reset_sprite_animation_stats() {
     SPRITE_FAST_BUCKET_FRAMES.store(0, Ordering::Relaxed);
     SPRITE_GENERAL_BUCKET_FRAMES.store(0, Ordering::Relaxed);
     SPRITE_FRAME_APPLY_COUNT.store(0, Ordering::Relaxed);
+    SPRITE_STATE_FLUSH_CALLS.store(0, Ordering::Relaxed);
+    SPRITE_STATE_FLUSH_ENTITIES.store(0, Ordering::Relaxed);
+    SPRITE_FRAME_QUEUE_DRAINS.store(0, Ordering::Relaxed);
+    SPRITE_FRAME_QUEUE_LEN.store(0, Ordering::Relaxed);
 }
 
 #[cfg(feature = "anim_stats")]
@@ -290,6 +607,26 @@ fn record_sprite_frame_applies(count: u64) {
 #[cfg(not(feature = "anim_stats"))]
 #[allow(dead_code)]
 fn record_sprite_frame_applies(_count: u64) {}
+
+#[cfg(all(feature = "anim_stats", feature = "sprite_anim_soa"))]
+fn record_sprite_state_flush(batch_len: usize) {
+    SPRITE_STATE_FLUSH_CALLS.fetch_add(1, Ordering::Relaxed);
+    SPRITE_STATE_FLUSH_ENTITIES.fetch_add(batch_len as u64, Ordering::Relaxed);
+}
+
+#[cfg(not(all(feature = "anim_stats", feature = "sprite_anim_soa")))]
+#[allow(dead_code)]
+fn record_sprite_state_flush(_batch_len: usize) {}
+
+#[cfg(feature = "anim_stats")]
+fn record_sprite_frame_queue_depth(len: usize) {
+    SPRITE_FRAME_QUEUE_DRAINS.fetch_add(1, Ordering::Relaxed);
+    SPRITE_FRAME_QUEUE_LEN.fetch_add(len as u64, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "anim_stats"))]
+#[allow(dead_code)]
+fn record_sprite_frame_queue_depth(_len: usize) {}
 
 #[cfg(feature = "anim_stats")]
 fn record_transform_advance(count: u64) {
@@ -399,6 +736,9 @@ pub fn sys_drive_sprite_animations(
     animation_time: Res<AnimationTime>,
     mut events: ResMut<EventBus>,
     mut frame_updates: ResMut<SpriteFrameApplyQueue>,
+    #[cfg(feature = "sprite_anim_soa")] mut runtime: ResMut<SpriteAnimatorSoa>,
+    #[cfg(feature = "sprite_anim_soa")] mut fast_sprite_states: Query<&mut SpriteFrameState, With<FastSpriteAnimator>>,
+    #[cfg(not(feature = "sprite_anim_soa"))]
     mut fast_animations: Query<
         (Entity, &mut SpriteAnimation, &mut SpriteFrameState),
         With<FastSpriteAnimator>,
@@ -414,6 +754,8 @@ pub fn sys_drive_sprite_animations(
         "SpriteFrameApplyQueue should be empty before driving animations (pending {} entries)",
         frame_updates.len()
     );
+    #[cfg(feature = "sprite_anim_soa")]
+    let mut state_updates: Vec<SpriteStateUpdate> = Vec::new();
     let plan = animation_plan.delta;
     if !plan.has_steps() {
         return;
@@ -424,13 +766,32 @@ pub fn sys_drive_sprite_animations(
         AnimationDelta::None => {}
         AnimationDelta::Single(delta) => {
             if delta != 0.0 {
-                drive_fast_single(
-                    delta,
-                    has_group_scales,
-                    animation_time_ref,
-                    frame_updates.as_mut(),
-                    &mut fast_animations,
-                );
+                #[cfg(feature = "sprite_anim_soa")]
+                {
+                    drive_fast_single_soa(
+                        delta,
+                        has_group_scales,
+                        animation_time_ref,
+                        runtime.as_mut(),
+                        &mut state_updates,
+                    );
+                    flush_sprite_state_updates(
+                        runtime.as_ref(),
+                        &mut state_updates,
+                        frame_updates.as_mut(),
+                        &mut fast_sprite_states,
+                    );
+                }
+                #[cfg(not(feature = "sprite_anim_soa"))]
+                {
+                    drive_fast_single(
+                        delta,
+                        has_group_scales,
+                        animation_time_ref,
+                        frame_updates.as_mut(),
+                        &mut fast_animations,
+                    );
+                }
                 drive_general_single(
                     delta,
                     has_group_scales,
@@ -443,14 +804,34 @@ pub fn sys_drive_sprite_animations(
         }
         AnimationDelta::Fixed { step, steps } => {
             if steps > 0 && step != 0.0 {
-                drive_fast_fixed(
-                    step,
-                    steps,
-                    has_group_scales,
-                    animation_time_ref,
-                    frame_updates.as_mut(),
-                    &mut fast_animations,
-                );
+                #[cfg(feature = "sprite_anim_soa")]
+                {
+                    drive_fast_fixed_soa(
+                        step,
+                        steps,
+                        has_group_scales,
+                        animation_time_ref,
+                        runtime.as_mut(),
+                        &mut state_updates,
+                    );
+                    flush_sprite_state_updates(
+                        runtime.as_ref(),
+                        &mut state_updates,
+                        frame_updates.as_mut(),
+                        &mut fast_sprite_states,
+                    );
+                }
+                #[cfg(not(feature = "sprite_anim_soa"))]
+                {
+                    drive_fast_fixed(
+                        step,
+                        steps,
+                        has_group_scales,
+                        animation_time_ref,
+                        frame_updates.as_mut(),
+                        &mut fast_animations,
+                    );
+                }
                 drive_general_fixed(
                     step,
                     steps,
@@ -477,6 +858,7 @@ pub fn sys_init_sprite_frame_state(
 
 pub fn sys_flag_fast_sprite_animators(
     mut commands: Commands,
+    #[cfg(feature = "sprite_anim_soa")] mut runtime: ResMut<SpriteAnimatorSoa>,
     animations: Query<
         (Entity, &SpriteAnimation, Option<&FastSpriteAnimator>),
         Or<(Added<SpriteAnimation>, Changed<SpriteAnimation>)>,
@@ -484,13 +866,29 @@ pub fn sys_flag_fast_sprite_animators(
 ) {
     for (entity, animation, marker) in animations.iter() {
         if animation.fast_loop {
+            #[cfg(feature = "sprite_anim_soa")]
+            runtime.upsert(entity, animation);
             if marker.is_none() {
                 commands.entity(entity).insert(FastSpriteAnimator);
             }
-        } else if marker.is_some() {
-            commands.entity(entity).remove::<FastSpriteAnimator>();
+        } else {
+            if marker.is_some() {
+                commands.entity(entity).remove::<FastSpriteAnimator>();
+            }
+            #[cfg(feature = "sprite_anim_soa")]
+            {
+                runtime.remove(entity);
+            }
         }
     }
+}
+
+#[cfg(feature = "sprite_anim_soa")]
+pub fn sys_cleanup_sprite_animator_soa(
+    mut runtime: ResMut<SpriteAnimatorSoa>,
+    active: Query<Entity, (With<SpriteAnimation>, With<FastSpriteAnimator>)>,
+) {
+    runtime.retain_entities(|entity| active.get(entity).is_ok());
 }
 
 #[cfg(test)]
@@ -716,6 +1114,8 @@ mod tests {
         world.insert_resource(AnimationTime::default());
         world.insert_resource(EventBus::default());
         world.insert_resource(SpriteFrameApplyQueue::default());
+        #[cfg(feature = "sprite_anim_soa")]
+        world.insert_resource(SpriteAnimatorSoa::default());
 
         let region = Arc::from("frame0");
         let event_name = Arc::from("spawn");
@@ -746,6 +1146,18 @@ mod tests {
         let frame_state = SpriteFrameState::from_sprite(&sprite);
         world.spawn((animation, sprite, frame_state));
 
+        #[cfg(feature = "sprite_anim_soa")]
+        let mut system_state = SystemState::<(
+            ResMut<SystemProfiler>,
+            Res<AnimationPlan>,
+            Res<AnimationTime>,
+            ResMut<EventBus>,
+            ResMut<SpriteFrameApplyQueue>,
+            ResMut<SpriteAnimatorSoa>,
+            Query<&mut SpriteFrameState, With<FastSpriteAnimator>>,
+            Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState), Without<FastSpriteAnimator>>,
+        )>::new(&mut world);
+        #[cfg(not(feature = "sprite_anim_soa"))]
         let mut system_state = SystemState::<(
             ResMut<SystemProfiler>,
             Res<AnimationPlan>,
@@ -755,6 +1167,30 @@ mod tests {
             Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState), With<FastSpriteAnimator>>,
             Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState), Without<FastSpriteAnimator>>,
         )>::new(&mut world);
+        #[cfg(feature = "sprite_anim_soa")]
+        {
+            let (
+                profiler,
+                plan,
+                time,
+                events,
+                frame_updates,
+                runtime,
+                fast_states,
+                general_animations,
+            ) = system_state.get_mut(&mut world);
+            sys_drive_sprite_animations(
+                profiler,
+                plan,
+                time,
+                events,
+                frame_updates,
+                runtime,
+                fast_states,
+                general_animations,
+            );
+        }
+        #[cfg(not(feature = "sprite_anim_soa"))]
         {
             let (profiler, plan, time, events, frame_updates, fast_animations, general_animations) =
                 system_state.get_mut(&mut world);
@@ -784,6 +1220,8 @@ mod tests {
         use bevy_ecs::system::SystemState;
 
         let mut world = World::new();
+        #[cfg(feature = "sprite_anim_soa")]
+        world.insert_resource(SpriteAnimatorSoa::default());
         let region = Arc::from("frame");
         let frames: Arc<[SpriteAnimationFrame]> = Arc::from(
             vec![SpriteAnimationFrame {
@@ -812,20 +1250,147 @@ mod tests {
 
         let entity = world.spawn(animation).id();
 
-        let mut system_state = SystemState::<(
-            Commands,
-            Query<
-                (Entity, &SpriteAnimation, Option<&FastSpriteAnimator>),
-                Or<(Added<SpriteAnimation>, Changed<SpriteAnimation>)>,
-            >,
-        )>::new(&mut world);
+        #[cfg(feature = "sprite_anim_soa")]
         {
+            let mut system_state = SystemState::<(
+                Commands,
+                ResMut<SpriteAnimatorSoa>,
+                Query<
+                    (Entity, &SpriteAnimation, Option<&FastSpriteAnimator>),
+                    Or<(Added<SpriteAnimation>, Changed<SpriteAnimation>)>,
+                >,
+            )>::new(&mut world);
+            let (commands, runtime, animations) = system_state.get_mut(&mut world);
+            sys_flag_fast_sprite_animators(commands, runtime, animations);
+            system_state.apply(&mut world);
+        }
+        #[cfg(not(feature = "sprite_anim_soa"))]
+        {
+            let mut system_state = SystemState::<(
+                Commands,
+                Query<
+                    (Entity, &SpriteAnimation, Option<&FastSpriteAnimator>),
+                    Or<(Added<SpriteAnimation>, Changed<SpriteAnimation>)>,
+                >,
+            )>::new(&mut world);
             let (commands, animations) = system_state.get_mut(&mut world);
             sys_flag_fast_sprite_animators(commands, animations);
+            system_state.apply(&mut world);
+        }
+
+        assert!(world.get::<FastSpriteAnimator>(entity).is_some());
+    }
+
+    #[cfg(feature = "sprite_anim_soa")]
+    #[test]
+    fn drive_fast_single_soa_advances_frames() {
+        use bevy_ecs::system::SystemState;
+
+        let mut world = World::new();
+        let mut runtime = SpriteAnimatorSoa::default();
+        let region = Arc::from("frame");
+        let frames: Arc<[SpriteAnimationFrame]> = Arc::from(
+            (0..2)
+                .map(|idx| SpriteAnimationFrame {
+                    name: Arc::clone(&region),
+                    region: Arc::clone(&region),
+                    region_id: idx,
+                    duration: 0.05,
+                    uv: [0.0; 4],
+                    events: Arc::default(),
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        );
+        let hot_frames = hot_frames_from(frames.as_ref());
+        let durations = Arc::from(vec![0.05_f32, 0.05_f32].into_boxed_slice());
+        let offsets = Arc::from(vec![0.0_f32, 0.05_f32].into_boxed_slice());
+        let animation = SpriteAnimation::new(
+            Arc::from("timeline"),
+            frames,
+            hot_frames,
+            durations,
+            offsets,
+            0.1,
+            SpriteAnimationLoopMode::Loop,
+        );
+
+        let entity = world
+            .spawn((
+                FastSpriteAnimator,
+                SpriteFrameState::new_uninitialized(),
+            ))
+            .id();
+        runtime.upsert(entity, &animation);
+
+        let mut frame_updates = SpriteFrameApplyQueue::default();
+        let animation_time = AnimationTime::default();
+        let mut system_state = SystemState::<Query<&mut SpriteFrameState, With<FastSpriteAnimator>>>::new(&mut world);
+        let mut state_updates = Vec::new();
+        drive_fast_single_soa(0.05, false, &animation_time, &mut runtime, &mut state_updates);
+        {
+            let mut sprite_states = system_state.get_mut(&mut world);
+            flush_sprite_state_updates(&runtime, &mut state_updates, &mut frame_updates, &mut sprite_states);
         }
         system_state.apply(&mut world);
 
-        assert!(world.get::<FastSpriteAnimator>(entity).is_some());
+        assert_eq!(runtime.frame_index[runtime.slot_index(entity).unwrap()], 1);
+        assert_eq!(frame_updates.len(), 1);
+    }
+
+    #[cfg(feature = "sprite_anim_soa")]
+    #[test]
+    fn sprite_animator_soa_upsert_and_remove_handles_updates() {
+        let region = Arc::from("frame");
+        let frames: Arc<[SpriteAnimationFrame]> = Arc::from(
+            (0..4)
+                .map(|idx| SpriteAnimationFrame {
+                    name: Arc::clone(&region),
+                    region: Arc::clone(&region),
+                    region_id: idx as u16,
+                    duration: 0.1,
+                    uv: [0.0; 4],
+                    events: Arc::default(),
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        );
+        let hot_frames = hot_frames_from(frames.as_ref());
+        let durations = Arc::from(vec![0.1_f32; 4].into_boxed_slice());
+        let offsets = Arc::from(vec![0.0_f32, 0.1_f32, 0.2_f32, 0.3_f32].into_boxed_slice());
+        let mut animation = SpriteAnimation::new(
+            Arc::from("timeline"),
+            frames,
+            hot_frames,
+            durations,
+            offsets,
+            0.1,
+            SpriteAnimationLoopMode::Loop,
+        );
+        let entity = Entity::from_raw(7);
+        animation.frame_index = 3;
+        animation.elapsed_in_frame = 0.05;
+        animation.current_duration = 0.2;
+        animation.pending_small_delta = 0.01;
+        animation.playback_rate = 1.5;
+        animation.playback_rate_dirty = false;
+        animation.forward = false;
+        animation.prev_forward = false;
+        animation.pending_start_events = true;
+
+        let mut runtime = SpriteAnimatorSoa::default();
+        assert!(runtime.is_empty());
+        runtime.upsert(entity, &animation);
+        assert_eq!(runtime.len(), 1);
+        assert!(runtime.contains(entity));
+
+        animation.frame_index = 1;
+        animation.elapsed_in_frame = 0.02;
+        runtime.upsert(entity, &animation);
+        assert_eq!(runtime.len(), 1, "upsert should update existing slot");
+
+        assert!(runtime.remove(entity));
+        assert!(runtime.is_empty());
     }
 
     #[test]
@@ -950,6 +1515,8 @@ mod tests {
         use bevy_ecs::system::SystemState;
 
         let mut world = World::new();
+        #[cfg(feature = "sprite_anim_soa")]
+        world.insert_resource(SpriteAnimatorSoa::default());
         let region = Arc::from("frame");
         let event = Arc::from("spawn");
         let frames: Arc<[SpriteAnimationFrame]> = Arc::from(
@@ -979,18 +1546,33 @@ mod tests {
 
         let entity = world.spawn((animation, FastSpriteAnimator)).id();
 
-        let mut system_state = SystemState::<(
-            Commands,
-            Query<
-                (Entity, &SpriteAnimation, Option<&FastSpriteAnimator>),
-                Or<(Added<SpriteAnimation>, Changed<SpriteAnimation>)>,
-            >,
-        )>::new(&mut world);
+        #[cfg(feature = "sprite_anim_soa")]
         {
+            let mut system_state = SystemState::<(
+                Commands,
+                ResMut<SpriteAnimatorSoa>,
+                Query<
+                    (Entity, &SpriteAnimation, Option<&FastSpriteAnimator>),
+                    Or<(Added<SpriteAnimation>, Changed<SpriteAnimation>)>,
+                >,
+            )>::new(&mut world);
+            let (commands, runtime, animations) = system_state.get_mut(&mut world);
+            sys_flag_fast_sprite_animators(commands, runtime, animations);
+            system_state.apply(&mut world);
+        }
+        #[cfg(not(feature = "sprite_anim_soa"))]
+        {
+            let mut system_state = SystemState::<(
+                Commands,
+                Query<
+                    (Entity, &SpriteAnimation, Option<&FastSpriteAnimator>),
+                    Or<(Added<SpriteAnimation>, Changed<SpriteAnimation>)>,
+                >,
+            )>::new(&mut world);
             let (commands, animations) = system_state.get_mut(&mut world);
             sys_flag_fast_sprite_animators(commands, animations);
+            system_state.apply(&mut world);
         }
-        system_state.apply(&mut world);
 
         assert!(world.get::<FastSpriteAnimator>(entity).is_none());
     }
@@ -1294,6 +1876,20 @@ mod tests {
         let frame_state = SpriteFrameState::from_sprite(&sprite);
         world.spawn((animation, sprite, frame_state));
 
+        #[cfg(feature = "sprite_anim_soa")]
+        world.insert_resource(SpriteAnimatorSoa::default());
+        #[cfg(feature = "sprite_anim_soa")]
+        let mut system_state = SystemState::<(
+            ResMut<SystemProfiler>,
+            Res<AnimationPlan>,
+            Res<AnimationTime>,
+            ResMut<EventBus>,
+            ResMut<SpriteFrameApplyQueue>,
+            ResMut<SpriteAnimatorSoa>,
+            Query<&mut SpriteFrameState, With<FastSpriteAnimator>>,
+            Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState), Without<FastSpriteAnimator>>,
+        )>::new(&mut world);
+        #[cfg(not(feature = "sprite_anim_soa"))]
         let mut system_state = SystemState::<(
             ResMut<SystemProfiler>,
             Res<AnimationPlan>,
@@ -1305,6 +1901,30 @@ mod tests {
         )>::new(&mut world);
 
         let _guard = DriveFixedRecorderGuard::enable();
+        #[cfg(feature = "sprite_anim_soa")]
+        {
+            let (
+                profiler,
+                plan,
+                time,
+                events,
+                frame_updates,
+                runtime,
+                fast_states,
+                general_animations,
+            ) = system_state.get_mut(&mut world);
+            sys_drive_sprite_animations(
+                profiler,
+                plan,
+                time,
+                events,
+                frame_updates,
+                runtime,
+                fast_states,
+                general_animations,
+            );
+        }
+        #[cfg(not(feature = "sprite_anim_soa"))]
         {
             let (profiler, plan, time, events, frame_updates, fast_animations, general_animations) =
                 system_state.get_mut(&mut world);
@@ -2472,6 +3092,113 @@ fn advance_animation_loop_no_events(animation: &mut SpriteAnimation, delta: f32)
     wrapped || index != previous_index
 }
 
+#[cfg(feature = "sprite_anim_soa")]
+fn advance_animation_loop_no_events_slot(
+    runtime: &mut SpriteAnimatorSoa,
+    slot: usize,
+    delta: f32,
+) -> bool {
+    if delta == 0.0 || !runtime.flags[slot].playing() {
+        return false;
+    }
+    let frame_count = runtime.frame_durations[slot].len();
+    if frame_count == 0 {
+        return false;
+    }
+
+    #[cfg(feature = "anim_stats")]
+    record_fast_loop_call(1);
+
+    let total_duration = runtime.total_duration[slot].max(0.0);
+    if total_duration <= 0.0 {
+        return false;
+    }
+
+    let total = total_duration.max(std::f32::EPSILON);
+    let current_duration = runtime.current_duration[slot].max(0.0);
+    let current_elapsed = runtime.elapsed_in_frame[slot];
+    let current_offset = runtime.current_frame_offset[slot];
+
+    if delta > 0.0 {
+        let new_elapsed = current_elapsed + delta;
+        if new_elapsed <= current_duration + CLIP_TIME_EPSILON {
+            runtime.elapsed_in_frame[slot] = new_elapsed.min(current_duration);
+            return false;
+        }
+    } else if delta < 0.0 {
+        let new_elapsed = current_elapsed + delta;
+        if new_elapsed >= -CLIP_TIME_EPSILON {
+            runtime.elapsed_in_frame[slot] = new_elapsed.max(0.0);
+            return false;
+        }
+    }
+
+    let raw_position = current_offset + current_elapsed + delta;
+    let mut normalized = raw_position.rem_euclid(total);
+    if normalized.is_nan() {
+        normalized = 0.0;
+    } else if normalized >= total {
+        normalized = total - std::f32::EPSILON;
+    } else if normalized < 0.0 {
+        normalized = 0.0;
+    }
+
+    let wrapped = raw_position < 0.0 || raw_position >= total;
+
+    #[cfg(feature = "anim_stats")]
+    if wrapped {
+        record_fast_loop_binary_search(1);
+    }
+
+    let offsets = runtime.frame_offsets[slot].as_ref();
+    let durations = runtime.frame_durations[slot].as_ref();
+
+    let mut index = if frame_count == 1 {
+        0
+    } else {
+        match offsets
+            .binary_search_by(|start| start.partial_cmp(&normalized).unwrap_or(std::cmp::Ordering::Less))
+        {
+            Ok(idx) => idx,
+            Err(idx) => idx.saturating_sub(1),
+        }
+    };
+
+    if index >= frame_count {
+        index = frame_count - 1;
+    }
+
+    let current_start = offsets.get(index).copied().unwrap_or(0.0);
+    let mut new_duration = durations.get(index).copied().unwrap_or(current_duration);
+    if new_duration < 0.0 {
+        new_duration = 0.0;
+    }
+
+    let mut elapsed = normalized - current_start;
+    if elapsed < 0.0 {
+        elapsed = 0.0;
+    } else if elapsed > new_duration {
+        elapsed = new_duration;
+    }
+
+    let previous_index = runtime.frame_index[slot].min((frame_count - 1) as u32);
+
+    runtime.frame_index[slot] = index as u32;
+    runtime.elapsed_in_frame[slot] = elapsed;
+    runtime.current_duration[slot] = new_duration;
+    runtime.current_frame_offset[slot] = current_start;
+    #[cfg(feature = "sprite_anim_fixed_point")]
+    {
+        runtime.elapsed_in_frame_fp[slot] = fp_from_f32(elapsed);
+        runtime.current_duration_fp[slot] =
+            unsafe { *runtime.frame_durations_fp[slot].get_unchecked(index) };
+        runtime.current_frame_offset_fp[slot] =
+            unsafe { *runtime.frame_offsets_fp[slot].get_unchecked(index) };
+    }
+
+    wrapped || index as u32 != previous_index
+}
+
 #[inline(always)]
 fn advance_animation_fast_loop(animation: &mut SpriteAnimation, delta: f32) -> bool {
     if delta == 0.0 || !animation.playing {
@@ -2552,6 +3279,8 @@ fn advance_animation_fast_loop(animation: &mut SpriteAnimation, delta: f32) -> b
     }
 }
 
+#[cfg(not(feature = "sprite_anim_soa"))]
+#[cfg(not(feature = "sprite_anim_soa"))]
 fn drive_fast_single(
     delta: f32,
     has_group_scales: bool,
@@ -2594,97 +3323,73 @@ fn drive_fast_single(
     record_fast_bucket_sample(processed);
 }
 
-fn drive_general_single(
+#[cfg(feature = "sprite_anim_soa")]
+fn drive_fast_single_soa(
     delta: f32,
     has_group_scales: bool,
     animation_time: &AnimationTime,
-    events: &mut EventBus,
-    frame_updates: &mut SpriteFrameApplyQueue,
-    animations: &mut Query<
-        (Entity, &mut SpriteAnimation, &mut SpriteFrameState),
-        Without<FastSpriteAnimator>,
-    >,
+    runtime: &mut SpriteAnimatorSoa,
+    state_updates: &mut Vec<SpriteStateUpdate>,
 ) {
+    if delta == 0.0 || runtime.is_empty() {
+        return;
+    }
+
+    #[cfg(feature = "sprite_anim_simd")]
+    if delta > 0.0 && runtime.len() >= SPRITE_SIMD_WIDTH {
+        let processed = drive_fast_single_simd(delta, has_group_scales, animation_time, runtime, state_updates);
+        #[cfg(feature = "anim_stats")]
+        record_fast_bucket_sample(processed);
+        #[cfg(not(feature = "anim_stats"))]
+        {
+            let _ = processed;
+        }
+        return;
+    }
+
     #[cfg(feature = "anim_stats")]
     let mut processed = 0_u64;
 
-    for (entity, mut animation, mut sprite_state) in animations.iter_mut() {
-        let frame_count = animation.frames.len();
-        if !prepare_animation(&mut animation, frame_count) {
-            continue;
-        }
-
-        if animation.pending_start_events {
-            if animation.has_events {
-                emit_sprite_animation_events(entity, &animation, events);
-            }
-            animation.pending_start_events = false;
-        }
-
-        let Some(playback_rate) = resolve_playback_rate(&mut animation, has_group_scales, animation_time)
-        else {
-            continue;
-        };
-        let scaled = delta * playback_rate;
-        if scaled == 0.0 {
-            continue;
-        }
-        let Some(advance_delta) = animation.accumulate_delta(scaled, CLIP_TIME_EPSILON) else {
-            continue;
-        };
-
-        let mut sprite_changed = false;
-        if animation.fast_loop {
-            if advance_animation_fast_loop(&mut animation, advance_delta) {
-                sprite_changed = true;
-            }
-        } else if animation.has_events {
-            let events_ref = &mut *events;
-            if advance_animation(&mut animation, advance_delta, entity, Some(events_ref), true) {
-                sprite_changed = true;
-            }
-        } else if advance_animation(&mut animation, advance_delta, entity, None, true) {
-            sprite_changed = true;
-        }
-
-        if sprite_changed {
-            queue_sprite_frame_update(entity, &animation, &mut sprite_state, frame_updates);
-        }
+    for slot in 0..runtime.len() {
+        let handled = process_fast_slot(slot, delta, has_group_scales, animation_time, runtime, state_updates);
         #[cfg(feature = "anim_stats")]
         {
-            processed += 1;
+            if handled {
+                processed += 1;
+            }
+        }
+        #[cfg(not(feature = "anim_stats"))]
+        {
+            let _ = handled;
         }
     }
 
     #[cfg(feature = "anim_stats")]
-    record_general_bucket_sample(processed);
+    record_fast_bucket_sample(processed);
 }
 
-fn drive_fast_fixed(
+#[cfg(feature = "sprite_anim_soa")]
+fn drive_fast_fixed_soa(
     step: f32,
     steps: u32,
     has_group_scales: bool,
     animation_time: &AnimationTime,
-    frame_updates: &mut SpriteFrameApplyQueue,
-    animations: &mut Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState), With<FastSpriteAnimator>>,
+    runtime: &mut SpriteAnimatorSoa,
+    state_updates: &mut Vec<SpriteStateUpdate>,
 ) {
-    #[cfg(feature = "anim_stats")]
-    let mut processed = 0_u64;
-
-    if steps == 0 {
-        #[cfg(feature = "anim_stats")]
-        record_fast_bucket_sample(0);
+    if step == 0.0 || steps == 0 || runtime.is_empty() {
         return;
     }
 
-    for (entity, mut animation, mut sprite_state) in animations.iter_mut() {
-        let frame_count = animation.frames.len();
-        if !prepare_animation(&mut animation, frame_count) {
+    #[cfg(feature = "anim_stats")]
+    let mut processed = 0_u64;
+
+    for slot in 0..runtime.len() {
+        if !prepare_animation_slot(runtime, slot) {
             continue;
         }
 
-        let Some(playback_rate) = resolve_playback_rate(&mut animation, has_group_scales, animation_time)
-        else {
+        let Some(playback_rate) = resolve_playback_rate_slot(runtime, slot, has_group_scales, animation_time) else {
             continue;
         };
         let scaled_step = step * playback_rate;
@@ -2696,7 +3401,71 @@ fn drive_fast_fixed(
         for _ in 0..steps {
             #[cfg(test)]
             tests::record_drive_fixed_step_iteration();
+            let Some(advance_delta) = accumulate_delta_slot(runtime, slot, scaled_step, CLIP_TIME_EPSILON) else {
+                if !runtime.flags[slot].playing() {
+                    break;
+                }
+                continue;
+            };
+            if advance_animation_fast_loop_slot(runtime, slot, advance_delta) {
+                sprite_changed = true;
+            }
+            if !runtime.flags[slot].playing() {
+                break;
+            }
+        }
 
+        if sprite_changed {
+            let entity = runtime.entity(slot);
+            state_updates.push((entity, slot));
+        }
+
+        #[cfg(feature = "anim_stats")]
+        {
+            processed += 1;
+        }
+    }
+
+    #[cfg(feature = "anim_stats")]
+    record_fast_bucket_sample(processed);
+}
+
+#[cfg(not(feature = "sprite_anim_soa"))]
+fn drive_fast_fixed(
+    step: f32,
+    steps: u32,
+    has_group_scales: bool,
+    animation_time: &AnimationTime,
+    frame_updates: &mut SpriteFrameApplyQueue,
+    animations: &mut Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState), With<FastSpriteAnimator>>,
+) {
+    if step == 0.0 || steps == 0 {
+        #[cfg(feature = "anim_stats")]
+        record_fast_bucket_sample(0);
+        return;
+    }
+
+    #[cfg(feature = "anim_stats")]
+    let mut processed = 0_u64;
+
+    for (entity, mut animation, mut sprite_state) in animations.iter_mut() {
+        let frame_count = animation.frames.len();
+        if !prepare_animation(&mut animation, frame_count) {
+            continue;
+        }
+
+        let Some(playback_rate) = resolve_playback_rate(&mut animation, has_group_scales, animation_time) else {
+            continue;
+        };
+        let scaled_step = step * playback_rate;
+        if scaled_step == 0.0 {
+            continue;
+        }
+
+        let mut sprite_changed = false;
+        for _ in 0..steps {
+            #[cfg(test)]
+            tests::record_drive_fixed_step_iteration();
             let Some(advance_delta) = animation.accumulate_delta(scaled_step, CLIP_TIME_EPSILON) else {
                 if !animation.playing {
                     break;
@@ -2704,6 +3473,7 @@ fn drive_fast_fixed(
                 continue;
             };
 
+            debug_assert!(animation.fast_loop);
             if advance_animation_fast_loop(&mut animation, advance_delta) {
                 sprite_changed = true;
             }
@@ -2715,6 +3485,7 @@ fn drive_fast_fixed(
         if sprite_changed {
             queue_sprite_frame_update(entity, &animation, &mut sprite_state, frame_updates);
         }
+
         #[cfg(feature = "anim_stats")]
         {
             processed += 1;
@@ -2723,6 +3494,91 @@ fn drive_fast_fixed(
 
     #[cfg(feature = "anim_stats")]
     record_fast_bucket_sample(processed);
+}
+
+#[cfg(feature = "sprite_anim_soa")]
+fn process_fast_slot(
+    slot: usize,
+    delta: f32,
+    has_group_scales: bool,
+    animation_time: &AnimationTime,
+    runtime: &mut SpriteAnimatorSoa,
+    state_updates: &mut Vec<SpriteStateUpdate>,
+) -> bool {
+    if !prepare_animation_slot(runtime, slot) {
+        return false;
+    }
+
+    let Some(playback_rate) = resolve_playback_rate_slot(runtime, slot, has_group_scales, animation_time) else {
+        return false;
+    };
+    let scaled = delta * playback_rate;
+    if scaled == 0.0 {
+        return false;
+    }
+    let Some(advance_delta) = accumulate_delta_slot(runtime, slot, scaled, CLIP_TIME_EPSILON) else {
+        return false;
+    };
+
+    if advance_animation_fast_loop_slot(runtime, slot, advance_delta) {
+        let entity = runtime.entity(slot);
+        state_updates.push((entity, slot));
+    }
+    true
+}
+
+#[cfg(feature = "sprite_anim_simd")]
+fn drive_fast_single_simd(
+    delta: f32,
+    has_group_scales: bool,
+    animation_time: &AnimationTime,
+    runtime: &mut SpriteAnimatorSoa,
+    state_updates: &mut Vec<SpriteStateUpdate>,
+) -> u64 {
+    let len = runtime.len();
+    if len == 0 {
+        return 0;
+    }
+    let mut slot = 0;
+    let mut processed = 0_u64;
+    while slot < len {
+        let chunk_end = (slot + SPRITE_SIMD_WIDTH).min(len);
+        for current in slot..chunk_end {
+            if process_fast_slot(current, delta, has_group_scales, animation_time, runtime, state_updates) {
+                processed += 1;
+            }
+        }
+        slot = chunk_end;
+    }
+    processed
+}
+
+#[cfg(feature = "sprite_anim_soa")]
+fn flush_sprite_state_updates(
+    runtime: &SpriteAnimatorSoa,
+    state_updates: &mut Vec<SpriteStateUpdate>,
+    frame_updates: &mut SpriteFrameApplyQueue,
+    sprite_states: &mut Query<&mut SpriteFrameState, With<FastSpriteAnimator>>,
+) {
+    if state_updates.is_empty() {
+        return;
+    }
+    let flush_len = state_updates.len();
+    record_sprite_state_flush(flush_len);
+    let mut entities: Vec<Entity> = Vec::with_capacity(state_updates.len());
+    let mut slots: Vec<usize> = Vec::with_capacity(state_updates.len());
+    for (entity, slot) in state_updates.drain(..) {
+        entities.push(entity);
+        slots.push(slot);
+    }
+    let mut iter = sprite_states.iter_many_mut(entities.iter());
+    let mut idx = 0usize;
+    while let Some(mut sprite_state) = iter.fetch_next() {
+        let entity = entities[idx];
+        let slot = slots[idx];
+        queue_sprite_frame_update_from_soa(entity, slot, runtime, &mut sprite_state, frame_updates);
+        idx += 1;
+    }
 }
 
 fn drive_general_fixed(
@@ -2827,6 +3683,30 @@ fn prepare_animation(animation: &mut SpriteAnimation, frame_count: usize) -> boo
     animation.playing
 }
 
+#[cfg(feature = "sprite_anim_soa")]
+fn prepare_animation_slot(runtime: &mut SpriteAnimatorSoa, slot: usize) -> bool {
+    let frame_count = runtime.frame_durations[slot].len();
+    if frame_count == 0 {
+        return false;
+    }
+    let index = runtime.frame_index[slot] as usize;
+    if index >= frame_count {
+        runtime.frame_index[slot] = 0;
+        runtime.elapsed_in_frame[slot] = 0.0;
+        runtime.current_duration[slot] = runtime.frame_durations[slot].first().copied().unwrap_or(0.0);
+        runtime.current_frame_offset[slot] = runtime.frame_offsets[slot].first().copied().unwrap_or(0.0);
+        #[cfg(feature = "sprite_anim_fixed_point")]
+        {
+            runtime.elapsed_in_frame_fp[slot] = 0;
+            runtime.current_duration_fp[slot] =
+                runtime.frame_durations_fp[slot].first().copied().unwrap_or(0);
+            runtime.current_frame_offset_fp[slot] =
+                runtime.frame_offsets_fp[slot].first().copied().unwrap_or(0);
+        }
+    }
+    runtime.flags[slot].playing()
+}
+
 fn resolve_playback_rate(
     animation: &mut SpriteAnimation,
     has_group_scales: bool,
@@ -2843,6 +3723,232 @@ fn resolve_playback_rate(
         None
     } else {
         Some(playback_rate)
+    }
+}
+
+#[cfg(all(feature = "sprite_anim_soa", not(feature = "sprite_anim_fixed_point")))]
+fn advance_animation_fast_loop_slot(runtime: &mut SpriteAnimatorSoa, slot: usize, delta: f32) -> bool {
+    if delta == 0.0 || !runtime.flags[slot].playing() {
+        return false;
+    }
+    let frame_count = runtime.frame_durations[slot].len();
+    if frame_count == 0 {
+        return false;
+    }
+
+    #[cfg(feature = "anim_stats")]
+    record_fast_loop_call(1);
+
+    let total_duration = runtime.total_duration[slot].max(std::f32::EPSILON);
+    if delta.abs() >= total_duration * 4.0 {
+        return advance_animation_loop_no_events_slot(runtime, slot, delta);
+    }
+
+    let durations = runtime.frame_durations[slot].as_ref();
+    let offsets = runtime.frame_offsets[slot].as_ref();
+    let mut index = (runtime.frame_index[slot] as usize) % frame_count;
+    let mut current_duration = runtime.current_duration[slot];
+    let mut current_offset = runtime.current_frame_offset[slot];
+
+    if delta > 0.0 {
+        let mut remaining = runtime.elapsed_in_frame[slot] + delta;
+        let mut threshold = current_duration.max(CLIP_TIME_EPSILON);
+        if remaining <= threshold {
+            runtime.elapsed_in_frame[slot] = remaining.min(current_duration);
+            runtime.current_frame_offset[slot] = current_offset;
+            return false;
+        }
+        remaining -= threshold;
+        loop {
+            index += 1;
+            if index == frame_count {
+                index = 0;
+            }
+            unsafe {
+                current_duration = *durations.get_unchecked(index);
+                current_offset = *offsets.get_unchecked(index);
+            }
+            threshold = current_duration.max(CLIP_TIME_EPSILON);
+            if remaining <= threshold {
+                runtime.frame_index[slot] = index as u32;
+                runtime.current_duration[slot] = current_duration;
+                runtime.current_frame_offset[slot] = current_offset;
+                runtime.elapsed_in_frame[slot] = remaining.min(current_duration);
+                return true;
+            }
+            remaining -= threshold;
+        }
+    } else {
+        let mut remaining = runtime.elapsed_in_frame[slot] + delta;
+        if remaining >= -CLIP_TIME_EPSILON {
+            runtime.elapsed_in_frame[slot] = remaining.max(0.0);
+            runtime.current_frame_offset[slot] = current_offset;
+            return false;
+        }
+        remaining = -remaining;
+        loop {
+            index = if index == 0 { frame_count - 1 } else { index - 1 };
+            unsafe {
+                current_duration = *durations.get_unchecked(index);
+                current_offset = *offsets.get_unchecked(index);
+            }
+            let threshold = current_duration.max(CLIP_TIME_EPSILON);
+            if remaining <= threshold {
+                runtime.frame_index[slot] = index as u32;
+                runtime.current_duration[slot] = current_duration;
+                runtime.current_frame_offset[slot] = current_offset;
+                let new_elapsed = current_duration - remaining;
+                runtime.elapsed_in_frame[slot] = new_elapsed.max(0.0);
+                return true;
+            }
+            remaining -= threshold;
+        }
+    }
+}
+
+#[cfg(all(feature = "sprite_anim_soa", feature = "sprite_anim_fixed_point"))]
+fn advance_animation_fast_loop_slot(runtime: &mut SpriteAnimatorSoa, slot: usize, delta: f32) -> bool {
+    if delta == 0.0 || !runtime.flags[slot].playing() {
+        return false;
+    }
+    let frame_count = runtime.frame_durations_fp[slot].len();
+    if frame_count == 0 {
+        return false;
+    }
+
+    #[cfg(feature = "anim_stats")]
+    record_fast_loop_call(1);
+
+    let total_duration = runtime.total_duration[slot].max(std::f32::EPSILON);
+    if delta.abs() >= total_duration * 4.0 {
+        return advance_animation_loop_no_events_slot(runtime, slot, delta);
+    }
+
+    let durations = runtime.frame_durations_fp[slot].as_ref();
+    let offsets = runtime.frame_offsets_fp[slot].as_ref();
+    let mut index = (runtime.frame_index[slot] as usize) % frame_count;
+    let mut current_duration_fp = runtime.current_duration_fp[slot].max(FP_CLIP_EPSILON);
+    let mut current_offset_fp = runtime.current_frame_offset_fp[slot];
+
+    if delta > 0.0 {
+        let delta_fp = fp_from_f32(delta) as u64;
+        let mut remaining = runtime.elapsed_in_frame_fp[slot] as u64 + delta_fp;
+        let mut threshold = current_duration_fp.max(FP_CLIP_EPSILON) as u64;
+        if remaining <= threshold {
+            let new_elapsed = remaining.min(current_duration_fp as u64) as u32;
+            runtime.elapsed_in_frame_fp[slot] = new_elapsed;
+            runtime.elapsed_in_frame[slot] = f32_from_fp(new_elapsed);
+            runtime.current_frame_offset_fp[slot] = current_offset_fp;
+            runtime.current_frame_offset[slot] = f32_from_fp(current_offset_fp);
+            return false;
+        }
+        remaining -= threshold;
+        loop {
+            index += 1;
+            if index == frame_count {
+                index = 0;
+            }
+            unsafe {
+                current_duration_fp = (*durations.get_unchecked(index)).max(FP_CLIP_EPSILON);
+                current_offset_fp = *offsets.get_unchecked(index);
+            }
+            threshold = current_duration_fp as u64;
+            if remaining <= threshold {
+                runtime.frame_index[slot] = index as u32;
+                runtime.current_duration_fp[slot] = current_duration_fp;
+                runtime.current_duration[slot] = f32_from_fp(current_duration_fp);
+                runtime.current_frame_offset_fp[slot] = current_offset_fp;
+                runtime.current_frame_offset[slot] = f32_from_fp(current_offset_fp);
+                let new_elapsed = remaining.min(current_duration_fp as u64) as u32;
+                runtime.elapsed_in_frame_fp[slot] = new_elapsed;
+                runtime.elapsed_in_frame[slot] = f32_from_fp(new_elapsed);
+                return true;
+            }
+            remaining -= threshold;
+        }
+    } else {
+        let delta_fp = fp_from_f32(-delta) as u64;
+        let mut remaining = runtime.elapsed_in_frame_fp[slot] as i64 - delta_fp as i64;
+        if remaining >= -(FP_CLIP_EPSILON as i64) {
+            let clamped = remaining.max(0) as u32;
+            runtime.elapsed_in_frame_fp[slot] = clamped;
+            runtime.elapsed_in_frame[slot] = f32_from_fp(clamped);
+            runtime.current_frame_offset_fp[slot] = current_offset_fp;
+            runtime.current_frame_offset[slot] = f32_from_fp(current_offset_fp);
+            return false;
+        }
+        remaining = -remaining;
+        loop {
+            index = if index == 0 { frame_count - 1 } else { index - 1 };
+            unsafe {
+                current_duration_fp = (*durations.get_unchecked(index)).max(FP_CLIP_EPSILON);
+                current_offset_fp = *offsets.get_unchecked(index);
+            }
+            let threshold = current_duration_fp as i64;
+            if remaining <= threshold {
+                runtime.frame_index[slot] = index as u32;
+                runtime.current_duration_fp[slot] = current_duration_fp;
+                runtime.current_duration[slot] = f32_from_fp(current_duration_fp);
+                runtime.current_frame_offset_fp[slot] = current_offset_fp;
+                runtime.current_frame_offset[slot] = f32_from_fp(current_offset_fp);
+                let new_elapsed = current_duration_fp as i64 - remaining;
+                let clamped = new_elapsed.max(0) as u32;
+                runtime.elapsed_in_frame_fp[slot] = clamped;
+                runtime.elapsed_in_frame[slot] = f32_from_fp(clamped);
+                return true;
+            }
+            remaining -= threshold;
+        }
+    }
+}
+
+#[cfg(feature = "sprite_anim_soa")]
+fn resolve_playback_rate_slot(
+    runtime: &mut SpriteAnimatorSoa,
+    slot: usize,
+    has_group_scales: bool,
+    animation_time: &AnimationTime,
+) -> Option<f32> {
+    let mut flags = runtime.flags[slot];
+    if flags.playback_dirty() {
+        let group_scale = if has_group_scales {
+            animation_time.group_scale(runtime.group[slot].as_deref())
+        } else {
+            1.0
+        };
+        runtime.playback_rate[slot] = runtime.speed[slot] * group_scale;
+        flags.set_playback_dirty(false);
+        runtime.flags[slot] = flags;
+    }
+    let playback_rate = runtime.playback_rate[slot];
+    if playback_rate == 0.0 {
+        None
+    } else {
+        Some(playback_rate)
+    }
+}
+
+#[cfg(feature = "sprite_anim_soa")]
+fn accumulate_delta_slot(
+    runtime: &mut SpriteAnimatorSoa,
+    slot: usize,
+    delta: f32,
+    epsilon: f32,
+) -> Option<f32> {
+    if delta == 0.0 {
+        return None;
+    }
+    let mut pending = runtime.pending_delta[slot];
+    if pending != 0.0 && pending.signum() != delta.signum() {
+        pending = 0.0;
+    }
+    let total = pending + delta;
+    if total.abs() < epsilon {
+        runtime.pending_delta[slot] = total;
+        None
+    } else {
+        runtime.pending_delta[slot] = 0.0;
+        Some(total)
     }
 }
 
@@ -2869,16 +3975,44 @@ fn queue_sprite_frame_update(
     frame_updates.push(entity);
 }
 
+#[cfg(feature = "sprite_anim_soa")]
+fn queue_sprite_frame_update_from_soa(
+    entity: Entity,
+    slot: usize,
+    runtime: &SpriteAnimatorSoa,
+    sprite_state: &mut SpriteFrameState,
+    frame_updates: &mut SpriteFrameApplyQueue,
+) {
+    let index = runtime.frame_index[slot] as usize;
+    let hot_frames = runtime.frame_hot_data[slot].as_ref();
+    let frames = runtime.frames[slot].as_ref();
+    let hot = unsafe { hot_frames.get_unchecked(index) };
+    let region = if sprite_state.region_initialized {
+        None
+    } else {
+        let frame = unsafe { frames.get_unchecked(index) };
+        Some(&frame.region)
+    };
+    sprite_state.update_from_hot_frame(hot, region);
+    if sprite_state.queued_for_apply {
+        return;
+    }
+    sprite_state.queued_for_apply = true;
+    frame_updates.push(entity);
+}
+
 pub fn sys_apply_sprite_frame_states(
     mut profiler: ResMut<SystemProfiler>,
     mut frame_updates: ResMut<SpriteFrameApplyQueue>,
     mut sprites: Query<(&mut Sprite, &mut SpriteFrameState)>,
 ) {
     let pending = frame_updates.take();
-    if pending.is_empty() {
+    let pending_len = pending.len();
+    if pending_len == 0 {
         frame_updates.restore(pending);
         return;
     }
+    record_sprite_frame_queue_depth(pending_len);
 
     let _span = profiler.scope("sys_apply_sprite_frame_states");
     #[cfg(feature = "anim_stats")]
@@ -2905,4 +4039,68 @@ pub fn sys_apply_sprite_frame_states(
     record_sprite_frame_applies(applied);
 
     frame_updates.restore(pending);
+}
+fn drive_general_single(
+    delta: f32,
+    has_group_scales: bool,
+    animation_time: &AnimationTime,
+    events: &mut EventBus,
+    frame_updates: &mut SpriteFrameApplyQueue,
+    animations: &mut Query<
+        (Entity, &mut SpriteAnimation, &mut SpriteFrameState),
+        Without<FastSpriteAnimator>,
+    >,
+) {
+    #[cfg(feature = "anim_stats")]
+    let mut processed = 0_u64;
+
+    for (entity, mut animation, mut sprite_state) in animations.iter_mut() {
+        let frame_count = animation.frames.len();
+        if !prepare_animation(&mut animation, frame_count) {
+            continue;
+        }
+
+        if animation.pending_start_events {
+            if animation.has_events {
+                emit_sprite_animation_events(entity, &animation, events);
+            }
+            animation.pending_start_events = false;
+        }
+
+        let Some(playback_rate) = resolve_playback_rate(&mut animation, has_group_scales, animation_time) else {
+            continue;
+        };
+        let scaled = delta * playback_rate;
+        if scaled == 0.0 {
+            continue;
+        }
+        let Some(advance_delta) = animation.accumulate_delta(scaled, CLIP_TIME_EPSILON) else {
+            continue;
+        };
+
+        let mut sprite_changed = false;
+        if animation.fast_loop {
+            if advance_animation_fast_loop(&mut animation, advance_delta) {
+                sprite_changed = true;
+            }
+        } else if animation.has_events {
+            let events_ref = &mut *events;
+            if advance_animation(&mut animation, advance_delta, entity, Some(events_ref), true) {
+                sprite_changed = true;
+            }
+        } else if advance_animation(&mut animation, advance_delta, entity, None, true) {
+            sprite_changed = true;
+        }
+
+        if sprite_changed {
+            queue_sprite_frame_update(entity, &animation, &mut sprite_state, frame_updates);
+        }
+        #[cfg(feature = "anim_stats")]
+        {
+            processed += 1;
+        }
+    }
+
+    #[cfg(feature = "anim_stats")]
+    record_general_bucket_sample(processed);
 }

@@ -27,6 +27,14 @@
 
 ---
 
+## Recent Wins (2025-11-12)
+
+- Fresh `cargo test --release animation_targets_measure -- --ignored --nocapture` runs **without extra features** now show `transform_clips` at **0.260 ms mean** (0.256–0.262 ms range) and `skeletal_clips` at **0.110 ms** while `sprite_timelines` sits at 0.262 ms. These brownfield numbers are captured in `target/animation_targets_report.json` so we have a clean reference outside diagnostic builds.
+- `animation_profile_snapshot` grew four new anim-stats counters—`state_flush_calls`, `state_flush_entities`, `frame_apply_queue_drains`, and `frame_apply_queue_len`—which quantify SoA flush batches and GPU apply queue depth per step. The latest profile log confirms they track 1:1, proving we eliminated duplicate flushes.
+- We now explicitly document that `anim_stats`/`sprite_anim_soa` builds carry ~0.6 ms of instrumentation overhead. Budget sign-off always uses the lean release build, while the feature-rich build is reserved for investigation.
+
+---
+
 ## Constraints & Assumptions
 
 - Rust stable toolchain acceptable; SIMD may use `std::simd` (stable) or a crate fallback.
@@ -54,6 +62,7 @@
   $env:ANIMATION_PROFILE_DT=0.016666667
   cargo test --release animation_targets_measure -- --ignored --nocapture
   ```
+- [x] Make the clean release run (no feature flags) the default benchmark: `python scripts/sprite_bench.py --label inline_apply_rerun --runs 3` is now the canonical command for sharing/acceptance artefacts, and any experiments must quote their feature list explicitly in the label.
 - [ ] When investigating regressions, capture per-step stats with anim counters enabled:
   ```powershell
   $env:ANIMATION_PROFILE_COUNT=10000
@@ -119,7 +128,7 @@ Artifacts: `perf/before_phase0.txt`, `perf/before_phase0.json`
 **Tasks:**
 - [x] Audit `SpriteFrameApplyQueue` consumers to ensure no duplicate entries and to confirm removed entities clear pending updates (queue writes are now deduplicated per-entity and verified via unit tests).
 - [x] Add a debug assertion/test that verifies `frame_updates` stays empty when `animation.fast_loop` absorbed a zero-delta advance (the driver asserts the queue is drained before each update and the new test exercises the fast-path no-op).
-- [x] Consider logging (behind `anim_stats`) how many sprites were applied per frame to correlate with GPU upload batches (`frame_apply_count` is exported alongside the fast/general bucket stats).
+- [x] Consider logging (behind `anim_stats`) how many sprites were applied per frame to correlate with GPU upload batches (`frame_apply_count`, `state_flush_calls`, `state_flush_entities`, `frame_apply_queue_drains`, and `frame_apply_queue_len` all ship in `sprite_animation_stats_snapshot` now, giving us full visibility into apply churn).
 
 **Checkpoint:** `animation_profile_snapshot` should show the queue drain matching the number of animators that reported a frame change, and GPU traces should continue to show a single write per material batch.
 
@@ -260,6 +269,7 @@ idx.as_array().iter().enumerate().for_each(|(k,&v)| frame_idx[i+k]=v);
    - `perf/after_phase2.{txt,json}` + `perf/after_phase2_profile.{log,json}`
    - `perf/final.{txt,json}` + `perf/final_profile.{log,json}`
 4. **Graph (optional):** simple CSV and plot of ms vs animators (can be derived from the JSON summaries if needed).
+5. **Phase‑2 feature flags:** capture SoA/fixed-point/SIMD numbers with `python scripts/sprite_bench.py --features "sprite_anim_fixed_point,sprite_anim_simd"` (or pass the same list to `cargo test`). Always note the feature set in the perf artifact label.
 
 ---
 

@@ -86,6 +86,12 @@ fn animation_profile_snapshot() {
                 general_bucket_frames: current_sprite.general_bucket_frames
                     - prev_sprite_stats.general_bucket_frames,
                 frame_apply_count: current_sprite.frame_apply_count - prev_sprite_stats.frame_apply_count,
+                state_flush_calls: current_sprite.state_flush_calls - prev_sprite_stats.state_flush_calls,
+                state_flush_entities: current_sprite.state_flush_entities - prev_sprite_stats.state_flush_entities,
+                frame_apply_queue_drains: current_sprite.frame_apply_queue_drains
+                    - prev_sprite_stats.frame_apply_queue_drains,
+                frame_apply_queue_len: current_sprite.frame_apply_queue_len
+                    - prev_sprite_stats.frame_apply_queue_len,
             });
             prev_sprite_stats = current_sprite;
 
@@ -191,6 +197,10 @@ fn animation_profile_snapshot() {
                 total_sprite.fast_bucket_frames += stats.fast_bucket_frames;
                 total_sprite.general_bucket_frames += stats.general_bucket_frames;
                 total_sprite.frame_apply_count += stats.frame_apply_count;
+                total_sprite.state_flush_calls += stats.state_flush_calls;
+                total_sprite.state_flush_entities += stats.state_flush_entities;
+                total_sprite.frame_apply_queue_drains += stats.frame_apply_queue_drains;
+                total_sprite.frame_apply_queue_len += stats.frame_apply_queue_len;
             }
 
             let mut total_transform = TransformClipStats::default();
@@ -216,6 +226,14 @@ fn animation_profile_snapshot() {
                 total_sprite.fast_loop_binary_searches,
                 total_sprite.fast_bucket_entities,
                 total_sprite.general_bucket_entities,
+                total_sprite.frame_apply_count
+            );
+            println!(
+                "[animation_profile] anim_stats sprite flush/apply: flush_calls={} flushed={} queue_drains={} queue_len={} applied={}",
+                total_sprite.state_flush_calls,
+                total_sprite.state_flush_entities,
+                total_sprite.frame_apply_queue_drains,
+                total_sprite.frame_apply_queue_len,
                 total_sprite.frame_apply_count
             );
             if total_sprite.fast_bucket_frames > 0 || total_sprite.general_bucket_frames > 0 {
@@ -256,7 +274,7 @@ fn animation_profile_snapshot() {
                 let sprite_step = sprite_stats_per_step.get(index).copied().unwrap_or_default();
                 let transform_step = transform_stats_per_step.get(index).copied().unwrap_or_default();
                 println!(
-                    "[animation_profile]   step {:>4} -> {:>8.4} ms | sprite(fast={} event={} plain={} bsearch={} fast_bucket={} general_bucket={} applies={}) transform(adv={} zero={} skipped={} loop_resume={} zero_duration={} fast={} slow={}) time_ns(adv={} sample={} apply={})",
+                    "[animation_profile]   step {:>4} -> {:>8.4} ms | sprite(fast={} event={} plain={} bsearch={} fast_bucket={} general_bucket={} applies={} flush_calls={} flushed={} queue_drains={} queue_len={}) transform(adv={} zero={} skipped={} loop_resume={} zero_duration={} fast={} slow={}) time_ns(adv={} sample={} apply={})",
                     index,
                     value,
                     sprite_step.fast_loop_calls,
@@ -266,6 +284,10 @@ fn animation_profile_snapshot() {
                     sprite_step.fast_bucket_entities,
                     sprite_step.general_bucket_entities,
                     sprite_step.frame_apply_count,
+                    sprite_step.state_flush_calls,
+                    sprite_step.state_flush_entities,
+                    sprite_step.frame_apply_queue_drains,
+                    sprite_step.frame_apply_queue_len,
                     transform_step.advance_calls,
                     transform_step.zero_delta_calls,
                     transform_step.skipped_clips,
