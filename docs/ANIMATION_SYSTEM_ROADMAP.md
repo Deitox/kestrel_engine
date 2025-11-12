@@ -144,6 +144,27 @@ Benchmarks emit CSV summaries for CI. Failing budgets block the milestone exit.
 - **Platform Constraints:** Track GPU palette limits (WebGPU/DX12/Vulkan) and split draw calls accordingly; gate features behind flags when not supported.
 - **Risk Watch:** Ping-pong edge duplication, event flood at high FPS, skinning buffer exhaustion, and graph oscillation loops - each gets targeted tests before milestone close.
 
+## Sprite Animation Performance Guard Plan
+*(Full checklist in `docs/SPRITE_ANIMATION_PERF_PLAN.md`; roadmap highlights below.)*
+
+### Mission & Targets
+- Keep sprite timelines ≤ **0.200 ms @ 10 000 animators** in release benches (`animation_targets_measure`).
+- Surface slow-path usage (var-dt, ping-pong, event-heavy clips) in-editor so asset changes can’t silently regress budgets.
+- Fail CI when `sprite_timelines_mean_ms > 0.2005` or `%slow > 1%`; archive perf CSVs and HUD screenshots per release.
+
+### Phased Execution
+1. **Hot Loop Hygiene:** Remove `%`/`/` from the kernel, ensure floor-delta math, isolate ping-pong buckets, and verify SIMD lanes fire under `-C target-cpu=native`.
+2. **Instrumentation & HUD:** Track per-frame counters (`const_dt`, `var_dt`, `ping_pong`, `events_heavy`, `%slow`), expose them in the Stats panel, and split CPU eval vs GPU palette upload timings.
+3. **Toolchain & CI Gates:** Add a GitHub Action perf guard, keep `sprite_anim_fixed_point` enabled in release/bench profiles, and capture a dedicated bench-PGO profile.
+4. **Asset & Importer Guardrails:** Add Aseprite importer linting for uniform timeline drift, buffer animation events outside the hot loop, and flag “fast-path eligible” clips in the inspector.
+5. **Runtime Stability Tests:** Stress animator re-bucketing, add SIMD tail parity tests, enforce FTZ/DAZ in benches, and rate-limit per-frame event floods.
+6. **Bench Matrix & Docs:** Automate 3-run sweeps for baseline/SoA/fixed-point/SIMD, archive CSVs under `perf/`, and expand README + `docs/animation_workflows.md` with HUD guidance and CI troubleshooting.
+
+### Ownership, Timeline, Verification
+- **Owners:** Animation runtime (<hot loop + counters>), Tools/UI (<HUD + importer lint>), DevOps (<CI perf gate + artifacts>), Docs (<workflow updates>).
+- **Suggested cadence:** Weeks 1-5 cover Phases 1-6 sequentially but with overlap where teams differ.
+- **Exit Checklist:** HUD counters live, CI gate blocking, importer warnings covered by tests, SIMD/event stress tests green, README/docs updated, and latest bench CSVs published.
+
 ## Immediate Next Actions
 - [x] Land GLTF skeleton importer and fixture assets (sample rig + clip extraction into `AssetManager`). *(Importer module + AssetManager retention APIs merged; minimal slime rig fixture + regression test now in place.)*
 - [x] Introduce ECS skeleton components (`SkeletonInstance`, `SkinMesh`, `BoneTransforms`) and hook them into transform propagation. *(Component scaffolding + pose system now live; BoneTransforms updated each frame.)*
