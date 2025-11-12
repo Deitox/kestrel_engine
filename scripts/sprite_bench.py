@@ -17,7 +17,7 @@ import statistics as stats
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REPORT = REPO_ROOT / "target" / "animation_targets_report.json"
@@ -51,6 +51,20 @@ def read_report(report_path: Path) -> List[dict]:
     return json.loads(report_path.read_text(encoding="utf-8"))
 
 
+def load_baseline(path: Path) -> Tuple[Dict[str, float], Dict[str, object]]:
+    if not path.exists():
+        raise FileNotFoundError(f"Baseline summary not found: {path}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    mapping = {entry["label"]: entry.get("mean_ms", 0.0) for entry in payload.get("systems", [])}
+    meta = {
+        "path": str(path),
+        "label": payload.get("label"),
+        "commit": payload.get("commit"),
+        "timestamp": payload.get("timestamp"),
+    }
+    return mapping, meta
+
+
 def git_rev() -> str:
     return (
         subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT)
@@ -76,6 +90,7 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     parser.add_argument("--steps", type=int, default=240, help="ANIMATION_PROFILE_STEPS value")
     parser.add_argument("--warmup", type=int, default=16, help="ANIMATION_PROFILE_WARMUP value")
     parser.add_argument("--dt", type=float, default=1.0 / 60.0, help="ANIMATION_PROFILE_DT value")
+    parser.add_argument("--baseline", default="", help="Optional JSON summary to diff against")
     return parser.parse_args(argv)
 
 
@@ -104,6 +119,12 @@ def main(argv: List[str]) -> int:
     env["ANIMATION_PROFILE_DT"] = f"{args.dt:.9f}"
 
     cmd = build_command(args)
+    baseline_map: Dict[str, float] = {}
+    baseline_meta: Optional[Dict[str, object]] = None
+    has_baseline = bool(args.baseline)
+    if has_baseline:
+        baseline_path = Path(args.baseline)
+        baseline_map, baseline_meta = load_baseline(baseline_path)
     report_path = Path(args.report_path)
     cases: Dict[str, Dict[str, object]] = {}
 
@@ -132,7 +153,10 @@ def main(argv: List[str]) -> int:
     env_keys = sorted(k for k in env if k.startswith("ANIMATION_PROFILE_"))
     env_lines = [f"{key}={env[key]}" for key in env_keys]
 
-    header = ["system"] + [f"run{i}" for i in range(1, args.runs + 1)] + ["mean", "stddev", "budget"]
+    header = ["system"] + [f"run{i}" for i in range(1, args.runs + 1)] + ["mean", "stddev"]
+    if has_baseline:
+        header.append("delta")
+    header.append("budget")
     rows = [header]
     summary_payload = {
         "label": args.label,
@@ -142,25 +166,40 @@ def main(argv: List[str]) -> int:
         "env": {key: env[key] for key in env_keys},
         "systems": [],
     }
+    if has_baseline and baseline_meta:
+        summary_payload["baseline"] = baseline_meta
     for label in sorted(cases.keys()):
         slot = cases[label]
         values: List[float] = slot["runs"]
         mean_val = stats.mean(values)
         std_val = stats.pstdev(values) if len(values) > 1 else 0.0
         budget = slot["budget"]
-        row = [label] + [f"{v:.3f}" for v in values] + [f"{mean_val:.3f}", f"{std_val:.3f}", f"{budget:.3f}"]
+        delta_cell = ""
+        delta_payload: Optional[float] = None
+        if has_baseline:
+            baseline_mean = baseline_map.get(label)
+            if baseline_mean is None:
+                delta_cell = "n/a"
+            else:
+                delta_payload = mean_val - baseline_mean
+                delta_cell = f"{delta_payload:+.3f}"
+        row = [label] + [f"{v:.3f}" for v in values] + [f"{mean_val:.3f}", f"{std_val:.3f}"]
+        if has_baseline:
+            row.append(delta_cell if delta_cell else "n/a")
+        row.append(f"{budget:.3f}")
         rows.append(row)
-        summary_payload["systems"].append(
-            {
-                "label": label,
-                "units": slot["units"],
-                "count": slot["count"],
-                "budget_ms": budget,
-                "runs": list(values),
-                "mean_ms": mean_val,
-                "stddev_ms": std_val,
-            }
-        )
+        entry_payload = {
+            "label": label,
+            "units": slot["units"],
+            "count": slot["count"],
+            "budget_ms": budget,
+            "runs": list(values),
+            "mean_ms": mean_val,
+            "stddev_ms": std_val,
+        }
+        if delta_payload is not None:
+            entry_payload["delta_vs_baseline_ms"] = delta_payload
+        summary_payload["systems"].append(entry_payload)
 
     summary_lines = [
         f"Sprite benchmark summary: {args.label}",
@@ -170,6 +209,15 @@ def main(argv: List[str]) -> int:
         "Environment:",
     ]
     summary_lines.extend(f"  - {line}" for line in env_lines)
+    if has_baseline and baseline_meta:
+        summary_lines.append(
+            "Baseline: {label} (commit {commit}) @ {path} [{timestamp}]".format(
+                label=baseline_meta.get("label") or "n/a",
+                commit=baseline_meta.get("commit") or "n/a",
+                path=baseline_meta.get("path") or args.baseline,
+                timestamp=baseline_meta.get("timestamp") or "n/a",
+            )
+        )
     summary_lines.append("")
     summary_lines.append("Per-run mean_step_ms (ms):")
     summary_lines.append(format_table(rows))
