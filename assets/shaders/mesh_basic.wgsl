@@ -1,14 +1,16 @@
 struct FrameUniform {
     view_proj : mat4x4<f32>,
+    view : mat4x4<f32>,
     camera_pos : vec4<f32>,
     light_dir : vec4<f32>,
     light_color : vec4<f32>,
     ambient_color : vec4<f32>,
     exposure_params : vec4<f32>,
-    padding : vec4<f32>,
+    cascade_splits : vec4<f32>,
 }
 
 const MAX_SKIN_JOINTS : u32 = 256u;
+const MAX_SHADOW_CASCADES : u32 = 4u;
 
 struct DrawUniform {
     model : mat4x4<f32>,
@@ -29,7 +31,7 @@ struct MaterialUniform {
 }
 
 struct ShadowUniform {
-    light_view_proj : mat4x4<f32>,
+    light_view_proj : array<mat4x4<f32>, MAX_SHADOW_CASCADES>,
     params : vec4<f32>,
 }
 
@@ -64,7 +66,7 @@ var material_sampler : sampler;
 var<uniform> shadow : ShadowUniform;
 
 @group(4) @binding(1)
-var shadow_map : texture_depth_2d;
+var shadow_map : texture_depth_2d_array;
 
 @group(4) @binding(2)
 var shadow_sampler : sampler_comparison;
@@ -199,8 +201,26 @@ fn apply_normal_map(
     return normalize(tbn * tangent_normal);
 }
 
+fn cascade_for_depth(depth : f32, splits : vec4<f32>, cascade_count : u32) -> u32 {
+    var index : u32 = 0u;
+    if cascade_count > 1u && depth > splits.x {
+        index = 1u;
+    }
+    if cascade_count > 2u && depth > splits.y {
+        index = 2u;
+    }
+    if cascade_count > 3u && depth > splits.z {
+        index = 3u;
+    }
+    return min(index, max(cascade_count, 1u) - 1u);
+}
+
 fn sample_shadow(world_pos : vec3<f32>) -> f32 {
-    let clip = shadow.light_view_proj * vec4<f32>(world_pos, 1.0);
+    let view_pos = frame.view * vec4<f32>(world_pos, 1.0);
+    let cascade_depth = -view_pos.z;
+    let cascade_count = u32(clamp(shadow.params.z, 1.0, f32(MAX_SHADOW_CASCADES)) + 0.5);
+    let cascade_index = cascade_for_depth(cascade_depth, frame.cascade_splits, cascade_count);
+    let clip = shadow.light_view_proj[cascade_index] * vec4<f32>(world_pos, 1.0);
     if abs(clip.w) < 1e-5 {
         return 1.0;
     }
@@ -210,9 +230,9 @@ fn sample_shadow(world_pos : vec3<f32>) -> f32 {
     if uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 {
         return 1.0;
     }
-    let depth = clamp(ndc.z * 0.5 + 0.5, 0.0, 1.0);
+    let sample_depth = clamp(ndc.z * 0.5 + 0.5, 0.0, 1.0);
     let bias = shadow.params.x;
-    return textureSampleCompare(shadow_map, shadow_sampler, uv, depth - bias);
+    return textureSampleCompare(shadow_map, shadow_sampler, uv, i32(cascade_index), sample_depth - bias);
 }
 
 @fragment

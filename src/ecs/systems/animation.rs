@@ -1352,6 +1352,7 @@ mod tests {
     fn skeletal_driver_skips_paused_clean_instances() -> Result<()> {
         let fixture = SkeletalFixture::load()?;
         let mut world = World::new();
+        world.insert_resource(SpriteAnimPerfTelemetry::new(240));
         let skeleton_key = Arc::clone(&fixture.skeleton.name);
         let mut instance = SkeletonInstance::new(skeleton_key, Arc::clone(&fixture.skeleton));
         instance.set_active_clip(Some(Arc::clone(&fixture.clip)));
@@ -1422,6 +1423,7 @@ mod tests {
         use bevy_ecs::system::SystemState;
 
         let mut world = World::new();
+        world.insert_resource(SpriteAnimPerfTelemetry::new(240));
         world.insert_resource(SystemProfiler::new());
         world.insert_resource(AnimationPlan { delta: AnimationDelta::Single(0.05) });
         world.insert_resource(AnimationTime::default());
@@ -2135,6 +2137,7 @@ mod tests {
         use crate::events::EventBus;
 
         let mut world = World::new();
+        world.insert_resource(SpriteAnimPerfTelemetry::new(240));
         world.insert_resource(SystemProfiler::new());
         world.insert_resource(AnimationPlan { delta: AnimationDelta::Fixed { step: 0.1, steps: 3 } });
         world.insert_resource(AnimationTime::default());

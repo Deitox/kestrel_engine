@@ -51,8 +51,7 @@ impl PluginHost {
         let (manifest, manifest_error) = match PluginManager::load_manifest(&manifest_path) {
             Ok(data) => (data, None),
             Err(err) => {
-                let message =
-                    format!("failed to parse manifest '{}': {err:?}", manifest_path.display());
+                let message = format!("failed to parse manifest '{}': {err:?}", manifest_path.display());
                 eprintln!("[plugin] {message}");
                 (None, Some(message))
             }
@@ -151,10 +150,8 @@ impl PluginHost {
             }
             Err(err) => {
                 self.manifest = None;
-                self.manifest_error = Some(format!(
-                    "failed to load manifest '{}': {err:?}",
-                    self.manifest_path.display()
-                ));
+                self.manifest_error =
+                    Some(format!("failed to load manifest '{}': {err:?}", self.manifest_path.display()));
                 Err(err)
             }
         }
@@ -240,10 +237,7 @@ mod tests {
         let mut host = PluginHost::new(&manifest_path);
         assert!(host.manifest().is_none(), "invalid manifest should not load");
         let captured = host.manifest_error().expect("error recorded");
-        assert!(
-            captured.contains("failed to parse manifest"),
-            "captured error explains parse failure"
-        );
+        assert!(captured.contains("failed to parse manifest"), "captured error explains parse failure");
 
         fs::write(
             &manifest_path,

@@ -3,9 +3,9 @@ use crate::config::WindowConfig;
 use crate::ecs::{InstanceData, MeshLightingInfo};
 use crate::environment::EnvironmentGpu;
 use crate::material_registry::MaterialGpu;
-use crate::mesh::{Mesh, MeshVertex};
+use crate::mesh::{Mesh, MeshBounds, MeshVertex};
 use anyhow::{anyhow, Context, Result};
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec3, Vec4};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
@@ -26,17 +26,20 @@ struct Globals {
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const MAX_SKIN_JOINTS: usize = 256;
 const SKINNING_CACHE_HEADROOM: usize = 4;
+const MAX_SHADOW_CASCADES: usize = 4;
+const DEFAULT_CASCADE_SPLITS: [f32; MAX_SHADOW_CASCADES] = [0.05, 0.15, 0.4, 1.0];
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct MeshFrameData {
     view_proj: [[f32; 4]; 4],
+    view: [[f32; 4]; 4],
     camera_pos: [f32; 4],
     light_dir: [f32; 4],
     light_color: [f32; 4],
     ambient_color: [f32; 4],
     exposure_params: [f32; 4],
-    padding: [f32; 4],
+    cascade_splits: [f32; 4],
 }
 
 #[repr(C)]
@@ -51,7 +54,7 @@ struct MeshDrawData {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct ShadowUniform {
-    light_view_proj: [[f32; 4]; 4],
+    light_view_proj: [[[f32; 4]; 4]; MAX_SHADOW_CASCADES],
     params: [f32; 4],
 }
 
@@ -300,8 +303,10 @@ pub struct GpuMesh {
     pub vertex_buffer: wgpu::Buffer,
     pub index_buffer: wgpu::Buffer,
     pub index_count: u32,
+    pub bounds: MeshBounds,
 }
 
+#[derive(Clone)]
 pub struct MeshDraw<'a> {
     pub mesh: &'a GpuMesh,
     pub model: Mat4,
@@ -392,10 +397,14 @@ struct ShadowPass {
     skinning_cursor: usize,
     map_texture: Option<wgpu::Texture>,
     map_view: Option<wgpu::TextureView>,
+    cascade_views: Vec<wgpu::TextureView>,
     sampler: Option<wgpu::Sampler>,
     sample_layout: Option<Arc<wgpu::BindGroupLayout>>,
     sample_bind_group: Option<wgpu::BindGroup>,
     resolution: u32,
+    cascade_matrices: [Mat4; MAX_SHADOW_CASCADES],
+    cascade_splits: [f32; MAX_SHADOW_CASCADES],
+    cascade_count: usize,
     dirty: bool,
 }
 
@@ -415,10 +424,14 @@ impl Default for ShadowPass {
             skinning_cursor: 0,
             map_texture: None,
             map_view: None,
+            cascade_views: Vec::new(),
             sampler: None,
             sample_layout: None,
             sample_bind_group: None,
             resolution: 2048,
+            cascade_matrices: [Mat4::IDENTITY; MAX_SHADOW_CASCADES],
+            cascade_splits: [0.0; MAX_SHADOW_CASCADES],
+            cascade_count: MAX_SHADOW_CASCADES,
             dirty: true,
         }
     }
@@ -1098,7 +1111,7 @@ impl Renderer {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
                         sample_type: wgpu::TextureSampleType::Depth,
                     },
                     count: None,
@@ -1196,7 +1209,12 @@ impl Renderer {
             contents: bytemuck::cast_slice(&mesh.indices),
             usage: wgpu::BufferUsages::INDEX,
         });
-        Ok(GpuMesh { vertex_buffer, index_buffer, index_count: mesh.indices.len() as u32 })
+        Ok(GpuMesh {
+            vertex_buffer,
+            index_buffer,
+            index_count: mesh.indices.len() as u32,
+            bounds: mesh.bounds.clone(),
+        })
     }
 
     pub fn encode_mesh_pass(
@@ -1227,9 +1245,11 @@ impl Renderer {
             viewport.size.1.max(1.0).round() as u32,
         );
         let view_proj = camera.view_projection(vp_size);
+        let view_matrix = camera.view_matrix();
         let lighting_dir = self.lighting.direction.normalize_or_zero();
         let frame_data = MeshFrameData {
             view_proj: view_proj.to_cols_array_2d(),
+            view: view_matrix.to_cols_array_2d(),
             camera_pos: [camera.position.x, camera.position.y, camera.position.z, 1.0],
             light_dir: [lighting_dir.x, lighting_dir.y, lighting_dir.z, 0.0],
             light_color: [self.lighting.color.x, self.lighting.color.y, self.lighting.color.z, 1.0],
@@ -1240,7 +1260,7 @@ impl Renderer {
                 environment_state.intensity,
                 0.0,
             ],
-            padding: [0.0; 4],
+            cascade_splits: self.shadow_pass.cascade_splits,
         };
 
         if self.mesh_pass.frame_buffer.is_none() {
@@ -1508,7 +1528,12 @@ impl Renderer {
     fn recreate_shadow_map(&mut self) -> Result<()> {
         let device = self.device()?.clone();
         let resolution = self.shadow_pass.resolution.max(1);
-        let extent = wgpu::Extent3d { width: resolution, height: resolution, depth_or_array_layers: 1 };
+        let cascade_layers = self.shadow_pass.cascade_count.max(1);
+        let extent = wgpu::Extent3d {
+            width: resolution,
+            height: resolution,
+            depth_or_array_layers: cascade_layers as u32,
+        };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Shadow Map"),
             size: extent,
@@ -1519,9 +1544,32 @@ impl Renderer {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("Shadow Map Array View"),
+            format: Some(DEPTH_FORMAT),
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            base_mip_level: 0,
+            mip_level_count: None,
+            base_array_layer: 0,
+            array_layer_count: None,
+            ..Default::default()
+        });
+        let mut layer_views = Vec::with_capacity(cascade_layers);
+        for layer in 0..cascade_layers {
+            layer_views.push(texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("Shadow Map Cascade Layer"),
+                format: Some(DEPTH_FORMAT),
+                dimension: Some(wgpu::TextureViewDimension::D2),
+                base_mip_level: 0,
+                mip_level_count: None,
+                base_array_layer: layer as u32,
+                array_layer_count: Some(1),
+                ..Default::default()
+            }));
+        }
         self.shadow_pass.map_texture = Some(texture);
         self.shadow_pass.map_view = Some(view);
+        self.shadow_pass.cascade_views = layer_views;
         self.shadow_pass.sample_bind_group = None;
         self.shadow_pass.dirty = true;
         Ok(())
@@ -1712,14 +1760,28 @@ impl Renderer {
         Ok(())
     }
 
-    fn write_shadow_uniform(&mut self, matrix: Mat4, strength: f32) -> Result<()> {
+    fn write_shadow_uniform(
+        &mut self,
+        matrices: &[Mat4; MAX_SHADOW_CASCADES],
+        strength: f32,
+        cascade_count: usize,
+        active_cascade: usize,
+    ) -> Result<()> {
         let queue = self.queue()?;
         let buffer = self.shadow_pass.uniform_buffer.as_ref().context("Shadow uniform buffer missing")?;
         let bias = self.lighting.shadow_bias.clamp(0.00001, 0.05);
-        let data = ShadowUniform {
-            light_view_proj: matrix.to_cols_array_2d(),
-            params: [bias, strength.clamp(0.0, 1.0), 0.0, 0.0],
-        };
+        let clamped_count = cascade_count.clamp(1, MAX_SHADOW_CASCADES);
+        let mut gpu_matrices = [[[0.0f32; 4]; 4]; MAX_SHADOW_CASCADES];
+        for (dst, src) in gpu_matrices.iter_mut().zip(matrices.iter()) {
+            *dst = src.to_cols_array_2d();
+        }
+        let params = [
+            bias,
+            strength.clamp(0.0, 1.0),
+            clamped_count as f32,
+            active_cascade.min(clamped_count - 1) as f32,
+        ];
+        let data = ShadowUniform { light_view_proj: gpu_matrices, params };
         queue.write_buffer(buffer, 0, bytemuck::bytes_of(&data));
         self.shadow_pass.dirty = false;
         Ok(())
@@ -1730,6 +1792,7 @@ impl Renderer {
         encoder: &mut wgpu::CommandEncoder,
         draws: &[MeshDraw],
         camera: &Camera3D,
+        viewport: RenderViewport,
     ) -> Result<()> {
         self.init_mesh_pipeline()?;
         self.ensure_shadow_resources()?;
@@ -1737,7 +1800,11 @@ impl Renderer {
         let shadow_strength = self.lighting.shadow_strength.clamp(0.0, 1.0);
         let casters: Vec<&MeshDraw> = draws.iter().filter(|draw| draw.casts_shadows).collect();
         if casters.is_empty() || shadow_strength <= 0.0 {
-            self.write_shadow_uniform(Mat4::IDENTITY, 0.0)?;
+            self.shadow_pass.cascade_matrices = [Mat4::IDENTITY; MAX_SHADOW_CASCADES];
+            self.shadow_pass.cascade_splits = [0.0; MAX_SHADOW_CASCADES];
+            let matrices = self.shadow_pass.cascade_matrices;
+            let cascade_count = self.shadow_pass.cascade_count;
+            self.write_shadow_uniform(&matrices, 0.0, cascade_count, 0)?;
             return Ok(());
         }
 
@@ -1745,28 +1812,45 @@ impl Renderer {
         if light_dir.length_squared() < 1e-4 {
             light_dir = Vec3::new(0.4, 0.8, 0.35).normalize();
         }
-
-        let focus = camera.target;
-        let distance = self.lighting.shadow_distance.max(1.0);
-        let light_pos = focus - light_dir * distance;
-        let mut up = Vec3::new(0.0, 1.0, 0.0);
-        if up.dot(light_dir).abs() > 0.95 {
-            up = Vec3::new(1.0, 0.0, 0.0);
+        let viewport_size = PhysicalSize::new(
+            viewport.size.0.max(1.0).round() as u32,
+            viewport.size.1.max(1.0).round() as u32,
+        );
+        let aspect = if viewport_size.height > 0 {
+            viewport_size.width as f32 / viewport_size.height as f32
+        } else {
+            1.0
+        };
+        let splits = self.compute_cascade_splits(camera);
+        let mut prev_split = camera.near;
+        for (idx, split) in splits.iter().enumerate().take(self.shadow_pass.cascade_count) {
+            let cascade_far = split.max(prev_split + 0.01);
+            self.shadow_pass.cascade_matrices[idx] =
+                self.build_cascade_matrix(camera, aspect, prev_split, cascade_far, light_dir);
+            prev_split = cascade_far;
         }
-        let view = Mat4::look_at_rh(light_pos, focus, up);
-        let half = distance;
-        let near = 0.1;
-        let far = distance * 4.0;
-        let proj = Mat4::orthographic_rh(-half, half, -half, half, near, far);
-        let light_matrix = proj * view;
-        self.write_shadow_uniform(light_matrix, shadow_strength)?;
+        self.shadow_pass.cascade_splits = splits;
 
-        let resources = self.shadow_pass.resources.as_ref().context("Shadow pipeline resources missing")?;
-        let view = self.shadow_pass.map_view.as_ref().context("Shadow map view missing")?;
+        let pipeline = self
+            .shadow_pass
+            .resources
+            .as_ref()
+            .context("Shadow pipeline resources missing")?
+            .pipeline
+            .clone();
+        let skinning_bgl = self
+            .shadow_pass
+            .resources
+            .as_ref()
+            .context("Shadow pipeline resources missing")?
+            .skinning_bgl
+            .clone();
         let frame_bg =
-            self.shadow_pass.frame_bind_group.as_ref().context("Shadow frame bind group missing")?;
-        let draw_bg = self.shadow_pass.draw_bind_group.as_ref().context("Shadow draw bind group missing")?;
-        let draw_buffer = self.shadow_pass.draw_buffer.as_ref().context("Shadow draw buffer missing")?;
+            self.shadow_pass.frame_bind_group.as_ref().context("Shadow frame bind group missing")?.clone();
+        let draw_bg =
+            self.shadow_pass.draw_bind_group.as_ref().context("Shadow draw bind group missing")?.clone();
+        let draw_buffer =
+            self.shadow_pass.draw_buffer.as_ref().context("Shadow draw buffer missing")?.clone();
         let queue = self.queue()?.clone();
 
         if self.shadow_pass.skinning_identity_buffer.is_none() {
@@ -1788,7 +1872,7 @@ impl Renderer {
                 .context("Shadow skinning identity buffer missing")?;
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Shadow Skinning Identity BG"),
-                layout: resources.skinning_bgl.as_ref(),
+                layout: skinning_bgl.as_ref(),
                 entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
             });
             self.shadow_pass.skinning_identity_bind_group = Some(bind_group);
@@ -1797,7 +1881,8 @@ impl Renderer {
             .shadow_pass
             .skinning_identity_bind_group
             .as_ref()
-            .context("Shadow skinning identity bind group missing")?;
+            .context("Shadow skinning identity bind group missing")?
+            .clone();
 
         let resolution = self.shadow_pass.resolution.max(1);
         self.shadow_pass.skinning_cursor = 0;
@@ -1806,12 +1891,22 @@ impl Renderer {
             self.shadow_pass.palette_staging.clear();
             self.shadow_pass.palette_staging.resize(MAX_SKIN_JOINTS, identity_cols);
         }
-        {
+
+        for cascade_index in 0..self.shadow_pass.cascade_count {
+            let layer_view = self
+                .shadow_pass
+                .cascade_views
+                .get(cascade_index)
+                .cloned()
+                .context("Shadow cascade view missing")?;
+            let matrices = self.shadow_pass.cascade_matrices;
+            let cascade_count = self.shadow_pass.cascade_count;
+            self.write_shadow_uniform(&matrices, shadow_strength, cascade_count, cascade_index)?;
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Shadow Pass"),
                 color_attachments: &[],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view,
+                    view: &layer_view,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(1.0),
                         store: wgpu::StoreOp::Store,
@@ -1821,13 +1916,13 @@ impl Renderer {
                 occlusion_query_set: None,
                 timestamp_writes: None,
             });
-            pass.set_pipeline(&resources.pipeline);
+            pass.set_pipeline(&pipeline);
             let res_f = resolution as f32;
             pass.set_viewport(0.0, 0.0, res_f, res_f, 0.0, 1.0);
             pass.set_scissor_rect(0, 0, resolution, resolution);
-            pass.set_bind_group(0, frame_bg, &[]);
+            pass.set_bind_group(0, &frame_bg, &[]);
 
-            for draw in casters {
+            for draw in &casters {
                 let palette_len = draw.skin_palette.as_ref().map(|palette| palette.len()).unwrap_or(0);
                 if palette_len > MAX_SKIN_JOINTS && self.skinning_limit_warnings.insert(palette_len) {
                     eprintln!(
@@ -1841,8 +1936,8 @@ impl Renderer {
                     joint_count: joint_count as u32,
                     _padding: [0; 3],
                 };
-                queue.write_buffer(draw_buffer, 0, bytemuck::bytes_of(&draw_uniform));
-                pass.set_bind_group(1, draw_bg, &[]);
+                queue.write_buffer(&draw_buffer, 0, bytemuck::bytes_of(&draw_uniform));
+                pass.set_bind_group(1, &draw_bg, &[]);
                 if joint_count > 0 {
                     {
                         let staging = &mut self.shadow_pass.palette_staging;
@@ -1866,7 +1961,7 @@ impl Renderer {
                         });
                         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                             label: Some("Shadow Skinning Palette BG"),
-                            layout: resources.skinning_bgl.as_ref(),
+                            layout: skinning_bgl.as_ref(),
                             entries: &[wgpu::BindGroupEntry {
                                 binding: 0,
                                 resource: buffer.as_entire_binding(),
@@ -1880,7 +1975,7 @@ impl Renderer {
                     let bind_group = &self.shadow_pass.skinning_palette_bind_groups[slot];
                     pass.set_bind_group(2, bind_group, &[]);
                 } else {
-                    pass.set_bind_group(2, shadow_skinning_identity, &[]);
+                    pass.set_bind_group(2, &shadow_skinning_identity, &[]);
                 }
                 pass.set_vertex_buffer(0, draw.mesh.vertex_buffer.slice(..));
                 pass.set_index_buffer(draw.mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
@@ -2100,6 +2195,143 @@ impl Renderer {
         Ok((texture, view))
     }
 
+    fn compute_cascade_splits(&self, camera: &Camera3D) -> [f32; MAX_SHADOW_CASCADES] {
+        let near = camera.near;
+        let target_far = (near + self.lighting.shadow_distance).min(camera.far);
+        let range = (target_far - near).max(0.1);
+        let mut splits = [0.0; MAX_SHADOW_CASCADES];
+        for (idx, ratio) in DEFAULT_CASCADE_SPLITS.iter().enumerate() {
+            let clamped = (*ratio).clamp(0.0, 1.0);
+            let split = near + clamped * range;
+            splits[idx] = split.min(target_far);
+        }
+        splits[MAX_SHADOW_CASCADES - 1] = target_far;
+        for idx in 1..MAX_SHADOW_CASCADES {
+            if splits[idx] <= splits[idx - 1] {
+                splits[idx] = splits[idx - 1] + 0.01;
+            }
+        }
+        splits
+    }
+
+    fn build_cascade_matrix(
+        &self,
+        camera: &Camera3D,
+        aspect: f32,
+        near: f32,
+        far: f32,
+        light_dir: Vec3,
+    ) -> Mat4 {
+        let corners = Self::frustum_corners(camera, aspect, near, far);
+        let mut center = Vec3::ZERO;
+        for corner in &corners {
+            center += *corner;
+        }
+        center /= corners.len() as f32;
+        let mut up = Vec3::Y;
+        if up.dot(light_dir).abs() > 0.95 {
+            up = Vec3::X;
+        }
+        let distance = (far - near).max(1.0);
+        let eye = center - light_dir * (distance + self.lighting.shadow_distance * 0.5);
+        let view = Mat4::look_at_rh(eye, center, up);
+        let mut min = Vec3::splat(f32::MAX);
+        let mut max = Vec3::splat(f32::MIN);
+        for corner in corners {
+            let light_space = view.transform_point3(corner);
+            min = min.min(light_space);
+            max = max.max(light_space);
+        }
+        let padding = 10.0;
+        min -= Vec3::splat(padding);
+        max += Vec3::splat(padding);
+        Mat4::orthographic_rh(min.x, max.x, min.y, max.y, min.z - padding, max.z + padding) * view
+    }
+
+    fn frustum_corners(camera: &Camera3D, aspect: f32, near: f32, far: f32) -> [Vec3; 8] {
+        let proj = Mat4::perspective_rh_gl(camera.fov_y_radians, aspect.max(0.0001), near, far);
+        let view = camera.view_matrix();
+        let inv = (proj * view).inverse();
+        let mut corners = [Vec3::ZERO; 8];
+        let mut idx = 0;
+        for &x in &[-1.0, 1.0] {
+            for &y in &[-1.0, 1.0] {
+                for &z in &[-1.0, 1.0] {
+                    let clip = Vec4::new(x, y, z, 1.0);
+                    let world = inv * clip;
+                    let point = world.truncate() / world.w.max(1e-6);
+                    corners[idx] = point;
+                    idx += 1;
+                }
+            }
+        }
+        corners
+    }
+
+    fn cull_mesh_draws<'a>(
+        &self,
+        draws: &[MeshDraw<'a>],
+        camera: &Camera3D,
+        viewport: RenderViewport,
+    ) -> Vec<MeshDraw<'a>> {
+        if draws.is_empty() {
+            return Vec::new();
+        }
+        let vp_size = PhysicalSize::new(
+            viewport.size.0.max(1.0).round() as u32,
+            viewport.size.1.max(1.0).round() as u32,
+        );
+        let view_proj = camera.view_projection(vp_size);
+        let planes = Self::extract_frustum_planes(view_proj);
+        let mut visible = Vec::with_capacity(draws.len());
+        for draw in draws {
+            let (center, radius) = Self::transform_bounds(draw.model, &draw.mesh.bounds);
+            if radius <= 0.0 || Self::sphere_in_frustum(center, radius, &planes) {
+                visible.push(draw.clone());
+            }
+        }
+        visible
+    }
+
+    fn transform_bounds(model: Mat4, bounds: &MeshBounds) -> (Vec3, f32) {
+        let center = model.transform_point3(bounds.center);
+        let scale_x = model.x_axis.truncate().length();
+        let scale_y = model.y_axis.truncate().length();
+        let scale_z = model.z_axis.truncate().length();
+        let max_scale = scale_x.max(scale_y).max(scale_z).max(0.0001);
+        let radius = bounds.radius * max_scale;
+        (center, radius)
+    }
+
+    fn sphere_in_frustum(center: Vec3, radius: f32, planes: &[Vec4; 6]) -> bool {
+        for plane in planes {
+            let normal = plane.truncate();
+            let distance = normal.dot(center) + plane.w;
+            if distance < -radius {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn extract_frustum_planes(matrix: Mat4) -> [Vec4; 6] {
+        let m = matrix.to_cols_array();
+        let row = |i: usize| Vec4::new(m[i], m[i + 4], m[i + 8], m[i + 12]);
+        let row0 = row(0);
+        let row1 = row(1);
+        let row2 = row(2);
+        let row3 = row(3);
+        let mut planes = [row3 + row0, row3 - row0, row3 + row1, row3 - row1, row3 + row2, row3 - row2];
+        for plane in &mut planes {
+            let normal = plane.truncate();
+            let length = normal.length();
+            if length > 0.0 {
+                *plane /= length;
+            }
+        }
+        planes
+    }
+
     pub fn render_frame(
         &mut self,
         instances: &[InstanceData],
@@ -2150,14 +2382,20 @@ impl Renderer {
         }
 
         let clear_color = wgpu::Color { r: 0.05, g: 0.06, b: 0.1, a: 1.0 };
+        let mut culled_mesh_draws: Vec<MeshDraw> = Vec::new();
+        let mut mesh_draw_slice: &[MeshDraw] = culled_mesh_draws.as_slice();
+        if let Some(camera) = mesh_camera {
+            culled_mesh_draws = self.cull_mesh_draws(mesh_draws, camera, viewport);
+            mesh_draw_slice = culled_mesh_draws.as_slice();
+        }
         let mut sprite_load_op = wgpu::LoadOp::Clear(clear_color);
         if let Some(camera) = mesh_camera {
-            if !mesh_draws.is_empty() {
+            if !mesh_draw_slice.is_empty() {
                 self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::ShadowStart);
-                self.prepare_shadow_map(&mut encoder, mesh_draws, camera)?;
+                self.prepare_shadow_map(&mut encoder, mesh_draw_slice, camera, viewport)?;
                 self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::ShadowEnd);
                 self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::MeshStart);
-                self.encode_mesh_pass(&mut encoder, view, viewport, mesh_draws, camera, clear_color)?;
+                self.encode_mesh_pass(&mut encoder, view, viewport, mesh_draw_slice, camera, clear_color)?;
                 self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::MeshEnd);
                 sprite_load_op = wgpu::LoadOp::Load;
             }

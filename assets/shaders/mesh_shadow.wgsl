@@ -1,9 +1,10 @@
 struct ShadowFrame {
-    light_view_proj : mat4x4<f32>,
+    light_view_proj : array<mat4x4<f32>, MAX_SHADOW_CASCADES>,
     params : vec4<f32>,
 }
 
 const MAX_SKIN_JOINTS : u32 = 256u;
+const MAX_SHADOW_CASCADES : u32 = 4u;
 
 struct ShadowDraw {
     model : mat4x4<f32>,
@@ -86,7 +87,9 @@ fn vs_main(input : VertexIn) -> VertexOut {
     let skin_matrix = accumulate_skin(input.joints, input.weights, draw.joint_count);
     let skinned_position = skin_matrix * vec4<f32>(input.position, 1.0);
     let world_pos = draw.model * skinned_position;
-    out.position = frame.light_view_proj * world_pos;
+    let cascade_index = u32(clamp(frame.params.w, 0.0, f32(MAX_SHADOW_CASCADES - 1u)) + 0.5);
+    let matrix = frame.light_view_proj[cascade_index];
+    out.position = matrix * world_pos;
     return out;
 }
 
