@@ -2861,6 +2861,9 @@ impl ApplicationHandler for App {
             let timings = self.renderer.take_gpu_timings();
             if !timings.is_empty() {
                 self.gpu_frame_counter = self.gpu_frame_counter.saturating_add(1);
+                if let Some(analytics) = self.analytics_plugin_mut() {
+                    analytics.record_gpu_timings(&timings);
+                }
                 self.gpu_timings = timings.clone();
                 self.gpu_timing_history
                     .push_back(GpuTimingFrame { frame_index: self.gpu_frame_counter, timings });
@@ -2873,6 +2876,9 @@ impl ApplicationHandler for App {
             let timings = self.renderer.take_gpu_timings();
             if !timings.is_empty() {
                 self.gpu_frame_counter = self.gpu_frame_counter.saturating_add(1);
+                if let Some(analytics) = self.analytics_plugin_mut() {
+                    analytics.record_gpu_timings(&timings);
+                }
                 self.gpu_timings = timings.clone();
                 self.gpu_timing_history
                     .push_back(GpuTimingFrame { frame_index: self.gpu_frame_counter, timings });

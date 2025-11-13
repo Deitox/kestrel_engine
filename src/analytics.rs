@@ -1,9 +1,10 @@
 use crate::ecs::{ParticleBudgetMetrics, SpatialMetrics};
 use crate::events::GameEvent;
 use crate::plugins::{EnginePlugin, PluginContext};
+use crate::renderer::GpuPassTiming;
 use anyhow::Result;
 use std::any::Any;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 pub struct AnalyticsPlugin {
     frame_hist: Vec<f32>,
@@ -12,6 +13,8 @@ pub struct AnalyticsPlugin {
     event_capacity: usize,
     particle_budget: Option<ParticleBudgetMetrics>,
     spatial_metrics: Option<SpatialMetrics>,
+    gpu_capacity: usize,
+    gpu_timings: BTreeMap<&'static str, VecDeque<f32>>,
 }
 
 impl AnalyticsPlugin {
@@ -23,6 +26,8 @@ impl AnalyticsPlugin {
             event_capacity: event_capacity.max(1),
             particle_budget: None,
             spatial_metrics: None,
+            gpu_capacity: 120,
+            gpu_timings: BTreeMap::new(),
         }
     }
 
@@ -52,6 +57,33 @@ impl AnalyticsPlugin {
 
     pub fn spatial_metrics(&self) -> Option<SpatialMetrics> {
         self.spatial_metrics
+    }
+
+    pub fn record_gpu_timings(&mut self, timings: &[GpuPassTiming]) {
+        if timings.is_empty() {
+            return;
+        }
+        for timing in timings {
+            let entry = self
+                .gpu_timings
+                .entry(timing.label)
+                .or_insert_with(|| VecDeque::with_capacity(self.gpu_capacity));
+            if entry.len() == self.gpu_capacity {
+                entry.pop_front();
+            }
+            entry.push_back(timing.duration_ms);
+        }
+    }
+
+    pub fn gpu_pass_metric(&self, label: &'static str) -> Option<GpuPassMetric> {
+        let samples = self.gpu_timings.get(label)?;
+        if samples.is_empty() {
+            return None;
+        }
+        let latest_ms = *samples.back().unwrap();
+        let sum: f32 = samples.iter().sum();
+        let avg = sum / samples.len() as f32;
+        Some(GpuPassMetric { label, latest_ms, average_ms: avg, sample_count: samples.len() })
     }
 }
 
@@ -97,6 +129,7 @@ impl EnginePlugin for AnalyticsPlugin {
         self.frame_hist.clear();
         self.particle_budget = None;
         self.spatial_metrics = None;
+        self.gpu_timings.clear();
         Ok(())
     }
 
@@ -107,4 +140,12 @@ impl EnginePlugin for AnalyticsPlugin {
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct GpuPassMetric {
+    pub label: &'static str,
+    pub latest_ms: f32,
+    pub average_ms: f32,
+    pub sample_count: usize,
 }

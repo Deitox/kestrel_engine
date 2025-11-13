@@ -572,6 +572,11 @@ impl App {
             reload: false,
         };
 
+        let shadow_pass_metric =
+            self.analytics_plugin().and_then(|analytics| analytics.gpu_pass_metric("Shadow pass"));
+        let mesh_pass_metric =
+            self.analytics_plugin().and_then(|analytics| analytics.gpu_pass_metric("Mesh pass"));
+
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
             let left_panel =
                 egui::SidePanel::left("kestrel_left_panel").default_width(340.0).show(ctx, |ui| {
@@ -593,6 +598,16 @@ impl App {
                             ));
                         });
                         ui.label("Target: 16.7ms for 60 FPS");
+                        if shadow_pass_metric.is_some() || mesh_pass_metric.is_some() {
+                            ui.separator();
+                            ui.label("GPU Pass Baselines");
+                            for metric in [shadow_pass_metric, mesh_pass_metric].into_iter().flatten() {
+                                ui.label(format!(
+                                    "{:<12} {:>5.2} ms (avg {:>5.2} ms over {} frames)",
+                                    metric.label, metric.latest_ms, metric.average_ms, metric.sample_count
+                                ));
+                            }
+                        }
                         if let Some(metrics) = particle_budget {
                             ui.separator();
                             ui.label("Particle Budget");
