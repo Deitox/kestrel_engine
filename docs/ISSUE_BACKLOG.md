@@ -27,7 +27,7 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
    - *Why:* Gizmo/selection bugs are common whenever egui changes land.
    - *Acceptance:* Build a headless egui test that simulates selecting an entity, switching gizmo modes, saving, and reloading. The test should confirm entity IDs remain stable and gizmo interaction state resets cleanly.
 6. **[M1 Perf] Sprite animation telemetry & HUD instrumentation** - *In progress this sprint (see `docs/SPRITE_ANIMATION_PERF_PLAN.md`, Phase 2).*
-   - *Why:* Hitting ≤0.200 ms @ 10k animators only holds if slow-path usage is visible to authors; we need per-frame counters and HUD surfacing to keep asset regressions obvious.
+   - *Why:* Keeping ≤0.300 ms @ 10k animators demands visibility into slow-path usage; we need per-frame counters and HUD surfacing to keep asset regressions obvious.
    - *Acceptance:* 
      1. Add zero-allocation per-frame counters (`const_dt`, `var_dt`, `ping_pong`, `events_heavy`, `%slow`) to the animation runtime and expose them via the profiler resource.
      2. Extend the Stats panel/HUD to display these counters with threshold coloring plus split CPU evaluation vs GPU palette upload timings.

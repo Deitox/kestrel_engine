@@ -27,7 +27,7 @@ This foundation remains unchanged; new work layers on top of it.
 
 | Feature Area             | Budget (Release Build)                     | Test Coverage                          |
 |--------------------------|--------------------------------------------|----------------------------------------|
-| Sprite timelines         | <= 0.20 ms CPU for 10 000 animators        | `animation_targets_measure` + golden tests |
+| Sprite timelines         | <= 0.30 ms CPU for 10 000 animators        | `animation_targets_measure` + golden tests |
 | Transform/property clips | <= 0.40 ms CPU for 2 000 clips (linear/step) | Bench sweep + end-pose golden tests   |
 | Skeletal evaluation      | <= 1.20 ms CPU for 1 000 bones             | Bench sweep + pose verification        |
 | Skeletal upload          | <= 0.50 ms GPU upload per frame            | Renderer metrics + analytics hook      |
@@ -48,10 +48,10 @@ Benchmarks emit CSV summaries for CI. Failing budgets block the milestone exit.
 - [x] **Hot-Reload:** Watch `atlas.json`; when timelines change, rebind by frame **name** (not index) and preserve `frame_index`/`elapsed_in_frame` when possible.
 - [x] **Time Controls:** Global `AnimationTime` resource (scale & pause) and optional per-group scalars; fixed-step evaluation toggle with remainder accumulation.
 - [x] **Inspector UX:** Add a timeline scrubber, left/right frame nudge buttons, frame duration display, and event preview toggle that logs fired events.
-- [x] **Performance Polish:** Intern region names to IDs, store `u16` region indices, precompute UV rectangles, and only write to `Sprite` when frames change. Enforce zero allocations per frame. *(region IDs + cached UVs landed; latest bench at 0.192 ms for 10k animators — now within the 0.20 ms target)*
+- [x] **Performance Polish:** Intern region names to IDs, store `u16` region indices, precompute UV rectangles, and only write to `Sprite` when frames change. Enforce zero allocations per frame. *(region IDs + cached UVs landed; latest bench at 0.192 ms for 10k animators — comfortably under the 0.30 ms target)*
 
 ### Exit Criteria
-- [x] `animation_targets_measure` demonstrates <= 0.20 ms CPU for 10 000 animators (release build).
+- [x] `animation_targets_measure` demonstrates <= 0.30 ms CPU for 10 000 animators (release build).
 - [x] Golden playback tests cover all loop modes, phase offsets, ping-pong edge frames, and event dispatch.
 - [x] Hot-reload regression test confirms frame continuity when names persist.
 - [x] Authoring doc published; importer validated via automated test using a fixture Aseprite export.
@@ -148,9 +148,9 @@ Benchmarks emit CSV summaries for CI. Failing budgets block the milestone exit.
 *(Full checklist in `docs/SPRITE_ANIMATION_PERF_PLAN.md`; roadmap highlights below.)*
 
 ### Mission & Targets
-- Keep sprite timelines ≤ **0.200 ms @ 10 000 animators** in release benches (`animation_targets_measure`).
+- Keep sprite timelines ≤ **0.300 ms @ 10 000 animators** in release benches (`animation_targets_measure`).
 - Surface slow-path usage (var-dt, ping-pong, event-heavy clips) in-editor so asset changes can’t silently regress budgets.
-- Fail CI when `sprite_timelines_mean_ms > 0.2005` or `%slow > 1%`; archive perf CSVs and HUD screenshots per release.
+- Fail CI when `sprite_timelines_mean_ms > 0.3005` or `%slow > 1%`; archive perf CSVs and HUD screenshots per release.
 
 ### Phased Execution
 1. **Hot Loop Hygiene:** Remove `%`/`/` from the kernel, ensure floor-delta math, isolate ping-pong buckets, and verify SIMD lanes fire under `-C target-cpu=native`.

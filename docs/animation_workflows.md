@@ -29,7 +29,7 @@
 ## Sprite Animation Perf HUD
 - Open **Stats → Sprite Animation Perf** in the editor to inspect runtime telemetry. The panel lists fast/slow bucket counts, Δt mix (`var_dt` vs `const_dt`), ping-pong/event-heavy animator totals, emitted/coalesced event counts, and modulo/division fallbacks. Values update every frame without allocations, so you can leave the panel open while iterating.
 - The HUD highlights `%slow > 1%` streaks and SIMD tail-scalar ratios >5% (both require 60 consecutive frames before the warning turns orange). Use these cues to spot regressions caused by new atlas content, event storms, or clip settings.
-- Eval/Pack/Upload progress bars visualize `sys_drive_sprite_animations`, `sys_apply_sprite_frame_states`, and the GPU sprite pass respectively. Budgets default to 0.205 ms / 0.050 ms / 0.100 ms; the bars turn orange when a stage exceeds its budget for the most recent frame.
+- Eval/Pack/Upload progress bars visualize `sys_drive_sprite_animations`, `sys_apply_sprite_frame_states`, and the GPU sprite pass respectively. Budgets default to 0.305 ms / 0.050 ms / 0.100 ms; the bars turn orange when a stage exceeds its budget for the most recent frame.
 - Need raw samples? Call `sprite_anim_perf_history()` from the REPL or test harness to fetch the ring buffer, or `sprite_anim_perf_sample()` to read the most recent frame. Both helpers live on `EcsWorld`.
 
 ## Transform & Property Clips

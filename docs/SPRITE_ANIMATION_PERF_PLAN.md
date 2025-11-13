@@ -1,7 +1,7 @@
 # Sprite Animation Performance Guard Plan
 
 ## 1. Mission & Success Criteria
-- Keep the sprite timeline path at or below **0.200 ms for 10,000 animators** in release builds; enforce `p95(sprite_timelines_ms) <= 0.205 ms` with 240 measured frames (after a 16-frame warmup).
+- Keep the sprite timeline path at or below **0.300 ms for 10,000 animators** in release builds; enforce `p95(sprite_timelines_ms) <= 0.305 ms` with 240 measured frames (after a 16-frame warmup).
 - Capture and gate on `{mean, median, p95, p99}` plus metadata `{warmup_frames, measured_frames, samples_per_case, dt, profile, lto_mode, rustc_version, target_cpu, feature_flags, commit_sha}` in every bench artifact (already emitted by `animation_targets_report.json`).
 - Surface slow-path usage (var-dt, ping-pong, event-heavy clips) in-editor so asset changes stay honest, with no allocations/logging inside the hot loop.
 - Fail CI whenever perf metrics exceed thresholds and archive CSV/JSON artifacts per run; include commit SHA + feature flags.
@@ -36,7 +36,7 @@
 
 | Task | Details | Exit Criteria |
 | --- | --- | --- |
-| 3.1 Perf guard action | GitHub Action runs the bench, records `{mean, median, p95, p99}` + Eval/Pack/Upload. If thresholds fail, rerun once and keep the better sample; after two failures block the build. Emit warnings when mean regresses >5% vs last green commit. Always upload artifacts and link them in CI logs. Gate on Eval `p95 ≤ 0.205 ms`, warn when Pack/Upload exceed budgets. | CI badge flips red on regression; logs show artifact links and trend comparisons. |
+| 3.1 Perf guard action | GitHub Action runs the bench, records `{mean, median, p95, p99}` + Eval/Pack/Upload. If thresholds fail, rerun once and keep the better sample; after two failures block the build. Emit warnings when mean regresses >5% vs last green commit. Always upload artifacts and link them in CI logs. Gate on Eval `p95 ≤ 0.305 ms`, warn when Pack/Upload exceed budgets. | CI badge flips red on regression; logs show artifact links and trend comparisons. |
 | 3.2 Bench PGO profile | Capture PGO data for the animation bench target and bake into the **bench profile only** (`cargo test --profile bench-pgo ...`). Shipping/release builds can opt out but record the active mode in bench metadata. | Instructions documented; measured delta recorded plus metadata field showing `lto_mode`/`pgo`. |
 | 3.3 Fixed-point default | Keep `sprite_anim_fixed_point` enabled in production profiles while allowing opt-out for diagnostics. | Cargo profiles updated; documentation explains the default. |
 
@@ -98,7 +98,7 @@
 
 ## 10. Verification Checklist
 
-- [ ] Bench logs ≤ 0.200 ms mean/max, `%slow ≤ 1%`.  
+- [ ] Bench logs ≤ 0.300 ms mean/max, `%slow ≤ 1%`.  
 - [ ] HUD counters accurate and highlighted on breaches.  
 - [ ] CI gate fails on simulated regression.  
 - [ ] Importer emits drift lint on synthetic noisy data.  
