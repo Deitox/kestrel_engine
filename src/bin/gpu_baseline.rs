@@ -104,6 +104,13 @@ async fn run_baseline(args: BaselineArgs) -> Result<()> {
     })
     .await;
     renderer.init_headless_for_test().await?;
+    if !renderer.gpu_timing_supported() {
+        return Err(anyhow!(
+            "GPU timestamp queries unavailable on the selected adapter/backend.\n\
+             Baseline capture requires both TIMESTAMP_QUERY and TIMESTAMP_QUERY_INSIDE_ENCODERS.\n\
+             On Windows try forcing DX12 (`$env:WGPU_BACKEND = \"dx12\"`) or Vulkan, and update to the latest GPU driver."
+        ));
+    }
     renderer.prepare_headless_render_target()?;
 
     let mut scene = BaselineScene::load(&mut renderer, Path::new("assets/scenes/quick_save.json"))?;
@@ -111,7 +118,8 @@ async fn run_baseline(args: BaselineArgs) -> Result<()> {
     let camera2d = Camera2D::new(1.2);
     let viewport = RenderViewport { origin: (0.0, 0.0), size: (1280.0, 720.0) };
     let mesh_camera = Camera3D::new(Vec3::new(6.0, 6.0, 10.0), Vec3::ZERO, 60f32.to_radians(), 0.1, 100.0);
-    for _ in 0..args.frames {
+    let mut frames_recorded = 0usize;
+    for _ in 0..(args.frames * 2) {
         let sprite_sampler = scene.sprite_sampler_arc();
         scene.step(1.0 / 60.0);
         let (instances, batches) = scene.build_sprite_batches()?;
@@ -129,7 +137,14 @@ async fn run_baseline(args: BaselineArgs) -> Result<()> {
         let timings = renderer.take_gpu_timings();
         if !timings.is_empty() {
             accumulator.record_frame(&timings);
+            frames_recorded += 1;
+            if frames_recorded >= args.frames {
+                break;
+            }
         }
+    }
+    if frames_recorded == 0 {
+        return Err(anyhow!("GPU timings unavailable; ensure profiling is supported on this adapter"));
     }
 
     let snapshot = accumulator.snapshot(

@@ -1,13 +1,13 @@
 # Engine Polish Targets
 
 ## Automated GPU Baselines & Alerts
-- **Status:** [ ] Pending
+- **Status:** [x] Completed via `cargo run --bin gpu_baseline` harness + `scripts/ci/run_gpu_baseline.ps1` and the GitHub Action step that uploads diffs.
 - **Goal:** Catch regressions in Shadow/Mesh/Sprite passes automatically now that analytics exposes GPU timings.
-- **Scope:** Add a deterministic, ignored test that boots the engine headless, loads a canned scene, runs N frames, and writes `perf/gpu_baseline.json` with the same schema as the sprite bench summaries. Compare the samples against a checked-in baseline with configurable tolerances (e.g., Shadow/Mesh ±0.30 ms, Sprite ±0.20 ms) and fail when drift exceeds the envelope.
+- **Scope:** Deterministic headless runner loads the canned scene, renders N frames, writes `perf/gpu_baseline.json`, and compares to a checked-in baseline with per-pass tolerances; CI invokes it and fails on drift.
 - **Implementation Notes:**
-  - Reuse `Renderer::init_headless_for_test` + `take_gpu_timings` to avoid window/system noise and keep runs deterministic.
-  - Use `EcsWorld::load_scene_from_path_with_dependencies` so atlases/materials load reliably, then pause particle/script systems during the capture window.
-  - Serialize via the same helper that backs `export_gpu_timings_csv`, add a `scripts/ci/run_gpu_baseline.ps1` wrapper, and wire a GitHub workflow job so PRs upload the JSON artifact.
+  - `GpuTimingAccumulator` serializes pass summaries and the `gpu_baseline` binary reuses the full scene-loading path so sprites/meshes match editor behavior.
+  - `scripts/ci/run_gpu_baseline.ps1` wraps the binary for CI; `.github/workflows/animation-bench.yml` runs it after perf suite and publishes the artifact.
+  - Future updates refresh `perf/gpu_baseline.json` to tighten tolerances as optimizations land.
 
 ## Cascaded Shadow Refinement
 - **Status:** [ ] Pending

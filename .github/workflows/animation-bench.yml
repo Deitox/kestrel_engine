@@ -48,6 +48,10 @@ jobs:
             --bench-profile release `
             --bench-test animation_targets_measure `
             --bench-test-args "--ignored --nocapture"
+      - name: Run GPU baseline check
+        shell: pwsh
+        run: |
+          ./scripts/ci/run_gpu_baseline.ps1 -Output perf/gpu_baseline_ci.json -Baseline perf/gpu_baseline.json
 
       - name: Upload target report
         if: always()
@@ -62,3 +66,9 @@ jobs:
         with:
           name: perf-suite
           path: perf/${{ env.PERF_SUITE_LABEL }}*
+      - name: Upload GPU baseline
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-baseline
+          path: perf/gpu_baseline_ci.json
