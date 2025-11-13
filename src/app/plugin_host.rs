@@ -42,23 +42,30 @@ pub(crate) struct PluginHost {
     manager: PluginManager,
     manifest: Option<PluginManifest>,
     manifest_path: PathBuf,
+    manifest_error: Option<String>,
 }
 
 impl PluginHost {
     pub(crate) fn new(manifest_path: impl Into<PathBuf>) -> Self {
         let manifest_path = manifest_path.into();
-        let manifest = match PluginManager::load_manifest(&manifest_path) {
-            Ok(data) => data,
+        let (manifest, manifest_error) = match PluginManager::load_manifest(&manifest_path) {
+            Ok(data) => (data, None),
             Err(err) => {
-                eprintln!("[plugin] failed to parse manifest '{}': {err:?}", manifest_path.display());
-                None
+                let message =
+                    format!("failed to parse manifest '{}': {err:?}", manifest_path.display());
+                eprintln!("[plugin] {message}");
+                (None, Some(message))
             }
         };
-        Self { manager: PluginManager::default(), manifest, manifest_path }
+        Self { manager: PluginManager::default(), manifest, manifest_path, manifest_error }
     }
 
     pub(crate) fn manifest(&self) -> Option<&PluginManifest> {
         self.manifest.as_ref()
+    }
+
+    pub(crate) fn manifest_error(&self) -> Option<&str> {
+        self.manifest_error.as_deref()
     }
 
     pub(crate) fn statuses(&self) -> &[PluginStatus] {
@@ -136,8 +143,21 @@ impl PluginHost {
     }
 
     pub(crate) fn reload_manifest_from_disk(&mut self) -> Result<()> {
-        self.manifest = PluginManager::load_manifest(&self.manifest_path)?;
-        Ok(())
+        match PluginManager::load_manifest(&self.manifest_path) {
+            Ok(manifest) => {
+                self.manifest = manifest;
+                self.manifest_error = None;
+                Ok(())
+            }
+            Err(err) => {
+                self.manifest = None;
+                self.manifest_error = Some(format!(
+                    "failed to load manifest '{}': {err:?}",
+                    self.manifest_path.display()
+                ));
+                Err(err)
+            }
+        }
     }
 
     fn disabled_builtins(&self) -> HashSet<String> {
@@ -156,7 +176,12 @@ impl PluginHost {
     }
 
     pub(crate) fn placeholder() -> Self {
-        Self { manager: PluginManager::default(), manifest: None, manifest_path: PathBuf::new() }
+        Self {
+            manager: PluginManager::default(),
+            manifest: None,
+            manifest_path: PathBuf::new(),
+            manifest_error: None,
+        }
     }
 }
 
@@ -205,5 +230,31 @@ mod tests {
         host.manifest = None;
         let err = host.apply_manifest_toggles(&[], &[]).expect_err("missing manifest errors");
         assert!(err.to_string().contains("manifest"), "error mentions manifest");
+    }
+
+    #[test]
+    fn manifest_errors_reported_and_cleared() {
+        let dir = tempdir().expect("temp dir");
+        let manifest_path = dir.path().join("plugins.json");
+        fs::write(&manifest_path, "{ invalid json").expect("write invalid manifest");
+        let mut host = PluginHost::new(&manifest_path);
+        assert!(host.manifest().is_none(), "invalid manifest should not load");
+        let captured = host.manifest_error().expect("error recorded");
+        assert!(
+            captured.contains("failed to parse manifest"),
+            "captured error explains parse failure"
+        );
+
+        fs::write(
+            &manifest_path,
+            r#"{
+  "disable_builtins": [],
+  "plugins": []
+}"#,
+        )
+        .expect("valid manifest written");
+        host.reload_manifest_from_disk().expect("reload succeeds");
+        assert!(host.manifest().is_some(), "valid manifest loads after reload");
+        assert!(host.manifest_error().is_none(), "error cleared after successful load");
     }
 }

@@ -1736,6 +1736,12 @@ impl App {
 
                     ui.separator();
                     ui.heading("Plugins");
+                    if let Some(error) = self.plugin_host.manifest_error() {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(230, 120, 120),
+                            format!("Manifest error: {error}"),
+                        );
+                    }
                     if ui.button("Reload plugins").clicked() {
                         actions.reload_plugins = true;
                     }
