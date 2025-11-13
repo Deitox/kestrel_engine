@@ -26,6 +26,18 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
 5. **[M11] Editor workflow regression tests** - *Completed via headless harness test (`src/app/gizmo_interaction.rs:576`).*
    - *Why:* Gizmo/selection bugs are common whenever egui changes land.
    - *Acceptance:* Build a headless egui test that simulates selecting an entity, switching gizmo modes, saving, and reloading. The test should confirm entity IDs remain stable and gizmo interaction state resets cleanly.
+6. **[M1 Perf] Sprite animation telemetry & HUD instrumentation** - *In progress this sprint (see `docs/SPRITE_ANIMATION_PERF_PLAN.md`, Phase 2).*
+   - *Why:* Hitting ≤0.200 ms @ 10k animators only holds if slow-path usage is visible to authors; we need per-frame counters and HUD surfacing to keep asset regressions obvious.
+   - *Acceptance:* 
+     1. Add zero-allocation per-frame counters (`const_dt`, `var_dt`, `ping_pong`, `events_heavy`, `%slow`) to the animation runtime and expose them via the profiler resource.
+     2. Extend the Stats panel/HUD to display these counters with threshold coloring plus split CPU evaluation vs GPU palette upload timings.
+     3. Document the workflow in `docs/animation_workflows.md` with screenshots so authors know how to read the new metrics.
+7. **[M1 Perf] Bench telemetry export & GPU timing split** - *In progress this sprint (Plan Phase 2.3–2.4).*
+   - *Why:* `animation_targets_measure` must prove the HUD counters match bench output, and palette uploads need distinct timing so we can budget CPU vs GPU separately.
+   - *Acceptance:*
+     1. Update `animation_targets_measure` to record and emit the new counters per run (stdout + `target/animation_targets_report.json`).
+     2. Ensure GPU palette upload timings are reported independently of CPU evaluation both in the Stats panel and bench artifacts.
+     3. Store the resulting CSV/JSON in `perf/` during perf captures so CI and docs can reference the exact numbers.
 
 ## P1 — Tooling & Workflow Enhancements
 
