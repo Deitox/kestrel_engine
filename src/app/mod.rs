@@ -1967,6 +1967,7 @@ impl ApplicationHandler for App {
         }
         self.record_events();
         let particle_budget_snapshot = self.ecs.particle_budget_metrics();
+        let sprite_perf_sample = self.ecs.sprite_anim_perf_sample();
         let spatial_metrics_snapshot = self.ecs.spatial_metrics();
         if let Some(analytics) = self.analytics_plugin_mut() {
             analytics.record_particle_budget(particle_budget_snapshot);
@@ -2161,6 +2162,19 @@ impl ApplicationHandler for App {
         let spatial_metrics = self.analytics_plugin().and_then(|plugin| plugin.spatial_metrics());
         let frame_timings = self.frame_profiler.samples();
         let system_timings = self.ecs.system_timings();
+        let sprite_eval_ms = system_timings
+            .iter()
+            .find(|timing| timing.name == "sys_drive_sprite_animations")
+            .map(|timing| timing.last_ms);
+        let sprite_pack_ms = system_timings
+            .iter()
+            .find(|timing| timing.name == "sys_apply_sprite_frame_states")
+            .map(|timing| timing.last_ms);
+        let sprite_upload_ms = self
+            .gpu_timings
+            .iter()
+            .find(|timing| timing.label == "Sprite pass")
+            .map(|timing| timing.duration_ms);
         let entity_count = self.ecs.entity_count();
         let instances_drawn = instances.len();
         let orbit_target =
@@ -2255,6 +2269,10 @@ impl ApplicationHandler for App {
             vsync_enabled: self.renderer.vsync_enabled(),
             particle_budget: Some(particle_budget_snapshot),
             spatial_metrics,
+            sprite_perf_sample,
+            sprite_eval_ms,
+            sprite_pack_ms,
+            sprite_upload_ms,
             ui_scale: self.ui_scale,
             ui_cell_size: self.ui_cell_size,
             ui_spatial_use_quadtree: self.ui_spatial_use_quadtree,

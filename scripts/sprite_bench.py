@@ -45,10 +45,17 @@ def run_once(cmd: List[str], env: Dict[str, str]) -> None:
     subprocess.run(cmd, check=True, cwd=REPO_ROOT, env=env)
 
 
-def read_report(report_path: Path) -> List[dict]:
+def read_report(report_path: Path) -> Tuple[Dict[str, object], List[dict]]:
     if not report_path.exists():
         raise FileNotFoundError(f"Benchmark report not found: {report_path}")
-    return json.loads(report_path.read_text(encoding="utf-8"))
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    if isinstance(payload, dict):
+        metadata = payload.get("metadata", {})
+        cases = payload.get("cases", [])
+    else:
+        metadata = {}
+        cases = payload
+    return metadata, cases
 
 
 def load_baseline(path: Path) -> Tuple[Dict[str, float], Dict[str, object]]:
@@ -129,11 +136,14 @@ def main(argv: List[str]) -> int:
     cases: Dict[str, Dict[str, object]] = {}
 
     print(f"[sprite_bench] running {args.runs} iteration(s): {' '.join(cmd)}")
+    bench_meta: Optional[Dict[str, object]] = None
     for idx in range(1, args.runs + 1):
         print(f"[sprite_bench] run {idx}/{args.runs}")
         run_once(cmd, env)
-        report = read_report(report_path)
-        for entry in report:
+        meta, report_entries = read_report(report_path)
+        if meta and bench_meta is None:
+            bench_meta = meta
+        for entry in report_entries:
             label = entry["label"]
             slot = cases.setdefault(
                 label,
@@ -168,6 +178,8 @@ def main(argv: List[str]) -> int:
     }
     if has_baseline and baseline_meta:
         summary_payload["baseline"] = baseline_meta
+    if bench_meta:
+        summary_payload["animation_targets_metadata"] = bench_meta
     for label in sorted(cases.keys()):
         slot = cases[label]
         values: List[float] = slot["runs"]
@@ -218,6 +230,20 @@ def main(argv: List[str]) -> int:
                 timestamp=baseline_meta.get("timestamp") or "n/a",
             )
         )
+    if bench_meta:
+        summary_lines.append("Animation targets metadata:")
+        for key in (
+            "warmup_frames",
+            "measured_frames",
+            "samples_per_case",
+            "dt",
+            "profile",
+            "lto_mode",
+            "target_cpu",
+            "rustc_version",
+        ):
+            if key in bench_meta:
+                summary_lines.append(f"  - {key}: {bench_meta[key]}")
     summary_lines.append("")
     summary_lines.append("Per-run mean_step_ms (ms):")
     summary_lines.append(format_table(rows))

@@ -4,7 +4,7 @@ use crate::assets::AssetManager;
 use crate::ecs::systems::record_transform_looped_resume;
 use crate::ecs::systems::{
     initialize_animation_phase, sys_flag_fast_sprite_animators, AnimationDelta, AnimationPlan, AnimationTime,
-    SpriteFrameApplyQueue, TimeDelta,
+    SpriteAnimPerfSample, SpriteAnimPerfTelemetry, SpriteFrameApplyQueue, TimeDelta,
 };
 #[cfg(feature = "sprite_anim_soa")]
 use crate::ecs::systems::{sys_cleanup_sprite_animator_soa, SpriteAnimatorSoa};
@@ -68,6 +68,7 @@ impl EcsWorld {
         world.insert_resource(TransformPropagationScratch::default());
         world.insert_resource(SystemProfiler::new());
         world.insert_resource(SpriteFrameApplyQueue::default());
+        world.insert_resource(SpriteAnimPerfTelemetry::new(240));
         #[cfg(feature = "sprite_anim_soa")]
         world.insert_resource(SpriteAnimatorSoa::default());
 
@@ -448,6 +449,23 @@ impl EcsWorld {
             emitter_backlog_total: backlog_total,
             emitter_backlog_max_observed: backlog_max,
             emitter_backlog_limit: caps.max_emitter_backlog,
+        }
+    }
+
+    pub fn sprite_anim_perf_sample(&self) -> Option<SpriteAnimPerfSample> {
+        self.world.get_resource::<SpriteAnimPerfTelemetry>().and_then(|telemetry| telemetry.latest())
+    }
+
+    pub fn sprite_anim_perf_history(&self) -> Vec<SpriteAnimPerfSample> {
+        self.world
+            .get_resource::<SpriteAnimPerfTelemetry>()
+            .map(|telemetry| telemetry.history().collect::<Vec<_>>())
+            .unwrap_or_default()
+    }
+
+    pub fn reset_sprite_anim_perf_history(&mut self) {
+        if let Some(mut telemetry) = self.world.get_resource_mut::<SpriteAnimPerfTelemetry>() {
+            telemetry.clear_history();
         }
     }
 

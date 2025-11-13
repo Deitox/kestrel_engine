@@ -5,7 +5,8 @@ use super::{
 use crate::audio::{AudioHealthSnapshot, AudioPlugin};
 use crate::camera3d::Camera3D;
 use crate::ecs::{
-    AnimationTime, EntityInfo, ParticleBudgetMetrics, SpatialMetrics, SpatialMode, SystemTimingSummary,
+    AnimationTime, EntityInfo, ParticleBudgetMetrics, SpatialMetrics, SpatialMode, SpriteAnimPerfSample,
+    SystemTimingSummary,
 };
 use crate::events::GameEvent;
 use crate::gizmo::{
@@ -297,6 +298,10 @@ pub(super) struct EditorUiParams {
     pub vsync_enabled: bool,
     pub particle_budget: Option<ParticleBudgetMetrics>,
     pub spatial_metrics: Option<SpatialMetrics>,
+    pub sprite_perf_sample: Option<SpriteAnimPerfSample>,
+    pub sprite_eval_ms: Option<f32>,
+    pub sprite_pack_ms: Option<f32>,
+    pub sprite_upload_ms: Option<f32>,
     pub ui_scale: f32,
     pub ui_cell_size: f32,
     pub ui_spatial_use_quadtree: bool,
@@ -474,6 +479,10 @@ impl App {
             audio_health,
             particle_budget,
             spatial_metrics,
+            sprite_perf_sample,
+            sprite_eval_ms,
+            sprite_pack_ms,
+            sprite_upload_ms,
             mut id_lookup_input,
             mut id_lookup_active,
             binary_prefabs_enabled,
@@ -608,6 +617,60 @@ impl App {
                                 ui.label("Emitters: none active");
                             }
                         }
+                        ui.separator();
+                        ui.label("Sprite Animation Perf");
+                        let warn_color = egui::Color32::from_rgb(255, 140, 0);
+                        if let Some(perf) = sprite_perf_sample {
+                            if perf.total_animators() == 0 {
+                                ui.label("No sprite animators updated last frame.");
+                            } else {
+                                let slow_pct = perf.slow_ratio() * 100.0;
+                                let slow_text =
+                                    format!("Slow bucket: {} ({slow_pct:.2}%)", perf.slow_animators);
+                                if perf.slow_ratio_streak >= 60 && slow_pct > 1.0 {
+                                    ui.colored_label(warn_color, slow_text);
+                                } else {
+                                    ui.label(slow_text);
+                                }
+                                ui.label(format!("Fast bucket: {}", perf.fast_animators));
+                                ui.label(format!(
+                                    "Δt mix – variable: {} | fixed: {}",
+                                    perf.var_dt_animators, perf.const_dt_animators
+                                ));
+                                ui.label(format!(
+                                    "Ping-pong: {} | Event-heavy: {}",
+                                    perf.ping_pong_animators, perf.events_heavy_animators
+                                ));
+                                ui.label(format!(
+                                    "Events emitted: {} (coalesced {})",
+                                    perf.events_emitted, perf.events_coalesced
+                                ));
+                                ui.label(format!("Modulo fallbacks: {}", perf.mod_or_div_calls));
+                                if perf.simd_supported && perf.fast_animators > 0 {
+                                    let tail_pct = perf.tail_scalar_ratio() * 100.0;
+                                    let lanes_text = format!(
+                                        "SIMD lanes 8/4/tail: {}/{}/{} (tail {:.1}%)",
+                                        perf.simd_lanes_8, perf.simd_lanes_4, perf.simd_tail_scalar, tail_pct
+                                    );
+                                    if perf.tail_scalar_streak >= 60 && tail_pct > 5.0 {
+                                        ui.colored_label(warn_color, lanes_text);
+                                    } else {
+                                        ui.label(lanes_text);
+                                    }
+                                } else if perf.simd_supported {
+                                    ui.label("SIMD lanes: no fast animators recorded");
+                                } else {
+                                    ui.label("SIMD lanes: scalar path (feature disabled)");
+                                }
+                            }
+                        } else {
+                            ui.label("No sprite perf samples recorded yet.");
+                        }
+                        ui.separator();
+                        ui.label("Sprite Stage Timings");
+                        sprite_stage_bar(ui, "Eval (sys_drive_sprite_animations)", sprite_eval_ms, 0.205);
+                        sprite_stage_bar(ui, "Pack (sys_apply_sprite_frame_states)", sprite_pack_ms, 0.050);
+                        sprite_stage_bar(ui, "Upload (Sprite GPU pass)", sprite_upload_ms, 0.100);
                         ui.separator();
                         ui.label("Spatial Index");
                         if let Some(metrics) = spatial_metrics {
@@ -2526,6 +2589,32 @@ fn system_row_strings(timing: &SystemTimingSummary) -> [String; 4] {
         format!("{:.2}", timing.max_ms),
         format!("{}", timing.samples),
     ]
+}
+
+fn sprite_stage_bar(ui: &mut egui::Ui, label: &str, value_ms: Option<f32>, budget_ms: f32) {
+    match value_ms {
+        Some(value) => {
+            let ratio = (value / budget_ms).clamp(0.0, 1.0);
+            let over_budget = value > budget_ms;
+            let color = if over_budget {
+                egui::Color32::from_rgb(220, 120, 20)
+            } else {
+                egui::Color32::from_rgb(120, 200, 120)
+            };
+            let text = format!("{label}: {value:.3} ms (budget {budget_ms:.3} ms)");
+            ui.add(egui::ProgressBar::new(ratio).fill(color).text(text));
+            if over_budget {
+                ui.colored_label(color, format!("{} over budget by {:.3} ms", label, value - budget_ms));
+            }
+        }
+        None => {
+            if label.contains("Upload") {
+                ui.label(format!("{label}: enable GPU timers to capture sprite pass"));
+            } else {
+                ui.label(format!("{label}: timing unavailable"));
+            }
+        }
+    }
 }
 
 #[cfg(test)]

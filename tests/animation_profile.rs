@@ -87,7 +87,8 @@ fn animation_profile_snapshot() {
                     - prev_sprite_stats.general_bucket_frames,
                 frame_apply_count: current_sprite.frame_apply_count - prev_sprite_stats.frame_apply_count,
                 state_flush_calls: current_sprite.state_flush_calls - prev_sprite_stats.state_flush_calls,
-                state_flush_entities: current_sprite.state_flush_entities - prev_sprite_stats.state_flush_entities,
+                state_flush_entities: current_sprite.state_flush_entities
+                    - prev_sprite_stats.state_flush_entities,
                 frame_apply_queue_drains: current_sprite.frame_apply_queue_drains
                     - prev_sprite_stats.frame_apply_queue_drains,
                 frame_apply_queue_len: current_sprite.frame_apply_queue_len

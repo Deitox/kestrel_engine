@@ -10,17 +10,21 @@ use kestrel_engine::assets::{
     ClipVec4Track,
 };
 use kestrel_engine::ecs::{
-    BoneTransforms, ClipInstance, EcsWorld, PropertyTrackPlayer, SkeletonInstance, Sprite, SpriteAnimation,
-    SpriteAnimationFrame, SpriteAnimationLoopMode, SpriteFrameHotData, SpriteFrameState, Tint, Transform,
-    TransformTrackPlayer, WorldTransform,
+    BoneTransforms, ClipInstance, EcsWorld, PropertyTrackPlayer, SkeletonInstance, Sprite,
+    SpriteAnimPerfSample, SpriteAnimation, SpriteAnimationFrame, SpriteAnimationLoopMode, SpriteFrameHotData,
+    SpriteFrameState, Tint, Transform, TransformTrackPlayer, WorldTransform,
 };
+use rustc_version_runtime::version as rustc_version;
 use serde::Serialize;
+use std::cmp::Ordering;
+use std::env;
 use std::fs::{create_dir_all, File};
 use std::hint::black_box;
 use std::io::Write;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const DT: f32 = 1.0 / 60.0;
 const STEPS: u32 = 240;
@@ -45,6 +49,27 @@ enum CaseKind {
 }
 
 #[derive(Serialize)]
+struct BenchReport {
+    metadata: BenchMetadata,
+    cases: Vec<CaseReport>,
+}
+
+#[derive(Serialize)]
+struct BenchMetadata {
+    warmup_frames: u32,
+    measured_frames: u32,
+    samples_per_case: usize,
+    dt: f32,
+    profile: String,
+    lto_mode: String,
+    target_cpu: String,
+    rustc_version: String,
+    feature_flags: Vec<&'static str>,
+    commit_sha: Option<String>,
+    generated_at_unix_ms: u128,
+}
+
+#[derive(Serialize)]
 struct CaseReport {
     label: &'static str,
     units: &'static str,
@@ -55,6 +80,28 @@ struct CaseReport {
     budget_ms: f64,
     summary: TimingSummary,
     status: TargetStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sprite_perf: Option<SpritePerfReport>,
+}
+
+#[derive(Serialize)]
+struct SpritePerfReport {
+    frames: usize,
+    fast_animators_total: u64,
+    slow_animators_total: u64,
+    slow_ratio_mean: f64,
+    slow_ratio_p95: f64,
+    slow_ratio_p99: f64,
+    slow_ratio_warn_frames: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tail_scalar_ratio_p95: Option<f64>,
+    tail_scalar_warn_frames: usize,
+    ping_pong_total: u64,
+    events_heavy_total: u64,
+    events_emitted_total: u64,
+    mod_or_div_calls_total: u64,
+    var_dt_animators_total: u64,
+    const_dt_animators_total: u64,
 }
 
 #[derive(Serialize)]
@@ -62,6 +109,9 @@ struct TimingSummary {
     mean_step_ms: f64,
     min_step_ms: f64,
     max_step_ms: f64,
+    median_step_ms: f64,
+    p95_step_ms: f64,
+    p99_step_ms: f64,
     total_elapsed_ms: f64,
 }
 
@@ -123,13 +173,16 @@ fn animation_targets_measure() {
         reports.push(report);
     }
 
-    if let Err(err) = write_report(&reports) {
+    let bench_report = BenchReport { metadata: BenchMetadata::capture(), cases: reports };
+    if let Err(err) = write_report(&bench_report) {
         eprintln!("[animation_targets] Failed to write report: {err}");
     }
 }
 
 fn run_case(case: &BudgetCase) -> CaseReport {
     let mut elapsed = Vec::with_capacity(SAMPLES);
+    let track_sprite_perf = matches!(case.kind, CaseKind::Sprite);
+    let mut sprite_perf_samples = Vec::new();
     for _ in 0..SAMPLES {
         let mut world = EcsWorld::new();
         seed_world(case, &mut world);
@@ -138,11 +191,16 @@ fn run_case(case: &BudgetCase) -> CaseReport {
             world.update(DT);
         }
 
+        world.reset_sprite_anim_perf_history();
+
         let start = Instant::now();
         for _ in 0..STEPS {
             world.update(black_box(DT));
         }
         elapsed.push(start.elapsed());
+        if track_sprite_perf {
+            sprite_perf_samples.extend(world.sprite_anim_perf_history());
+        }
         black_box(&world);
     }
 
@@ -152,6 +210,7 @@ fn run_case(case: &BudgetCase) -> CaseReport {
     } else {
         TargetStatus::OverBudget
     };
+    let sprite_perf = if track_sprite_perf { summarize_sprite_perf(&sprite_perf_samples) } else { None };
 
     CaseReport {
         label: case.label,
@@ -163,6 +222,7 @@ fn run_case(case: &BudgetCase) -> CaseReport {
         budget_ms: case.budget_ms,
         summary,
         status,
+        sprite_perf,
     }
 }
 
@@ -183,11 +243,13 @@ fn summarize(samples: &[Duration]) -> TimingSummary {
     let mut min_ms = f64::INFINITY;
     let mut max_ms = 0.0;
     let mut total_elapsed_ms = 0.0;
+    let mut per_step_values = Vec::with_capacity(samples.len());
 
     for elapsed in samples {
         let elapsed_ms = elapsed.as_secs_f64() * 1_000.0;
         total_elapsed_ms += elapsed_ms;
         let per_step = elapsed_ms / steps_f64;
+        per_step_values.push(per_step);
         mean_acc += per_step;
         if per_step < min_ms {
             min_ms = per_step;
@@ -198,23 +260,203 @@ fn summarize(samples: &[Duration]) -> TimingSummary {
     }
 
     let sample_count = samples.len().max(1) as f64;
+    let mut sorted = per_step_values.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
     TimingSummary {
         mean_step_ms: mean_acc / sample_count,
         min_step_ms: min_ms,
         max_step_ms: max_ms,
+        median_step_ms: percentile(&mut sorted, 0.5),
+        p95_step_ms: percentile(&mut sorted, 0.95),
+        p99_step_ms: percentile(&mut sorted, 0.99),
         total_elapsed_ms,
     }
 }
 
-fn write_report(reports: &[CaseReport]) -> std::io::Result<()> {
-    if reports.is_empty() {
+fn percentile(values: &mut [f64], pct: f64) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let clamped = pct.clamp(0.0, 1.0);
+    let rank = clamped * (values.len().saturating_sub(1) as f64);
+    let lower = rank.floor() as usize;
+    let upper = rank.ceil() as usize;
+    if lower == upper {
+        values[lower]
+    } else {
+        let weight = rank - lower as f64;
+        values[lower] * (1.0 - weight) + values[upper] * weight
+    }
+}
+
+fn summarize_sprite_perf(samples: &[SpriteAnimPerfSample]) -> Option<SpritePerfReport> {
+    if samples.is_empty() {
+        return None;
+    }
+    let mut slow_ratios = Vec::with_capacity(samples.len());
+    let mut tail_ratios = Vec::new();
+    let mut slow_ratio_warn = 0usize;
+    let mut tail_warn = 0usize;
+    let mut fast_total = 0_u64;
+    let mut slow_total = 0_u64;
+    let mut ping_total = 0_u64;
+    let mut events_heavy_total = 0_u64;
+    let mut events_emitted_total = 0_u64;
+    let mut mod_calls_total = 0_u64;
+    let mut var_total = 0_u64;
+    let mut const_total = 0_u64;
+
+    for sample in samples {
+        fast_total += sample.fast_animators as u64;
+        slow_total += sample.slow_animators as u64;
+        ping_total += sample.ping_pong_animators as u64;
+        events_heavy_total += sample.events_heavy_animators as u64;
+        events_emitted_total += sample.events_emitted as u64;
+        mod_calls_total += sample.mod_or_div_calls as u64;
+        var_total += sample.var_dt_animators as u64;
+        const_total += sample.const_dt_animators as u64;
+
+        let slow_ratio = sample.slow_ratio() as f64;
+        slow_ratios.push(slow_ratio);
+        if slow_ratio > 0.01 {
+            slow_ratio_warn += 1;
+        }
+        if sample.simd_supported && sample.fast_animators > 0 {
+            let tail_ratio = sample.tail_scalar_ratio();
+            tail_ratios.push(tail_ratio as f64);
+            if tail_ratio > 0.05 {
+                tail_warn += 1;
+            }
+        }
+    }
+
+    let mut slow_sorted = slow_ratios.clone();
+    slow_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+    let slow_ratio_mean = slow_ratios.iter().sum::<f64>() / slow_ratios.len() as f64;
+    let slow_ratio_p95 = percentile(&mut slow_sorted, 0.95);
+    let slow_ratio_p99 = percentile(&mut slow_sorted, 0.99);
+
+    let tail_scalar_ratio_p95 = if tail_ratios.is_empty() {
+        None
+    } else {
+        let mut tail_sorted = tail_ratios;
+        tail_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+        Some(percentile(&mut tail_sorted, 0.95))
+    };
+
+    Some(SpritePerfReport {
+        frames: samples.len(),
+        fast_animators_total: fast_total,
+        slow_animators_total: slow_total,
+        slow_ratio_mean,
+        slow_ratio_p95,
+        slow_ratio_p99,
+        slow_ratio_warn_frames: slow_ratio_warn,
+        tail_scalar_ratio_p95,
+        tail_scalar_warn_frames: tail_warn,
+        ping_pong_total: ping_total,
+        events_heavy_total,
+        events_emitted_total,
+        mod_or_div_calls_total: mod_calls_total,
+        var_dt_animators_total: var_total,
+        const_dt_animators_total: const_total,
+    })
+}
+
+impl BenchMetadata {
+    fn capture() -> Self {
+        let profile = env::var("PROFILE").unwrap_or_else(|_| "dev".to_string());
+        Self {
+            warmup_frames: WARMUP_STEPS,
+            measured_frames: STEPS,
+            samples_per_case: SAMPLES,
+            dt: DT,
+            profile: profile.clone(),
+            lto_mode: detect_lto_mode(&profile).to_string(),
+            target_cpu: detect_target_cpu(),
+            rustc_version: rustc_version().to_string(),
+            feature_flags: active_feature_flags(),
+            commit_sha: detect_commit_sha(),
+            generated_at_unix_ms: current_timestamp_ms(),
+        }
+    }
+}
+
+fn current_timestamp_ms() -> u128 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|dur| dur.as_millis()).unwrap_or(0)
+}
+
+fn detect_target_cpu() -> String {
+    env::var("RUSTFLAGS")
+        .ok()
+        .and_then(|flags| parse_target_cpu(&flags))
+        .unwrap_or_else(|| "default".to_string())
+}
+
+fn parse_target_cpu(flags: &str) -> Option<String> {
+    let mut tokens = flags.split_whitespace();
+    while let Some(token) = tokens.next() {
+        if let Some(value) = token.strip_prefix("-Ctarget-cpu=") {
+            return Some(value.to_string());
+        }
+        if token == "-C" {
+            if let Some(next) = tokens.next() {
+                if let Some(value) = next.strip_prefix("target-cpu=") {
+                    return Some(value.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn detect_commit_sha() -> Option<String> {
+    Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|sha| !sha.is_empty())
+}
+
+fn detect_lto_mode(profile: &str) -> &'static str {
+    match profile {
+        "release-fat" => "fat",
+        "release" | "bench" => "thin",
+        _ => "none",
+    }
+}
+
+fn active_feature_flags() -> Vec<&'static str> {
+    let mut flags = Vec::new();
+    if cfg!(feature = "binary_scene") {
+        flags.push("binary_scene");
+    }
+    if cfg!(feature = "anim_stats") {
+        flags.push("anim_stats");
+    }
+    if cfg!(feature = "sprite_anim_soa") {
+        flags.push("sprite_anim_soa");
+    }
+    if cfg!(feature = "sprite_anim_fixed_point") {
+        flags.push("sprite_anim_fixed_point");
+    }
+    if cfg!(feature = "sprite_anim_simd") {
+        flags.push("sprite_anim_simd");
+    }
+    flags
+}
+
+fn write_report(report: &BenchReport) -> std::io::Result<()> {
+    if report.cases.is_empty() {
         return Ok(());
     }
     let path = target_dir();
     if let Some(parent) = path.as_path().parent() {
         create_dir_all(parent)?;
     }
-    let json = serde_json::to_string_pretty(reports).expect("serialize report");
+    let json = serde_json::to_string_pretty(report).expect("serialize report");
     let mut file = File::create(&path)?;
     file.write_all(json.as_bytes())?;
     println!("[animation_targets] Report written to {}", path.display());
