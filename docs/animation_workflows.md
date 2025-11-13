@@ -26,6 +26,12 @@
   - Invalid tag ranges log the offending indices; confirm tag start/end frames in the tag dialog.
   - If hot reload does not trigger, ensure the atlas is retained in-scene (`Scene > Atlas refs`) and the watcher path matches the edited file.
 
+## Sprite Animation Perf HUD
+- Open **Stats → Sprite Animation Perf** in the editor to inspect runtime telemetry. The panel lists fast/slow bucket counts, Δt mix (`var_dt` vs `const_dt`), ping-pong/event-heavy animator totals, emitted/coalesced event counts, and modulo/division fallbacks. Values update every frame without allocations, so you can leave the panel open while iterating.
+- The HUD highlights `%slow > 1%` streaks and SIMD tail-scalar ratios >5% (both require 60 consecutive frames before the warning turns orange). Use these cues to spot regressions caused by new atlas content, event storms, or clip settings.
+- Eval/Pack/Upload progress bars visualize `sys_drive_sprite_animations`, `sys_apply_sprite_frame_states`, and the GPU sprite pass respectively. Budgets default to 0.205 ms / 0.050 ms / 0.100 ms; the bars turn orange when a stage exceeds its budget for the most recent frame.
+- Need raw samples? Call `sprite_anim_perf_history()` from the REPL or test harness to fetch the ring buffer, or `sprite_anim_perf_sample()` to read the most recent frame. Both helpers live on `EcsWorld`.
+
 ## Transform & Property Clips
 - **Milestone status:** The `AnimationClip` loader and fixtures are live on `main`; playback systems, inspector controls, and ECS glue land across Milestone 2. Build clips now so content is ready as the runtime merges.
 - **Authoring prerequisites:** Keep source files under `assets/animation_clips/` (any path is valid as long as you pass it to `AssetManager::retain_clip`); use schema `version >= 1`; express keyframe times in seconds and rotations in radians; values must be finite or the loader rejects the clip.
@@ -137,7 +143,7 @@
   - `cargo test --release --features anim_stats animation_targets_measure -- --ignored --exact --nocapture` (roadmap checkpoints).
 - Sprite metrics now expose hot-path coverage: `fast_bucket_entities`, `general_bucket_entities`, their frame counts, plus `frame_apply_count` so we can match GPU uploads to actual hot-loop work. `capture_sprite_perf.py` stores these stats alongside the run metadata each time it invokes `animation_profile_snapshot`.
 - `animation_profile` logs per-step sprite counters in the format `sprite(fast=… event=… plain=…)` and transform clip counters `transform(adv=… zero=… skipped=… loop_resume=… zero_duration=…)`, aligned with the heaviest timing samples so you can spot whether spikes come from the fast-loop path or event/paused branches.
-- `animation_targets_measure` captures the roadmap checkpoints, printing PASS/WARN summaries and writing per-case timing data to `target/animation_targets_report.json` for CI dashboards.
+- `animation_targets_measure` captures the roadmap checkpoints, printing PASS/WARN summaries and writing per-case timing data to `target/animation_targets_report.json` for CI dashboards. The JSON now ships with `{mean, median, p95, p99}` timing stats, rich metadata (profile/LTO/CPU/rustc/features/commit), and a `sprite_perf` block mirroring the HUD counters so you can diff slow-path mix inside CI.
 - Call `reset_sprite_animation_stats()` / `reset_transform_clip_stats()` between custom runs if you are inspecting counters from scripts or the REPL; the helpers are re-exported under `kestrel_engine::ecs::*`.
 
 ## GPU Timing Capture

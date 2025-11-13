@@ -1,8 +1,8 @@
 # Sprite Animation Performance Guard Plan
 
 ## 1. Mission & Success Criteria
-- Keep the sprite timeline path at or below **0.200 ms for 10 000 animators** in release builds; enforce `p95(sprite_timelines_ms) ≤ 0.205 ms` with 240 measured frames (after a 16-frame warmup).
-- Capture and gate on `{mean, median, p95, p99}` plus metadata `{warmup_frames, measured_frames, rustc_version, target_cpu, lto_mode}` in every bench artifact.
+- Keep the sprite timeline path at or below **0.200 ms for 10,000 animators** in release builds; enforce `p95(sprite_timelines_ms) <= 0.205 ms` with 240 measured frames (after a 16-frame warmup).
+- Capture and gate on `{mean, median, p95, p99}` plus metadata `{warmup_frames, measured_frames, samples_per_case, dt, profile, lto_mode, rustc_version, target_cpu, feature_flags, commit_sha}` in every bench artifact (already emitted by `animation_targets_report.json`).
 - Surface slow-path usage (var-dt, ping-pong, event-heavy clips) in-editor so asset changes stay honest, with no allocations/logging inside the hot loop.
 - Fail CI whenever perf metrics exceed thresholds and archive CSV/JSON artifacts per run; include commit SHA + feature flags.
 - Provide a repeatable perf matrix (baseline/SoA/fixed-point/SIMD) with archived CSVs plus README notes.
@@ -13,10 +13,11 @@
 
 | Task | Details | Exit Criteria |
 | --- | --- | --- |
-| 1.1 Remove `%` / `/` from the inner loop | Inspect `advance_animation_fast_loop(_slot)` for modulo/divide ops; precompute reciprocal frame counts and rely on multiply-adds. Keep ping-pong flips as a direction bit toggled only at wrap points; add a regression trap that fails if a release bench build still contains `rem`/`div` in the symbol. | Perf inspection (cargo-asm/perf) plus automated test show no `%`/`/` in hot functions. |
-| 1.2 Floor-delta fast path | Confirm constant-delta mode uses integer/fixed-point accumulators with `time_left -= dt` loops. | Bench trace shows zero `rem_euclid` or float divides when const-dt is active. |
-| 1.3 Ping-pong isolation | Keep ping-pong animators in a dedicated bucket or treat direction toggles only on boundary events. | Fast bucket occupancy ≥ 99 % on reference scenes. |
-| 1.4 SIMD verification | Build benches with `-C target-cpu=native` + ThinLTO; inspect disassembly to verify vector width. Optionally surface lane-utilization stats in HUD. | Saved disassembly snippet plus HUD counter verifying vector lanes fire. |
+| 2.1 Runtime counters | ? `SpriteAnimPerfTelemetry` records per-frame counts for `var_dt`, `const_dt`, `ping_pong`, `events_heavy`, `%slow`, modulo/div fallbacks, SIMD lane mix, and emitted/coalesced events without allocating in the hot loop. | Resource lives on `World`; tests/benches consume it via `sprite_anim_perf_history()` / `sprite_anim_perf_sample()`. |
+| 2.2 Stats panel wiring | ? The editor?s **Stats ? Sprite Animation Perf** block shows the counters, highlights `%slow > 1%` or tail-scalar >5% streaks, and adds Eval/Pack/Upload progress bars fed by profiler/GPU timers. | Screenshot/doc snippet demonstrating the readout and warning states. |
+| 2.3 Bench harness output | ? `animation_targets_measure` now emits percentile stats + `{warmup_frames, measured_frames, samples_per_case, dt, profile, lto_mode, rustc_version, target_cpu, feature_flags, commit_sha}` metadata plus a `sprite_perf` summary per case. | `target/animation_targets_report.json` carries the new envelope for CI. |
+| 2.4 CPU/GPU split | ? Eval (hot loop), Pack (SoA?AoS), and Upload (GPU sprite pass) timings are surfaced in the HUD and captured by the profiler/telemetry mix. | Stats panel bars + JSON output show all three stages for gating. |
+
 
 ---
 

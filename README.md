@@ -55,11 +55,12 @@ cargo run
 `
 
 ## Benchmarks
-- `pwsh scripts/ci/run_animation_targets.ps1 [-OutputDirectory artifacts]` runs `cargo test --profile release-fat animation_targets_measure -- --ignored --exact --nocapture` (matching the CI configuration) and captures the results in `target/animation_targets_report.json` (copied to `artifacts` when provided).
-- `python scripts/sprite_bench.py --label inline_apply_rerun --runs 3` is the **default** bench invocation: it runs the release harness with the pinned env vars (no feature flags), aggregates three runs, and drops lightweight summaries in `perf/<label>.{txt,json}` for easy sharing. Use this command for acceptance/perf tracking unless you are explicitly testing an experimental feature set.
-- Phase‑2 sprite experiments (SoA/fixed-point/SIMD) are feature gated; enable them with `--features "sprite_anim_fixed_point,sprite_anim_simd"` (the helper script accepts `--features` and forwards the value to `cargo test`), but always compare back to the default run above.
+- `pwsh scripts/ci/run_animation_targets.ps1 [-OutputDirectory artifacts]` runs `cargo test --profile release-fat animation_targets_measure -- --ignored --exact --nocapture` (matching the CI configuration) and captures the results in `target/animation_targets_report.json` (copied to `artifacts` when provided). Each report now includes `{mean, median, p95, p99}` timing stats, `{warmup_frames, measured_frames, samples_per_case, dt, profile, lto_mode, rustc_version, target_cpu, feature_flags, commit_sha}` metadata, and a `sprite_perf` payload so CI can diff both budgets and slow-path mix.
+- `python scripts/sprite_bench.py --label inline_apply_rerun --runs 3` is the **default** bench invocation: it runs the release harness with the pinned env vars (no feature flags), aggregates three runs, and drops lightweight summaries in `perf/<label>.{txt,json}` (plus the metadata above). Use this command for acceptance/perf tracking unless you are explicitly testing an experimental feature set.
+- Phase 2 sprite experiments (SoA/fixed-point/SIMD) are feature gated; enable them with `--features "sprite_anim_fixed_point,sprite_anim_simd"` (the helper script accepts `--features` and forwards the value to `cargo test`), but always compare back to the default run above.
 - `python scripts/capture_sprite_perf.py --label after_phase1 --runs 3` wraps the sprite bench sweep plus `animation_profile_snapshot` (anim_stats-enabled). It emits `perf/<label>.txt/.json` for the averaged bench data and `perf/<label>_profile.{log,json}` for the per-step driver/apply stats so regressions can be compared apples-to-apples.
-- The harness measures the roadmap checkpoints (10 000 sprite animators, 2 000 transform clips, 1 000 bones) and prints PASS/WARN summaries against the stated CPU budgets.
+- The harness measures the roadmap checkpoints (10 000 sprite animators, 2 000 transform clips, 1 000 bones) and prints PASS/WARN summaries against the stated CPU budgets. Use the editor?s **Stats ? Sprite Animation Perf** block to spot-check fast/slow bucket mix, ?t ratios, modulo fallbacks, and Eval/Pack/Upload bars while iterating in real time.
+
 
 ## Plugins
 - `pwsh scripts/build_plugins.ps1 [-Release]` builds every enabled entry from `config/plugins.json` by inferring the crate root from each artifact path.
