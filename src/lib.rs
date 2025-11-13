@@ -10,6 +10,7 @@ pub mod ecs;
 pub mod environment;
 pub mod events;
 pub(crate) mod gizmo;
+pub mod gpu_baseline;
 pub mod input;
 pub mod material_registry;
 pub mod mesh;

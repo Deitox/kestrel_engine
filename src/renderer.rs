@@ -327,7 +327,6 @@ impl SurfaceFrame {
         Self { view, surface: Some(surface) }
     }
 
-    #[cfg(test)]
     fn headless(view: wgpu::TextureView) -> Self {
         Self { view, surface: None }
     }
@@ -343,7 +342,6 @@ impl SurfaceFrame {
     }
 }
 
-#[cfg(test)]
 struct HeadlessTarget {
     texture: wgpu::Texture,
 }
@@ -501,7 +499,6 @@ pub struct Renderer {
     skinning_limit_warnings: HashSet<usize>,
     #[cfg(test)]
     resize_invocations: usize,
-    #[cfg(test)]
     headless_target: Option<HeadlessTarget>,
     #[cfg(test)]
     surface_error_injector: Option<wgpu::SurfaceError>,
@@ -551,7 +548,6 @@ impl Renderer {
             skinning_limit_warnings: HashSet::new(),
             #[cfg(test)]
             resize_invocations: 0,
-            #[cfg(test)]
             headless_target: None,
             #[cfg(test)]
             surface_error_injector: None,
@@ -1276,6 +1272,7 @@ impl Renderer {
         let frame_buffer = self.mesh_pass.frame_buffer.as_ref().context("Mesh frame buffer missing")?.clone();
 
         if self.mesh_pass.draw_buffer.is_none() {
+            debug_assert_eq!(std::mem::size_of::<MeshDrawData>(), 112);
             let draw_buf = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("Mesh Draw Buffer"),
                 size: std::mem::size_of::<MeshDrawData>() as u64,
@@ -2006,14 +2003,10 @@ impl Renderer {
                 Ok(frame) => Ok(SurfaceFrame::new(frame)),
                 Err(err) => Err(self.handle_surface_error(&err)),
             }
+        } else if let Some(target) = self.headless_target.as_ref() {
+            let view = target.texture.create_view(&wgpu::TextureViewDescriptor::default());
+            Ok(SurfaceFrame::headless(view))
         } else {
-            #[cfg(test)]
-            {
-                if let Some(target) = self.headless_target.as_ref() {
-                    let view = target.texture.create_view(&wgpu::TextureViewDescriptor::default());
-                    return Ok(SurfaceFrame::headless(view));
-                }
-            }
             Err(anyhow!("Surface not initialized"))
         }
     }
@@ -2023,8 +2016,7 @@ impl Renderer {
         self.resize_invocations
     }
 
-    #[cfg(test)]
-    pub fn prepare_headless_render_target_for_test(&mut self) -> Result<()> {
+    pub fn prepare_headless_render_target(&mut self) -> Result<()> {
         let device = self.device()?;
         if self.size.width == 0 || self.size.height == 0 {
             return Err(anyhow!("Headless render target requires non-zero dimensions"));
@@ -2077,8 +2069,8 @@ impl Renderer {
         #[cfg(test)]
         {
             self.resize_invocations = self.resize_invocations.saturating_add(1);
-            self.headless_target = None;
         }
+        self.headless_target = None;
         if new_size.width > 0 && new_size.height > 0 {
             if let Some(config) = self.config.as_mut() {
                 config.width = new_size.width;
@@ -2584,6 +2576,10 @@ mod surface_tests {
     use pollster::block_on;
 
     #[test]
+    fn mesh_draw_data_layout() {
+        assert_eq!(std::mem::size_of::<MeshDrawData>(), 112);
+    }
+    #[test]
     fn present_mode_respects_vsync_flag() {
         let cfg = WindowConfig::default();
         let mut renderer = block_on(Renderer::new(&cfg));
@@ -2658,7 +2654,7 @@ mod surface_tests {
             (pipeline_sampler, draw_sampler, atlas_view)
         };
         renderer.init_sprite_pipeline_with_atlas(atlas_view, pipeline_sampler).expect("init sprite pipeline");
-        renderer.prepare_headless_render_target_for_test().expect("headless target");
+        renderer.prepare_headless_render_target().expect("headless target");
         let viewport = RenderViewport {
             origin: (0.0, 0.0),
             size: (window_config.width as f32, window_config.height as f32),
@@ -2676,7 +2672,7 @@ mod surface_tests {
         let err = render_once(&mut renderer).expect_err("surface loss should bubble");
         assert!(err.to_string().contains("Surface lost"));
         assert!(renderer.resize_invocations_for_test() >= 1);
-        renderer.prepare_headless_render_target_for_test().expect("headless target reinit");
+        renderer.prepare_headless_render_target().expect("headless target reinit");
         render_once(&mut renderer).expect("render after recovery");
     }
 }
