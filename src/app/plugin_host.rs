@@ -1,10 +1,10 @@
 use crate::plugins::{
-    apply_manifest_builtin_toggles, apply_manifest_dynamic_toggles, EnginePlugin, ManifestBuiltinToggle,
-    ManifestBuiltinToggleOutcome, ManifestDynamicToggle, ManifestDynamicToggleOutcome, PluginContext,
-    PluginManager, PluginManifest, PluginStatus,
+    apply_manifest_builtin_toggles, apply_manifest_dynamic_toggles, CapabilityViolationLog, EnginePlugin,
+    ManifestBuiltinToggle, ManifestBuiltinToggleOutcome, ManifestDynamicToggle, ManifestDynamicToggleOutcome,
+    PluginContext, PluginManager, PluginManifest, PluginStatus,
 };
 use anyhow::{anyhow, Result};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::mem;
 use std::path::PathBuf;
 
@@ -69,6 +69,10 @@ impl PluginHost {
 
     pub(crate) fn statuses(&self) -> &[PluginStatus] {
         self.manager.statuses()
+    }
+
+    pub(crate) fn capability_metrics(&self) -> HashMap<String, CapabilityViolationLog> {
+        self.manager.capability_metrics()
     }
 
     pub(crate) fn get<T: EnginePlugin + 'static>(&self) -> Option<&T> {

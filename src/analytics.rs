@@ -1,10 +1,10 @@
 use crate::ecs::{ParticleBudgetMetrics, SpatialMetrics};
 use crate::events::GameEvent;
-use crate::plugins::{EnginePlugin, PluginContext};
+use crate::plugins::{CapabilityViolationLog, EnginePlugin, PluginContext};
 use crate::renderer::GpuPassTiming;
 use anyhow::Result;
 use std::any::Any;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 pub struct AnalyticsPlugin {
     frame_hist: Vec<f32>,
@@ -15,6 +15,7 @@ pub struct AnalyticsPlugin {
     spatial_metrics: Option<SpatialMetrics>,
     gpu_capacity: usize,
     gpu_timings: BTreeMap<&'static str, VecDeque<f32>>,
+    plugin_capability_metrics: HashMap<String, CapabilityViolationLog>,
 }
 
 impl AnalyticsPlugin {
@@ -28,6 +29,7 @@ impl AnalyticsPlugin {
             spatial_metrics: None,
             gpu_capacity: 120,
             gpu_timings: BTreeMap::new(),
+            plugin_capability_metrics: HashMap::new(),
         }
     }
 
@@ -84,6 +86,14 @@ impl AnalyticsPlugin {
         let sum: f32 = samples.iter().sum();
         let avg = sum / samples.len() as f32;
         Some(GpuPassMetric { label, latest_ms, average_ms: avg, sample_count: samples.len() })
+    }
+
+    pub fn record_plugin_capability_metrics(&mut self, metrics: HashMap<String, CapabilityViolationLog>) {
+        self.plugin_capability_metrics = metrics;
+    }
+
+    pub fn plugin_capability_metrics(&self) -> &HashMap<String, CapabilityViolationLog> {
+        &self.plugin_capability_metrics
     }
 }
 

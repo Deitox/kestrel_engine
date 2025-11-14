@@ -14,7 +14,7 @@ use libloading::Library;
 use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::cell::{Ref, RefCell, RefMut};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::mem;
@@ -81,6 +81,20 @@ impl PluginCapability {
             PluginCapability::All => CapabilityFlags::all(),
         }
     }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PluginCapability::Renderer => "renderer",
+            PluginCapability::Ecs => "ecs",
+            PluginCapability::Assets => "assets",
+            PluginCapability::Input => "input",
+            PluginCapability::Scripts => "scripts",
+            PluginCapability::Analytics => "analytics",
+            PluginCapability::Time => "time",
+            PluginCapability::Events => "events",
+            PluginCapability::All => "all",
+        }
+    }
 }
 
 impl From<&[PluginCapability]> for CapabilityFlags {
@@ -108,6 +122,15 @@ impl Default for PluginTrust {
     }
 }
 
+impl PluginTrust {
+    pub fn label(self) -> &'static str {
+        match self {
+            PluginTrust::Full => "Full",
+            PluginTrust::Isolated => "Isolated",
+        }
+    }
+}
+
 fn default_capabilities() -> Vec<PluginCapability> {
     vec![
         PluginCapability::Renderer,
@@ -121,6 +144,49 @@ fn default_capabilities() -> Vec<PluginCapability> {
 
 fn default_capability_flags() -> CapabilityFlags {
     CapabilityFlags::from(default_capabilities().as_slice())
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CapabilityViolationLog {
+    pub count: u64,
+    pub last_capability: Option<PluginCapability>,
+}
+
+#[derive(Clone)]
+struct CapabilityTracker(Rc<RefCell<HashMap<String, CapabilityViolationLog>>>);
+
+impl CapabilityTracker {
+    fn new() -> Self {
+        Self(Rc::new(RefCell::new(HashMap::new())))
+    }
+
+    fn register(&self, name: &str) {
+        self.0.borrow_mut().entry(name.to_string()).or_default();
+    }
+
+    fn log_violation(&self, name: &str, capability: PluginCapability) {
+        let mut log = self.0.borrow_mut();
+        let entry = log.entry(name.to_string()).or_default();
+        entry.count += 1;
+        entry.last_capability = Some(capability);
+    }
+
+    fn snapshot(&self) -> HashMap<String, CapabilityViolationLog> {
+        self.0.borrow().clone()
+    }
+}
+
+#[derive(Clone)]
+pub struct CapabilityTrackerHandle(CapabilityTracker);
+
+impl CapabilityTrackerHandle {
+    fn new(inner: CapabilityTracker) -> Self {
+        Self(inner)
+    }
+
+    fn tracker(&self) -> CapabilityTracker {
+        self.0.clone()
+    }
 }
 
 #[repr(C)]
@@ -247,6 +313,7 @@ pub struct PluginContext<'a> {
     active_capabilities: CapabilityFlags,
     active_trust: PluginTrust,
     active_plugin: Option<String>,
+    capability_tracker: CapabilityTracker,
 }
 
 impl<'a> PluginContext<'a> {
@@ -263,6 +330,7 @@ impl<'a> PluginContext<'a> {
         emit_event: fn(&mut EcsWorld, GameEvent),
         feature_registry: FeatureRegistryHandle,
         selected_entity: Option<Entity>,
+        capability_tracker: CapabilityTrackerHandle,
     ) -> Self {
         Self {
             renderer,
@@ -279,6 +347,7 @@ impl<'a> PluginContext<'a> {
             active_capabilities: CapabilityFlags::all(),
             active_trust: PluginTrust::Full,
             active_plugin: None,
+            capability_tracker: capability_tracker.tracker(),
         }
     }
 
@@ -415,6 +484,9 @@ impl<'a> PluginContext<'a> {
         if self.active_capabilities.contains(capability.flag()) {
             Ok(())
         } else {
+            if let Some(plugin) = self.active_plugin.as_deref() {
+                self.capability_tracker.log_violation(plugin, capability);
+            }
             Err(CapabilityError::new(self.active_plugin.as_deref(), capability))
         }
     }
@@ -525,6 +597,7 @@ pub struct PluginStatus {
 pub struct PluginManager {
     plugins: Vec<PluginSlot>,
     features: Rc<RefCell<FeatureRegistry>>,
+    capability_tracker: CapabilityTracker,
     statuses: Vec<PluginStatus>,
     loaded_names: HashSet<String>,
 }
@@ -546,6 +619,7 @@ impl Default for PluginManager {
         Self {
             plugins: Vec::new(),
             features: Rc::new(RefCell::new(FeatureRegistry::with_engine_defaults())),
+            capability_tracker: CapabilityTracker::new(),
             statuses: Vec::new(),
             loaded_names: HashSet::new(),
         }
@@ -555,6 +629,14 @@ impl Default for PluginManager {
 impl PluginManager {
     pub fn feature_handle(&self) -> FeatureRegistryHandle {
         FeatureRegistryHandle::new(self.features.clone())
+    }
+
+    pub fn capability_tracker_handle(&self) -> CapabilityTrackerHandle {
+        CapabilityTrackerHandle::new(self.capability_tracker.clone())
+    }
+
+    pub fn capability_metrics(&self) -> HashMap<String, CapabilityViolationLog> {
+        self.capability_tracker.snapshot()
     }
 
     pub fn register(&mut self, plugin: Box<dyn EnginePlugin>, ctx: &mut PluginContext<'_>) -> Result<()> {
@@ -809,6 +891,7 @@ impl PluginManager {
         }
         self.ensure_dependencies(plugin.depends_on(), &name)?;
         let capability_flags = CapabilityFlags::from(capabilities.as_slice());
+        self.capability_tracker.register(&name);
         ctx.set_active_plugin(&name, capability_flags, trust);
         let build_result = plugin.build(ctx);
         ctx.clear_active_plugin();

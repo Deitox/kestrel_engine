@@ -497,11 +497,8 @@ impl MeshPreviewPlugin {
             Vec3::new(rng.gen_range(-1.2..1.2), rng.gen_range(-0.6..0.8), rng.gen_range(-1.0..1.0));
         let scale = Vec3::splat(0.6);
         let entity = ctx.ecs_mut()?.spawn_mesh_entity(mesh_key, position, scale);
-        let subset_copy = ctx
-            .mesh_registry()?
-            .mesh_subsets(mesh_key)
-            .map(|subs| subs.to_vec())
-            .unwrap_or_default();
+        let subset_copy =
+            ctx.mesh_registry()?.mesh_subsets(mesh_key).map(|subs| subs.to_vec()).unwrap_or_default();
         if let Some(material) = subset_copy.iter().find_map(|subset| subset.material.clone()) {
             ctx.ecs_mut()?.set_mesh_material(entity, Some(material));
         }

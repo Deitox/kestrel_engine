@@ -15,7 +15,7 @@ use crate::gizmo::{
     GIZMO_SCALE_HANDLE_SIZE_PX, GIZMO_SCALE_INNER_RADIUS_PX, GIZMO_SCALE_OUTER_RADIUS_PX,
 };
 use crate::mesh_preview::{GIZMO_3D_AXIS_LENGTH_SCALE, GIZMO_3D_AXIS_MAX, GIZMO_3D_AXIS_MIN};
-use crate::plugins::{PluginState, PluginStatus};
+use crate::plugins::{CapabilityViolationLog, PluginCapability, PluginState, PluginStatus, PluginTrust};
 use crate::prefab::{PrefabFormat, PrefabStatusKind, PrefabStatusMessage};
 use crate::renderer::MAX_SHADOW_CASCADES;
 use crate::scene::SceneShadowData;
@@ -137,6 +137,38 @@ fn plugin_status_summary(status: &PluginStatus) -> (egui::Color32, String) {
         }
         PluginState::Failed(reason) => (egui::Color32::from_rgb(220, 120, 120), format!("Failed: {reason}")),
     }
+}
+
+fn format_capability_list(list: &[PluginCapability]) -> String {
+    if list.is_empty() {
+        "none".to_string()
+    } else {
+        list.iter().map(|cap| cap.label()).collect::<Vec<_>>().join(", ")
+    }
+}
+
+fn capability_violation_summary(log: Option<&CapabilityViolationLog>) -> (egui::Color32, String) {
+    if let Some(log) = log {
+        if log.count > 0 {
+            let last = log.last_capability.map(|cap| cap.label()).unwrap_or("unknown");
+            return (
+                egui::Color32::from_rgb(220, 120, 80),
+                format!("Capability violations: {} (last: {last})", log.count),
+            );
+        }
+    }
+    (egui::Color32::from_rgb(120, 200, 120), "Capability violations: 0".to_string())
+}
+
+fn show_capability_info(
+    ui: &mut egui::Ui,
+    caps: &[PluginCapability],
+    trust: PluginTrust,
+    log: Option<&CapabilityViolationLog>,
+) {
+    ui.small(format!("Capabilities: {} (trust: {})", format_capability_list(caps), trust.label()));
+    let (color, text) = capability_violation_summary(log);
+    ui.colored_label(color, text);
 }
 
 fn ellipsize(text: &str, max_len: usize) -> String {
@@ -1888,6 +1920,7 @@ impl App {
                         "Toggle entries below to update config/plugins.json without leaving the editor.",
                     );
                     let status_snapshot = self.plugin_host.statuses().to_vec();
+                    let capability_metrics = self.plugin_host.capability_metrics();
                     let mut dynamic_statuses: BTreeMap<String, PluginStatus> = BTreeMap::new();
                     let mut builtin_statuses = Vec::new();
                     for status in status_snapshot {
@@ -1923,6 +1956,12 @@ impl App {
                                             {
                                                 ui.small(format!("v{}", version));
                                             }
+                                            show_capability_info(
+                                                ui,
+                                                &status.capabilities,
+                                                status.trust,
+                                                capability_metrics.get(&status.name),
+                                            );
                                         } else if let Some(version) = entry.version.as_deref() {
                                             ui.small(format!("v{} (manifest)", version));
                                         } else {
@@ -1952,6 +1991,14 @@ impl App {
                                             entry.provides_features.join(", ")
                                         ));
                                     }
+                                    if status.is_none() {
+                                        show_capability_info(
+                                            ui,
+                                            &entry.capabilities,
+                                            entry.trust,
+                                            capability_metrics.get(&plugin_name),
+                                        );
+                                    }
                                 });
                                 if toggled {
                                     actions.plugin_toggles.push(PluginToggleRequest {
@@ -1978,6 +2025,12 @@ impl App {
                             if !status.provides.is_empty() {
                                 ui.small(format!("Provides: {}", status.provides.join(", ")));
                             }
+                            show_capability_info(
+                                ui,
+                                &status.capabilities,
+                                status.trust,
+                                capability_metrics.get(&status.name),
+                            );
                         }
                     }
                     if !builtin_statuses.is_empty() {
@@ -2010,6 +2063,12 @@ impl App {
                                 if !status.provides.is_empty() {
                                     ui.small(format!("Provides: {}", status.provides.join(", ")));
                                 }
+                                show_capability_info(
+                                    ui,
+                                    &status.capabilities,
+                                    status.trust,
+                                    capability_metrics.get(&status.name),
+                                );
                             });
                             if toggled {
                                 actions.plugin_toggles.push(PluginToggleRequest {

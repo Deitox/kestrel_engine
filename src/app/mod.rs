@@ -20,7 +20,8 @@ use crate::material_registry::{MaterialGpu, MaterialRegistry};
 use crate::mesh_preview::{MeshControlMode, MeshPreviewPlugin};
 use crate::mesh_registry::MeshRegistry;
 use crate::plugins::{
-    FeatureRegistryHandle, ManifestBuiltinToggle, ManifestDynamicToggle, PluginContext, PluginManager,
+    CapabilityTrackerHandle, FeatureRegistryHandle, ManifestBuiltinToggle, ManifestDynamicToggle,
+    PluginContext, PluginManager,
 };
 use crate::prefab::{PrefabFormat, PrefabLibrary, PrefabStatusKind, PrefabStatusMessage};
 use crate::renderer::{GpuPassTiming, MeshDraw, RenderViewport, Renderer, SpriteBatch, MAX_SHADOW_CASCADES};
@@ -660,6 +661,7 @@ impl App {
         {
             let mut manager = plugin_host.take_manager();
             let handle = manager.feature_handle();
+            let capability_handle = manager.capability_tracker_handle();
             let mut ctx = PluginContext::new(
                 &mut renderer,
                 &mut ecs,
@@ -672,6 +674,7 @@ impl App {
                 Self::emit_event_for_plugin,
                 handle,
                 None,
+                capability_handle,
             );
             plugin_host.register_builtins(&mut manager, &mut ctx, &builtin_plugins);
             drop(ctx);
@@ -680,6 +683,7 @@ impl App {
         if !initial_events.is_empty() {
             let mut manager = plugin_host.take_manager();
             let handle = manager.feature_handle();
+            let capability_handle = manager.capability_tracker_handle();
             let mut ctx = PluginContext::new(
                 &mut renderer,
                 &mut ecs,
@@ -692,6 +696,7 @@ impl App {
                 Self::emit_event_for_plugin,
                 handle,
                 None,
+                capability_handle,
             );
             manager.handle_events(&mut ctx, &initial_events);
             drop(ctx);
@@ -1139,7 +1144,11 @@ impl App {
         }
     }
 
-    fn plugin_context(&mut self, feature_handle: FeatureRegistryHandle) -> PluginContext<'_> {
+    fn plugin_context(
+        &mut self,
+        feature_handle: FeatureRegistryHandle,
+        capability_handle: CapabilityTrackerHandle,
+    ) -> PluginContext<'_> {
         PluginContext::new(
             &mut self.renderer,
             &mut self.ecs,
@@ -1152,6 +1161,7 @@ impl App {
             Self::emit_event_for_plugin,
             feature_handle,
             self.selected_entity,
+            capability_handle,
         )
     }
 
@@ -1161,8 +1171,9 @@ impl App {
     {
         let mut host = std::mem::replace(&mut self.plugin_host, PluginHost::placeholder());
         let mut manager = host.take_manager();
-        let handle = manager.feature_handle();
-        let mut ctx = self.plugin_context(handle);
+        let feature_handle = manager.feature_handle();
+        let capability_handle = manager.capability_tracker_handle();
+        let mut ctx = self.plugin_context(feature_handle, capability_handle);
         let result = f(&mut host, &mut manager, &mut ctx);
         drop(ctx);
         host.restore_manager(manager);
@@ -2014,6 +2025,10 @@ impl ApplicationHandler for App {
         }
 
         self.with_plugins(|plugins, ctx| plugins.update(ctx, dt));
+        let capability_metrics = self.plugin_host.capability_metrics();
+        if let Some(analytics) = self.analytics_plugin_mut() {
+            analytics.record_plugin_capability_metrics(capability_metrics);
+        }
 
         if self.camera_follow_target.is_some() && !self.refresh_camera_follow() {
             self.camera_follow_target = None;

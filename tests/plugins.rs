@@ -143,6 +143,7 @@ fn plugins_receive_lifecycle_hooks() {
             push_event_bridge,
             manager.feature_handle(),
             None,
+            manager.capability_tracker_handle(),
         );
         manager
             .register(Box::new(CountingPlugin::default()), &mut ctx)
@@ -162,6 +163,7 @@ fn plugins_receive_lifecycle_hooks() {
             push_event_bridge,
             manager.feature_handle(),
             None,
+            manager.capability_tracker_handle(),
         );
         manager.update(&mut ctx, 0.5);
     }
@@ -179,6 +181,7 @@ fn plugins_receive_lifecycle_hooks() {
             push_event_bridge,
             manager.feature_handle(),
             None,
+            manager.capability_tracker_handle(),
         );
         manager.fixed_update(&mut ctx, 1.0 / 60.0);
     }
@@ -200,6 +203,7 @@ fn plugins_receive_lifecycle_hooks() {
             push_event_bridge,
             manager.feature_handle(),
             None,
+            manager.capability_tracker_handle(),
         );
         manager.handle_events(&mut ctx, &events);
     }
@@ -217,6 +221,7 @@ fn plugins_receive_lifecycle_hooks() {
             push_event_bridge,
             manager.feature_handle(),
             None,
+            manager.capability_tracker_handle(),
         );
         manager.shutdown(&mut ctx);
     }
@@ -255,6 +260,7 @@ fn plugins_can_publish_features() {
             push_event_bridge,
             manager.feature_handle(),
             None,
+            manager.capability_tracker_handle(),
         );
         manager
             .register(Box::new(FeaturePublishingPlugin::default()), &mut ctx)
@@ -293,6 +299,7 @@ fn capability_gating_blocks_unlisted_access() {
             push_event_bridge,
             manager.feature_handle(),
             None,
+            manager.capability_tracker_handle(),
         );
         manager
             .register_with_capabilities(
@@ -305,6 +312,9 @@ fn capability_gating_blocks_unlisted_access() {
     };
     let message = format!("{err:?}");
     assert!(message.contains("renderer"), "error should mention missing renderer capability: {message}");
+    let metrics = manager.capability_metrics();
+    let log = metrics.get("renderer_access").expect("violation log exists");
+    assert_eq!(log.count, 1, "violation count recorded");
 }
 
 #[test]
