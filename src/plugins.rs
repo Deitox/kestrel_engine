@@ -5,6 +5,7 @@ use crate::events::GameEvent;
 use crate::input::Input;
 use crate::material_registry::MaterialRegistry;
 use crate::mesh_registry::MeshRegistry;
+use crate::plugin_rpc::{recv_frame, send_frame, PluginHostRequest, PluginHostResponse, RpcGameEvent};
 use crate::renderer::Renderer;
 use crate::time::Time;
 use anyhow::{anyhow, bail, Context, Result};
@@ -17,10 +18,10 @@ use std::cell::{Ref, RefCell, RefMut};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::env;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, BufReader};
 use std::mem;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::ptr;
 use std::rc::Rc;
 
@@ -189,6 +190,10 @@ impl CapabilityTrackerHandle {
     fn tracker(&self) -> CapabilityTracker {
         self.0.clone()
     }
+
+    pub fn isolated() -> Self {
+        Self(CapabilityTracker::new())
+    }
 }
 
 #[repr(C)]
@@ -297,6 +302,10 @@ impl FeatureRegistryHandle {
 
     pub fn borrow_mut(&self) -> RefMut<'_, FeatureRegistry> {
         self.0.borrow_mut()
+    }
+
+    pub fn isolated() -> Self {
+        Self(Rc::new(RefCell::new(FeatureRegistry::with_engine_defaults())))
     }
 }
 
@@ -1037,6 +1046,8 @@ struct IsolatedPluginProxy {
     version: &'static str,
     child: Child,
     stdin: Option<ChildStdin>,
+    stdout: BufReader<ChildStdout>,
+    terminated: bool,
 }
 
 impl IsolatedPluginProxy {
@@ -1050,18 +1061,28 @@ impl IsolatedPluginProxy {
         for capability in &entry.capabilities {
             command.arg("--cap").arg(capability.label());
         }
-        let mut child =
-            command.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().with_context(
-                || {
-                    format!(
-                        "failed to spawn isolated host for plugin '{}' ({})",
-                        entry.name,
-                        plugin_path.display()
-                    )
-                },
-            )?;
-        let stdin = child.stdin.take();
-        Ok(Self { name: leaked_name, version: version_static, child, stdin })
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .with_context(|| {
+                format!(
+                    "failed to spawn isolated host for plugin '{}' ({})",
+                    entry.name,
+                    plugin_path.display()
+                )
+            })?;
+        let stdin = child.stdin.take().ok_or_else(|| anyhow!("isolated host missing stdin"))?;
+        let stdout = child.stdout.take().ok_or_else(|| anyhow!("isolated host missing stdout"))?;
+        Ok(Self {
+            name: leaked_name,
+            version: version_static,
+            child,
+            stdin: Some(stdin),
+            stdout: BufReader::new(stdout),
+            terminated: false,
+        })
     }
 
     fn host_binary_path() -> Result<PathBuf> {
@@ -1079,11 +1100,29 @@ impl IsolatedPluginProxy {
         }
     }
 
-    fn send_command(&mut self, command: &str) {
-        if let Some(stdin) = self.stdin.as_mut() {
-            let _ = writeln!(stdin, "{command}");
-            let _ = stdin.flush();
+    fn call_remote(&mut self, request: PluginHostRequest) -> Result<()> {
+        if self.terminated {
+            bail!("isolated plugin host already terminated");
         }
+        let stdin = self.stdin.as_mut().ok_or_else(|| anyhow!("isolated host stdin closed"))?;
+        send_frame(stdin, &request).context("send isolated plugin request")?;
+        let response: PluginHostResponse =
+            recv_frame(&mut self.stdout).context("recv isolated plugin response")?;
+        match response {
+            PluginHostResponse::Ok => Ok(()),
+            PluginHostResponse::Error(message) => bail!("isolated plugin error: {message}"),
+        }
+    }
+
+    fn ensure_shutdown(&mut self) {
+        if self.terminated {
+            return;
+        }
+        if let Err(err) = self.call_remote(PluginHostRequest::Shutdown) {
+            eprintln!("[plugin:{}] failed to shutdown isolated host: {err:?}", self.name);
+        }
+        self.terminated = true;
+        self.stdin.take();
     }
 }
 
@@ -1097,15 +1136,27 @@ impl EnginePlugin for IsolatedPluginProxy {
     }
 
     fn build(&mut self, _ctx: &mut PluginContext<'_>) -> Result<()> {
-        Ok(())
+        self.call_remote(PluginHostRequest::Build)
     }
 
-    fn update(&mut self, _ctx: &mut PluginContext<'_>, _dt: f32) -> Result<()> {
-        Ok(())
+    fn update(&mut self, _ctx: &mut PluginContext<'_>, dt: f32) -> Result<()> {
+        self.call_remote(PluginHostRequest::Update { dt })
+    }
+
+    fn fixed_update(&mut self, _ctx: &mut PluginContext<'_>, dt: f32) -> Result<()> {
+        self.call_remote(PluginHostRequest::FixedUpdate { dt })
+    }
+
+    fn on_events(&mut self, _ctx: &mut PluginContext<'_>, events: &[GameEvent]) -> Result<()> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let payload: Vec<RpcGameEvent> = events.iter().cloned().map(RpcGameEvent::from).collect();
+        self.call_remote(PluginHostRequest::OnEvents { events: payload })
     }
 
     fn shutdown(&mut self, _ctx: &mut PluginContext<'_>) -> Result<()> {
-        self.send_command("exit");
+        self.ensure_shutdown();
         Ok(())
     }
 
@@ -1120,7 +1171,7 @@ impl EnginePlugin for IsolatedPluginProxy {
 
 impl Drop for IsolatedPluginProxy {
     fn drop(&mut self) {
-        self.send_command("exit");
+        self.ensure_shutdown();
         let _ = self.child.kill();
         let _ = self.child.wait();
     }

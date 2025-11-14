@@ -6,7 +6,7 @@ default-run = "kestrel_engine"
 
 [features]
 default = []
-binary_scene = ["bincode", "lz4_flex"]
+binary_scene = ["lz4_flex"]
 anim_stats = []
 sprite_anim_soa = []
 sprite_anim_fixed_point = ["sprite_anim_soa"]
@@ -37,7 +37,7 @@ gltf = "1.4"
 half = "2.4"
 uuid = { version = "1.8", features = ["v4"] }
 cpal = "0.15"
-bincode = { version = "1.3", optional = true }
+bincode = "1.3"
 lz4_flex = { version = "0.11", optional = true }
 notify = "6.1"
 bitflags = "2.4"

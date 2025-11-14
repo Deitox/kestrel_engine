@@ -16,6 +16,7 @@ pub mod material_registry;
 pub mod mesh;
 pub(crate) mod mesh_preview;
 pub mod mesh_registry;
+pub mod plugin_rpc;
 pub mod plugins;
 pub mod prefab;
 pub mod renderer;

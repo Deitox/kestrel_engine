@@ -37,12 +37,13 @@
   - Existing helper scripts remain standalone; the suite simply coordinates them for CI and local automation.
 
 ## Plugin Sandboxing Roadmap
-- **Status:** [ ] Pending
+- **Status:** [ ] Phase 3a underway (RPC harness checked in, capability proxies pending)
 - **Goal:** Provide a concrete plan for Milestone 13's stretch goal: isolating untrusted plugins.
 - **Scope:** Define capability metadata in `config/plugins.json`, gate `PluginContext` APIs by declared capabilities, log capability grants in `PluginStatus`, and design an out-of-process host for `trust = "isolated"` entries.
 - **Implementation Notes:**
-  - **Capability taxonomy:** implemented enum-based capability metadata (`renderer`, `ecs`, `assets`, `input`, `scripts`, `analytics`, `time`, `events`) plus manifest validation. Built-ins default to full access, while third-party entries must declare the capabilities they need.
-  - **API gating:** `PluginContext` enforces capability checks on every mutating accessor and emits `CapabilityError`s (plus analytics events) when a plugin asks for something it wasn’t granted. Tests cover the gating path so regressions are caught in CI.
-  - **Telemetry + surfacing:** capability grants/violations are visible in both the plugin manifest UI (per-plugin rows show trusted caps + violation counts) and the analytics “Stats” panel, which now lists recent violations captured via the Analytics plugin.
-  - **Isolated host prototype:** the new `kestrel_plugin_host` binary is spawned whenever a manifest entry uses `"trust": "isolated"`. The current stub simply launches an out-of-process host to keep untrusted DLLs away from engine memory; Phase 3 will layer a real IPC/RPC protocol on top so capability calls can be proxied safely.
-  - **Phased rollout:** Phase 1 (cap metadata + gating) and Phase 2 (analytics/UI surfacing) are complete; Phase 3 will add real RPC wiring for the isolated host and make the feature default once stability is proven.
+    - **Capability taxonomy:** implemented enum-based capability metadata (`renderer`, `ecs`, `assets`, `input`, `scripts`, `analytics`, `time`, `events`) plus manifest validation. Built-ins default to full access, while third-party entries must declare the capabilities they need.
+    - **API gating:** `PluginContext` enforces capability checks on every mutating accessor and emits `CapabilityError`s (plus analytics events) when a plugin asks for something it wasn’t granted. Tests cover the gating path so regressions are caught in CI.
+    - **Telemetry + surfacing:** capability grants/violations are visible in both the plugin manifest UI (per-plugin rows show trusted caps + violation counts) and the analytics "Stats" panel, which now lists recent violations captured via the Analytics plugin.
+    - **Pipe-based RPC harness:** `plugin_rpc.rs` defines the bincode/framed protocol shared by the engine and `kestrel_plugin_host`. The host now loads the target cdylib, services `build/update/fixed_update/on_events/shutdown` requests received over anonymous pipes, and mirrors plugin errors back to the editor UI.
+    - **Isolated proxy integration:** `PluginManager` launches `kestrel_plugin_host` whenever `"trust": "isolated"` is set, and the proxy encodes lifecycle calls over the RPC channel with per-request error propagation. Phase 3b will extend this transport with capability-proxied operations (event emission, ECS queries, asset reads).
+    - **Phased rollout:** Phase 1 (cap metadata + gating) and Phase 2 (analytics/UI surfacing) are complete; Phase 3a (RPC loop + lifecycle calls) is live. Phase 3b will add capability RPCs, and Phase 3c will fold in ECS readbacks plus watchdogs before making isolation the default.
