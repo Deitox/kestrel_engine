@@ -1,6 +1,6 @@
 use super::{
-    App, CameraBookmark, FrameTimingSample, MeshControlMode, ScriptConsoleEntry, ScriptConsoleKind,
-    ViewportCameraMode,
+    plugin_host::PluginHost, App, CameraBookmark, FrameTimingSample, MeshControlMode, ScriptConsoleEntry,
+    ScriptConsoleKind, ViewportCameraMode,
 };
 use crate::audio::{AudioHealthSnapshot, AudioPlugin};
 use crate::camera3d::Camera3D;
@@ -15,7 +15,9 @@ use crate::gizmo::{
     GIZMO_SCALE_HANDLE_SIZE_PX, GIZMO_SCALE_INNER_RADIUS_PX, GIZMO_SCALE_OUTER_RADIUS_PX,
 };
 use crate::mesh_preview::{GIZMO_3D_AXIS_LENGTH_SCALE, GIZMO_3D_AXIS_MAX, GIZMO_3D_AXIS_MIN};
-use crate::plugins::{CapabilityViolationLog, PluginCapability, PluginState, PluginStatus, PluginTrust};
+use crate::plugins::{
+    AssetReadbackStats, CapabilityViolationLog, PluginCapability, PluginState, PluginStatus, PluginTrust,
+};
 use crate::prefab::{PrefabFormat, PrefabStatusKind, PrefabStatusMessage};
 use crate::renderer::MAX_SHADOW_CASCADES;
 use crate::scene::SceneShadowData;
@@ -34,6 +36,7 @@ mod entity_inspector;
 pub(super) struct PrefabDragPayload {
     pub entity: Entity,
 }
+
 
 #[derive(Clone)]
 pub(super) struct PrefabSpawnPayload {
@@ -160,6 +163,27 @@ fn capability_violation_summary(log: Option<&CapabilityViolationLog>) -> (egui::
     (egui::Color32::from_rgb(120, 200, 120), "Capability violations: 0".to_string())
 }
 
+fn show_capability_badges(ui: &mut egui::Ui, caps: &[PluginCapability]) {
+    fn has_cap(caps: &[PluginCapability], target: PluginCapability) -> bool {
+        caps.iter().any(|cap| matches!(cap, PluginCapability::All) || *cap == target)
+    }
+    let mut badges = Vec::new();
+    if has_cap(caps, PluginCapability::Ecs) {
+        badges.push(("ECS", egui::Color32::from_rgb(120, 170, 250)));
+    }
+    if has_cap(caps, PluginCapability::Assets) {
+        badges.push(("ASSETS", egui::Color32::from_rgb(200, 170, 120)));
+    }
+    if badges.is_empty() {
+        return;
+    }
+    ui.horizontal_wrapped(|ui| {
+        for (label, color) in badges {
+            ui.colored_label(color, egui::RichText::new(label).monospace());
+        }
+    });
+}
+
 fn show_capability_info(
     ui: &mut egui::Ui,
     caps: &[PluginCapability],
@@ -167,8 +191,80 @@ fn show_capability_info(
     log: Option<&CapabilityViolationLog>,
 ) {
     ui.small(format!("Capabilities: {} (trust: {})", format_capability_list(caps), trust.label()));
+    show_capability_badges(ui, caps);
     let (color, text) = capability_violation_summary(log);
     ui.colored_label(color, text);
+}
+
+fn format_ecs_entity(bits: u64) -> String {
+    let entity = Entity::from_bits(bits);
+    format!("Entity #{:05} (bits {} v{})", entity.index(), bits, entity.generation())
+}
+
+fn format_data_size(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    if bytes == 0 {
+        return "0 B".to_string();
+    }
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    format!("{value:.1} {}", UNITS[unit])
+}
+
+fn plugin_debug_ui(
+    ui: &mut egui::Ui,
+    plugin_name: &str,
+    asset_metrics: &HashMap<String, AssetReadbackStats>,
+    ecs_history: &HashMap<String, Vec<u64>>,
+    plugin_host: &mut PluginHost,
+    scene_status: &mut Option<String>,
+) {
+    if let Some(history) = ecs_history.get(plugin_name).filter(|entries| !entries.is_empty()) {
+        egui::CollapsingHeader::new("Read-only ECS")
+            .default_open(false)
+            .show(ui, |ui| {
+                let max_rows = 8;
+                for bits in history.iter().take(max_rows) {
+                    ui.small(format_ecs_entity(*bits));
+                }
+                if history.len() > max_rows {
+                    ui.small(format!("... {} older queries hidden", history.len() - max_rows));
+                }
+            });
+    }
+    if let Some(stats) = asset_metrics.get(plugin_name) {
+        ui.small(format!(
+            "Asset readbacks: {} req / {} cache hits / {} throttled – {} transferred",
+            stats.requests,
+            stats.cache_hits,
+            stats.throttled,
+            format_data_size(stats.bytes),
+        ));
+    }
+    let retry_enabled = plugin_host.has_asset_readback_request(plugin_name);
+    let retry_button = ui.add_enabled(retry_enabled, egui::Button::new("Retry asset readback"));
+    if retry_button.clicked() {
+        match plugin_host.retry_last_asset_readback(plugin_name) {
+            Ok(Some((bytes, content_type))) => {
+                *scene_status = Some(format!(
+                    "Retried asset readback for {plugin_name}: {} ({content_type})",
+                    format_data_size(bytes)
+                ));
+            }
+            Ok(None) => {
+                *scene_status = Some(format!("No asset readbacks recorded for {plugin_name}"));
+            }
+            Err(err) => {
+                *scene_status = Some(format!("Asset readback retry failed for {plugin_name}: {err}"));
+            }
+        }
+    } else if !retry_enabled {
+        ui.small("No asset readbacks recorded yet.");
+    }
 }
 
 fn ellipsize(text: &str, max_len: usize) -> String {
@@ -1941,6 +2037,8 @@ impl App {
                     );
                     let status_snapshot = self.plugin_host.statuses().to_vec();
                     let capability_metrics = self.plugin_host.capability_metrics();
+                    let asset_metrics = self.plugin_host.asset_readback_metrics();
+                    let ecs_history = self.plugin_host.ecs_query_history();
                     let mut dynamic_statuses: BTreeMap<String, PluginStatus> = BTreeMap::new();
                     let mut builtin_statuses = Vec::new();
                     for status in status_snapshot {
@@ -1955,10 +2053,14 @@ impl App {
                         if let Some(path) = manifest.path() {
                             ui.small(format!("Manifest: {}", path.display()));
                         }
-                        if manifest.entries().is_empty() {
+                    }
+                    let manifest_entries =
+                        self.plugin_host.manifest().map(|manifest| manifest.entries().to_vec());
+                    if let Some(entries) = manifest_entries {
+                        if entries.is_empty() {
                             ui.label("No dynamic plugins listed in manifest.");
                         } else {
-                            for entry in manifest.entries() {
+                            for entry in entries {
                                 let plugin_name = entry.name.clone();
                                 let mut enabled_flag = entry.enabled;
                                 let mut toggled = false;
@@ -2019,6 +2121,14 @@ impl App {
                                             capability_metrics.get(&plugin_name),
                                         );
                                     }
+                                    plugin_debug_ui(
+                                        ui,
+                                        &plugin_name,
+                                        &asset_metrics,
+                                        &ecs_history,
+                                        &mut self.plugin_host,
+                                        &mut self.ui_scene_status,
+                                    );
                                 });
                                 if toggled {
                                     actions.plugin_toggles.push(PluginToggleRequest {
@@ -2051,21 +2161,31 @@ impl App {
                                 status.trust,
                                 capability_metrics.get(&status.name),
                             );
+                            plugin_debug_ui(
+                                ui,
+                                &status.name,
+                                &asset_metrics,
+                                &ecs_history,
+                                &mut self.plugin_host,
+                                &mut self.ui_scene_status,
+                            );
                         }
                     }
                     if !builtin_statuses.is_empty() {
                         if !dynamic_statuses.is_empty() {
                             ui.separator();
                         }
-                        let manifest_ref = self.plugin_host.manifest();
+                        let manifest_loaded = self.plugin_host.manifest().is_some();
                         for status in builtin_statuses {
-                            let mut enabled_flag = manifest_ref
+                            let mut enabled_flag = self
+                                .plugin_host
+                                .manifest()
                                 .map(|manifest| !manifest.is_builtin_disabled(&status.name))
                                 .unwrap_or(!matches!(status.state, PluginState::Disabled(_)));
                             let mut toggled = false;
                             ui.group(|ui| {
                                 ui.horizontal(|ui| {
-                                    if manifest_ref.is_some() {
+                                    if manifest_loaded {
                                         if ui.checkbox(&mut enabled_flag, &status.name).changed() {
                                             toggled = true;
                                         }
@@ -2089,6 +2209,14 @@ impl App {
                                     status.trust,
                                     capability_metrics.get(&status.name),
                                 );
+                                plugin_debug_ui(
+                                    ui,
+                                    &status.name,
+                                    &asset_metrics,
+                                    &ecs_history,
+                                    &mut self.plugin_host,
+                                    &mut self.ui_scene_status,
+                                );
                             });
                             if toggled {
                                 actions.plugin_toggles.push(PluginToggleRequest {
@@ -2097,7 +2225,7 @@ impl App {
                                 });
                             }
                         }
-                        if manifest_ref.is_some() {
+                        if manifest_loaded {
                             ui.small("Built-in plugin changes take effect after restarting the engine.");
                         } else {
                             ui.small("Load config/plugins.json to edit built-in toggles.");

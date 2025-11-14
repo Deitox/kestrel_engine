@@ -1,7 +1,7 @@
 use crate::plugins::{
-    apply_manifest_builtin_toggles, apply_manifest_dynamic_toggles, CapabilityViolationLog, EnginePlugin,
-    ManifestBuiltinToggle, ManifestBuiltinToggleOutcome, ManifestDynamicToggle, ManifestDynamicToggleOutcome,
-    PluginContext, PluginManager, PluginManifest, PluginStatus,
+    apply_manifest_builtin_toggles, apply_manifest_dynamic_toggles, AssetReadbackStats, CapabilityViolationLog,
+    EnginePlugin, ManifestBuiltinToggle, ManifestBuiltinToggleOutcome, ManifestDynamicToggle,
+    ManifestDynamicToggleOutcome, PluginContext, PluginManager, PluginManifest, PluginStatus,
 };
 use anyhow::{anyhow, Result};
 use std::collections::{HashMap, HashSet};
@@ -73,6 +73,28 @@ impl PluginHost {
 
     pub(crate) fn capability_metrics(&self) -> HashMap<String, CapabilityViolationLog> {
         self.manager.capability_metrics()
+    }
+
+    pub(crate) fn asset_readback_metrics(&self) -> HashMap<String, AssetReadbackStats> {
+        self.manager.asset_readback_metrics()
+    }
+
+    pub(crate) fn ecs_query_history(&self) -> HashMap<String, Vec<u64>> {
+        self.manager.ecs_query_history()
+    }
+
+    pub(crate) fn has_asset_readback_request(&self, plugin_name: &str) -> bool {
+        self.manager.has_asset_readback_request(plugin_name)
+    }
+
+    pub(crate) fn retry_last_asset_readback(
+        &mut self,
+        plugin_name: &str,
+    ) -> Result<Option<(u64, String)>> {
+        match self.manager.retry_last_asset_readback(plugin_name)? {
+            Some(response) => Ok(Some((response.byte_length, response.content_type))),
+            None => Ok(None),
+        }
     }
 
     pub(crate) fn get<T: EnginePlugin + 'static>(&self) -> Option<&T> {

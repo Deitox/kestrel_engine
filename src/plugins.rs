@@ -745,6 +745,8 @@ pub struct PluginManager {
     loaded_names: HashSet<String>,
     asset_cache: IsolatedAssetCache,
     asset_metrics: HashMap<String, AssetReadbackStats>,
+    ecs_query_history: HashMap<String, VecDeque<u64>>,
+    last_asset_payload: HashMap<String, RpcAssetReadbackPayload>,
 }
 
 struct PluginSlot {
@@ -779,6 +781,8 @@ impl Default for PluginManager {
             loaded_names: HashSet::new(),
             asset_cache: IsolatedAssetCache::new(32 * 1024 * 1024),
             asset_metrics: HashMap::new(),
+            ecs_query_history: HashMap::new(),
+            last_asset_payload: HashMap::new(),
         }
     }
 }
@@ -798,6 +802,28 @@ impl PluginManager {
 
     pub fn asset_readback_metrics(&self) -> HashMap<String, AssetReadbackStats> {
         self.asset_metrics.clone()
+    }
+
+    pub fn ecs_query_history(&self) -> HashMap<String, Vec<u64>> {
+        self.ecs_query_history
+            .iter()
+            .map(|(plugin, log)| (plugin.clone(), log.iter().copied().collect()))
+            .collect()
+    }
+
+    pub fn has_asset_readback_request(&self, plugin_name: &str) -> bool {
+        self.last_asset_payload.contains_key(plugin_name)
+    }
+
+    pub fn retry_last_asset_readback(
+        &mut self,
+        plugin_name: &str,
+    ) -> Result<Option<RpcAssetReadbackResponse>> {
+        if let Some(payload) = self.last_asset_payload.get(plugin_name).cloned() {
+            self.asset_readback(plugin_name, payload).map(Some)
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn query_isolated_entity_info(
@@ -832,6 +858,10 @@ impl PluginManager {
             .isolated_proxy()
             .ok_or_else(|| anyhow!("plugin '{plugin_name}' is not running in isolated mode"))?;
         let response = proxy.read_components(entity, components, format)?;
+        if let Some(snapshot) = response.snapshot.as_ref() {
+            let logged: Entity = snapshot.entity.into();
+            self.log_ecs_entities(plugin_name, [logged]);
+        }
         Ok(response.snapshot)
     }
 
@@ -852,7 +882,15 @@ impl PluginManager {
         let proxy = slot
             .isolated_proxy()
             .ok_or_else(|| anyhow!("plugin '{plugin_name}' is not running in isolated mode"))?;
-        proxy.iter_entities(filter, cursor, limit, components, format)
+        let response = proxy.iter_entities(filter, cursor, limit, components, format)?;
+        if !response.snapshots.is_empty() {
+            let entities = response.snapshots.iter().map(|snapshot| {
+                let entity: Entity = snapshot.entity.into();
+                entity
+            });
+            self.log_ecs_entities(plugin_name, entities);
+        }
+        Ok(response)
     }
 
     pub fn asset_readback(
@@ -860,6 +898,7 @@ impl PluginManager {
         plugin_name: &str,
         payload: RpcAssetReadbackPayload,
     ) -> Result<RpcAssetReadbackResponse> {
+        self.last_asset_payload.insert(plugin_name.to_string(), payload.clone());
         let key = AssetCacheKey::from_payload(&payload);
         if let Some(hit) = self.asset_cache.get(&key) {
             let stats = self.asset_metrics.entry(plugin_name.to_string()).or_default();
@@ -895,6 +934,24 @@ impl PluginManager {
                 }
                 Err(err)
             }
+        }
+    }
+
+    fn log_ecs_entities(
+        &mut self,
+        plugin_name: &str,
+        entities: impl IntoIterator<Item = Entity>,
+    ) {
+        let log = self
+            .ecs_query_history
+            .entry(plugin_name.to_string())
+            .or_insert_with(VecDeque::new);
+        for entity in entities {
+            log.push_front(entity.to_bits());
+        }
+        const MAX_ENTRIES: usize = 16;
+        while log.len() > MAX_ENTRIES {
+            log.pop_back();
         }
     }
 
