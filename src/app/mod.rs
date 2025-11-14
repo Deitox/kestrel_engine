@@ -2026,8 +2026,16 @@ impl ApplicationHandler for App {
 
         self.with_plugins(|plugins, ctx| plugins.update(ctx, dt));
         let capability_metrics = self.plugin_host.capability_metrics();
+        let watchdog_alerts = self.plugin_host.drain_watchdog_events();
+        let asset_readback_alerts = self.plugin_host.drain_asset_readback_events();
         if let Some(analytics) = self.analytics_plugin_mut() {
             analytics.record_plugin_capability_metrics(capability_metrics);
+            if !asset_readback_alerts.is_empty() {
+                analytics.record_plugin_asset_readbacks(asset_readback_alerts);
+            }
+            if !watchdog_alerts.is_empty() {
+                analytics.record_plugin_watchdog_events(watchdog_alerts);
+            }
         }
 
         if self.camera_follow_target.is_some() && !self.refresh_camera_follow() {

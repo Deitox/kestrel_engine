@@ -21,7 +21,11 @@
         "events",
         "time"
       ],
-      "trust": "full"
+      "trust": "full",
+      "asset_filters": {
+        "atlases": [],
+        "blobs": []
+      }
     }
   ]
 }

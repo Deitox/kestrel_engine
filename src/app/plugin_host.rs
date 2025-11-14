@@ -1,7 +1,8 @@
 use crate::plugins::{
-    apply_manifest_builtin_toggles, apply_manifest_dynamic_toggles, AssetReadbackStats, CapabilityViolationLog,
-    EnginePlugin, ManifestBuiltinToggle, ManifestBuiltinToggleOutcome, ManifestDynamicToggle,
-    ManifestDynamicToggleOutcome, PluginContext, PluginManager, PluginManifest, PluginStatus,
+    apply_manifest_builtin_toggles, apply_manifest_dynamic_toggles, AssetReadbackStats,
+    CapabilityViolationLog, EnginePlugin, ManifestBuiltinToggle, ManifestBuiltinToggleOutcome,
+    ManifestDynamicToggle, ManifestDynamicToggleOutcome, PluginAssetReadbackEvent, PluginContext,
+    PluginManager, PluginManifest, PluginStatus, PluginWatchdogEvent,
 };
 use anyhow::{anyhow, Result};
 use std::collections::{HashMap, HashSet};
@@ -83,14 +84,27 @@ impl PluginHost {
         self.manager.ecs_query_history()
     }
 
+    pub(crate) fn watchdog_events(&self) -> HashMap<String, Vec<PluginWatchdogEvent>> {
+        self.manager.watchdog_events()
+    }
+
+    pub(crate) fn clear_watchdog_events(&mut self, plugin_name: &str) {
+        self.manager.clear_watchdog_events(plugin_name);
+    }
+
+    pub(crate) fn drain_watchdog_events(&mut self) -> Vec<PluginWatchdogEvent> {
+        self.manager.drain_watchdog_events()
+    }
+
+    pub(crate) fn drain_asset_readback_events(&mut self) -> Vec<PluginAssetReadbackEvent> {
+        self.manager.drain_asset_readback_events()
+    }
+
     pub(crate) fn has_asset_readback_request(&self, plugin_name: &str) -> bool {
         self.manager.has_asset_readback_request(plugin_name)
     }
 
-    pub(crate) fn retry_last_asset_readback(
-        &mut self,
-        plugin_name: &str,
-    ) -> Result<Option<(u64, String)>> {
+    pub(crate) fn retry_last_asset_readback(&mut self, plugin_name: &str) -> Result<Option<(u64, String)>> {
         match self.manager.retry_last_asset_readback(plugin_name)? {
             Some(response) => Ok(Some((response.byte_length, response.content_type))),
             None => Ok(None),

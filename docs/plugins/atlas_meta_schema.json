@@ -1,0 +1,63 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AtlasMetaDocument",
+  "type": "object",
+  "required": ["atlas_id", "width", "height", "image_path", "regions", "animations"],
+  "properties": {
+    "atlas_id": { "type": "string", "minLength": 1 },
+    "width": { "type": "integer", "minimum": 1 },
+    "height": { "type": "integer", "minimum": 1 },
+    "image_path": { "type": "string", "minLength": 1 },
+    "regions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "rect", "uv", "id"],
+        "properties": {
+          "name": { "type": "string" },
+          "rect": {
+            "type": "array",
+            "items": { "type": "integer" },
+            "minItems": 4,
+            "maxItems": 4
+          },
+          "uv": {
+            "type": "array",
+            "items": { "type": "number" },
+            "minItems": 4,
+            "maxItems": 4
+          },
+          "id": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "animations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "looped", "loop_mode", "frame_count", "frames"],
+        "properties": {
+          "name": { "type": "string" },
+          "looped": { "type": "boolean" },
+          "loop_mode": { "type": "string" },
+          "frame_count": { "type": "integer", "minimum": 0 },
+          "frames": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["region", "duration", "events"],
+              "properties": {
+                "region": { "type": "string" },
+                "duration": { "type": "number", "minimum": 0 },
+                "events": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

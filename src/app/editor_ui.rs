@@ -17,6 +17,7 @@ use crate::gizmo::{
 use crate::mesh_preview::{GIZMO_3D_AXIS_LENGTH_SCALE, GIZMO_3D_AXIS_MAX, GIZMO_3D_AXIS_MIN};
 use crate::plugins::{
     AssetReadbackStats, CapabilityViolationLog, PluginCapability, PluginState, PluginStatus, PluginTrust,
+    PluginWatchdogEvent,
 };
 use crate::prefab::{PrefabFormat, PrefabStatusKind, PrefabStatusMessage};
 use crate::renderer::MAX_SHADOW_CASCADES;
@@ -36,7 +37,6 @@ mod entity_inspector;
 pub(super) struct PrefabDragPayload {
     pub entity: Entity,
 }
-
 
 #[derive(Clone)]
 pub(super) struct PrefabSpawnPayload {
@@ -220,21 +220,44 @@ fn plugin_debug_ui(
     plugin_name: &str,
     asset_metrics: &HashMap<String, AssetReadbackStats>,
     ecs_history: &HashMap<String, Vec<u64>>,
+    watchdog_events: &HashMap<String, Vec<PluginWatchdogEvent>>,
     plugin_host: &mut PluginHost,
     scene_status: &mut Option<String>,
 ) {
+    if let Some(events) = watchdog_events.get(plugin_name).filter(|entries| !entries.is_empty()) {
+        ui.horizontal(|ui| {
+            ui.colored_label(
+                egui::Color32::from_rgb(230, 190, 90),
+                format!("Watchdog events: {}", events.len()),
+            );
+            if ui.button("Clear").clicked() {
+                plugin_host.clear_watchdog_events(plugin_name);
+            }
+        });
+        egui::CollapsingHeader::new("Watchdog history").default_open(false).show(ui, |ui| {
+            for event in events {
+                let ago = event
+                    .timestamp
+                    .elapsed()
+                    .map(|duration| format!("{:.1}s ago", duration.as_secs_f32()))
+                    .unwrap_or_else(|_| "just now".to_string());
+                ui.label(format!(
+                    "{} | {} ({} ms) | last request: {}",
+                    ago, event.reason, event.elapsed_ms, event.last_request
+                ));
+            }
+        });
+    }
     if let Some(history) = ecs_history.get(plugin_name).filter(|entries| !entries.is_empty()) {
-        egui::CollapsingHeader::new("Read-only ECS")
-            .default_open(false)
-            .show(ui, |ui| {
-                let max_rows = 8;
-                for bits in history.iter().take(max_rows) {
-                    ui.small(format_ecs_entity(*bits));
-                }
-                if history.len() > max_rows {
-                    ui.small(format!("... {} older queries hidden", history.len() - max_rows));
-                }
-            });
+        egui::CollapsingHeader::new("Read-only ECS").default_open(false).show(ui, |ui| {
+            let max_rows = 8;
+            for bits in history.iter().take(max_rows) {
+                ui.small(format_ecs_entity(*bits));
+            }
+            if history.len() > max_rows {
+                ui.small(format!("... {} older queries hidden", history.len() - max_rows));
+            }
+        });
     }
     if let Some(stats) = asset_metrics.get(plugin_name) {
         ui.small(format!(
@@ -711,6 +734,10 @@ impl App {
             .analytics_plugin()
             .map(|analytics| analytics.plugin_capability_metrics().clone())
             .unwrap_or_default();
+        let plugin_asset_readback_log =
+            self.analytics_plugin().map(|analytics| analytics.plugin_asset_readbacks()).unwrap_or_default();
+        let plugin_watchdog_log =
+            self.analytics_plugin().map(|analytics| analytics.plugin_watchdog_events()).unwrap_or_default();
 
         let mut editor_settings_dirty = false;
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
@@ -2039,6 +2066,7 @@ impl App {
                     let capability_metrics = self.plugin_host.capability_metrics();
                     let asset_metrics = self.plugin_host.asset_readback_metrics();
                     let ecs_history = self.plugin_host.ecs_query_history();
+                    let watchdog_events = self.plugin_host.watchdog_events();
                     let mut dynamic_statuses: BTreeMap<String, PluginStatus> = BTreeMap::new();
                     let mut builtin_statuses = Vec::new();
                     for status in status_snapshot {
@@ -2126,6 +2154,7 @@ impl App {
                                         &plugin_name,
                                         &asset_metrics,
                                         &ecs_history,
+                                        &watchdog_events,
                                         &mut self.plugin_host,
                                         &mut self.ui_scene_status,
                                     );
@@ -2166,6 +2195,7 @@ impl App {
                                 &status.name,
                                 &asset_metrics,
                                 &ecs_history,
+                                &watchdog_events,
                                 &mut self.plugin_host,
                                 &mut self.ui_scene_status,
                             );
@@ -2214,6 +2244,7 @@ impl App {
                                     &status.name,
                                     &asset_metrics,
                                     &ecs_history,
+                                    &watchdog_events,
                                     &mut self.plugin_host,
                                     &mut self.ui_scene_status,
                                 );
@@ -2266,6 +2297,45 @@ impl App {
                         }
                         if let Some(status) = self.gpu_metrics_status.as_ref() {
                             ui.small(status.as_str());
+                        }
+                    }
+
+                    if !plugin_watchdog_log.is_empty() {
+                        ui.separator();
+                        ui.label("Plugin Watchdog Alerts");
+                        for event in plugin_watchdog_log.iter().take(6) {
+                            let ago = event
+                                .timestamp
+                                .elapsed()
+                                .map(|duration| format!("{:.1}s ago", duration.as_secs_f32()))
+                                .unwrap_or_else(|_| "just now".to_string());
+                            ui.small(format!(
+                                "[{}] {} - {} ({:.1} ms) [{}]",
+                                ago, event.plugin, event.reason, event.elapsed_ms, event.last_request
+                            ));
+                        }
+                    }
+
+                    if !plugin_asset_readback_log.is_empty() {
+                        ui.separator();
+                        ui.label("Recent Asset Readbacks");
+                        for event in plugin_asset_readback_log.iter().take(6) {
+                            let ago = event
+                                .timestamp
+                                .elapsed()
+                                .map(|duration| format!("{:.1}s ago", duration.as_secs_f32()))
+                                .unwrap_or_else(|_| "just now".to_string());
+                            let cache_hint = if event.cache_hit { "cache" } else { "live" };
+                            ui.small(format!(
+                                "[{}] {} -> {}:{} ({} bytes, {:.1} ms, {})",
+                                ago,
+                                event.plugin,
+                                event.kind,
+                                event.target,
+                                event.bytes,
+                                event.duration_ms,
+                                cache_hint
+                            ));
                         }
                     }
 

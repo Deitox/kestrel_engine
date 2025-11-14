@@ -1,6 +1,8 @@
 use crate::ecs::{ParticleBudgetMetrics, SpatialMetrics};
 use crate::events::GameEvent;
-use crate::plugins::{CapabilityViolationLog, EnginePlugin, PluginContext};
+use crate::plugins::{
+    CapabilityViolationLog, EnginePlugin, PluginAssetReadbackEvent, PluginContext, PluginWatchdogEvent,
+};
 use crate::renderer::GpuPassTiming;
 use anyhow::Result;
 use std::any::Any;
@@ -16,7 +18,11 @@ pub struct AnalyticsPlugin {
     gpu_capacity: usize,
     gpu_timings: BTreeMap<&'static str, VecDeque<f32>>,
     plugin_capability_metrics: HashMap<String, CapabilityViolationLog>,
+    plugin_asset_readbacks: VecDeque<PluginAssetReadbackEvent>,
+    plugin_watchdog_events: VecDeque<PluginWatchdogEvent>,
 }
+
+const SECURITY_EVENT_CAPACITY: usize = 64;
 
 impl AnalyticsPlugin {
     pub fn new(frame_capacity: usize, event_capacity: usize) -> Self {
@@ -30,6 +36,8 @@ impl AnalyticsPlugin {
             gpu_capacity: 120,
             gpu_timings: BTreeMap::new(),
             plugin_capability_metrics: HashMap::new(),
+            plugin_asset_readbacks: VecDeque::with_capacity(32),
+            plugin_watchdog_events: VecDeque::with_capacity(32),
         }
     }
 
@@ -94,6 +102,35 @@ impl AnalyticsPlugin {
 
     pub fn plugin_capability_metrics(&self) -> &HashMap<String, CapabilityViolationLog> {
         &self.plugin_capability_metrics
+    }
+
+    pub fn record_plugin_asset_readbacks(
+        &mut self,
+        events: impl IntoIterator<Item = PluginAssetReadbackEvent>,
+    ) {
+        for event in events {
+            self.plugin_asset_readbacks.push_front(event);
+            if self.plugin_asset_readbacks.len() > SECURITY_EVENT_CAPACITY {
+                self.plugin_asset_readbacks.pop_back();
+            }
+        }
+    }
+
+    pub fn record_plugin_watchdog_events(&mut self, events: impl IntoIterator<Item = PluginWatchdogEvent>) {
+        for event in events {
+            self.plugin_watchdog_events.push_front(event);
+            if self.plugin_watchdog_events.len() > SECURITY_EVENT_CAPACITY {
+                self.plugin_watchdog_events.pop_back();
+            }
+        }
+    }
+
+    pub fn plugin_asset_readbacks(&self) -> Vec<PluginAssetReadbackEvent> {
+        self.plugin_asset_readbacks.iter().cloned().collect()
+    }
+
+    pub fn plugin_watchdog_events(&self) -> Vec<PluginWatchdogEvent> {
+        self.plugin_watchdog_events.iter().cloned().collect()
     }
 }
 
