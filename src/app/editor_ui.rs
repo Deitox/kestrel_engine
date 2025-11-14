@@ -734,6 +734,8 @@ impl App {
             .analytics_plugin()
             .map(|analytics| analytics.plugin_capability_metrics().clone())
             .unwrap_or_default();
+        let plugin_capability_events_snapshot =
+            self.analytics_plugin().map(|analytics| analytics.plugin_capability_events()).unwrap_or_default();
         let plugin_asset_readback_log =
             self.analytics_plugin().map(|analytics| analytics.plugin_asset_readbacks()).unwrap_or_default();
         let plugin_watchdog_log =
@@ -901,6 +903,23 @@ impl App {
                                         ui.small(format!("last missing: {}", last.label()));
                                     }
                                 });
+                            }
+                        }
+                        if !plugin_capability_events_snapshot.is_empty() {
+                            ui.separator();
+                            ui.label("Capability Violations");
+                            for event in plugin_capability_events_snapshot.iter().take(6) {
+                                let ago = event
+                                    .timestamp
+                                    .elapsed()
+                                    .map(|duration| format!("{:.1}s ago", duration.as_secs_f32()))
+                                    .unwrap_or_else(|_| "just now".to_string());
+                                ui.small(format!(
+                                    "[{}] {} attempted {}",
+                                    ago,
+                                    event.plugin,
+                                    event.capability.label()
+                                ));
                             }
                         }
                         ui.separator();

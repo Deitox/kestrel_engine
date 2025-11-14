@@ -4,8 +4,8 @@ use bevy_ecs::world::EntityRef;
 use kestrel_engine::assets::{AssetManager, AtlasSnapshot};
 use kestrel_engine::config::WindowConfig;
 use kestrel_engine::ecs::{
-    Children, EcsWorld, EntityInfo, Parent, SceneEntityTag, Sprite, SpriteAnimation, SpriteInfo, Tint, Transform,
-    Velocity, WorldTransform,
+    Children, EcsWorld, EntityInfo, Parent, SceneEntityTag, Sprite, SpriteAnimation, SpriteInfo, Tint,
+    Transform, Velocity, WorldTransform,
 };
 use kestrel_engine::environment::EnvironmentRegistry;
 use kestrel_engine::events::GameEvent;
@@ -14,11 +14,11 @@ use kestrel_engine::material_registry::MaterialRegistry;
 use kestrel_engine::mesh_registry::MeshRegistry;
 use kestrel_engine::plugin_rpc::{
     recv_frame, send_frame, PluginHostRequest, PluginHostResponse, RpcAssetReadbackPayload,
-    RpcAssetReadbackRequest, RpcAssetReadbackResponse, RpcComponentKind, RpcComponentSnapshot, RpcEntityFilter,
-    RpcEntityInfo, RpcEntitySnapshot, RpcGameEvent, RpcHierarchySnapshot, RpcIterEntitiesRequest,
-    RpcIterEntitiesResponse, RpcIteratorCursor, RpcReadComponentsRequest, RpcReadComponentsResponse, RpcResponseData,
-    RpcSnapshotFormat, RpcSpriteInfo, RpcSpriteSnapshot, RpcTintSnapshot, RpcTransformSnapshot, RpcVelocitySnapshot,
-    RpcWorldTransformSnapshot,
+    RpcAssetReadbackRequest, RpcAssetReadbackResponse, RpcComponentKind, RpcComponentSnapshot,
+    RpcEntityFilter, RpcEntityInfo, RpcEntitySnapshot, RpcGameEvent, RpcHierarchySnapshot,
+    RpcIterEntitiesRequest, RpcIterEntitiesResponse, RpcIteratorCursor, RpcReadComponentsRequest,
+    RpcReadComponentsResponse, RpcResponseData, RpcSnapshotFormat, RpcSpriteInfo, RpcSpriteSnapshot,
+    RpcTintSnapshot, RpcTransformSnapshot, RpcVelocitySnapshot, RpcWorldTransformSnapshot,
 };
 use kestrel_engine::plugins::{
     CapabilityTrackerHandle, EnginePlugin, FeatureRegistryHandle, PluginContext, PluginEntryFn,
@@ -411,8 +411,7 @@ impl EngineState {
             }
             RpcAssetReadbackPayload::BlobRange { blob_id, offset, length } => {
                 let path = Path::new(&blob_id);
-                let data =
-                    fs::read(path).with_context(|| format!("reading blob '{}'", path.display()))?;
+                let data = fs::read(path).with_context(|| format!("reading blob '{}'", path.display()))?;
                 let start = offset.min(data.len() as u64) as usize;
                 let end = if length == 0 {
                     data.len()
@@ -433,10 +432,7 @@ impl EngineState {
 
     fn matches_filter(&self, entity_ref: &EntityRef<'_>, filter: &RpcEntityFilter) -> bool {
         if !filter.components.is_empty()
-            && !filter
-                .components
-                .iter()
-                .all(|component| self.entity_has_component(entity_ref, *component))
+            && !filter.components.iter().all(|component| self.entity_has_component(entity_ref, *component))
         {
             return false;
         }
@@ -491,11 +487,9 @@ impl EngineState {
                 }
                 RpcComponentKind::WorldTransform => {
                     if let Some(world_transform) = self.ecs.world.get::<WorldTransform>(entity) {
-                        snapshots.push(RpcComponentSnapshot::WorldTransform(
-                            RpcWorldTransformSnapshot {
-                                matrix: world_transform.0.to_cols_array_2d(),
-                            },
-                        ));
+                        snapshots.push(RpcComponentSnapshot::WorldTransform(RpcWorldTransformSnapshot {
+                            matrix: world_transform.0.to_cols_array_2d(),
+                        }));
                     } else {
                         missing.push(*kind);
                     }
@@ -503,8 +497,7 @@ impl EngineState {
                 RpcComponentKind::Sprite => {
                     if let Some(sprite) = self.ecs.world.get::<Sprite>(entity) {
                         let animation = self.ecs.world.get::<SpriteAnimation>(entity);
-                        let frame_index =
-                            animation.map(|anim| anim.frame_index as u32);
+                        let frame_index = animation.map(|anim| anim.frame_index as u32);
                         let tint = self.ecs.world.get::<Tint>(entity).map(|t| t.0.to_array());
                         snapshots.push(RpcComponentSnapshot::Sprite(RpcSpriteSnapshot {
                             atlas: sprite.atlas_key.to_string(),
@@ -560,10 +553,7 @@ impl EngineState {
         if snapshots.is_empty() {
             (None, missing)
         } else {
-            (
-                Some(RpcEntitySnapshot { entity: entity.into(), components: snapshots }),
-                missing,
-            )
+            (Some(RpcEntitySnapshot { entity: entity.into(), components: snapshots }), missing)
         }
     }
 }

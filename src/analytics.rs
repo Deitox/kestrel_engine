@@ -1,7 +1,8 @@
 use crate::ecs::{ParticleBudgetMetrics, SpatialMetrics};
 use crate::events::GameEvent;
 use crate::plugins::{
-    CapabilityViolationLog, EnginePlugin, PluginAssetReadbackEvent, PluginContext, PluginWatchdogEvent,
+    CapabilityViolationLog, EnginePlugin, PluginAssetReadbackEvent, PluginCapabilityEvent, PluginContext,
+    PluginWatchdogEvent,
 };
 use crate::renderer::GpuPassTiming;
 use anyhow::Result;
@@ -18,6 +19,7 @@ pub struct AnalyticsPlugin {
     gpu_capacity: usize,
     gpu_timings: BTreeMap<&'static str, VecDeque<f32>>,
     plugin_capability_metrics: HashMap<String, CapabilityViolationLog>,
+    plugin_capability_events: VecDeque<PluginCapabilityEvent>,
     plugin_asset_readbacks: VecDeque<PluginAssetReadbackEvent>,
     plugin_watchdog_events: VecDeque<PluginWatchdogEvent>,
 }
@@ -36,6 +38,7 @@ impl AnalyticsPlugin {
             gpu_capacity: 120,
             gpu_timings: BTreeMap::new(),
             plugin_capability_metrics: HashMap::new(),
+            plugin_capability_events: VecDeque::with_capacity(SECURITY_EVENT_CAPACITY),
             plugin_asset_readbacks: VecDeque::with_capacity(32),
             plugin_watchdog_events: VecDeque::with_capacity(32),
         }
@@ -102,6 +105,22 @@ impl AnalyticsPlugin {
 
     pub fn plugin_capability_metrics(&self) -> &HashMap<String, CapabilityViolationLog> {
         &self.plugin_capability_metrics
+    }
+
+    pub fn record_plugin_capability_events(
+        &mut self,
+        events: impl IntoIterator<Item = PluginCapabilityEvent>,
+    ) {
+        for event in events {
+            self.plugin_capability_events.push_front(event);
+            if self.plugin_capability_events.len() > SECURITY_EVENT_CAPACITY {
+                self.plugin_capability_events.pop_back();
+            }
+        }
+    }
+
+    pub fn plugin_capability_events(&self) -> Vec<PluginCapabilityEvent> {
+        self.plugin_capability_events.iter().cloned().collect()
     }
 
     pub fn record_plugin_asset_readbacks(
@@ -177,6 +196,7 @@ impl EnginePlugin for AnalyticsPlugin {
         self.particle_budget = None;
         self.spatial_metrics = None;
         self.gpu_timings.clear();
+        self.plugin_capability_events.clear();
         Ok(())
     }
 

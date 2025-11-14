@@ -64,5 +64,6 @@ The data always flows in the same order - Input -> ECS -> Renderer -> UI - keepi
 - `world.spawn_sprite` returns a negative handle until the engine materializes the entity; use that handle with other `world.*` calls and the app will resolve it when commands are applied.
 - Scripts can override debug UI settings such as spawn counts or auto spawn rate via `set_spawn_per_press` and `set_auto_spawn_rate`.
 - Use the emitter helpers (`set_emitter_rate`, `*_spread`, `*_speed`, `*_lifetime`, `*_start_color`, `*_end_color`, `*_start_size`, `*_end_size`) to tweak the particle system at runtime.
+- The engine clamps or rejects non-finite values coming from Rhai (e.g., NaN scales or positions). Calls that provide invalid data are ignored and a log message is emitted so scripts cannot poison the ECS state.
 
 

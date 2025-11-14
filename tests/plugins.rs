@@ -1,4 +1,5 @@
 use anyhow::Result;
+use kestrel_engine::analytics::AnalyticsPlugin;
 use kestrel_engine::assets::AssetManager;
 use kestrel_engine::config::WindowConfig;
 use kestrel_engine::ecs::EcsWorld;
@@ -7,6 +8,7 @@ use kestrel_engine::events::GameEvent;
 use kestrel_engine::input::Input;
 use kestrel_engine::material_registry::MaterialRegistry;
 use kestrel_engine::mesh_registry::MeshRegistry;
+use kestrel_engine::plugin_rpc::RpcAssetReadbackPayload;
 use kestrel_engine::plugins::{
     apply_manifest_builtin_toggles, apply_manifest_dynamic_toggles, EnginePlugin, ManifestBuiltinToggle,
     ManifestDynamicToggle, PluginCapability, PluginContext, PluginManager,
@@ -110,6 +112,33 @@ impl EnginePlugin for RendererAccessPlugin {
 
     fn build(&mut self, ctx: &mut PluginContext<'_>) -> Result<()> {
         ctx.renderer_mut()?.mark_shadow_settings_dirty();
+        Ok(())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+#[derive(Default)]
+struct UnauthorizedRendererPlugin;
+
+impl EnginePlugin for UnauthorizedRendererPlugin {
+    fn name(&self) -> &'static str {
+        "unauthorized_renderer"
+    }
+
+    fn build(&mut self, ctx: &mut PluginContext<'_>) -> Result<()> {
+        let _ = ctx.renderer_mut();
+        Ok(())
+    }
+
+    fn update(&mut self, ctx: &mut PluginContext<'_>, _dt: f32) -> Result<()> {
+        let _ = ctx.renderer_mut();
         Ok(())
     }
 
@@ -505,6 +534,293 @@ fn isolated_plugin_emits_script_message_via_rpc() {
         None,
         manager.capability_tracker_handle(),
     );
+    manager.shutdown(&mut ctx);
+}
+
+#[test]
+fn capability_violations_emit_events() {
+    let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
+    let mut ecs = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    let mut input = Input::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+    let mut environment_registry = EnvironmentRegistry::new();
+    let time = Time::new();
+    let mut manager = PluginManager::default();
+    let mut ctx = PluginContext::new(
+        &mut renderer,
+        &mut ecs,
+        &mut assets,
+        &mut input,
+        &mut material_registry,
+        &mut mesh_registry,
+        &mut environment_registry,
+        &time,
+        push_event_bridge,
+        manager.feature_handle(),
+        None,
+        manager.capability_tracker_handle(),
+    );
+
+    manager
+        .register_with_capabilities(
+            Box::new(UnauthorizedRendererPlugin::default()),
+            Vec::new(),
+            vec![PluginCapability::Ecs, PluginCapability::Assets],
+            &mut ctx,
+        )
+        .expect("registration succeeds");
+
+    let initial_events = manager.drain_capability_events();
+    assert!(
+        initial_events.iter().any(|event| event.plugin == "unauthorized_renderer"),
+        "build should log violation"
+    );
+
+    manager.update(&mut ctx, 0.016);
+    let update_events = manager.drain_capability_events();
+    assert_eq!(update_events.len(), 1, "exactly one violation emitted during update");
+    let event = &update_events[0];
+    assert_eq!(event.plugin, "unauthorized_renderer");
+    assert!(matches!(event.capability, PluginCapability::Renderer));
+
+    let metrics = manager.capability_metrics();
+    let log = metrics.get("unauthorized_renderer").expect("metric present");
+    assert_eq!(log.count, 2, "build + update should record two violations");
+    assert!(log.last_timestamp.is_some(), "last timestamp captured");
+
+    manager.shutdown(&mut ctx);
+}
+
+#[test]
+fn isolated_asset_readback_roundtrip() {
+    let plugin_path = build_example_dynamic_plugin();
+    let manifest_dir = tempdir().expect("temp manifest dir");
+    let manifest_path = manifest_dir.path().join("plugins.json");
+    let manifest_json = json!({
+        "disable_builtins": [],
+        "plugins": [{
+            "name": "example_dynamic",
+            "path": plugin_path.to_string_lossy(),
+            "enabled": true,
+            "version": "0.1.0",
+            "requires_features": [],
+            "provides_features": [],
+            "capabilities": ["renderer","ecs","assets","input","events","time"],
+            "trust": "isolated"
+        }]
+    });
+    fs::write(&manifest_path, serde_json::to_string_pretty(&manifest_json).unwrap())
+        .expect("manifest written");
+    let manifest =
+        PluginManager::load_manifest(&manifest_path).expect("manifest read").expect("manifest present");
+
+    let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
+    let mut ecs = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    let mut input = Input::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+    let mut environment_registry = EnvironmentRegistry::new();
+    let time = Time::new();
+    let mut manager = PluginManager::default();
+    let mut ctx = PluginContext::new(
+        &mut renderer,
+        &mut ecs,
+        &mut assets,
+        &mut input,
+        &mut material_registry,
+        &mut mesh_registry,
+        &mut environment_registry,
+        &time,
+        push_event_bridge,
+        manager.feature_handle(),
+        None,
+        manager.capability_tracker_handle(),
+    );
+
+    let loaded = manager.load_dynamic_from_manifest(&manifest, &mut ctx).expect("manifest loads");
+    assert_eq!(loaded, vec!["example_dynamic"]);
+
+    let blob_path = std::env::current_dir().expect("cwd").join("assets").join("images").join("atlas.png");
+    assert!(blob_path.exists(), "atlas.png must exist for blob readback");
+    let payload = RpcAssetReadbackPayload::BlobRange {
+        blob_id: blob_path.to_string_lossy().to_string(),
+        offset: 0,
+        length: 64,
+    };
+    let response = manager.asset_readback("example_dynamic", payload).expect("blob readback succeeds");
+    assert_eq!(response.content_type, "application/octet-stream");
+    assert!(response.byte_length > 0);
+    assert!(response.metadata_json.is_none(), "blob readback should not include metadata");
+
+    manager.shutdown(&mut ctx);
+}
+
+#[test]
+fn isolated_asset_readback_budget_is_enforced() {
+    let plugin_path = build_example_dynamic_plugin();
+    let manifest_dir = tempdir().expect("temp manifest dir");
+    let manifest_path = manifest_dir.path().join("plugins.json");
+    let manifest_json = json!({
+        "disable_builtins": [],
+        "plugins": [{
+            "name": "example_dynamic",
+            "path": plugin_path.to_string_lossy(),
+            "enabled": true,
+            "version": "0.1.0",
+            "requires_features": [],
+            "provides_features": [],
+            "capabilities": ["renderer","ecs","assets","input","events","time"],
+            "trust": "isolated"
+        }]
+    });
+    fs::write(&manifest_path, serde_json::to_string_pretty(&manifest_json).unwrap())
+        .expect("manifest written");
+    let manifest =
+        PluginManager::load_manifest(&manifest_path).expect("manifest read").expect("manifest present");
+
+    let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
+    let mut ecs = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    let mut input = Input::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+    let mut environment_registry = EnvironmentRegistry::new();
+    let time = Time::new();
+    let mut manager = PluginManager::default();
+    let mut ctx = PluginContext::new(
+        &mut renderer,
+        &mut ecs,
+        &mut assets,
+        &mut input,
+        &mut material_registry,
+        &mut mesh_registry,
+        &mut environment_registry,
+        &time,
+        push_event_bridge,
+        manager.feature_handle(),
+        None,
+        manager.capability_tracker_handle(),
+    );
+
+    manager.load_dynamic_from_manifest(&manifest, &mut ctx).expect("manifest loads");
+
+    let blob_path = std::env::current_dir().expect("cwd").join("assets").join("images").join("atlas.png");
+    assert!(blob_path.exists(), "atlas.png must exist for blob readbacks");
+    let blob_id = blob_path.to_string_lossy().to_string();
+
+    for i in 0..8 {
+        let payload =
+            RpcAssetReadbackPayload::BlobRange { blob_id: blob_id.clone(), offset: i * 16, length: 8 };
+        manager.asset_readback("example_dynamic", payload).expect("readback succeeds");
+    }
+
+    let err = manager
+        .asset_readback(
+            "example_dynamic",
+            RpcAssetReadbackPayload::BlobRange { blob_id, offset: 1024, length: 16 },
+        )
+        .expect_err("budget should be exceeded");
+    assert!(err.to_string().contains("budget"), "throttle error should mention budget: {err:?}");
+
+    manager.shutdown(&mut ctx);
+}
+
+#[test]
+fn isolated_plugin_telemetry_pipeline() {
+    let plugin_path = build_example_dynamic_plugin();
+    let manifest_dir = tempdir().expect("temp manifest dir");
+    let manifest_path = manifest_dir.path().join("plugins.json");
+    let manifest_json = json!({
+        "disable_builtins": [],
+        "plugins": [{
+            "name": "example_dynamic",
+            "path": plugin_path.to_string_lossy(),
+            "enabled": true,
+            "version": "0.1.0",
+            "requires_features": [],
+            "provides_features": [],
+            "capabilities": ["ecs","assets","events","time"],
+            "trust": "isolated"
+        }]
+    });
+    fs::write(&manifest_path, serde_json::to_string_pretty(&manifest_json).unwrap())
+        .expect("manifest written");
+    let manifest =
+        PluginManager::load_manifest(&manifest_path).expect("manifest read").expect("manifest present");
+
+    let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
+    let mut ecs = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    let mut input = Input::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+    let mut environment_registry = EnvironmentRegistry::new();
+    let time = Time::new();
+    let mut manager = PluginManager::default();
+    let mut ctx = PluginContext::new(
+        &mut renderer,
+        &mut ecs,
+        &mut assets,
+        &mut input,
+        &mut material_registry,
+        &mut mesh_registry,
+        &mut environment_registry,
+        &time,
+        push_event_bridge,
+        manager.feature_handle(),
+        None,
+        manager.capability_tracker_handle(),
+    );
+
+    manager
+        .register_with_capabilities(
+            Box::new(UnauthorizedRendererPlugin::default()),
+            Vec::new(),
+            vec![PluginCapability::Ecs],
+            &mut ctx,
+        )
+        .expect("builtin plugin registered");
+    manager.load_dynamic_from_manifest(&manifest, &mut ctx).expect("manifest loads");
+    manager.update(&mut ctx, 0.016);
+
+    let capability_events = manager.drain_capability_events();
+    assert!(
+        capability_events.iter().any(|event| event.plugin == "unauthorized_renderer"),
+        "capability events recorded for builtin plugin"
+    );
+
+    let blob_path = std::env::current_dir().expect("cwd").join("assets").join("images").join("atlas.png");
+    assert!(blob_path.exists(), "atlas.png must exist for blob readbacks");
+    let payload = RpcAssetReadbackPayload::BlobRange {
+        blob_id: blob_path.to_string_lossy().to_string(),
+        offset: 0,
+        length: 128,
+    };
+    manager.asset_readback("example_dynamic", payload).expect("blob readback succeeds");
+    let asset_events = manager.drain_asset_readback_events();
+    assert!(
+        asset_events.iter().any(|event| event.plugin == "example_dynamic"),
+        "asset readback events recorded for isolated plugin"
+    );
+
+    let mut analytics = AnalyticsPlugin::default();
+    analytics.record_plugin_capability_metrics(manager.capability_metrics());
+    analytics.record_plugin_capability_events(capability_events.clone());
+    analytics.record_plugin_asset_readbacks(asset_events.clone());
+
+    let recorded = analytics.plugin_capability_events();
+    assert_eq!(recorded.len(), capability_events.len());
+    assert!(
+        recorded.iter().any(|event| event.plugin == "unauthorized_renderer"),
+        "analytics stored capability violation events"
+    );
+
+    let recent_readbacks = analytics.plugin_asset_readbacks();
+    assert!(!recent_readbacks.is_empty(), "analytics stored recent asset readback events");
+
     manager.shutdown(&mut ctx);
 }
 

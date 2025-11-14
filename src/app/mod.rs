@@ -981,7 +981,7 @@ impl App {
                 self.material_registry.material_source(key).map(|path| (key.to_string(), path.to_string()))
             })
             .collect();
-        let Some(mut scene) = self.ecs.export_prefab_with_sources(
+        let Some(scene) = self.ecs.export_prefab_with_sources(
             request.entity,
             &self.assets,
             |key| mesh_source_map.get(key).cloned(),
@@ -2019,10 +2019,7 @@ impl ApplicationHandler for App {
         self.accumulator += dt;
         if self.accumulator > MAX_FIXED_TIMESTEP_BACKLOG {
             let dropped = self.accumulator - MAX_FIXED_TIMESTEP_BACKLOG;
-            eprintln!(
-                "[time] Dropping {:.3}s of fixed-step backlog to maintain responsiveness",
-                dropped
-            );
+            eprintln!("[time] Dropping {:.3}s of fixed-step backlog to maintain responsiveness", dropped);
             self.accumulator = MAX_FIXED_TIMESTEP_BACKLOG;
         }
         self.ecs.profiler_begin_frame();
@@ -2056,10 +2053,14 @@ impl ApplicationHandler for App {
 
         self.with_plugins(|plugins, ctx| plugins.update(ctx, dt));
         let capability_metrics = self.plugin_host.capability_metrics();
+        let capability_events = self.plugin_host.drain_capability_events();
         let watchdog_alerts = self.plugin_host.drain_watchdog_events();
         let asset_readback_alerts = self.plugin_host.drain_asset_readback_events();
         if let Some(analytics) = self.analytics_plugin_mut() {
             analytics.record_plugin_capability_metrics(capability_metrics);
+            if !capability_events.is_empty() {
+                analytics.record_plugin_capability_events(capability_events);
+            }
             if !asset_readback_alerts.is_empty() {
                 analytics.record_plugin_asset_readbacks(asset_readback_alerts);
             }

@@ -374,8 +374,7 @@ mod tests {
         let mut buffer = Vec::new();
         send_frame(&mut buffer, &request).expect("request serialized");
         let mut cursor = Cursor::new(buffer);
-        let decoded: PluginHostRequest =
-            recv_frame(&mut cursor).expect("request decoded without corruption");
+        let decoded: PluginHostRequest = recv_frame(&mut cursor).expect("request decoded without corruption");
         match decoded {
             PluginHostRequest::ReadComponents(payload) => {
                 assert_eq!(payload.request_id, 7);

@@ -1,8 +1,8 @@
 use crate::plugins::{
     apply_manifest_builtin_toggles, apply_manifest_dynamic_toggles, AssetReadbackStats,
     CapabilityViolationLog, EnginePlugin, ManifestBuiltinToggle, ManifestBuiltinToggleOutcome,
-    ManifestDynamicToggle, ManifestDynamicToggleOutcome, PluginAssetReadbackEvent, PluginContext,
-    PluginManager, PluginManifest, PluginStatus, PluginWatchdogEvent,
+    ManifestDynamicToggle, ManifestDynamicToggleOutcome, PluginAssetReadbackEvent, PluginCapabilityEvent,
+    PluginContext, PluginManager, PluginManifest, PluginStatus, PluginWatchdogEvent,
 };
 use anyhow::{anyhow, Result};
 use std::collections::{HashMap, HashSet};
@@ -98,6 +98,10 @@ impl PluginHost {
 
     pub(crate) fn drain_asset_readback_events(&mut self) -> Vec<PluginAssetReadbackEvent> {
         self.manager.drain_asset_readback_events()
+    }
+
+    pub(crate) fn drain_capability_events(&mut self) -> Vec<PluginCapabilityEvent> {
+        self.manager.drain_capability_events()
     }
 
     pub(crate) fn has_asset_readback_request(&self, plugin_name: &str) -> bool {

@@ -258,16 +258,7 @@ impl CliOptions {
         }
         let manifest = manifest.ok_or_else(|| anyhow!("--manifest is required"))?;
         let plugin = plugin.ok_or_else(|| anyhow!("--plugin is required"))?;
-        Ok(Self {
-            manifest,
-            plugin,
-            steps,
-            dt,
-            entity_bits,
-            watchdog_ms,
-            asset_readbacks,
-            fail_on_throttle,
-        })
+        Ok(Self { manifest, plugin, steps, dt, entity_bits, watchdog_ms, asset_readbacks, fail_on_throttle })
     }
 }
 
@@ -278,9 +269,8 @@ fn print_usage() {
 }
 
 fn parse_asset_readback_spec(spec: &str) -> Result<RpcAssetReadbackPayload> {
-    let (kind, value) = spec
-        .split_once('=')
-        .ok_or_else(|| anyhow!("asset readback spec must use kind=value syntax"))?;
+    let (kind, value) =
+        spec.split_once('=').ok_or_else(|| anyhow!("asset readback spec must use kind=value syntax"))?;
     match kind {
         "atlas-meta" | "atlas_meta" => Ok(RpcAssetReadbackPayload::AtlasMeta { atlas_id: value.to_string() }),
         "atlas-binary" | "atlas_binary" => {
@@ -299,11 +289,7 @@ fn parse_asset_readback_spec(spec: &str) -> Result<RpcAssetReadbackPayload> {
                 .ok_or_else(|| anyhow!("blob spec missing length"))?
                 .parse()
                 .context("blob length must be u64")?;
-            Ok(RpcAssetReadbackPayload::BlobRange {
-                blob_id: blob_id.to_string(),
-                offset,
-                length,
-            })
+            Ok(RpcAssetReadbackPayload::BlobRange { blob_id: blob_id.to_string(), offset, length })
         }
         _ => Err(anyhow!("unknown asset readback kind '{kind}'")),
     }

@@ -162,6 +162,14 @@ fn default_capability_flags() -> CapabilityFlags {
 pub struct CapabilityViolationLog {
     pub count: u64,
     pub last_capability: Option<PluginCapability>,
+    pub last_timestamp: Option<SystemTime>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PluginCapabilityEvent {
+    pub plugin: String,
+    pub capability: PluginCapability,
+    pub timestamp: SystemTime,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -306,27 +314,61 @@ impl From<RpcSpriteInfo> for RemoteSpriteInfo {
     }
 }
 
-#[derive(Clone)]
-struct CapabilityTracker(Rc<RefCell<HashMap<String, CapabilityViolationLog>>>);
+#[derive(Default)]
+struct CapabilityTrackerInner {
+    metrics: HashMap<String, CapabilityViolationLog>,
+    events: VecDeque<PluginCapabilityEvent>,
+}
 
-impl CapabilityTracker {
-    fn new() -> Self {
-        Self(Rc::new(RefCell::new(HashMap::new())))
+impl CapabilityTrackerInner {
+    fn register(&mut self, name: &str) {
+        self.metrics.entry(name.to_string()).or_default();
     }
 
-    fn register(&self, name: &str) {
-        self.0.borrow_mut().entry(name.to_string()).or_default();
-    }
-
-    fn log_violation(&self, name: &str, capability: PluginCapability) {
-        let mut log = self.0.borrow_mut();
-        let entry = log.entry(name.to_string()).or_default();
+    fn log_violation(&mut self, name: &str, capability: PluginCapability) {
+        let timestamp = SystemTime::now();
+        let entry = self.metrics.entry(name.to_string()).or_default();
         entry.count += 1;
         entry.last_capability = Some(capability);
+        entry.last_timestamp = Some(timestamp);
+        self.events.push_front(PluginCapabilityEvent { plugin: name.to_string(), capability, timestamp });
+        const CAPABILITY_EVENT_CAPACITY: usize = 64;
+        while self.events.len() > CAPABILITY_EVENT_CAPACITY {
+            self.events.pop_back();
+        }
     }
 
     fn snapshot(&self) -> HashMap<String, CapabilityViolationLog> {
-        self.0.borrow().clone()
+        self.metrics.clone()
+    }
+
+    fn drain_events(&mut self) -> Vec<PluginCapabilityEvent> {
+        self.events.drain(..).collect()
+    }
+}
+
+#[derive(Clone)]
+struct CapabilityTracker(Rc<RefCell<CapabilityTrackerInner>>);
+
+impl CapabilityTracker {
+    fn new() -> Self {
+        Self(Rc::new(RefCell::new(CapabilityTrackerInner::default())))
+    }
+
+    fn register(&self, name: &str) {
+        self.0.borrow_mut().register(name);
+    }
+
+    fn log_violation(&self, name: &str, capability: PluginCapability) {
+        self.0.borrow_mut().log_violation(name, capability);
+    }
+
+    fn snapshot(&self) -> HashMap<String, CapabilityViolationLog> {
+        self.0.borrow().snapshot()
+    }
+
+    fn drain_events(&self) -> Vec<PluginCapabilityEvent> {
+        self.0.borrow_mut().drain_events()
     }
 }
 
@@ -823,6 +865,10 @@ impl PluginManager {
 
     pub fn capability_metrics(&self) -> HashMap<String, CapabilityViolationLog> {
         self.capability_tracker.snapshot()
+    }
+
+    pub fn drain_capability_events(&mut self) -> Vec<PluginCapabilityEvent> {
+        self.capability_tracker.drain_events()
     }
 
     pub fn asset_readback_metrics(&self) -> HashMap<String, AssetReadbackStats> {

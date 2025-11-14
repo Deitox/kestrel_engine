@@ -10,6 +10,7 @@ struct ExampleDynamicPlugin {
     fired_events: u32,
     watchdog_sleep_ms: Option<u64>,
     watchdog_armed: bool,
+    force_renderer_violation: bool,
 }
 
 impl EnginePlugin for ExampleDynamicPlugin {
@@ -28,6 +29,10 @@ impl EnginePlugin for ExampleDynamicPlugin {
                 self.watchdog_sleep_ms = Some(parsed);
             }
         }
+        if let Ok(value) = std::env::var("EXAMPLE_DYNAMIC_FORCE_RENDERER_VIOLATION") {
+            self.force_renderer_violation =
+                value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes");
+        }
         Ok(())
     }
 
@@ -37,6 +42,9 @@ impl EnginePlugin for ExampleDynamicPlugin {
                 self.watchdog_armed = true;
                 std::thread::sleep(Duration::from_millis(ms));
             }
+        }
+        if self.force_renderer_violation {
+            let _ = ctx.renderer_mut();
         }
         self.elapsed += dt;
         if self.elapsed > 1.0 {

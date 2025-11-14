@@ -93,6 +93,7 @@
     - Loader errors such as `Clip keyframe time cannot be negative` or `Clip keyframe contains non-finite rotation value` point directly at the offending keyframe index.
     - If a clip fails to appear in the inspector list, confirm the asset was retained (`AssetManager::retain_clip`) and that the scene/prefab dependency points at the JSON path.
     - Scene and prefab exports automatically record transform clip dependencies; when moving clip JSON files, update the retained path so round-trip loads can resolve them without manual fixes.
+    - Prefab exports now embed mesh and material source paths for any assets currently loaded in the editor, so instantiating a prefab in a fresh session will automatically reload the referenced GLTF/material definitions rather than depending on another scene to keep them alive.
     - Performance budget for this milestone is <= 0.40 ms CPU for 2 000 active clips; trigger `cargo test --release animation_targets_measure -- --ignored --nocapture` when you need a fresh measurement. Use `python scripts/capture_sprite_perf.py --label clips_baseline --runs 3` to gather both the averaged bench artefacts and the anim_stats per-step log/JSON pair for later comparison.
 
 ## Skeletal Animation Pipeline
