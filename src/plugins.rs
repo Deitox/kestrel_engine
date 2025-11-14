@@ -9,6 +9,7 @@ use crate::renderer::Renderer;
 use crate::time::Time;
 use anyhow::{anyhow, bail, Context, Result};
 use bevy_ecs::prelude::Entity;
+use bitflags::bitflags;
 use libloading::Library;
 use serde::{Deserialize, Serialize};
 use std::any::Any;
@@ -37,6 +38,90 @@ const DEFAULT_ENGINE_FEATURES: &[&str] = &[
 
 pub const ENGINE_PLUGIN_API_VERSION: u32 = 1;
 pub const PLUGIN_ENTRY_SYMBOL: &[u8] = b"kestrel_plugin_entry\0";
+
+bitflags! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub struct CapabilityFlags: u32 {
+        const RENDERER = 1 << 0;
+        const ECS = 1 << 1;
+        const ASSETS = 1 << 2;
+        const INPUT = 1 << 3;
+        const SCRIPTS = 1 << 4;
+        const ANALYTICS = 1 << 5;
+        const TIME = 1 << 6;
+        const EVENTS = 1 << 7;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginCapability {
+    Renderer,
+    Ecs,
+    Assets,
+    Input,
+    Scripts,
+    Analytics,
+    Time,
+    Events,
+    All,
+}
+
+impl PluginCapability {
+    fn flag(self) -> CapabilityFlags {
+        match self {
+            PluginCapability::Renderer => CapabilityFlags::RENDERER,
+            PluginCapability::Ecs => CapabilityFlags::ECS,
+            PluginCapability::Assets => CapabilityFlags::ASSETS,
+            PluginCapability::Input => CapabilityFlags::INPUT,
+            PluginCapability::Scripts => CapabilityFlags::SCRIPTS,
+            PluginCapability::Analytics => CapabilityFlags::ANALYTICS,
+            PluginCapability::Time => CapabilityFlags::TIME,
+            PluginCapability::Events => CapabilityFlags::EVENTS,
+            PluginCapability::All => CapabilityFlags::all(),
+        }
+    }
+}
+
+impl From<&[PluginCapability]> for CapabilityFlags {
+    fn from(list: &[PluginCapability]) -> Self {
+        if list.is_empty() {
+            default_capability_flags()
+        } else if list.iter().any(|cap| matches!(cap, PluginCapability::All)) {
+            CapabilityFlags::all()
+        } else {
+            list.iter().fold(CapabilityFlags::empty(), |acc, cap| acc | cap.flag())
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginTrust {
+    Full,
+    Isolated,
+}
+
+impl Default for PluginTrust {
+    fn default() -> Self {
+        PluginTrust::Full
+    }
+}
+
+fn default_capabilities() -> Vec<PluginCapability> {
+    vec![
+        PluginCapability::Renderer,
+        PluginCapability::Ecs,
+        PluginCapability::Assets,
+        PluginCapability::Input,
+        PluginCapability::Events,
+        PluginCapability::Time,
+    ]
+}
+
+fn default_capability_flags() -> CapabilityFlags {
+    CapabilityFlags::from(default_capabilities().as_slice())
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -148,17 +233,20 @@ impl FeatureRegistryHandle {
 }
 
 pub struct PluginContext<'a> {
-    pub renderer: &'a mut Renderer,
-    pub ecs: &'a mut EcsWorld,
-    pub assets: &'a mut AssetManager,
-    pub input: &'a mut Input,
-    pub material_registry: &'a mut MaterialRegistry,
-    pub mesh_registry: &'a mut MeshRegistry,
-    pub environment_registry: &'a mut EnvironmentRegistry,
-    pub time: &'a Time,
-    pub selected_entity: Option<Entity>,
+    renderer: &'a mut Renderer,
+    ecs: &'a mut EcsWorld,
+    assets: &'a mut AssetManager,
+    input: &'a mut Input,
+    material_registry: &'a mut MaterialRegistry,
+    mesh_registry: &'a mut MeshRegistry,
+    environment_registry: &'a mut EnvironmentRegistry,
+    time: &'a Time,
+    selected_entity: Option<Entity>,
     feature_registry: FeatureRegistryHandle,
     emit_event: fn(&mut EcsWorld, GameEvent),
+    active_capabilities: CapabilityFlags,
+    active_trust: PluginTrust,
+    active_plugin: Option<String>,
 }
 
 impl<'a> PluginContext<'a> {
@@ -188,6 +276,9 @@ impl<'a> PluginContext<'a> {
             selected_entity,
             feature_registry,
             emit_event,
+            active_capabilities: CapabilityFlags::all(),
+            active_trust: PluginTrust::Full,
+            active_plugin: None,
         }
     }
 
@@ -199,20 +290,133 @@ impl<'a> PluginContext<'a> {
         self.feature_registry.borrow_mut()
     }
 
-    pub fn emit_event(&mut self, event: GameEvent) {
+    pub fn renderer_mut(&mut self) -> Result<&mut Renderer, CapabilityError> {
+        self.require_capability(PluginCapability::Renderer)?;
+        Ok(&mut *self.renderer)
+    }
+
+    pub fn ecs_mut(&mut self) -> Result<&mut EcsWorld, CapabilityError> {
+        self.require_capability(PluginCapability::Ecs)?;
+        Ok(&mut *self.ecs)
+    }
+
+    pub fn ecs(&self) -> Result<&EcsWorld, CapabilityError> {
+        self.require_capability(PluginCapability::Ecs)?;
+        Ok(&*self.ecs)
+    }
+
+    pub fn assets_mut(&mut self) -> Result<&mut AssetManager, CapabilityError> {
+        self.require_capability(PluginCapability::Assets)?;
+        Ok(&mut *self.assets)
+    }
+
+    pub fn assets(&self) -> Result<&AssetManager, CapabilityError> {
+        self.require_capability(PluginCapability::Assets)?;
+        Ok(&*self.assets)
+    }
+
+    pub fn input_mut(&mut self) -> Result<&mut Input, CapabilityError> {
+        self.require_capability(PluginCapability::Input)?;
+        Ok(&mut *self.input)
+    }
+
+    pub fn input(&self) -> Result<&Input, CapabilityError> {
+        self.require_capability(PluginCapability::Input)?;
+        Ok(&*self.input)
+    }
+
+    pub fn mesh_registry_mut(&mut self) -> Result<&mut MeshRegistry, CapabilityError> {
+        self.require_capability(PluginCapability::Assets)?;
+        Ok(&mut *self.mesh_registry)
+    }
+
+    pub fn mesh_registry(&self) -> Result<&MeshRegistry, CapabilityError> {
+        self.require_capability(PluginCapability::Assets)?;
+        Ok(&*self.mesh_registry)
+    }
+
+    pub fn material_registry_mut(&mut self) -> Result<&mut MaterialRegistry, CapabilityError> {
+        self.require_capability(PluginCapability::Assets)?;
+        Ok(&mut *self.material_registry)
+    }
+
+    pub fn material_registry(&self) -> Result<&MaterialRegistry, CapabilityError> {
+        self.require_capability(PluginCapability::Assets)?;
+        Ok(&*self.material_registry)
+    }
+
+    pub fn mesh_registry_and_renderer(
+        &mut self,
+    ) -> Result<(&mut MeshRegistry, &mut Renderer), CapabilityError> {
+        self.require_capability(PluginCapability::Assets)?;
+        self.require_capability(PluginCapability::Renderer)?;
+        Ok((&mut *self.mesh_registry, &mut *self.renderer))
+    }
+
+    pub fn mesh_registry_and_materials(
+        &mut self,
+    ) -> Result<(&mut MeshRegistry, &mut MaterialRegistry), CapabilityError> {
+        self.require_capability(PluginCapability::Assets)?;
+        Ok((&mut *self.mesh_registry, &mut *self.material_registry))
+    }
+
+    pub fn environment_registry_mut(&mut self) -> Result<&mut EnvironmentRegistry, CapabilityError> {
+        self.require_capability(PluginCapability::Renderer)?;
+        Ok(&mut *self.environment_registry)
+    }
+
+    pub fn time(&self) -> Result<&Time, CapabilityError> {
+        self.require_capability(PluginCapability::Time)?;
+        Ok(self.time)
+    }
+
+    pub fn selected_entity(&self) -> Option<Entity> {
+        self.selected_entity
+    }
+
+    pub fn emit_event(&mut self, event: GameEvent) -> Result<(), CapabilityError> {
+        self.require_capability(PluginCapability::Events)?;
         (self.emit_event)(self.ecs, event);
+        Ok(())
     }
 
-    pub fn emit_script_message(&mut self, message: impl Into<String>) {
-        self.emit_event(GameEvent::ScriptMessage { message: message.into() });
+    pub fn emit_script_message(&mut self, message: impl Into<String>) -> Result<(), CapabilityError> {
+        self.emit_event(GameEvent::ScriptMessage { message: message.into() })
     }
 
-    pub fn renderer_api(&mut self) -> RendererApi<'_> {
-        RendererApi { renderer: self.renderer }
+    pub fn renderer_api(&mut self) -> Result<RendererApi<'_>, CapabilityError> {
+        let renderer = self.renderer_mut()?;
+        Ok(RendererApi { renderer })
     }
 
-    pub fn assets_api(&mut self) -> AssetApi<'_> {
-        AssetApi { assets: self.assets }
+    pub fn assets_api(&mut self) -> Result<AssetApi<'_>, CapabilityError> {
+        let assets = self.assets_mut()?;
+        Ok(AssetApi { assets })
+    }
+
+    pub(crate) fn set_active_plugin(
+        &mut self,
+        name: &str,
+        capabilities: CapabilityFlags,
+        trust: PluginTrust,
+    ) {
+        self.active_plugin = Some(name.to_string());
+        self.active_capabilities = capabilities;
+        self.active_trust = trust;
+    }
+
+    pub(crate) fn clear_active_plugin(&mut self) {
+        self.active_plugin = None;
+        self.active_capabilities = CapabilityFlags::all();
+        self.active_trust = PluginTrust::Full;
+    }
+
+    fn require_capability(&self, capability: PluginCapability) -> Result<(), CapabilityError> {
+        if self.active_capabilities.contains(capability.flag()) {
+            Ok(())
+        } else {
+            Err(CapabilityError::new(self.active_plugin.as_deref(), capability))
+        }
     }
 }
 
@@ -239,6 +443,30 @@ impl<'a> AssetApi<'a> {
         self.assets.release_atlas(key);
     }
 }
+
+#[derive(Debug)]
+pub struct CapabilityError {
+    plugin: Option<String>,
+    capability: PluginCapability,
+}
+
+impl CapabilityError {
+    fn new(plugin: Option<&str>, capability: PluginCapability) -> Self {
+        Self { plugin: plugin.map(|s| s.to_string()), capability }
+    }
+}
+
+impl std::fmt::Display for CapabilityError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(name) = &self.plugin {
+            write!(f, "plugin '{name}' requested capability {:?}", self.capability)
+        } else {
+            write!(f, "plugin requested capability {:?}", self.capability)
+        }
+    }
+}
+
+impl std::error::Error for CapabilityError {}
 
 pub trait EnginePlugin: Any + 'static {
     fn name(&self) -> &'static str;
@@ -289,6 +517,8 @@ pub struct PluginStatus {
     pub dynamic: bool,
     pub provides: Vec<String>,
     pub depends_on: Vec<String>,
+    pub capabilities: Vec<PluginCapability>,
+    pub trust: PluginTrust,
     pub state: PluginState,
 }
 
@@ -305,6 +535,9 @@ struct PluginSlot {
     provides: Vec<String>,
     depends_on: Vec<String>,
     dynamic: bool,
+    trust: PluginTrust,
+    capabilities: CapabilityFlags,
+    capability_list: Vec<PluginCapability>,
     _library: Option<Library>,
 }
 
@@ -325,7 +558,7 @@ impl PluginManager {
     }
 
     pub fn register(&mut self, plugin: Box<dyn EnginePlugin>, ctx: &mut PluginContext<'_>) -> Result<()> {
-        self.insert_plugin(plugin, None, false, Vec::new(), ctx)
+        self.insert_plugin(plugin, None, false, Vec::new(), default_capabilities(), PluginTrust::Full, ctx)
     }
 
     pub fn register_with_features(
@@ -334,7 +567,17 @@ impl PluginManager {
         provides: Vec<String>,
         ctx: &mut PluginContext<'_>,
     ) -> Result<()> {
-        self.insert_plugin(plugin, None, false, provides, ctx)
+        self.insert_plugin(plugin, None, false, provides, default_capabilities(), PluginTrust::Full, ctx)
+    }
+
+    pub fn register_with_capabilities(
+        &mut self,
+        plugin: Box<dyn EnginePlugin>,
+        provides: Vec<String>,
+        capabilities: Vec<PluginCapability>,
+        ctx: &mut PluginContext<'_>,
+    ) -> Result<()> {
+        self.insert_plugin(plugin, None, false, provides, capabilities, PluginTrust::Full, ctx)
     }
 
     pub fn load_manifest(path: impl AsRef<Path>) -> Result<Option<PluginManifest>> {
@@ -357,11 +600,15 @@ impl PluginManager {
                         dynamic: true,
                         provides: slot.provides.clone(),
                         depends_on: slot.depends_on.clone(),
+                        capabilities: slot.capability_list.clone(),
+                        trust: slot.trust,
                         state: PluginState::Loaded,
                     });
                 }
                 continue;
             }
+            let entry_caps = entry.capabilities.clone();
+            let entry_trust = entry.trust;
             if !entry.enabled {
                 self.statuses.push(PluginStatus {
                     name: entry.name.clone(),
@@ -369,6 +616,8 @@ impl PluginManager {
                     dynamic: true,
                     provides: entry.provides_features.clone(),
                     depends_on: Vec::new(),
+                    capabilities: entry_caps.clone(),
+                    trust: entry_trust,
                     state: PluginState::Disabled("disabled in manifest".to_string()),
                 });
                 continue;
@@ -380,6 +629,8 @@ impl PluginManager {
                     dynamic: true,
                     provides: entry.provides_features.clone(),
                     depends_on: Vec::new(),
+                    capabilities: entry_caps.clone(),
+                    trust: entry_trust,
                     state: PluginState::Failed("missing plugin path".to_string()),
                 });
                 continue;
@@ -397,6 +648,8 @@ impl PluginManager {
                     dynamic: true,
                     provides: entry.provides_features.clone(),
                     depends_on: Vec::new(),
+                    capabilities: entry_caps.clone(),
+                    trust: entry_trust,
                     state: PluginState::Disabled(msg.clone()),
                 });
                 eprintln!("[plugin:{}] {msg}", entry.name);
@@ -411,6 +664,8 @@ impl PluginManager {
                         dynamic: true,
                         provides: entry.provides_features.clone(),
                         depends_on: Vec::new(),
+                        capabilities: entry_caps.clone(),
+                        trust: entry_trust,
                         state: PluginState::Failed(err.to_string()),
                     });
                 }
@@ -426,23 +681,29 @@ impl PluginManager {
             dynamic: false,
             provides: Vec::new(),
             depends_on: Vec::new(),
+            capabilities: default_capabilities(),
+            trust: PluginTrust::Full,
             state: PluginState::Disabled(reason.to_string()),
         });
     }
 
     pub fn update(&mut self, ctx: &mut PluginContext<'_>, dt: f32) {
         for slot in &mut self.plugins {
+            ctx.set_active_plugin(&slot.name, slot.capabilities, slot.trust);
             if let Err(err) = slot.plugin.update(ctx, dt) {
                 eprintln!("[plugin:{}] update failed: {err:?}", slot.name);
             }
+            ctx.clear_active_plugin();
         }
     }
 
     pub fn fixed_update(&mut self, ctx: &mut PluginContext<'_>, dt: f32) {
         for slot in &mut self.plugins {
+            ctx.set_active_plugin(&slot.name, slot.capabilities, slot.trust);
             if let Err(err) = slot.plugin.fixed_update(ctx, dt) {
                 eprintln!("[plugin:{}] fixed_update failed: {err:?}", slot.name);
             }
+            ctx.clear_active_plugin();
         }
     }
 
@@ -451,17 +712,21 @@ impl PluginManager {
             return;
         }
         for slot in &mut self.plugins {
+            ctx.set_active_plugin(&slot.name, slot.capabilities, slot.trust);
             if let Err(err) = slot.plugin.on_events(ctx, events) {
                 eprintln!("[plugin:{}] event hook failed: {err:?}", slot.name);
             }
+            ctx.clear_active_plugin();
         }
     }
 
     pub fn shutdown(&mut self, ctx: &mut PluginContext<'_>) {
         for slot in &mut self.plugins {
+            ctx.set_active_plugin(&slot.name, slot.capabilities, slot.trust);
             if let Err(err) = slot.plugin.shutdown(ctx) {
                 eprintln!("[plugin:{}] shutdown failed: {err:?}", slot.name);
             }
+            ctx.clear_active_plugin();
         }
     }
 
@@ -491,9 +756,11 @@ impl PluginManager {
         let mut retained = Vec::with_capacity(self.plugins.len());
         for mut slot in self.plugins.drain(..) {
             if slot.dynamic {
+                ctx.set_active_plugin(&slot.name, slot.capabilities, slot.trust);
                 if let Err(err) = slot.plugin.shutdown(ctx) {
                     eprintln!("[plugin:{}] shutdown failed during unload: {err:?}", slot.name);
                 }
+                ctx.clear_active_plugin();
                 self.loaded_names.remove(&slot.name);
                 removed_features.extend(slot.provides.clone());
             } else {
@@ -532,6 +799,8 @@ impl PluginManager {
         library: Option<Library>,
         is_dynamic: bool,
         provides: Vec<String>,
+        capabilities: Vec<PluginCapability>,
+        trust: PluginTrust,
         ctx: &mut PluginContext<'_>,
     ) -> Result<()> {
         let name = plugin.name().to_string();
@@ -539,7 +808,11 @@ impl PluginManager {
             bail!("plugin '{name}' already registered");
         }
         self.ensure_dependencies(plugin.depends_on(), &name)?;
-        plugin.build(ctx)?;
+        let capability_flags = CapabilityFlags::from(capabilities.as_slice());
+        ctx.set_active_plugin(&name, capability_flags, trust);
+        let build_result = plugin.build(ctx);
+        ctx.clear_active_plugin();
+        build_result?;
         let version = plugin.version().to_string();
         let depends = plugin.depends_on().iter().map(|s| s.to_string()).collect::<Vec<_>>();
         {
@@ -553,6 +826,8 @@ impl PluginManager {
             dynamic: is_dynamic,
             provides: provides.clone(),
             depends_on: depends.clone(),
+            capabilities: capabilities.clone(),
+            trust,
             state: PluginState::Loaded,
         });
         self.plugins.push(PluginSlot {
@@ -561,6 +836,9 @@ impl PluginManager {
             provides,
             depends_on: depends,
             dynamic: is_dynamic,
+            trust,
+            capabilities: capability_flags,
+            capability_list: capabilities,
             _library: library,
         });
         Ok(())
@@ -624,7 +902,15 @@ impl PluginManager {
         }
         let plugin = unsafe { handle.into_box() };
 
-        self.insert_plugin(plugin, Some(library), true, entry.provides_features.clone(), ctx)?;
+        self.insert_plugin(
+            plugin,
+            Some(library),
+            true,
+            entry.provides_features.clone(),
+            entry.capabilities.clone(),
+            entry.trust,
+            ctx,
+        )?;
         Ok(entry.name.clone())
     }
 
@@ -721,6 +1007,10 @@ pub struct PluginManifestEntry {
     pub requires_features: Vec<String>,
     #[serde(default)]
     pub provides_features: Vec<String>,
+    #[serde(default = "default_capabilities")]
+    pub capabilities: Vec<PluginCapability>,
+    #[serde(default)]
+    pub trust: PluginTrust,
 }
 
 fn default_enabled() -> bool {

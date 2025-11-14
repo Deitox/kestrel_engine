@@ -235,11 +235,13 @@ impl MeshPreviewPlugin {
         (self.mesh_camera.target - self.mesh_camera.position).normalize_or_zero()
     }
 
-    pub fn ensure_preview_gpu(&mut self, ctx: &mut PluginContext<'_>) {
-        if let Err(err) = ctx.mesh_registry.ensure_gpu(self.preview_mesh_key(), ctx.renderer) {
+    pub fn ensure_preview_gpu(&mut self, ctx: &mut PluginContext<'_>) -> Result<()> {
+        let (mesh_registry, renderer) = ctx.mesh_registry_and_renderer()?;
+        if let Err(err) = mesh_registry.ensure_gpu(self.preview_mesh_key(), renderer) {
             eprintln!("Failed to upload preview mesh '{}': {err:?}", self.preview_mesh_key());
             self.mesh_status = Some(format!("Mesh upload failed: {err}"));
         }
+        Ok(())
     }
 
     pub fn capture_preview_camera(&self) -> ScenePreviewCamera {
@@ -317,9 +319,13 @@ impl MeshPreviewPlugin {
         self.mesh_status = Some("Frustum focus updated.".to_string());
     }
 
-    pub fn set_mesh_control_mode(&mut self, ctx: &mut PluginContext<'_>, mode: MeshControlMode) {
+    pub fn set_mesh_control_mode(
+        &mut self,
+        ctx: &mut PluginContext<'_>,
+        mode: MeshControlMode,
+    ) -> Result<()> {
         if self.mesh_control_mode == mode {
-            return;
+            return Ok(());
         }
         self.mesh_freefly_velocity = Vec3::ZERO;
         self.mesh_freefly_rot_velocity = Vec3::ZERO;
@@ -337,20 +343,24 @@ impl MeshPreviewPlugin {
         }
         self.mesh_control_mode = mode;
         self.mesh_status = Some(mode.status_message().to_string());
-        ctx.input.wheel = 0.0;
-        ctx.input.mouse_delta = (0.0, 0.0);
+        {
+            let input = ctx.input_mut()?;
+            input.wheel = 0.0;
+            input.mouse_delta = (0.0, 0.0);
+        }
         if self.mesh_frustum_lock {
             self.mesh_frustum_distance =
                 (self.mesh_camera.position - self.mesh_frustum_focus).length().max(0.1);
         }
+        Ok(())
     }
 
-    pub fn set_frustum_lock(&mut self, ctx: &mut PluginContext<'_>, enabled: bool) {
+    pub fn set_frustum_lock(&mut self, ctx: &mut PluginContext<'_>, enabled: bool) -> Result<()> {
         if self.mesh_frustum_lock == enabled {
-            return;
+            return Ok(());
         }
         if enabled {
-            let focus = self.compute_focus_point(ctx);
+            let focus = self.compute_focus_point(ctx)?;
             self.mesh_frustum_focus = focus;
             self.mesh_frustum_distance = (self.mesh_camera.position - focus).length().max(0.1);
             if self.mesh_control_mode == MeshControlMode::Freefly {
@@ -371,9 +381,10 @@ impl MeshPreviewPlugin {
         self.mesh_frustum_lock = enabled;
         self.mesh_freefly_velocity = Vec3::ZERO;
         self.mesh_freefly_rot_velocity = Vec3::ZERO;
+        Ok(())
     }
 
-    pub fn reset_mesh_camera(&mut self, ctx: &mut PluginContext<'_>) {
+    pub fn reset_mesh_camera(&mut self, ctx: &mut PluginContext<'_>) -> Result<()> {
         let radius = self.mesh_orbit.radius;
         self.mesh_orbit = OrbitCamera::new(self.mesh_orbit.target, radius);
         self.mesh_camera =
@@ -386,13 +397,14 @@ impl MeshPreviewPlugin {
             self.mesh_camera = self.mesh_freefly.to_camera();
         }
         if self.mesh_frustum_lock {
-            self.mesh_frustum_focus = self.compute_focus_point(ctx);
+            self.mesh_frustum_focus = self.compute_focus_point(ctx)?;
             self.mesh_frustum_distance =
                 (self.mesh_camera.position - self.mesh_frustum_focus).length().max(0.1);
         } else {
             self.mesh_frustum_distance = self.mesh_orbit.radius;
         }
         self.mesh_status = Some("Mesh camera reset.".to_string());
+        Ok(())
     }
 
     pub fn set_preview_mesh(
@@ -400,48 +412,57 @@ impl MeshPreviewPlugin {
         ctx: &mut PluginContext<'_>,
         scene_material_refs: &HashSet<String>,
         new_key: String,
-    ) {
+    ) -> Result<()> {
         if new_key == self.preview_mesh_key {
-            return;
+            return Ok(());
         }
         let source_path =
-            ctx.mesh_registry.mesh_source(&new_key).map(|path| path.to_string_lossy().into_owned());
-        match ctx.mesh_registry.retain_mesh(&new_key, source_path.as_deref(), ctx.material_registry) {
+            ctx.mesh_registry()?.mesh_source(&new_key).map(|path| path.to_string_lossy().into_owned());
+        let retain_result = {
+            let (mesh_registry, material_registry) = ctx.mesh_registry_and_materials()?;
+            mesh_registry.retain_mesh(&new_key, source_path.as_deref(), material_registry)
+        };
+        match retain_result {
             Ok(()) => {
                 let previous = std::mem::replace(&mut self.preview_mesh_key, new_key.clone());
                 let previous_materials: Vec<String> = ctx
-                    .mesh_registry
+                    .mesh_registry()?
                     .mesh_subsets(&previous)
                     .map(|subs| subs.iter().filter_map(|subset| subset.material.clone()).collect())
                     .unwrap_or_default();
                 let new_materials: Vec<String> = ctx
-                    .mesh_registry
+                    .mesh_registry()?
                     .mesh_subsets(&new_key)
                     .map(|subs| subs.iter().filter_map(|subset| subset.material.clone()).collect())
                     .unwrap_or_default();
 
                 self.persistent_meshes.insert(new_key.clone());
                 if self.persistent_meshes.remove(&previous) {
-                    ctx.mesh_registry.release_mesh(&previous);
+                    ctx.mesh_registry_mut()?.release_mesh(&previous);
                 }
 
-                for material in &new_materials {
-                    if let Err(err) = ctx.material_registry.retain(material) {
-                        self.mesh_status = Some(format!("Material retain failed: {err}"));
-                    } else {
-                        self.persistent_materials.insert(material.clone());
+                {
+                    let material_registry = ctx.material_registry_mut()?;
+                    for material in &new_materials {
+                        if let Err(err) = material_registry.retain(material) {
+                            self.mesh_status = Some(format!("Material retain failed: {err}"));
+                        } else {
+                            self.persistent_materials.insert(material.clone());
+                        }
                     }
-                }
 
-                for material in previous_materials {
-                    if self.persistent_materials.remove(&material) && !scene_material_refs.contains(&material)
-                    {
-                        ctx.material_registry.release(&material);
+                    for material in previous_materials {
+                        if self.persistent_materials.remove(&material)
+                            && !scene_material_refs.contains(&material)
+                        {
+                            material_registry.release(&material);
+                        }
                     }
                 }
 
                 self.mesh_status = Some(format!("Preview mesh: {}", new_key));
-                if let Err(err) = ctx.mesh_registry.ensure_gpu(&self.preview_mesh_key, ctx.renderer) {
+                let (mesh_registry, renderer) = ctx.mesh_registry_and_renderer()?;
+                if let Err(err) = mesh_registry.ensure_gpu(&self.preview_mesh_key, renderer) {
                     self.mesh_status = Some(format!("Mesh upload failed: {err}"));
                 }
             }
@@ -449,57 +470,80 @@ impl MeshPreviewPlugin {
                 self.mesh_status = Some(format!("Mesh '{}' unavailable: {err}", new_key));
             }
         }
+        Ok(())
     }
 
-    pub fn spawn_mesh_entity(&mut self, ctx: &mut PluginContext<'_>, mesh_key: &str) -> Option<Entity> {
-        if let Err(err) = ctx.mesh_registry.ensure_mesh(mesh_key, None, ctx.material_registry) {
-            self.mesh_status = Some(format!("Mesh '{}' unavailable: {err}", mesh_key));
-            return None;
+    pub fn spawn_mesh_entity(
+        &mut self,
+        ctx: &mut PluginContext<'_>,
+        mesh_key: &str,
+    ) -> Result<Option<Entity>> {
+        {
+            let (mesh_registry, material_registry) = ctx.mesh_registry_and_materials()?;
+            if let Err(err) = mesh_registry.ensure_mesh(mesh_key, None, material_registry) {
+                self.mesh_status = Some(format!("Mesh '{}' unavailable: {err}", mesh_key));
+                return Ok(None);
+            }
         }
-        if let Err(err) = ctx.mesh_registry.ensure_gpu(mesh_key, ctx.renderer) {
-            self.mesh_status = Some(format!("Failed to upload mesh '{}': {err}", mesh_key));
-            return None;
+        {
+            let (mesh_registry, renderer) = ctx.mesh_registry_and_renderer()?;
+            if let Err(err) = mesh_registry.ensure_gpu(mesh_key, renderer) {
+                self.mesh_status = Some(format!("Failed to upload mesh '{}': {err}", mesh_key));
+                return Ok(None);
+            }
         }
         let mut rng = rand::thread_rng();
         let position =
             Vec3::new(rng.gen_range(-1.2..1.2), rng.gen_range(-0.6..0.8), rng.gen_range(-1.0..1.0));
         let scale = Vec3::splat(0.6);
-        let entity = ctx.ecs.spawn_mesh_entity(mesh_key, position, scale);
-        if let Some(subsets) = ctx.mesh_registry.mesh_subsets(mesh_key) {
-            if let Some(material) = subsets.iter().find_map(|subset| subset.material.clone()) {
-                ctx.ecs.set_mesh_material(entity, Some(material));
-            }
+        let entity = ctx.ecs_mut()?.spawn_mesh_entity(mesh_key, position, scale);
+        let subset_copy = ctx
+            .mesh_registry()?
+            .mesh_subsets(mesh_key)
+            .map(|subs| subs.to_vec())
+            .unwrap_or_default();
+        if let Some(material) = subset_copy.iter().find_map(|subset| subset.material.clone()) {
+            ctx.ecs_mut()?.set_mesh_material(entity, Some(material));
         }
         self.mesh_status = Some(format!("Spawned mesh '{}' as entity {:?}", mesh_key, entity));
-        Some(entity)
+        Ok(Some(entity))
     }
 
     fn ensure_preview_assets(&mut self, ctx: &mut PluginContext<'_>) -> Result<()> {
-        ctx.mesh_registry.retain_mesh(&self.preview_mesh_key, None, ctx.material_registry)?;
+        {
+            let (mesh_registry, material_registry) = ctx.mesh_registry_and_materials()?;
+            mesh_registry.retain_mesh(&self.preview_mesh_key, None, material_registry)?;
+        }
         self.persistent_meshes.insert(self.preview_mesh_key.clone());
-        if let Some(subsets) = ctx.mesh_registry.mesh_subsets(&self.preview_mesh_key) {
-            for subset in subsets {
-                if let Some(material_key) = subset.material.as_ref() {
-                    ctx.material_registry.retain(material_key)?;
-                    self.persistent_materials.insert(material_key.clone());
-                }
+        let subset_copies = ctx
+            .mesh_registry()?
+            .mesh_subsets(&self.preview_mesh_key)
+            .map(|subs| subs.to_vec())
+            .unwrap_or_default();
+        for subset in subset_copies {
+            if let Some(material_key) = subset.material.as_ref() {
+                ctx.material_registry_mut()?.retain(material_key)?;
+                self.persistent_materials.insert(material_key.clone());
             }
         }
         Ok(())
     }
 
-    fn handle_mesh_control_input(&mut self, ctx: &mut PluginContext<'_>) {
-        if ctx.input.take_mesh_toggle() {
+    fn handle_mesh_control_input(&mut self, ctx: &mut PluginContext<'_>) -> Result<()> {
+        let mesh_toggle = { ctx.input_mut()?.take_mesh_toggle() };
+        if mesh_toggle {
             let next = self.mesh_control_mode.next();
-            self.set_mesh_control_mode(ctx, next);
+            self.set_mesh_control_mode(ctx, next)?;
         }
-        if ctx.input.take_frustum_lock_toggle() {
+        let frustum_toggle = { ctx.input_mut()?.take_frustum_lock_toggle() };
+        if frustum_toggle {
             let next = !self.mesh_frustum_lock;
-            self.set_frustum_lock(ctx, next);
+            self.set_frustum_lock(ctx, next)?;
         }
+        Ok(())
     }
 
-    fn update_mesh_camera(&mut self, ctx: &mut PluginContext<'_>, dt: f32) {
+    fn update_mesh_camera(&mut self, ctx: &mut PluginContext<'_>, dt: f32) -> Result<()> {
         match self.mesh_control_mode {
             MeshControlMode::Disabled => {
                 self.mesh_freefly_velocity = Vec3::ZERO;
@@ -513,16 +557,20 @@ impl MeshPreviewPlugin {
             MeshControlMode::Orbit => {
                 self.mesh_freefly_velocity = Vec3::ZERO;
                 self.mesh_freefly_rot_velocity = Vec3::ZERO;
-                let (dx, dy) = ctx.input.mouse_delta;
-                if ctx.input.right_held() && (dx.abs() > f32::EPSILON || dy.abs() > f32::EPSILON) {
+                let (dx, dy, right_held) = {
+                    let input = ctx.input()?;
+                    (input.mouse_delta.0, input.mouse_delta.1, input.right_held())
+                };
+                if right_held && (dx.abs() > f32::EPSILON || dy.abs() > f32::EPSILON) {
                     let sensitivity = 0.008;
                     self.mesh_orbit.orbit(Vec2::new(dx * sensitivity, dy * sensitivity));
                 }
-                if ctx.input.wheel.abs() > 0.0 && !self.mesh_frustum_lock {
+                let wheel = { ctx.input()?.wheel };
+                if wheel.abs() > 0.0 && !self.mesh_frustum_lock {
                     let sensitivity = 0.12;
-                    let factor = (ctx.input.wheel * sensitivity).exp();
+                    let factor = (wheel * sensitivity).exp();
                     self.mesh_orbit.zoom(factor);
-                    ctx.input.wheel = 0.0;
+                    ctx.input_mut()?.wheel = 0.0;
                 }
                 self.mesh_camera =
                     self.mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
@@ -530,14 +578,46 @@ impl MeshPreviewPlugin {
             }
             MeshControlMode::Freefly => {
                 let dt = dt.max(1e-6);
-                let mut target_rot = Vec3::ZERO;
-                if ctx.input.right_held() {
-                    let sensitivity = 0.008;
-                    target_rot.x = ctx.input.mouse_delta.0 * sensitivity / dt;
-                    target_rot.y = ctx.input.mouse_delta.1 * sensitivity / dt;
+                #[derive(Clone, Copy)]
+                struct FreeflySnapshot {
+                    mouse_delta: (f32, f32),
+                    right_held: bool,
+                    roll_right: bool,
+                    roll_left: bool,
+                    forward: bool,
+                    backward: bool,
+                    right: bool,
+                    left: bool,
+                    up: bool,
+                    down: bool,
+                    boost: bool,
+                    wheel: f32,
                 }
-                let roll_raw =
-                    (ctx.input.freefly_roll_right() as i32 - ctx.input.freefly_roll_left() as i32) as f32;
+                let snapshot = {
+                    let input = ctx.input()?;
+                    FreeflySnapshot {
+                        mouse_delta: input.mouse_delta,
+                        right_held: input.right_held(),
+                        roll_right: input.freefly_roll_right(),
+                        roll_left: input.freefly_roll_left(),
+                        forward: input.freefly_forward(),
+                        backward: input.freefly_backward(),
+                        right: input.freefly_right(),
+                        left: input.freefly_left(),
+                        up: input.freefly_ascend(),
+                        down: input.freefly_descend(),
+                        boost: input.freefly_boost(),
+                        wheel: input.wheel,
+                    }
+                };
+
+                let mut target_rot = Vec3::ZERO;
+                if snapshot.right_held {
+                    let sensitivity = 0.008;
+                    target_rot.x = snapshot.mouse_delta.0 * sensitivity / dt;
+                    target_rot.y = snapshot.mouse_delta.1 * sensitivity / dt;
+                }
+                let roll_raw = (snapshot.roll_right as i32 - snapshot.roll_left as i32) as f32;
                 if roll_raw.abs() > 0.0 {
                     target_rot.z = roll_raw * 2.5;
                 }
@@ -556,27 +636,27 @@ impl MeshPreviewPlugin {
                 let up = self.mesh_freefly.up().normalize_or_zero();
 
                 if !self.mesh_frustum_lock {
-                    if ctx.input.freefly_forward() {
+                    if snapshot.forward {
                         direction += forward;
                     }
-                    if ctx.input.freefly_backward() {
+                    if snapshot.backward {
                         direction -= forward;
                     }
-                    if ctx.input.freefly_right() {
+                    if snapshot.right {
                         direction += right;
                     }
-                    if ctx.input.freefly_left() {
+                    if snapshot.left {
                         direction -= right;
                     }
-                    if ctx.input.freefly_ascend() {
+                    if snapshot.up {
                         direction += up;
                     }
-                    if ctx.input.freefly_descend() {
+                    if snapshot.down {
                         direction -= up;
                     }
                 }
 
-                let boost = if ctx.input.freefly_boost() { 3.0 } else { 1.0 };
+                let boost = if snapshot.boost { 3.0 } else { 1.0 };
                 let target_velocity = if direction.length_squared() > 0.0 {
                     direction.normalize_or_zero() * self.mesh_freefly_speed * boost
                 } else {
@@ -586,11 +666,11 @@ impl MeshPreviewPlugin {
                 self.mesh_freefly_velocity = self.mesh_freefly_velocity.lerp(target_velocity, velocity_lerp);
                 self.mesh_freefly.position += self.mesh_freefly_velocity * dt;
 
-                if !self.mesh_frustum_lock && ctx.input.wheel.abs() > 0.0 {
-                    let factor = (1.0 + ctx.input.wheel * 0.06).clamp(0.2, 5.0);
+                if !self.mesh_frustum_lock && snapshot.wheel.abs() > 0.0 {
+                    let factor = (1.0 + snapshot.wheel * 0.06).clamp(0.2, 5.0);
                     self.mesh_freefly_speed = (self.mesh_freefly_speed * factor).clamp(0.1, 200.0);
                     self.mesh_status = Some(format!("Free-fly speed: {:.2}", self.mesh_freefly_speed));
-                    ctx.input.wheel = 0.0;
+                    ctx.input_mut()?.wheel = 0.0;
                 }
 
                 self.mesh_camera = self.mesh_freefly.to_camera();
@@ -611,7 +691,7 @@ impl MeshPreviewPlugin {
         }
 
         if self.mesh_frustum_lock {
-            let focus = self.compute_focus_point(ctx);
+            let focus = self.compute_focus_point(ctx)?;
             if focus.length_squared() > 0.0 {
                 self.mesh_frustum_focus = focus;
             }
@@ -641,6 +721,7 @@ impl MeshPreviewPlugin {
                 }
             }
         }
+        Ok(())
     }
 
     fn focus_mesh_center(&mut self, center: Vec3) {
@@ -654,16 +735,16 @@ impl MeshPreviewPlugin {
         self.mesh_status = Some("Framed selection in 3D viewport.".to_string());
     }
 
-    fn compute_focus_point(&self, ctx: &PluginContext<'_>) -> Vec3 {
-        if let Some(entity) = ctx.selected_entity {
-            if let Some(info) = ctx.ecs.entity_info(entity) {
+    fn compute_focus_point(&self, ctx: &PluginContext<'_>) -> Result<Vec3> {
+        if let Some(entity) = ctx.selected_entity() {
+            if let Some(info) = ctx.ecs()?.entity_info(entity) {
                 if let Some(mesh_tx) = info.mesh_transform {
-                    return mesh_tx.translation;
+                    return Ok(mesh_tx.translation);
                 }
-                return Vec3::new(info.translation.x, info.translation.y, 0.0);
+                return Ok(Vec3::new(info.translation.x, info.translation.y, 0.0));
             }
         }
-        self.mesh_orbit.target
+        Ok(self.mesh_orbit.target)
     }
 
     fn sync_orbit_from_camera_pose(&mut self) {
@@ -693,7 +774,7 @@ impl EnginePlugin for MeshPreviewPlugin {
 
     fn build(&mut self, ctx: &mut PluginContext<'_>) -> Result<()> {
         if self.preview_mesh_key.is_empty() {
-            self.preview_mesh_key = ctx.mesh_registry.default_key().to_string();
+            self.preview_mesh_key = ctx.mesh_registry()?.default_key().to_string();
         }
         self.mesh_orbit = OrbitCamera::new(Vec3::ZERO, 5.0);
         self.mesh_camera =
@@ -712,17 +793,17 @@ impl EnginePlugin for MeshPreviewPlugin {
     fn update(&mut self, ctx: &mut PluginContext<'_>, dt: f32) -> Result<()> {
         self.mesh_angle = (self.mesh_angle + dt * 0.5) % (std::f32::consts::TAU);
         self.mesh_model = Mat4::from_rotation_y(self.mesh_angle);
-        self.handle_mesh_control_input(ctx);
-        self.update_mesh_camera(ctx, dt);
+        self.handle_mesh_control_input(ctx)?;
+        self.update_mesh_camera(ctx, dt)?;
         Ok(())
     }
 
     fn shutdown(&mut self, ctx: &mut PluginContext<'_>) -> Result<()> {
         for mesh in std::mem::take(&mut self.persistent_meshes) {
-            ctx.mesh_registry.release_mesh(&mesh);
+            ctx.mesh_registry_mut()?.release_mesh(&mesh);
         }
         for material in std::mem::take(&mut self.persistent_materials) {
-            ctx.material_registry.release(&material);
+            ctx.material_registry_mut()?.release(&material);
         }
         Ok(())
     }

@@ -29,7 +29,7 @@ impl EnginePlugin for ExampleDynamicPlugin {
                 self.fired_events,
                 ctx.features().all().count()
             );
-            ctx.emit_script_message(message);
+            ctx.emit_script_message(message)?;
         }
         Ok(())
     }

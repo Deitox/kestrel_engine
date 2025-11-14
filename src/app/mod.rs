@@ -1381,7 +1381,9 @@ impl App {
     fn set_mesh_control_mode(&mut self, mode: MeshControlMode) {
         self.with_plugins(|plugins, ctx| {
             if let Some(plugin) = plugins.get_mut::<MeshPreviewPlugin>() {
-                plugin.set_mesh_control_mode(ctx, mode);
+                if let Err(err) = plugin.set_mesh_control_mode(ctx, mode) {
+                    eprintln!("[mesh_preview] set_mesh_control_mode failed: {err:?}");
+                }
             }
         });
     }
@@ -1395,7 +1397,9 @@ impl App {
             self.with_plugins(|plugins, ctx| {
                 if let Some(plugin) = plugins.get_mut::<MeshPreviewPlugin>() {
                     if plugin.mesh_control_mode() == MeshControlMode::Disabled {
-                        plugin.set_mesh_control_mode(ctx, MeshControlMode::Orbit);
+                        if let Err(err) = plugin.set_mesh_control_mode(ctx, MeshControlMode::Orbit) {
+                            eprintln!("[mesh_preview] set_mesh_control_mode failed: {err:?}");
+                        }
                     }
                 }
             });
@@ -1405,7 +1409,9 @@ impl App {
     fn set_frustum_lock(&mut self, enabled: bool) {
         self.with_plugins(|plugins, ctx| {
             if let Some(plugin) = plugins.get_mut::<MeshPreviewPlugin>() {
-                plugin.set_frustum_lock(ctx, enabled);
+                if let Err(err) = plugin.set_frustum_lock(ctx, enabled) {
+                    eprintln!("[mesh_preview] set_frustum_lock failed: {err:?}");
+                }
             }
         });
     }
@@ -1413,7 +1419,9 @@ impl App {
     fn reset_mesh_camera(&mut self) {
         self.with_plugins(|plugins, ctx| {
             if let Some(plugin) = plugins.get_mut::<MeshPreviewPlugin>() {
-                plugin.reset_mesh_camera(ctx);
+                if let Err(err) = plugin.reset_mesh_camera(ctx) {
+                    eprintln!("[mesh_preview] reset_mesh_camera failed: {err:?}");
+                }
             }
         });
     }
@@ -1422,7 +1430,9 @@ impl App {
         let scene_refs = self.scene_material_refs.clone();
         self.with_plugins(|plugins, ctx| {
             if let Some(plugin) = plugins.get_mut::<MeshPreviewPlugin>() {
-                plugin.set_preview_mesh(ctx, &scene_refs, new_key.clone());
+                if let Err(err) = plugin.set_preview_mesh(ctx, &scene_refs, new_key.clone()) {
+                    eprintln!("[mesh_preview] set_preview_mesh failed: {err:?}");
+                }
             }
         });
     }
@@ -1432,7 +1442,10 @@ impl App {
         let mut spawned = None;
         self.with_plugins(|plugins, ctx| {
             if let Some(plugin) = plugins.get_mut::<MeshPreviewPlugin>() {
-                spawned = plugin.spawn_mesh_entity(ctx, &key);
+                match plugin.spawn_mesh_entity(ctx, &key) {
+                    Ok(entity) => spawned = entity,
+                    Err(err) => eprintln!("[mesh_preview] spawn_mesh_entity failed: {err:?}"),
+                }
             }
         });
         if let Some(entity) = spawned {
@@ -1906,7 +1919,9 @@ impl ApplicationHandler for App {
 
         self.with_plugins(|plugins, ctx| {
             if let Some(plugin) = plugins.get_mut::<MeshPreviewPlugin>() {
-                plugin.ensure_preview_gpu(ctx);
+                if let Err(err) = plugin.ensure_preview_gpu(ctx) {
+                    eprintln!("[mesh_preview] ensure_preview_gpu failed: {err:?}");
+                }
             }
         });
         if let Err(err) = self.renderer.init_mesh_pipeline() {

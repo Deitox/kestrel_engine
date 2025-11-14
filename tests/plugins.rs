@@ -9,7 +9,7 @@ use kestrel_engine::material_registry::MaterialRegistry;
 use kestrel_engine::mesh_registry::MeshRegistry;
 use kestrel_engine::plugins::{
     apply_manifest_builtin_toggles, apply_manifest_dynamic_toggles, EnginePlugin, ManifestBuiltinToggle,
-    ManifestDynamicToggle, PluginContext, PluginManager,
+    ManifestDynamicToggle, PluginCapability, PluginContext, PluginManager,
 };
 use kestrel_engine::renderer::Renderer;
 use kestrel_engine::time::Time;
@@ -84,6 +84,28 @@ impl EnginePlugin for FeaturePublishingPlugin {
 
     fn build(&mut self, ctx: &mut PluginContext<'_>) -> Result<()> {
         ctx.features_mut().register("test.feature");
+        Ok(())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+#[derive(Default)]
+struct RendererAccessPlugin;
+
+impl EnginePlugin for RendererAccessPlugin {
+    fn name(&self) -> &'static str {
+        "renderer_access"
+    }
+
+    fn build(&mut self, ctx: &mut PluginContext<'_>) -> Result<()> {
+        ctx.renderer_mut()?.mark_shadow_settings_dirty();
         Ok(())
     }
 
@@ -244,6 +266,45 @@ fn plugins_can_publish_features() {
         features.iter().any(|feature| feature == "test.feature"),
         "feature registry tracks plugin-provided capabilities"
     );
+}
+
+#[test]
+fn capability_gating_blocks_unlisted_access() {
+    let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
+    let mut ecs = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    let mut input = Input::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+    let mut environment_registry = EnvironmentRegistry::new();
+    let time = Time::new();
+    let mut manager = PluginManager::default();
+
+    let err = {
+        let mut ctx = PluginContext::new(
+            &mut renderer,
+            &mut ecs,
+            &mut assets,
+            &mut input,
+            &mut material_registry,
+            &mut mesh_registry,
+            &mut environment_registry,
+            &time,
+            push_event_bridge,
+            manager.feature_handle(),
+            None,
+        );
+        manager
+            .register_with_capabilities(
+                Box::new(RendererAccessPlugin::default()),
+                Vec::new(),
+                vec![PluginCapability::Ecs],
+                &mut ctx,
+            )
+            .expect_err("renderer capability should be required")
+    };
+    let message = format!("{err:?}");
+    assert!(message.contains("renderer"), "error should mention missing renderer capability: {message}");
 }
 
 #[test]

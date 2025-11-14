@@ -12,7 +12,16 @@
       ],
       "provides_features": [
         "examples.dynamic_overlay"
-      ]
+      ],
+      "capabilities": [
+        "renderer",
+        "ecs",
+        "assets",
+        "input",
+        "events",
+        "time"
+      ],
+      "trust": "full"
     }
   ]
 }
