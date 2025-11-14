@@ -82,4 +82,6 @@ This plan breaks Milestone 5 (“Tooling, Automation, and Analytics”) into con
 - [ ] Expose per-key editing interactions.
 - [ ] Persist edits via watchers/validators.
 
+
+
 - [x] Read-only keyframe panel lists sprite/transform tracks with per-key metadata (tests: pp::tests::sprite_key_details_capture_active_frame).
