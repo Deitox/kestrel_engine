@@ -1086,21 +1086,29 @@ impl IsolatedPluginProxy {
     }
 
     fn host_binary_path() -> Result<PathBuf> {
-        let current = env::current_exe().context("locate engine executable")?;
-        let mut host_path = current.clone();
-        host_path.set_file_name(if cfg!(windows) {
-            "kestrel_plugin_host.exe"
-        } else {
-            "kestrel_plugin_host"
-        });
-        if host_path.exists() {
-            Ok(host_path)
-        } else {
-            bail!("isolated host binary '{}' not found", host_path.display())
+        if let Ok(explicit) = env::var("CARGO_BIN_EXE_kestrel_plugin_host") {
+            let candidate = PathBuf::from(explicit);
+            if candidate.exists() {
+                return Ok(candidate);
+            }
         }
+        let current = env::current_exe().context("locate engine executable")?;
+        let filename = if cfg!(windows) { "kestrel_plugin_host.exe" } else { "kestrel_plugin_host" };
+        let mut host_path = current.clone();
+        host_path.set_file_name(filename);
+        if host_path.exists() {
+            return Ok(host_path);
+        }
+        if let Some(parent) = current.parent().and_then(|p| p.parent()) {
+            let fallback = parent.join(filename);
+            if fallback.exists() {
+                return Ok(fallback);
+            }
+        }
+        bail!("isolated host binary '{}' not found", host_path.display())
     }
 
-    fn call_remote(&mut self, request: PluginHostRequest) -> Result<()> {
+    fn call_remote(&mut self, request: PluginHostRequest) -> Result<Vec<GameEvent>> {
         if self.terminated {
             bail!("isolated plugin host already terminated");
         }
@@ -1109,7 +1117,7 @@ impl IsolatedPluginProxy {
         let response: PluginHostResponse =
             recv_frame(&mut self.stdout).context("recv isolated plugin response")?;
         match response {
-            PluginHostResponse::Ok => Ok(()),
+            PluginHostResponse::Ok { events } => Ok(events.into_iter().map(Into::into).collect()),
             PluginHostResponse::Error(message) => bail!("isolated plugin error: {message}"),
         }
     }
@@ -1118,11 +1126,23 @@ impl IsolatedPluginProxy {
         if self.terminated {
             return;
         }
-        if let Err(err) = self.call_remote(PluginHostRequest::Shutdown) {
+        if let Err(err) = self.call_remote(PluginHostRequest::Shutdown).map(|_| ()) {
             eprintln!("[plugin:{}] failed to shutdown isolated host: {err:?}", self.name);
         }
         self.terminated = true;
         self.stdin.take();
+    }
+
+    fn forward_with_ctx(&mut self, ctx: &mut PluginContext<'_>, request: PluginHostRequest) -> Result<()> {
+        let events = self.call_remote(request)?;
+        self.relay_events(ctx, events)
+    }
+
+    fn relay_events(&self, ctx: &mut PluginContext<'_>, events: Vec<GameEvent>) -> Result<()> {
+        for event in events {
+            ctx.emit_event(event)?;
+        }
+        Ok(())
     }
 }
 
@@ -1135,28 +1155,32 @@ impl EnginePlugin for IsolatedPluginProxy {
         self.version
     }
 
-    fn build(&mut self, _ctx: &mut PluginContext<'_>) -> Result<()> {
-        self.call_remote(PluginHostRequest::Build)
+    fn build(&mut self, ctx: &mut PluginContext<'_>) -> Result<()> {
+        self.forward_with_ctx(ctx, PluginHostRequest::Build)
     }
 
-    fn update(&mut self, _ctx: &mut PluginContext<'_>, dt: f32) -> Result<()> {
-        self.call_remote(PluginHostRequest::Update { dt })
+    fn update(&mut self, ctx: &mut PluginContext<'_>, dt: f32) -> Result<()> {
+        self.forward_with_ctx(ctx, PluginHostRequest::Update { dt })
     }
 
-    fn fixed_update(&mut self, _ctx: &mut PluginContext<'_>, dt: f32) -> Result<()> {
-        self.call_remote(PluginHostRequest::FixedUpdate { dt })
+    fn fixed_update(&mut self, ctx: &mut PluginContext<'_>, dt: f32) -> Result<()> {
+        self.forward_with_ctx(ctx, PluginHostRequest::FixedUpdate { dt })
     }
 
-    fn on_events(&mut self, _ctx: &mut PluginContext<'_>, events: &[GameEvent]) -> Result<()> {
+    fn on_events(&mut self, ctx: &mut PluginContext<'_>, events: &[GameEvent]) -> Result<()> {
         if events.is_empty() {
             return Ok(());
         }
         let payload: Vec<RpcGameEvent> = events.iter().cloned().map(RpcGameEvent::from).collect();
-        self.call_remote(PluginHostRequest::OnEvents { events: payload })
+        self.forward_with_ctx(ctx, PluginHostRequest::OnEvents { events: payload })
     }
 
-    fn shutdown(&mut self, _ctx: &mut PluginContext<'_>) -> Result<()> {
-        self.ensure_shutdown();
+    fn shutdown(&mut self, ctx: &mut PluginContext<'_>) -> Result<()> {
+        if !self.terminated {
+            self.forward_with_ctx(ctx, PluginHostRequest::Shutdown)?;
+            self.terminated = true;
+            self.stdin.take();
+        }
         Ok(())
     }
 

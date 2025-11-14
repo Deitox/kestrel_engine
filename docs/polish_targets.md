@@ -37,7 +37,7 @@
   - Existing helper scripts remain standalone; the suite simply coordinates them for CI and local automation.
 
 ## Plugin Sandboxing Roadmap
-- **Status:** [ ] Phase 3a underway (RPC harness checked in, capability proxies pending)
+- **Status:** [ ] Phase 3b underway (event RPC flowing; ECS queries/assets pending)
 - **Goal:** Provide a concrete plan for Milestone 13's stretch goal: isolating untrusted plugins.
 - **Scope:** Define capability metadata in `config/plugins.json`, gate `PluginContext` APIs by declared capabilities, log capability grants in `PluginStatus`, and design an out-of-process host for `trust = "isolated"` entries.
 - **Implementation Notes:**
@@ -45,5 +45,5 @@
     - **API gating:** `PluginContext` enforces capability checks on every mutating accessor and emits `CapabilityError`s (plus analytics events) when a plugin asks for something it wasn’t granted. Tests cover the gating path so regressions are caught in CI.
     - **Telemetry + surfacing:** capability grants/violations are visible in both the plugin manifest UI (per-plugin rows show trusted caps + violation counts) and the analytics "Stats" panel, which now lists recent violations captured via the Analytics plugin.
     - **Pipe-based RPC harness:** `plugin_rpc.rs` defines the bincode/framed protocol shared by the engine and `kestrel_plugin_host`. The host now loads the target cdylib, services `build/update/fixed_update/on_events/shutdown` requests received over anonymous pipes, and mirrors plugin errors back to the editor UI.
-    - **Isolated proxy integration:** `PluginManager` launches `kestrel_plugin_host` whenever `"trust": "isolated"` is set, and the proxy encodes lifecycle calls over the RPC channel with per-request error propagation. Phase 3b will extend this transport with capability-proxied operations (event emission, ECS queries, asset reads).
-    - **Phased rollout:** Phase 1 (cap metadata + gating) and Phase 2 (analytics/UI surfacing) are complete; Phase 3a (RPC loop + lifecycle calls) is live. Phase 3b will add capability RPCs, and Phase 3c will fold in ECS readbacks plus watchdogs before making isolation the default.
+    - **Isolated proxy integration:** `PluginManager` launches `kestrel_plugin_host` whenever `"trust": "isolated"` is set, and the proxy now captures emitted events from the host, re-injecting them into the editor ECS so `ctx.emit_event`/`ctx.emit_script_message` work for isolated plugins. Remaining capability RPCs (event analytics, ECS reads, asset fetches) will layer onto the same channel.
+    - **Phased rollout:** Phase 1 (cap metadata + gating) and Phase 2 (analytics/UI surfacing) are complete. Phase 3a (RPC loop + lifecycle calls) shipped previously; Phase 3b (event RPC + regression tests) is in progress, and Phase 3c will fold in ECS readbacks plus watchdogs before making isolation the default.

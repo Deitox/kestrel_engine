@@ -14,8 +14,12 @@ use kestrel_engine::plugins::{
 use kestrel_engine::renderer::Renderer;
 use kestrel_engine::time::Time;
 use pollster::block_on;
+use serde_json::json;
 use std::any::Any;
+use std::env;
 use std::fs;
+use std::path::PathBuf;
+use std::process::Command;
 use tempfile::tempdir;
 
 fn push_event_bridge(ecs: &mut EcsWorld, event: GameEvent) {
@@ -419,4 +423,104 @@ fn manifest_builtin_toggle_updates_disable_list() {
         PluginManager::load_manifest(&manifest_path).expect("reload ok").expect("manifest present");
     assert!(!reloaded.is_builtin_disabled("audio"), "audio should be removed from disable list");
     assert!(reloaded.is_builtin_disabled("analytics"), "analytics should be present in disable list");
+}
+
+#[test]
+fn isolated_plugin_emits_script_message_via_rpc() {
+    let plugin_path = build_example_dynamic_plugin();
+    let manifest_dir = tempdir().expect("temp manifest dir");
+    let manifest_path = manifest_dir.path().join("plugins.json");
+    let manifest_json = json!({
+        "disable_builtins": [],
+        "plugins": [{
+            "name": "example_dynamic",
+            "path": plugin_path.to_string_lossy(),
+            "enabled": true,
+            "version": "0.1.0",
+            "requires_features": [],
+            "provides_features": [],
+            "capabilities": ["renderer","ecs","assets","input","events","time"],
+            "trust": "isolated"
+        }]
+    });
+    fs::write(&manifest_path, serde_json::to_string_pretty(&manifest_json).unwrap())
+        .expect("manifest written");
+    let manifest =
+        PluginManager::load_manifest(&manifest_path).expect("manifest read").expect("manifest present");
+
+    let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
+    let mut ecs = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    let mut input = Input::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+    let mut environment_registry = EnvironmentRegistry::new();
+    let time = Time::new();
+    let mut manager = PluginManager::default();
+    {
+        let mut ctx = PluginContext::new(
+            &mut renderer,
+            &mut ecs,
+            &mut assets,
+            &mut input,
+            &mut material_registry,
+            &mut mesh_registry,
+            &mut environment_registry,
+            &time,
+            push_event_bridge,
+            manager.feature_handle(),
+            None,
+            manager.capability_tracker_handle(),
+        );
+
+        let loaded = manager.load_dynamic_from_manifest(&manifest, &mut ctx).expect("dynamic manifest loads");
+        assert_eq!(loaded, vec!["example_dynamic"]);
+
+        manager.update(&mut ctx, 1.1);
+    }
+    let events = ecs.drain_events();
+    assert!(
+        events.iter().any(
+            |event| matches!(event, GameEvent::ScriptMessage { message } if message.contains("heartbeat"))
+        ),
+        "isolated plugin should emit a heartbeat script message, got {events:?}"
+    );
+
+    let mut ctx = PluginContext::new(
+        &mut renderer,
+        &mut ecs,
+        &mut assets,
+        &mut input,
+        &mut material_registry,
+        &mut mesh_registry,
+        &mut environment_registry,
+        &time,
+        push_event_bridge,
+        manager.feature_handle(),
+        None,
+        manager.capability_tracker_handle(),
+    );
+    manager.shutdown(&mut ctx);
+}
+
+fn build_example_dynamic_plugin() -> PathBuf {
+    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let plugin_dir = project_root.join("plugins").join("example_dynamic");
+    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let artifact = plugin_dir.join("target").join("debug").join(library_file_name("example_dynamic"));
+    if !artifact.exists() {
+        let status = Command::new(&cargo)
+            .args(["build", "--offline"])
+            .current_dir(&plugin_dir)
+            .status()
+            .expect("cargo build example_dynamic");
+        assert!(status.success(), "building example_dynamic plugin failed");
+        assert!(artifact.exists(), "example_dynamic plugin artifact missing at {}", artifact.display());
+    }
+    assert!(artifact.exists(), "example_dynamic plugin artifact missing at {}", artifact.display());
+    artifact
+}
+
+fn library_file_name(name: &str) -> String {
+    format!("{}{}{}", std::env::consts::DLL_PREFIX, name, std::env::consts::DLL_SUFFIX)
 }

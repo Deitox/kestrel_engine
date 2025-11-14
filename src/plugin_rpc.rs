@@ -18,7 +18,7 @@ pub enum PluginHostRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum PluginHostResponse {
-    Ok,
+    Ok { events: Vec<RpcGameEvent> },
     Error(String),
 }
 

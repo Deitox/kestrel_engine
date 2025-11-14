@@ -7,7 +7,9 @@ use kestrel_engine::events::GameEvent;
 use kestrel_engine::input::Input;
 use kestrel_engine::material_registry::MaterialRegistry;
 use kestrel_engine::mesh_registry::MeshRegistry;
-use kestrel_engine::plugin_rpc::{recv_frame, send_frame, PluginHostRequest, PluginHostResponse};
+use kestrel_engine::plugin_rpc::{
+    recv_frame, send_frame, PluginHostRequest, PluginHostResponse, RpcGameEvent,
+};
 use kestrel_engine::plugins::{
     CapabilityTrackerHandle, EnginePlugin, FeatureRegistryHandle, PluginContext, PluginEntryFn,
     ENGINE_PLUGIN_API_VERSION, PLUGIN_ENTRY_SYMBOL,
@@ -16,10 +18,16 @@ use kestrel_engine::renderer::Renderer;
 use kestrel_engine::time::Time;
 use libloading::Library;
 use pollster::block_on;
+use std::cell::Cell;
 use std::env;
 use std::io::{self, BufReader, BufWriter};
 use std::path::PathBuf;
+use std::ptr;
 use std::time::Duration;
+
+thread_local! {
+    static ACTIVE_ENGINE_STATE: Cell<*mut EngineState> = Cell::new(ptr::null_mut());
+}
 
 fn main() {
     if let Err(err) = run() {
@@ -86,9 +94,9 @@ impl PluginHostService {
         let entry_fn = unsafe {
             library.get::<PluginEntryFn>(PLUGIN_ENTRY_SYMBOL).with_context(|| {
                 format!(
-                    "resolving '{symbol}' in plugin '{}'",
+                    "resolving '{symbol}' in plugin '{path}'",
                     symbol = "kestrel_plugin_entry",
-                    opts.plugin_path.display()
+                    path = opts.plugin_path.display()
                 )
             })?
         };
@@ -162,8 +170,11 @@ impl PluginHostService {
                 self.engine.with_context(|ctx| self.plugin.shutdown(ctx))
             }
         };
+        let captured_events = self.engine.drain_captured_events();
         let response = match result {
-            Ok(()) => PluginHostResponse::Ok,
+            Ok(()) => PluginHostResponse::Ok {
+                events: captured_events.into_iter().map(RpcGameEvent::from).collect(),
+            },
             Err(err) => {
                 eprintln!("[isolated-host] plugin call failed: {err:?}");
                 PluginHostResponse::Error(err.to_string())
@@ -184,6 +195,7 @@ struct EngineState {
     time: Time,
     feature_registry: FeatureRegistryHandle,
     capability_tracker: CapabilityTrackerHandle,
+    pending_events: Vec<GameEvent>,
 }
 
 impl EngineState {
@@ -201,6 +213,7 @@ impl EngineState {
             time: Time::new(),
             feature_registry: FeatureRegistryHandle::isolated(),
             capability_tracker: CapabilityTrackerHandle::isolated(),
+            pending_events: Vec::new(),
         }
     }
 
@@ -212,24 +225,52 @@ impl EngineState {
     where
         F: FnOnce(&mut PluginContext<'_>) -> Result<()>,
     {
-        let mut ctx = PluginContext::new(
-            &mut self.renderer,
-            &mut self.ecs,
-            &mut self.assets,
-            &mut self.input,
-            &mut self.material_registry,
-            &mut self.mesh_registry,
-            &mut self.environment_registry,
-            &self.time,
-            isolated_emit_event,
-            self.feature_registry.clone(),
-            None,
-            self.capability_tracker.clone(),
-        );
-        f(&mut ctx)
+        self.with_active(|state| {
+            let mut ctx = PluginContext::new(
+                &mut state.renderer,
+                &mut state.ecs,
+                &mut state.assets,
+                &mut state.input,
+                &mut state.material_registry,
+                &mut state.mesh_registry,
+                &mut state.environment_registry,
+                &state.time,
+                isolated_emit_event,
+                state.feature_registry.clone(),
+                None,
+                state.capability_tracker.clone(),
+            );
+            f(&mut ctx)
+        })
+    }
+
+    fn with_active<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&mut Self) -> R,
+    {
+        ACTIVE_ENGINE_STATE.with(|cell| {
+            let prev = cell.replace(self as *mut Self);
+            let result = f(self);
+            cell.set(prev);
+            result
+        })
+    }
+
+    fn capture_event(event: GameEvent) {
+        ACTIVE_ENGINE_STATE.with(|cell| {
+            let ptr = cell.get();
+            if let Some(state) = unsafe { ptr.as_mut() } {
+                state.pending_events.push(event);
+            }
+        });
+    }
+
+    fn drain_captured_events(&mut self) -> Vec<GameEvent> {
+        std::mem::take(&mut self.pending_events)
     }
 }
 
 fn isolated_emit_event(ecs: &mut EcsWorld, event: GameEvent) {
+    EngineState::capture_event(event.clone());
     ecs.push_event(event);
 }
