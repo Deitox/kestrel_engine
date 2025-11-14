@@ -1,14 +1,16 @@
 use anyhow::{anyhow, bail, Context, Result};
+use bevy_ecs::prelude::Entity;
 use kestrel_engine::assets::AssetManager;
 use kestrel_engine::config::WindowConfig;
-use kestrel_engine::ecs::EcsWorld;
+use kestrel_engine::ecs::{EcsWorld, EntityInfo, SpriteInfo};
 use kestrel_engine::environment::EnvironmentRegistry;
 use kestrel_engine::events::GameEvent;
 use kestrel_engine::input::Input;
 use kestrel_engine::material_registry::MaterialRegistry;
 use kestrel_engine::mesh_registry::MeshRegistry;
 use kestrel_engine::plugin_rpc::{
-    recv_frame, send_frame, PluginHostRequest, PluginHostResponse, RpcGameEvent,
+    recv_frame, send_frame, PluginHostRequest, PluginHostResponse, RpcEntityInfo, RpcGameEvent,
+    RpcResponseData, RpcSpriteInfo,
 };
 use kestrel_engine::plugins::{
     CapabilityTrackerHandle, EnginePlugin, FeatureRegistryHandle, PluginContext, PluginEntryFn,
@@ -152,6 +154,14 @@ impl PluginHostService {
     fn handle_request(&mut self, request: PluginHostRequest) -> (PluginHostResponse, bool) {
         let mut shutdown = false;
         let result = match request {
+            PluginHostRequest::QueryEntityInfo { entity } => {
+                let info = self.engine.entity_info_snapshot(entity.into());
+                let response = PluginHostResponse::Ok {
+                    events: Vec::new(),
+                    data: Some(RpcResponseData::EntityInfo(info)),
+                };
+                return (response, false);
+            }
             PluginHostRequest::Build => self.engine.with_context(|ctx| self.plugin.build(ctx)),
             PluginHostRequest::Update { dt } => {
                 self.engine.set_delta(dt);
@@ -174,6 +184,7 @@ impl PluginHostService {
         let response = match result {
             Ok(()) => PluginHostResponse::Ok {
                 events: captured_events.into_iter().map(RpcGameEvent::from).collect(),
+                data: None,
             },
             Err(err) => {
                 eprintln!("[isolated-host] plugin call failed: {err:?}");
@@ -268,9 +279,30 @@ impl EngineState {
     fn drain_captured_events(&mut self) -> Vec<GameEvent> {
         std::mem::take(&mut self.pending_events)
     }
+
+    fn entity_info_snapshot(&self, entity: Entity) -> Option<RpcEntityInfo> {
+        let info = self.ecs.entity_info(entity)?;
+        Some(entity_info_to_rpc(entity, info))
+    }
 }
 
 fn isolated_emit_event(ecs: &mut EcsWorld, event: GameEvent) {
     EngineState::capture_event(event.clone());
     ecs.push_event(event);
+}
+
+fn entity_info_to_rpc(entity: Entity, info: EntityInfo) -> RpcEntityInfo {
+    RpcEntityInfo {
+        entity: entity.into(),
+        scene_id: info.scene_id.as_str().to_string(),
+        translation: info.translation.to_array(),
+        rotation: info.rotation,
+        scale: info.scale.to_array(),
+        velocity: info.velocity.map(|v| v.to_array()),
+        sprite: info.sprite.map(sprite_info_to_rpc),
+    }
+}
+
+fn sprite_info_to_rpc(info: SpriteInfo) -> RpcSpriteInfo {
+    RpcSpriteInfo { atlas: info.atlas, region: info.region }
 }

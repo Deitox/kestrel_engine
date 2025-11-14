@@ -486,6 +486,11 @@ fn isolated_plugin_emits_script_message_via_rpc() {
         "isolated plugin should emit a heartbeat script message, got {events:?}"
     );
 
+    let unused_entity = ecs.world.spawn_empty().id();
+    let query =
+        manager.query_isolated_entity_info("example_dynamic", unused_entity).expect("query entity info");
+    assert!(query.is_none(), "stub host should not report entity snapshots: {query:?}");
+
     let mut ctx = PluginContext::new(
         &mut renderer,
         &mut ecs,

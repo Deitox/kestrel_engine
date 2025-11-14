@@ -5,7 +5,10 @@ use crate::events::GameEvent;
 use crate::input::Input;
 use crate::material_registry::MaterialRegistry;
 use crate::mesh_registry::MeshRegistry;
-use crate::plugin_rpc::{recv_frame, send_frame, PluginHostRequest, PluginHostResponse, RpcGameEvent};
+use crate::plugin_rpc::{
+    recv_frame, send_frame, PluginHostRequest, PluginHostResponse, RpcEntityInfo, RpcGameEvent,
+    RpcResponseData, RpcSpriteInfo,
+};
 use crate::renderer::Renderer;
 use crate::time::Time;
 use anyhow::{anyhow, bail, Context, Result};
@@ -24,6 +27,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::ptr;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
+
+const ISOLATED_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 
 const DEFAULT_ENGINE_FEATURES: &[&str] = &[
     "core.app",
@@ -153,6 +159,43 @@ fn default_capability_flags() -> CapabilityFlags {
 pub struct CapabilityViolationLog {
     pub count: u64,
     pub last_capability: Option<PluginCapability>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RemoteEntityInfo {
+    pub entity: Entity,
+    pub scene_id: String,
+    pub translation: [f32; 2],
+    pub rotation: f32,
+    pub scale: [f32; 2],
+    pub velocity: Option<[f32; 2]>,
+    pub sprite: Option<RemoteSpriteInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RemoteSpriteInfo {
+    pub atlas: String,
+    pub region: String,
+}
+
+impl From<RpcEntityInfo> for RemoteEntityInfo {
+    fn from(info: RpcEntityInfo) -> Self {
+        Self {
+            entity: info.entity.into(),
+            scene_id: info.scene_id,
+            translation: info.translation,
+            rotation: info.rotation,
+            scale: info.scale,
+            velocity: info.velocity,
+            sprite: info.sprite.map(RemoteSpriteInfo::from),
+        }
+    }
+}
+
+impl From<RpcSpriteInfo> for RemoteSpriteInfo {
+    fn from(info: RpcSpriteInfo) -> Self {
+        Self { atlas: info.atlas, region: info.region }
+    }
 }
 
 #[derive(Clone)]
@@ -625,6 +668,15 @@ struct PluginSlot {
     _library: Option<Library>,
 }
 
+impl PluginSlot {
+    fn isolated_proxy(&mut self) -> Option<&mut IsolatedPluginProxy> {
+        if self.trust != PluginTrust::Isolated {
+            return None;
+        }
+        self.plugin.as_any_mut().downcast_mut::<IsolatedPluginProxy>()
+    }
+}
+
 impl Default for PluginManager {
     fn default() -> Self {
         Self {
@@ -648,6 +700,22 @@ impl PluginManager {
 
     pub fn capability_metrics(&self) -> HashMap<String, CapabilityViolationLog> {
         self.capability_tracker.snapshot()
+    }
+
+    pub fn query_isolated_entity_info(
+        &mut self,
+        plugin_name: &str,
+        entity: Entity,
+    ) -> Result<Option<RemoteEntityInfo>> {
+        let slot = self
+            .plugins
+            .iter_mut()
+            .find(|slot| slot.name == plugin_name)
+            .ok_or_else(|| anyhow!("plugin '{plugin_name}' not registered"))?;
+        let proxy = slot
+            .isolated_proxy()
+            .ok_or_else(|| anyhow!("plugin '{plugin_name}' is not running in isolated mode"))?;
+        proxy.query_entity_info(entity)
     }
 
     pub fn register(&mut self, plugin: Box<dyn EnginePlugin>, ctx: &mut PluginContext<'_>) -> Result<()> {
@@ -1108,16 +1176,28 @@ impl IsolatedPluginProxy {
         bail!("isolated host binary '{}' not found", host_path.display())
     }
 
-    fn call_remote(&mut self, request: PluginHostRequest) -> Result<Vec<GameEvent>> {
+    fn call_remote(
+        &mut self,
+        request: PluginHostRequest,
+    ) -> Result<(Vec<GameEvent>, Option<RpcResponseData>)> {
         if self.terminated {
             bail!("isolated plugin host already terminated");
         }
         let stdin = self.stdin.as_mut().ok_or_else(|| anyhow!("isolated host stdin closed"))?;
         send_frame(stdin, &request).context("send isolated plugin request")?;
+        let start = Instant::now();
         let response: PluginHostResponse =
             recv_frame(&mut self.stdout).context("recv isolated plugin response")?;
+        let elapsed = start.elapsed();
+        if elapsed > ISOLATED_RPC_TIMEOUT {
+            self.terminated = true;
+            let _ = self.child.kill();
+            bail!("isolated plugin '{}' exceeded RPC timeout ({elapsed:?})", self.name);
+        }
         match response {
-            PluginHostResponse::Ok { events } => Ok(events.into_iter().map(Into::into).collect()),
+            PluginHostResponse::Ok { events, data } => {
+                Ok((events.into_iter().map(Into::into).collect(), data))
+            }
             PluginHostResponse::Error(message) => bail!("isolated plugin error: {message}"),
         }
     }
@@ -1126,7 +1206,7 @@ impl IsolatedPluginProxy {
         if self.terminated {
             return;
         }
-        if let Err(err) = self.call_remote(PluginHostRequest::Shutdown).map(|_| ()) {
+        if let Err(err) = self.call_remote(PluginHostRequest::Shutdown) {
             eprintln!("[plugin:{}] failed to shutdown isolated host: {err:?}", self.name);
         }
         self.terminated = true;
@@ -1134,7 +1214,7 @@ impl IsolatedPluginProxy {
     }
 
     fn forward_with_ctx(&mut self, ctx: &mut PluginContext<'_>, request: PluginHostRequest) -> Result<()> {
-        let events = self.call_remote(request)?;
+        let (events, _) = self.call_remote(request)?;
         self.relay_events(ctx, events)
     }
 
@@ -1143,6 +1223,24 @@ impl IsolatedPluginProxy {
             ctx.emit_event(event)?;
         }
         Ok(())
+    }
+
+    fn query_entity_info(&mut self, entity: Entity) -> Result<Option<RemoteEntityInfo>> {
+        let (events, payload) =
+            self.call_remote(PluginHostRequest::QueryEntityInfo { entity: entity.into() })?;
+        if !events.is_empty() {
+            eprintln!(
+                "[plugin:{}] query_entity_info returned unexpected events ({})",
+                self.name,
+                events.len()
+            );
+        }
+        #[allow(unreachable_patterns)]
+        match payload {
+            Some(RpcResponseData::EntityInfo(info)) => Ok(info.map(RemoteEntityInfo::from)),
+            Some(other) => bail!("unexpected payload from isolated host: {other:?}"),
+            None => Ok(None),
+        }
     }
 }
 

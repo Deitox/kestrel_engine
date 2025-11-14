@@ -13,12 +13,13 @@ pub enum PluginHostRequest {
     Update { dt: f32 },
     FixedUpdate { dt: f32 },
     OnEvents { events: Vec<RpcGameEvent> },
+    QueryEntityInfo { entity: RpcEntity },
     Shutdown,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum PluginHostResponse {
-    Ok { events: Vec<RpcGameEvent> },
+    Ok { events: Vec<RpcGameEvent>, data: Option<RpcResponseData> },
     Error(String),
 }
 
@@ -33,9 +34,31 @@ pub enum RpcGameEvent {
     ScriptMessage { message: String },
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum RpcResponseData {
+    EntityInfo(Option<RpcEntityInfo>),
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 pub struct RpcEntity {
     bits: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RpcEntityInfo {
+    pub entity: RpcEntity,
+    pub scene_id: String,
+    pub translation: [f32; 2],
+    pub rotation: f32,
+    pub scale: [f32; 2],
+    pub velocity: Option<[f32; 2]>,
+    pub sprite: Option<RpcSpriteInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RpcSpriteInfo {
+    pub atlas: String,
+    pub region: String,
 }
 
 impl From<Entity> for RpcEntity {
@@ -159,6 +182,35 @@ mod tests {
         match decoded {
             PluginHostRequest::Update { dt } => assert!((dt - 1.5).abs() < f32::EPSILON),
             other => panic!("unexpected request decoded: {other:?}"),
+        }
+    }
+    #[test]
+    fn response_payload_serializes() {
+        let response = PluginHostResponse::Ok {
+            events: Vec::new(),
+            data: Some(RpcResponseData::EntityInfo(Some(RpcEntityInfo {
+                entity: RpcEntity { bits: 42 },
+                scene_id: "demo".to_string(),
+                translation: [1.0, 2.0],
+                rotation: 0.5,
+                scale: [1.0, 1.0],
+                velocity: Some([0.0, 0.0]),
+                sprite: Some(RpcSpriteInfo { atlas: "atlas".into(), region: "region".into() }),
+            }))),
+        };
+        let mut buffer = Vec::new();
+        send_frame(&mut buffer, &response).expect("response serialized");
+        let mut cursor = std::io::Cursor::new(buffer);
+        let decoded: PluginHostResponse =
+            recv_frame(&mut cursor).expect("response decoded without corruption");
+        match decoded {
+            PluginHostResponse::Ok { data, .. } => match data {
+                Some(RpcResponseData::EntityInfo(Some(info))) => {
+                    assert_eq!(info.scene_id, "demo");
+                }
+                other => panic!("unexpected payload: {other:?}"),
+            },
+            other => panic!("unexpected response: {other:?}"),
         }
     }
 }
