@@ -57,6 +57,7 @@ const INPUT_CONFIG_PATH: &str = "config/input.json";
 const SCRIPT_CONSOLE_CAPACITY: usize = 200;
 const SCRIPT_HISTORY_CAPACITY: usize = 64;
 const BINARY_PREFABS_ENABLED: bool = cfg!(feature = "binary_scene");
+const MAX_FIXED_TIMESTEP_BACKLOG: f32 = 0.5;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ViewportCameraMode {
@@ -964,7 +965,28 @@ impl App {
             self.set_prefab_status(PrefabStatusKind::Error, "Selected entity is no longer available.");
             return;
         }
-        let Some(scene) = self.ecs.export_prefab(request.entity, &self.assets) else {
+        let mesh_source_map: HashMap<String, String> = self
+            .mesh_registry
+            .keys()
+            .filter_map(|key| {
+                self.mesh_registry
+                    .mesh_source(key)
+                    .map(|path| (key.to_string(), path.to_string_lossy().into_owned()))
+            })
+            .collect();
+        let material_source_map: HashMap<String, String> = self
+            .material_registry
+            .keys()
+            .filter_map(|key| {
+                self.material_registry.material_source(key).map(|path| (key.to_string(), path.to_string()))
+            })
+            .collect();
+        let Some(mut scene) = self.ecs.export_prefab_with_sources(
+            request.entity,
+            &self.assets,
+            |key| mesh_source_map.get(key).cloned(),
+            |key| material_source_map.get(key).cloned(),
+        ) else {
             self.set_prefab_status(PrefabStatusKind::Error, "Failed to export selection to prefab.");
             return;
         };
@@ -1995,6 +2017,14 @@ impl ApplicationHandler for App {
         self.process_atlas_hot_reload_events();
         let dt = self.time.delta_seconds();
         self.accumulator += dt;
+        if self.accumulator > MAX_FIXED_TIMESTEP_BACKLOG {
+            let dropped = self.accumulator - MAX_FIXED_TIMESTEP_BACKLOG;
+            eprintln!(
+                "[time] Dropping {:.3}s of fixed-step backlog to maintain responsiveness",
+                dropped
+            );
+            self.accumulator = MAX_FIXED_TIMESTEP_BACKLOG;
+        }
         self.ecs.profiler_begin_frame();
         let frame_start = Instant::now();
         let mut fixed_time_ms = 0.0;

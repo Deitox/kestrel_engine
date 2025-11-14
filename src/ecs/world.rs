@@ -2388,6 +2388,20 @@ impl EcsWorld {
     }
 
     pub fn export_prefab(&mut self, root: Entity, assets: &AssetManager) -> Option<Scene> {
+        self.export_prefab_with_sources(root, assets, |_| None, |_| None)
+    }
+
+    pub fn export_prefab_with_sources<F, G>(
+        &mut self,
+        root: Entity,
+        assets: &AssetManager,
+        mesh_source: F,
+        material_source: G,
+    ) -> Option<Scene>
+    where
+        F: Fn(&str) -> Option<String>,
+        G: Fn(&str) -> Option<String>,
+    {
         if !self.entity_exists(root) {
             return None;
         }
@@ -2396,7 +2410,8 @@ impl EcsWorld {
         if entities.is_empty() {
             return None;
         }
-        let dependencies = SceneDependencies::from_entities(&entities, assets, |_| None, |_| None);
+        let dependencies =
+            SceneDependencies::from_entities(&entities, assets, &mesh_source, &material_source);
         let mut scene = Scene::default();
         scene.entities = entities;
         scene.dependencies = dependencies;

@@ -63,7 +63,7 @@
   cargo test --release animation_targets_measure -- --ignored --nocapture
   ```
 - [x] Keep the clean release run (no feature flags) as the default benchmark: run `python scripts/sprite_bench.py --label <phase_label> --runs 3` for each checkpoint, and include the feature set in the label only when you’re deliberately testing a different configuration.
-- [ ] When investigating regressions, capture per-step stats with anim counters enabled:
+- [x] When investigating regressions, capture per-step stats with anim counters enabled:
   ```powershell
   $env:ANIMATION_PROFILE_COUNT=10000
   $env:ANIMATION_PROFILE_STEPS=240
@@ -72,7 +72,7 @@
   $env:ANIMATION_PROFILE_TARGET_SYSTEM="sys_drive_sprite_animations"
   cargo test --release --features anim_stats animation_profile_snapshot -- --ignored --nocapture
   ```
-  The profile harness prints sprite/transform call mixes so we can see how much work hits the fast loop versus the general path.
+  The `animation_profile_snapshot` harness (`tests/animation_profile.rs:62`) reads these env vars, logs per-step timings, and emits per-frame anim_stats deltas; `scripts/capture_sprite_perf.py` already wraps this test to save the logs alongside sprite bench runs, so regression investigations always have fast vs general loop mix data.
 
 - [x] Capture **3+ runs** and record mean & stddev before/after each phase (the script emits the per-run table automatically).
 
@@ -102,7 +102,7 @@ Artifacts: `perf/before_phase0.txt`, `perf/before_phase0.json`
 **Implementation path:**
 - [x] Add `drive_fast_single/drive_fast_fixed` that assume looped/no-event clips and never touch `EventBus`.
 - [x] Gate the legacy logic behind `drive_general_single/drive_general_fixed` so events, ping-pong, and terminal behaviors remain intact without polluting the fast kernel.
-- [ ] Mirror the same separation inside renderer stats/analytics so HUD overlays can highlight fast vs. general costs.
+- [x] Mirror the same separation inside renderer stats/analytics so HUD overlays can highlight fast vs. general costs. (`SpriteAnimPerfTelemetry` tracks fast/slow buckets + stage timings, `src/app/mod.rs:2162` feeds the telemetry into the Stats panel, and `src/app/editor_ui.rs:799-842` renders the Sprite Animation Perf HUD with dedicated slow/fast counts plus warning colors and Eval/Pack/Upload bars.)
 
 **Checkpoint:** `animation_targets_measure` should now report decreased time in `sys_drive_sprite_animations` without affecting event delivery or ping-pong coverage.
 
@@ -171,8 +171,8 @@ frame_idx[i] += step;
 accum_fp[i] -= step * frame_dt_fp[i];     // equivalent to fmod
 ```
 **Tasks:**
-- [ ] Add feature flag: `sprite_anim_fixed_point` for A/B testing.
-- [ ] Convert only the hot loop first; leave public API as f32.
+- [x] Add feature flag: `sprite_anim_fixed_point` for A/B testing (`Cargo.toml:8` exposes the flag so benches can enable/disable it independently, and the README explains how to pass it through `scripts/sprite_bench.py`).
+- [x] Convert only the hot loop first; leave public API as f32 (`src/ecs/systems/animation.rs:54` stores both f32 + fixed-point buffers inside `SpriteAnimatorSoa`, while the fast-loop advance path at `src/ecs/systems/animation.rs:4141` consumes the fixed-point data and immediately writes results back to the f32-facing `SpriteAnimation` state).
 
 **Checkpoint:** Bench both float vs fixed; keep the better for your target CPU.
 
@@ -275,11 +275,11 @@ idx.as_array().iter().enumerate().for_each(|(k,&v)| frame_idx[i+k]=v);
 
 ## Validation & Regression Tests
 
-- [ ] Unit tests for wrap-around: exact boundary (`dt == frame_dt`), multi-frame jumps, long `dt` spikes.
-- [ ] Loop modes: clamp, loop, ping-pong (bidirectional increment/decrement correctness).
+- [x] Unit tests for wrap-around: exact boundary (`dt == frame_dt`), multi-frame jumps, long `dt` spikes. (Covered by the `fast_loop_advances_multiple_frames`, `fast_loop_large_delta_wraps_phase`, and `fast_loop_rewinds_frames` cases in `src/ecs/systems/animation.rs:1965`, `src/ecs/systems/animation.rs:2023`, and `src/ecs/systems/animation.rs:2077`.)
+- [x] Loop modes: clamp, loop, ping-pong (bidirectional increment/decrement correctness). (`tests/sprite_animation.rs:174` verifies seek/clamp behavior, `tests/sprite_animation.rs:266` covers ping-pong reversal, and `tests/sprite_animation.rs:309` checks OnceHold semantics at the loop boundary.)
 - [ ] Mixed buckets: random distribution of const/var clips.
-- [ ] Fast bucket tagging: regression tests guaranteeing `FastSpriteAnimator` disappears as soon as events or ping-pong behavior is introduced.
-- [ ] SpriteFrameApplyQueue stays empty when no frames change (unit test + optional `debug_assert!`).
+- [x] Fast bucket tagging: regression tests guaranteeing `FastSpriteAnimator` disappears as soon as events or ping-pong behavior is introduced. (`src/ecs/systems/animation.rs:1533` asserts fast animators receive the marker, while `src/ecs/systems/animation.rs:1831` drops the component as soon as an event-bearing clip is applied.)
+- [x] SpriteFrameApplyQueue stays empty when no frames change (unit test + optional `debug_assert!`). (`src/ecs/systems/animation.rs:1055` asserts the queue is empty before each drive, and the `sprite_frame_queue_flag_clears_after_apply` regression test at `src/ecs/systems/animation.rs:1744` exercises the drive/apply pipeline to ensure the queue drains fully.)
 - [ ] SoA<->AoS transcode correctness once Phase 2 feature flags are enabled (visual spot-check via a minimal sample scene).
 ---
 
@@ -302,8 +302,8 @@ idx.as_array().iter().enumerate().for_each(|(k,&v)| frame_idx[i+k]=v);
 - [x] 1.3 Document/run the anim-stats profiling workflow each time perf work lands.
 - [x] 1.4 Track SpriteFrameApplyQueue churn (tests + optional counters).
 - [x] 1.5 Align `profile.bench` with `profile.release` (opt3 + ThinLTO + `codegen-units=8`).
-- [ ] 2.1 SoA animator storage (feature-gated).
-- [ ] 2.2 Fixed-point or SIMD kernels (decide based on SoA results).
+- [x] 2.1 SoA animator storage (feature-gated). (`Cargo.toml:11` exposes `sprite_anim_soa`, and `src/ecs/systems/animation.rs:54` introduces `SpriteAnimatorSoa` with fast/slow driver paths such as `sys_drive_sprite_animations` delegating to the SoA runtime when the feature is enabled.)
+- [x] 2.2 Fixed-point or SIMD kernels (decide based on SoA results). (`sprite_anim_fixed_point` builds on the SoA runtime by mirroring per-field fixed-point buffers and running the fast-loop advance via `advance_animation_fast_loop_slot` (`src/ecs/systems/animation.rs:4141`), while public ECS APIs remain f32-facing.)
 - [ ] 2.3 Prefetch/next-dt cache for var-dt.
 - [ ] 2.4 Single write-combined GPU upload.
 - [ ] 3.x Deep refactors if needed: slope sampling, workload bucketing, PGO/BOLT.

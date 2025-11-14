@@ -36,7 +36,7 @@
 - Esc - quit
 
 ## Script Debugger & REPL
-- Open the **Stats → Scripts** section inside the left panel to toggle scripting, pause updates, step once while paused, or hot-reload the active Rhai file. Click **Open debugger** from that section (or press the same button inside the Scripts window) to pop out the dedicated console.
+- Open the **Stats -> Scripts** section inside the left panel to toggle scripting, pause updates, step once while paused, or hot-reload the active Rhai file. Click **Open debugger** from that section (or press the same button inside the Scripts window) to pop out the dedicated console.
 - The debugger window shows a scrollback console that mixes script logs, REPL input/output, and runtime errors. Use **Clear Console** to reset the log without touching the underlying script state.
 - Type Rhai commands into the REPL field and press **Enter** or **Run**; commands execute against the live `World` just like the main script, so you can tweak emitters, spawn sprites, or inspect state at runtime.
 - Arrow keys cycle through command history, and the History list lets you click to rehydrate older commands for editing. The input box auto-focuses whenever a script error occurs so you can fix issues quickly.
@@ -56,24 +56,24 @@ cargo run
 
 ## Benchmarks
 - `pwsh scripts/ci/run_animation_targets.ps1 [-OutputDirectory artifacts]` runs `cargo test --profile release-fat animation_targets_measure -- --ignored --exact --nocapture` (matching the CI configuration) and captures the results in `target/animation_targets_report.json` (copied to `artifacts` when provided). Each report now includes `{mean, median, p95, p99}` timing stats, `{warmup_frames, measured_frames, samples_per_case, dt, profile, lto_mode, rustc_version, target_cpu, feature_flags, commit_sha}` metadata, and a `sprite_perf` payload so CI can diff both budgets and slow-path mix.
-- `python scripts/sprite_bench.py --label <my_label> --runs 3` wraps the release harness with the pinned env vars (no feature flags), aggregates three runs, and drops lightweight summaries in `perf/<label>.{txt,json}` (plus the metadata above). Pick a descriptive label (e.g. `before_phase0`, `after_phase1`) so it’s obvious which results are being compared.
+- `python scripts/sprite_bench.py --label <my_label> --runs 3` wraps the release harness with the pinned env vars (no feature flags), aggregates three runs, and drops lightweight summaries in `perf/<label>.{txt,json}` (plus the metadata above). Pick a descriptive label (e.g. `before_phase0`, `after_phase1`) so it's obvious which results are being compared.
 - Phase 2 sprite experiments (SoA/fixed-point/SIMD) are feature gated; enable them with `--features "sprite_anim_fixed_point,sprite_anim_simd"` (the helper script accepts `--features` and forwards the value to `cargo test`), but always compare back to the default run above.
 - `python scripts/capture_sprite_perf.py --label after_phase1 --runs 3` wraps the sprite bench sweep plus `animation_profile_snapshot` (anim_stats-enabled). It emits `perf/<label>.txt/.json` for the averaged bench data and `perf/<label>_profile.{log,json}` for the per-step driver/apply stats so regressions can be compared apples-to-apples.
-- The harness measures the roadmap checkpoints (10 000 sprite animators, 2 000 transform clips, 1 000 bones) and prints PASS/WARN summaries against the stated CPU budgets. Use the editor?s **Stats ? Sprite Animation Perf** block to spot-check fast/slow bucket mix, ?t ratios, modulo fallbacks, and Eval/Pack/Upload bars while iterating in real time.
+- The harness measures the roadmap checkpoints (10 000 sprite animators, 2 000 transform clips, 1 000 bones) and prints PASS/WARN summaries against the stated CPU budgets. Use the editor's **Stats -> Sprite Animation Perf** block to spot-check fast/slow bucket mix, delta-t ratios, modulo fallbacks, and Eval/Pack/Upload bars while iterating in real time.
 
 
 ## Plugins
 - `pwsh scripts/build_plugins.ps1 [-Release]` builds every enabled entry from `config/plugins.json` by inferring the crate root from each artifact path.
-- After rebuilding a plugin, open the Plugins panel in-app and click “Reload plugins” to rescan the manifest without restarting.
+- After rebuilding a plugin, open the Plugins panel in-app and click "Reload plugins" to rescan the manifest without restarting.
 
 ## Configuration
 - Edit config/app.json to tweak window title, resolution, vsync, or fullscreen defaults.
 - Override width/height/vsync from the CLI with `kestrel_engine --width 1920 --height 1080 --vsync off` (CLI overrides take precedence over config/app.json, which takes precedence over built-in defaults).
 - Remap keyboard input by editing config/input.json (missing or invalid entries fall back to the built-in bindings with warnings).
 - Toggle dynamic plugins via config/plugins.json (paths are resolved relative to that file; set `enabled` per entry).
-- Disable built-in plugins by listing their names in `config/plugins.json` → `disable_builtins`.
+- Disable built-in plugins by listing their names in `config/plugins.json` -> `disable_builtins`.
 - The engine falls back to built-in defaults and logs a warning if the file is missing or malformed.
-- If a dynamic plugin’s path is missing or invalid, the loader logs it and automatically marks it disabled (the app will proceed without crashing).
+- If a dynamic plugin's path is missing or invalid, the loader logs it and automatically marks it disabled (the app will proceed without crashing).
 
 ## Documentation
 - docs/ARCHITECTURE.md - subsystem responsibilities, frame flow, and notes on the hybrid transform pipeline.

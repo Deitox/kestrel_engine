@@ -65,6 +65,9 @@ impl ScriptWorld {
         vx: f32,
         vy: f32,
     ) -> ScriptHandle {
+        if !self.ensure_finite("spawn_sprite", &[x, y, scale, vx, vy]) {
+            return -1;
+        }
         if scale <= 0.0 {
             return -1;
         }
@@ -83,6 +86,9 @@ impl ScriptWorld {
     }
 
     fn set_velocity(&mut self, handle: ScriptHandle, vx: f32, vy: f32) -> bool {
+        if !self.ensure_finite("set_velocity", &[vx, vy]) {
+            return false;
+        }
         self.state
             .borrow_mut()
             .commands
@@ -91,6 +97,9 @@ impl ScriptWorld {
     }
 
     fn set_position(&mut self, handle: ScriptHandle, x: f32, y: f32) -> bool {
+        if !self.ensure_finite("set_position", &[x, y]) {
+            return false;
+        }
         self.state
             .borrow_mut()
             .commands
@@ -99,17 +108,26 @@ impl ScriptWorld {
     }
 
     fn set_rotation(&mut self, handle: ScriptHandle, radians: f32) -> bool {
+        if !self.ensure_finite("set_rotation", &[radians]) {
+            return false;
+        }
         self.state.borrow_mut().commands.push(ScriptCommand::SetRotation { handle, rotation: radians });
         true
     }
 
     fn set_scale(&mut self, handle: ScriptHandle, sx: f32, sy: f32) -> bool {
+        if !self.ensure_finite("set_scale", &[sx, sy]) {
+            return false;
+        }
         let clamped = Vec2::new(sx.max(0.01), sy.max(0.01));
         self.state.borrow_mut().commands.push(ScriptCommand::SetScale { handle, scale: clamped });
         true
     }
 
     fn set_tint(&mut self, handle: ScriptHandle, r: f32, g: f32, b: f32, a: f32) -> bool {
+        if !self.ensure_finite("set_tint", &[r, g, b, a]) {
+            return false;
+        }
         self.state
             .borrow_mut()
             .commands
@@ -208,6 +226,15 @@ impl ScriptWorld {
             state.logs.push(message.to_string());
         }
         println!("[script] {message}");
+    }
+
+    fn ensure_finite(&mut self, label: &str, values: &[f32]) -> bool {
+        if values.iter().all(|v| v.is_finite()) {
+            true
+        } else {
+            self.log(&format!("{label} received non-finite values; command ignored"));
+            false
+        }
     }
 }
 

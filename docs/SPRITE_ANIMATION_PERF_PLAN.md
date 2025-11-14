@@ -99,7 +99,7 @@
 ## 10. Verification Checklist
 
 - [ ] Bench logs ≤ 0.300 ms mean/max, `%slow ≤ 1%`.  
-- [ ] HUD counters accurate and highlighted on breaches.  
+- [x] HUD counters accurate and highlighted on breaches. (`src/app/editor_ui.rs:799` warns when `%slow > 1%` for 60 frames and highlights SIM D tail ratios >5%, while `docs/animation_workflows.md:29` walks authors through using the Sprite Animation Perf HUD.)
 - [ ] CI gate fails on simulated regression.  
 - [ ] Importer emits drift lint on synthetic noisy data.  
 - [ ] SIMD tail + event flood tests pass.  
