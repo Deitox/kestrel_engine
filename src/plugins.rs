@@ -15,10 +15,12 @@ use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::cell::{Ref, RefCell, RefMut};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::env;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::mem;
 use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::ptr;
 use std::rc::Rc;
 
@@ -953,6 +955,9 @@ impl PluginManager {
         if let Some(missing) = self.try_consume_requirements(&entry.requires_features) {
             bail!("missing required features: {}", missing.join(", "));
         }
+        if entry.trust == PluginTrust::Isolated {
+            return self.load_isolated_entry(entry, plugin_path, ctx);
+        }
         let library = unsafe {
             Library::new(&plugin_path)
                 .with_context(|| format!("loading plugin library '{}'", plugin_path.display()))?
@@ -997,6 +1002,25 @@ impl PluginManager {
         Ok(entry.name.clone())
     }
 
+    fn load_isolated_entry(
+        &mut self,
+        entry: &PluginManifestEntry,
+        plugin_path: PathBuf,
+        ctx: &mut PluginContext<'_>,
+    ) -> Result<String> {
+        let proxy = IsolatedPluginProxy::new(entry, plugin_path)?;
+        self.insert_plugin(
+            Box::new(proxy),
+            None,
+            true,
+            entry.provides_features.clone(),
+            entry.capabilities.clone(),
+            entry.trust,
+            ctx,
+        )?;
+        Ok(entry.name.clone())
+    }
+
     fn try_consume_requirements(&self, requirements: &[String]) -> Option<Vec<String>> {
         let registry = self.features.borrow();
         let missing = registry.missing(requirements.iter().map(|s| s.as_str()));
@@ -1005,6 +1029,100 @@ impl PluginManager {
         } else {
             Some(missing)
         }
+    }
+}
+
+struct IsolatedPluginProxy {
+    name: &'static str,
+    version: &'static str,
+    child: Child,
+    stdin: Option<ChildStdin>,
+}
+
+impl IsolatedPluginProxy {
+    fn new(entry: &PluginManifestEntry, plugin_path: PathBuf) -> Result<Self> {
+        let leaked_name: &'static str = Box::leak(entry.name.clone().into_boxed_str());
+        let version_static: &'static str =
+            Box::leak(entry.version.clone().unwrap_or_else(|| "0.1.0".to_string()).into_boxed_str());
+        let host_path = Self::host_binary_path().context("resolve isolated host binary")?;
+        let mut command = Command::new(host_path);
+        command.arg("--plugin").arg(&plugin_path).arg("--name").arg(entry.name.as_str());
+        for capability in &entry.capabilities {
+            command.arg("--cap").arg(capability.label());
+        }
+        let mut child =
+            command.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().with_context(
+                || {
+                    format!(
+                        "failed to spawn isolated host for plugin '{}' ({})",
+                        entry.name,
+                        plugin_path.display()
+                    )
+                },
+            )?;
+        let stdin = child.stdin.take();
+        Ok(Self { name: leaked_name, version: version_static, child, stdin })
+    }
+
+    fn host_binary_path() -> Result<PathBuf> {
+        let current = env::current_exe().context("locate engine executable")?;
+        let mut host_path = current.clone();
+        host_path.set_file_name(if cfg!(windows) {
+            "kestrel_plugin_host.exe"
+        } else {
+            "kestrel_plugin_host"
+        });
+        if host_path.exists() {
+            Ok(host_path)
+        } else {
+            bail!("isolated host binary '{}' not found", host_path.display())
+        }
+    }
+
+    fn send_command(&mut self, command: &str) {
+        if let Some(stdin) = self.stdin.as_mut() {
+            let _ = writeln!(stdin, "{command}");
+            let _ = stdin.flush();
+        }
+    }
+}
+
+impl EnginePlugin for IsolatedPluginProxy {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn version(&self) -> &'static str {
+        self.version
+    }
+
+    fn build(&mut self, _ctx: &mut PluginContext<'_>) -> Result<()> {
+        Ok(())
+    }
+
+    fn update(&mut self, _ctx: &mut PluginContext<'_>, _dt: f32) -> Result<()> {
+        Ok(())
+    }
+
+    fn shutdown(&mut self, _ctx: &mut PluginContext<'_>) -> Result<()> {
+        self.send_command("exit");
+        Ok(())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+impl Drop for IsolatedPluginProxy {
+    fn drop(&mut self) {
+        self.send_command("exit");
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 

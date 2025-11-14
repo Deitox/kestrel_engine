@@ -611,6 +611,10 @@ impl App {
             self.analytics_plugin().and_then(|analytics| analytics.gpu_pass_metric("Shadow pass"));
         let mesh_pass_metric =
             self.analytics_plugin().and_then(|analytics| analytics.gpu_pass_metric("Mesh pass"));
+        let plugin_capability_metrics_snapshot = self
+            .analytics_plugin()
+            .map(|analytics| analytics.plugin_capability_metrics().clone())
+            .unwrap_or_default();
 
         let mut editor_settings_dirty = false;
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
@@ -759,6 +763,22 @@ impl App {
                         }
                         if ui.button("Find entity by ID...").clicked() {
                             id_lookup_active = true;
+                        }
+                        if !plugin_capability_metrics_snapshot.is_empty() {
+                            ui.separator();
+                            ui.label("Plugin Capability Metrics");
+                            let mut rows = plugin_capability_metrics_snapshot.iter().collect::<Vec<_>>();
+                            rows.sort_by(|a, b| a.0.cmp(b.0));
+                            for (plugin, log) in rows {
+                                let (color, summary) = capability_violation_summary(Some(log));
+                                ui.horizontal(|ui| {
+                                    ui.label(format!("{plugin}:"));
+                                    ui.colored_label(color, summary);
+                                    if let Some(last) = log.last_capability {
+                                        ui.small(format!("last missing: {}", last.label()));
+                                    }
+                                });
+                            }
                         }
                         ui.separator();
                         egui::CollapsingHeader::new("Animation Time").default_open(false).show(ui, |ui| {
