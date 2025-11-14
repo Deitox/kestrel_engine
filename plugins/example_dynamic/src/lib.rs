@@ -2,12 +2,14 @@ use anyhow::Result;
 use kestrel_engine::plugins::{
     EnginePlugin, PluginContext, PluginExport, PluginHandle, ENGINE_PLUGIN_API_VERSION,
 };
-use std::any::Any;
+use std::{any::Any, time::Duration};
 
 #[derive(Default)]
 struct ExampleDynamicPlugin {
     elapsed: f32,
     fired_events: u32,
+    watchdog_sleep_ms: Option<u64>,
+    watchdog_armed: bool,
 }
 
 impl EnginePlugin for ExampleDynamicPlugin {
@@ -19,7 +21,23 @@ impl EnginePlugin for ExampleDynamicPlugin {
         "0.1.0"
     }
 
+    fn build(&mut self, ctx: &mut PluginContext<'_>) -> Result<()> {
+        ctx.assets_mut()?.load_atlas("main", "assets/images/atlas.json")?;
+        if let Ok(value) = std::env::var("EXAMPLE_DYNAMIC_SLEEP_MS") {
+            if let Ok(parsed) = value.parse::<u64>() {
+                self.watchdog_sleep_ms = Some(parsed);
+            }
+        }
+        Ok(())
+    }
+
     fn update(&mut self, ctx: &mut PluginContext<'_>, dt: f32) -> Result<()> {
+        if !self.watchdog_armed {
+            if let Some(ms) = self.watchdog_sleep_ms.take() {
+                self.watchdog_armed = true;
+                std::thread::sleep(Duration::from_millis(ms));
+            }
+        }
         self.elapsed += dt;
         if self.elapsed > 1.0 {
             self.elapsed = 0.0;

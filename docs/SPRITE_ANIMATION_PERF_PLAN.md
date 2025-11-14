@@ -103,4 +103,4 @@
 - [ ] CI gate fails on simulated regression.  
 - [ ] Importer emits drift lint on synthetic noisy data.  
 - [ ] SIMD tail + event flood tests pass.  
-- [ ] README/docs updated with HUD + perf guidance.
+- [x] README/docs updated with HUD + perf guidance (`README.md:62`, `docs/animation_workflows.md:29` describe the Stats → Sprite Animation Perf HUD, warning colors, and perf workflow tips).

@@ -63,7 +63,8 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
     - *Highlights:* Scenes saved with a `.kscene` extension now emit a versioned `KSCN` payload that bincode-serializes the normalized scene graph and compresses it with LZ4 (gated behind the `binary_scene` feature), while the loader auto-detects the magic header to decode or surface a helpful error if the feature is disabled.
     - *Tooling:* `scene_tool convert <input> <output>` converts between `.json` and `.kscene`, so existing content can migrate without manual edits.
     - *Acceptance:* Implement a binary encoder/decoder (with compression) behind a feature flag; provide migration tooling between JSON and binary formats.
-15. **[M11] Drag-and-drop prefab authoring**
+15. **[M11] Drag-and-drop prefab authoring** – *Completed via the Prefab Shelf UI + viewport instancing pipeline.*
+    - *Highlights:* The inspector exposes per-entity `PrefabDragPayload` handles (`src/app/editor_ui/entity_inspector.rs:1387`) that drop into the Prefab Shelf to name/save JSON or `.kscene` prefabs (`src/app/editor_ui.rs:2343`, `src/prefab.rs:1`); saved entries become drag sources that instantiate at 2D/3D drop targets inside the viewport (`src/app/editor_ui.rs:2556`, `src/app/mod.rs:950`, `src/app/mod.rs:1003`). Regression tests cover export/instantiate round-trips, drop offset alignment, and transform-clip retention (`tests/prefab_workflow.rs:10`, `tests/prefab_workflow.rs:42`, `tests/prefab_workflow.rs:82`).
     - *Acceptance:* Allow entities or hierarchies to be dragged from the inspector into a prefab shelf, saved as JSON/`kscene`, and instanced via drag/drop.
     - *Note:* Binary `.kscene` export requires launching with the `binary_scene` feature enabled; when absent the Prefab Shelf surfaces guidance to switch formats.
 
