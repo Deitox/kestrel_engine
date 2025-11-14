@@ -23,10 +23,24 @@ pub struct ParticleConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct ShadowConfig {
+    #[serde(default = "ShadowConfig::default_cascade_count")]
+    pub cascade_count: u32,
+    #[serde(default = "ShadowConfig::default_resolution")]
+    pub resolution: u32,
+    #[serde(default = "ShadowConfig::default_split_lambda")]
+    pub split_lambda: f32,
+    #[serde(default = "ShadowConfig::default_pcf_radius")]
+    pub pcf_radius: f32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
     pub window: WindowConfig,
     #[serde(default)]
     pub particles: ParticleConfig,
+    #[serde(default)]
+    pub shadow: ShadowConfig,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -66,9 +80,42 @@ impl Default for ParticleConfig {
     }
 }
 
+impl ShadowConfig {
+    const fn default_cascade_count() -> u32 {
+        4
+    }
+
+    const fn default_resolution() -> u32 {
+        2048
+    }
+
+    const fn default_split_lambda() -> f32 {
+        0.6
+    }
+
+    const fn default_pcf_radius() -> f32 {
+        1.25
+    }
+}
+
+impl Default for ShadowConfig {
+    fn default() -> Self {
+        Self {
+            cascade_count: Self::default_cascade_count(),
+            resolution: Self::default_resolution(),
+            split_lambda: Self::default_split_lambda(),
+            pcf_radius: Self::default_pcf_radius(),
+        }
+    }
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
-        Self { window: WindowConfig::default(), particles: ParticleConfig::default() }
+        Self {
+            window: WindowConfig::default(),
+            particles: ParticleConfig::default(),
+            shadow: ShadowConfig::default(),
+        }
     }
 }
 

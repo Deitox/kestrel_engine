@@ -1,6 +1,7 @@
 struct ShadowFrame {
     light_view_proj : array<mat4x4<f32>, MAX_SHADOW_CASCADES>,
     params : vec4<f32>,
+    cascade_params : array<vec4<f32>, MAX_SHADOW_CASCADES>,
 }
 
 const MAX_SKIN_JOINTS : u32 = 256u;

@@ -26,8 +26,7 @@ struct Globals {
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const MAX_SKIN_JOINTS: usize = 256;
 const SKINNING_CACHE_HEADROOM: usize = 4;
-const MAX_SHADOW_CASCADES: usize = 4;
-const DEFAULT_CASCADE_SPLITS: [f32; MAX_SHADOW_CASCADES] = [0.05, 0.15, 0.4, 1.0];
+pub const MAX_SHADOW_CASCADES: usize = 4;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -56,6 +55,7 @@ struct MeshDrawData {
 struct ShadowUniform {
     light_view_proj: [[[f32; 4]; 4]; MAX_SHADOW_CASCADES],
     params: [f32; 4],
+    cascade_params: [[f32; 4]; MAX_SHADOW_CASCADES],
 }
 
 #[repr(C)]
@@ -445,6 +445,10 @@ pub struct SceneLightingState {
     pub shadow_distance: f32,
     pub shadow_bias: f32,
     pub shadow_strength: f32,
+    pub shadow_cascade_count: u32,
+    pub shadow_resolution: u32,
+    pub shadow_split_lambda: f32,
+    pub shadow_pcf_radius: f32,
 }
 
 impl Default for SceneLightingState {
@@ -458,6 +462,10 @@ impl Default for SceneLightingState {
             shadow_distance: 35.0,
             shadow_bias: 0.002,
             shadow_strength: 1.0,
+            shadow_cascade_count: MAX_SHADOW_CASCADES as u32,
+            shadow_resolution: 2048,
+            shadow_split_lambda: 0.6,
+            shadow_pcf_radius: 1.25,
         }
     }
 }
@@ -590,6 +598,25 @@ impl Renderer {
 
     pub fn mark_shadow_settings_dirty(&mut self) {
         self.shadow_pass.dirty = true;
+    }
+
+    fn sync_shadow_map_config(&mut self) -> Result<()> {
+        let desired_cascades =
+            self.lighting.shadow_cascade_count.clamp(1, MAX_SHADOW_CASCADES as u32) as usize;
+        let desired_resolution = self.lighting.shadow_resolution.clamp(256, 8192);
+        let mut needs_recreate = false;
+        if self.shadow_pass.cascade_count != desired_cascades {
+            self.shadow_pass.cascade_count = desired_cascades;
+            needs_recreate = true;
+        }
+        if self.shadow_pass.resolution != desired_resolution {
+            self.shadow_pass.resolution = desired_resolution;
+            needs_recreate = true;
+        }
+        if needs_recreate {
+            self.recreate_shadow_map()?;
+        }
+        Ok(())
     }
 
     pub fn set_environment(&mut self, environment: &EnvironmentGpu, intensity: f32) -> Result<()> {
@@ -1772,13 +1799,21 @@ impl Renderer {
         for (dst, src) in gpu_matrices.iter_mut().zip(matrices.iter()) {
             *dst = src.to_cols_array_2d();
         }
+        let inv_resolution = 1.0 / self.shadow_pass.resolution.max(1) as f32;
+        let base_radius = self.lighting.shadow_pcf_radius.max(0.0);
+        let mut cascade_params = [[0.0f32; 4]; MAX_SHADOW_CASCADES];
+        for (idx, params) in cascade_params.iter_mut().enumerate() {
+            let cascade_factor = 1.0 + (idx as f32 * 0.35);
+            params[0] = inv_resolution;
+            params[1] = (base_radius * cascade_factor).max(0.0);
+        }
         let params = [
             bias,
             strength.clamp(0.0, 1.0),
             clamped_count as f32,
             active_cascade.min(clamped_count - 1) as f32,
         ];
-        let data = ShadowUniform { light_view_proj: gpu_matrices, params };
+        let data = ShadowUniform { light_view_proj: gpu_matrices, params, cascade_params };
         queue.write_buffer(buffer, 0, bytemuck::bytes_of(&data));
         self.shadow_pass.dirty = false;
         Ok(())
@@ -1793,6 +1828,7 @@ impl Renderer {
     ) -> Result<()> {
         self.init_mesh_pipeline()?;
         self.ensure_shadow_resources()?;
+        self.sync_shadow_map_config()?;
         let device = self.device()?.clone();
         let shadow_strength = self.lighting.shadow_strength.clamp(0.0, 1.0);
         let casters: Vec<&MeshDraw> = draws.iter().filter(|draw| draw.casts_shadows).collect();
@@ -1825,6 +1861,9 @@ impl Renderer {
             self.shadow_pass.cascade_matrices[idx] =
                 self.build_cascade_matrix(camera, aspect, prev_split, cascade_far, light_dir);
             prev_split = cascade_far;
+        }
+        for idx in self.shadow_pass.cascade_count..MAX_SHADOW_CASCADES {
+            self.shadow_pass.cascade_matrices[idx] = Mat4::IDENTITY;
         }
         self.shadow_pass.cascade_splits = splits;
 
@@ -2188,21 +2227,28 @@ impl Renderer {
     }
 
     fn compute_cascade_splits(&self, camera: &Camera3D) -> [f32; MAX_SHADOW_CASCADES] {
-        let near = camera.near;
-        let target_far = (near + self.lighting.shadow_distance).min(camera.far);
-        let range = (target_far - near).max(0.1);
-        let mut splits = [0.0; MAX_SHADOW_CASCADES];
-        for (idx, ratio) in DEFAULT_CASCADE_SPLITS.iter().enumerate() {
-            let clamped = (*ratio).clamp(0.0, 1.0);
-            let split = near + clamped * range;
-            splits[idx] = split.min(target_far);
+        let safe_near = camera.near.max(0.01);
+        let mut target_far = (safe_near + self.lighting.shadow_distance).min(camera.far);
+        if target_far <= safe_near {
+            target_far = safe_near + 0.01;
         }
-        splits[MAX_SHADOW_CASCADES - 1] = target_far;
+        let range = (target_far - safe_near).max(0.01);
+        let mut splits = [target_far; MAX_SHADOW_CASCADES];
+        let cascade_count = self.shadow_pass.cascade_count.max(1);
+        let lambda = self.lighting.shadow_split_lambda.clamp(0.0, 1.0);
+        for cascade in 0..cascade_count {
+            let p = (cascade + 1) as f32 / cascade_count as f32;
+            let uniform_split = safe_near + range * p;
+            let log_split = safe_near * (target_far / safe_near).powf(p);
+            let split = uniform_split + (log_split - uniform_split) * lambda;
+            splits[cascade] = split.min(target_far);
+        }
         for idx in 1..MAX_SHADOW_CASCADES {
             if splits[idx] <= splits[idx - 1] {
                 splits[idx] = splits[idx - 1] + 0.01;
             }
         }
+        splits[MAX_SHADOW_CASCADES - 1] = target_far;
         splits
     }
 

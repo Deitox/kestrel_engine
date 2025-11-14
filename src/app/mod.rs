@@ -23,7 +23,7 @@ use crate::plugins::{
     FeatureRegistryHandle, ManifestBuiltinToggle, ManifestDynamicToggle, PluginContext, PluginManager,
 };
 use crate::prefab::{PrefabFormat, PrefabLibrary, PrefabStatusKind, PrefabStatusMessage};
-use crate::renderer::{GpuPassTiming, MeshDraw, RenderViewport, Renderer, SpriteBatch};
+use crate::renderer::{GpuPassTiming, MeshDraw, RenderViewport, Renderer, SpriteBatch, MAX_SHADOW_CASCADES};
 use crate::scene::{
     EnvironmentDependency, Scene, SceneCamera2D, SceneCameraBookmark, SceneDependencies, SceneEntityId,
     SceneEnvironment, SceneLightingData, SceneMetadata, SceneShadowData, SceneViewportMode, Vec2Data,
@@ -265,6 +265,10 @@ pub struct App {
     ui_shadow_distance: f32,
     ui_shadow_bias: f32,
     ui_shadow_strength: f32,
+    ui_shadow_cascade_count: u32,
+    ui_shadow_resolution: u32,
+    ui_shadow_split_lambda: f32,
+    ui_shadow_pcf_radius: f32,
     ui_scale: f32,
     ui_scene_path: String,
     ui_scene_status: Option<String>,
@@ -548,6 +552,15 @@ impl App {
     }
     pub async fn new(config: AppConfig) -> Self {
         let mut renderer = Renderer::new(&config.window).await;
+        {
+            let shadow_cfg = &config.shadow;
+            let lighting = renderer.lighting_mut();
+            lighting.shadow_cascade_count = shadow_cfg.cascade_count.clamp(1, MAX_SHADOW_CASCADES as u32);
+            lighting.shadow_resolution = shadow_cfg.resolution.clamp(256, 8192);
+            lighting.shadow_split_lambda = shadow_cfg.split_lambda.clamp(0.0, 1.0);
+            lighting.shadow_pcf_radius = shadow_cfg.pcf_radius.clamp(0.0, 10.0);
+        }
+        renderer.mark_shadow_settings_dirty();
         let lighting_state = renderer.lighting().clone();
         let particle_config = config.particles.clone();
         let mut ecs = EcsWorld::new();
@@ -729,6 +742,10 @@ impl App {
             ui_shadow_distance: lighting_state.shadow_distance,
             ui_shadow_bias: lighting_state.shadow_bias,
             ui_shadow_strength: lighting_state.shadow_strength,
+            ui_shadow_cascade_count: lighting_state.shadow_cascade_count,
+            ui_shadow_resolution: lighting_state.shadow_resolution,
+            ui_shadow_split_lambda: lighting_state.shadow_split_lambda,
+            ui_shadow_pcf_radius: lighting_state.shadow_pcf_radius,
             ui_scale: 1.0,
             ui_scene_path: scene_path,
             ui_scene_status: None,
@@ -1480,6 +1497,10 @@ impl App {
                 distance: lighting.shadow_distance,
                 bias: lighting.shadow_bias,
                 strength: lighting.shadow_strength,
+                cascade_count: lighting.shadow_cascade_count,
+                resolution: lighting.shadow_resolution,
+                split_lambda: lighting.shadow_split_lambda,
+                pcf_radius: lighting.shadow_pcf_radius,
             },
         });
         metadata.environment =
@@ -1530,6 +1551,10 @@ impl App {
                 lighting_mut.shadow_distance = shadow.distance.clamp(1.0, 500.0);
                 lighting_mut.shadow_bias = shadow.bias.clamp(0.00005, 0.05);
                 lighting_mut.shadow_strength = shadow.strength.clamp(0.0, 1.0);
+                lighting_mut.shadow_cascade_count = shadow.cascade_count.clamp(1, MAX_SHADOW_CASCADES as u32);
+                lighting_mut.shadow_resolution = shadow.resolution.clamp(256, 8192);
+                lighting_mut.shadow_split_lambda = shadow.split_lambda.clamp(0.0, 1.0);
+                lighting_mut.shadow_pcf_radius = shadow.pcf_radius.clamp(0.0, 10.0);
             }
             let renderer_lighting = self.renderer.lighting();
             self.ui_light_direction = renderer_lighting.direction;
@@ -1539,6 +1564,10 @@ impl App {
             self.ui_shadow_distance = renderer_lighting.shadow_distance;
             self.ui_shadow_bias = renderer_lighting.shadow_bias;
             self.ui_shadow_strength = renderer_lighting.shadow_strength;
+            self.ui_shadow_cascade_count = renderer_lighting.shadow_cascade_count;
+            self.ui_shadow_resolution = renderer_lighting.shadow_resolution;
+            self.ui_shadow_split_lambda = renderer_lighting.shadow_split_lambda;
+            self.ui_shadow_pcf_radius = renderer_lighting.shadow_pcf_radius;
             self.renderer.mark_shadow_settings_dirty();
         }
         if let Some(environment) = metadata.environment.as_ref() {

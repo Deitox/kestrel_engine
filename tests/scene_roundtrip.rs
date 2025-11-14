@@ -440,7 +440,15 @@ fn lighting_shadow_settings_roundtrip() {
         color: Vec3Data { x: 1.2, y: 1.1, z: 0.9 },
         ambient: Vec3Data { x: 0.05, y: 0.06, z: 0.07 },
         exposure: 2.5,
-        shadow: SceneShadowData { distance: 64.0, bias: 0.0035, strength: 0.65 },
+        shadow: SceneShadowData {
+            distance: 64.0,
+            bias: 0.0035,
+            strength: 0.65,
+            cascade_count: 3,
+            resolution: 1024,
+            split_lambda: 0.75,
+            pcf_radius: 1.6,
+        },
     };
     let serialized = serde_json::to_string(&lighting).expect("serialize lighting");
     let roundtrip: SceneLightingData = serde_json::from_str(&serialized).expect("deserialize lighting");
@@ -448,6 +456,10 @@ fn lighting_shadow_settings_roundtrip() {
     assert!((roundtrip.shadow.distance - 64.0).abs() < f32::EPSILON);
     assert!((roundtrip.shadow.bias - 0.0035).abs() < f32::EPSILON);
     assert!((roundtrip.shadow.strength - 0.65).abs() < f32::EPSILON);
+    assert_eq!(roundtrip.shadow.cascade_count, 3);
+    assert_eq!(roundtrip.shadow.resolution, 1024);
+    assert!((roundtrip.shadow.split_lambda - 0.75).abs() < f32::EPSILON);
+    assert!((roundtrip.shadow.pcf_radius - 1.6).abs() < f32::EPSILON);
 }
 
 #[test]

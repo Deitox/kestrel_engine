@@ -33,6 +33,7 @@ struct MaterialUniform {
 struct ShadowUniform {
     light_view_proj : array<mat4x4<f32>, MAX_SHADOW_CASCADES>,
     params : vec4<f32>,
+    cascade_params : array<vec4<f32>, MAX_SHADOW_CASCADES>,
 }
 
 @group(0) @binding(0)
@@ -232,7 +233,45 @@ fn sample_shadow(world_pos : vec3<f32>) -> f32 {
     }
     let sample_depth = clamp(ndc.z * 0.5 + 0.5, 0.0, 1.0);
     let bias = shadow.params.x;
-    return textureSampleCompare(shadow_map, shadow_sampler, uv, i32(cascade_index), sample_depth - bias);
+    let comparison_depth = sample_depth - bias;
+    let base = textureSampleCompare(shadow_map, shadow_sampler, uv, i32(cascade_index), comparison_depth);
+    let cascade_data = shadow.cascade_params[cascade_index];
+    let radius = max(cascade_data.y, 0.0);
+    let texel = cascade_data.x;
+    if radius <= 0.001 || texel <= 0.0 {
+        return base;
+    }
+    var sum = base;
+    var taps = 1.0;
+    let step_size = vec2<f32>(texel * radius, texel * radius);
+    var y : i32 = -1;
+    loop {
+        if y > 1 {
+            break;
+        }
+        var x : i32 = -1;
+        loop {
+            if x > 1 {
+                break;
+            }
+            if x == 0 && y == 0 {
+                x = x + 1;
+                continue;
+            }
+            let offset = vec2<f32>(f32(x), f32(y)) * step_size;
+            let offset_uv = uv + offset;
+            var tap = 1.0;
+            if offset_uv.x >= 0.0 && offset_uv.x <= 1.0 && offset_uv.y >= 0.0 && offset_uv.y <= 1.0 {
+                tap =
+                    textureSampleCompare(shadow_map, shadow_sampler, offset_uv, i32(cascade_index), comparison_depth);
+            }
+            sum = sum + tap;
+            taps = taps + 1.0;
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    return sum / taps;
 }
 
 @fragment

@@ -190,6 +190,22 @@ fn default_shadow_strength() -> f32 {
     1.0
 }
 
+fn default_shadow_cascade_count() -> u32 {
+    4
+}
+
+fn default_shadow_resolution() -> u32 {
+    2048
+}
+
+fn default_shadow_split_lambda() -> f32 {
+    0.6
+}
+
+fn default_shadow_pcf_radius() -> f32 {
+    1.25
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SceneShadowData {
     #[serde(default = "default_shadow_distance")]
@@ -198,6 +214,14 @@ pub struct SceneShadowData {
     pub bias: f32,
     #[serde(default = "default_shadow_strength")]
     pub strength: f32,
+    #[serde(default = "default_shadow_cascade_count")]
+    pub cascade_count: u32,
+    #[serde(default = "default_shadow_resolution")]
+    pub resolution: u32,
+    #[serde(default = "default_shadow_split_lambda")]
+    pub split_lambda: f32,
+    #[serde(default = "default_shadow_pcf_radius")]
+    pub pcf_radius: f32,
 }
 
 impl Default for SceneShadowData {
@@ -206,6 +230,10 @@ impl Default for SceneShadowData {
             distance: default_shadow_distance(),
             bias: default_shadow_bias(),
             strength: default_shadow_strength(),
+            cascade_count: default_shadow_cascade_count(),
+            resolution: default_shadow_resolution(),
+            split_lambda: default_shadow_split_lambda(),
+            pcf_radius: default_shadow_pcf_radius(),
         }
     }
 }

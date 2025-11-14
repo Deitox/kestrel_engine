@@ -17,6 +17,8 @@ use crate::gizmo::{
 use crate::mesh_preview::{GIZMO_3D_AXIS_LENGTH_SCALE, GIZMO_3D_AXIS_MAX, GIZMO_3D_AXIS_MIN};
 use crate::plugins::{PluginState, PluginStatus};
 use crate::prefab::{PrefabFormat, PrefabStatusKind, PrefabStatusMessage};
+use crate::renderer::MAX_SHADOW_CASCADES;
+use crate::scene::SceneShadowData;
 
 use bevy_ecs::prelude::Entity;
 use egui::{Checkbox, DragAndDrop, Key, SliderClamping};
@@ -1593,6 +1595,56 @@ impl App {
                             self.ui_shadow_strength = self.ui_shadow_strength.clamp(0.0, 1.0);
                             lighting_dirty = true;
                         }
+                        if ui
+                            .add(
+                                egui::Slider::new(
+                                    &mut self.ui_shadow_cascade_count,
+                                    1..=MAX_SHADOW_CASCADES as u32,
+                                )
+                                .text("Shadow cascades"),
+                            )
+                            .changed()
+                        {
+                            lighting_dirty = true;
+                        }
+                        let mut resolution_changed = false;
+                        ui.horizontal(|ui| {
+                            ui.label("Shadow resolution");
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut self.ui_shadow_resolution)
+                                        .suffix(" px")
+                                        .speed(64.0),
+                                )
+                                .changed()
+                            {
+                                resolution_changed = true;
+                            }
+                        });
+                        if resolution_changed {
+                            self.ui_shadow_resolution = self.ui_shadow_resolution.clamp(256, 8192);
+                            lighting_dirty = true;
+                        }
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut self.ui_shadow_split_lambda, 0.0..=1.0)
+                                    .text("Cascade split bias"),
+                            )
+                            .changed()
+                        {
+                            self.ui_shadow_split_lambda = self.ui_shadow_split_lambda.clamp(0.0, 1.0);
+                            lighting_dirty = true;
+                        }
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut self.ui_shadow_pcf_radius, 0.0..=4.0)
+                                    .text("PCF radius"),
+                            )
+                            .changed()
+                        {
+                            self.ui_shadow_pcf_radius = self.ui_shadow_pcf_radius.clamp(0.0, 10.0);
+                            lighting_dirty = true;
+                        }
 
                         ui.separator();
                         ui.label("Environment");
@@ -1628,13 +1680,18 @@ impl App {
                         }
 
                         if ui.button("Reset lighting").clicked() {
+                            let default_shadow = SceneShadowData::default();
                             self.ui_light_direction = default_dir;
                             self.ui_light_color = Vec3::new(1.05, 0.98, 0.92);
                             self.ui_light_ambient = Vec3::splat(0.03);
                             self.ui_light_exposure = 1.0;
-                            self.ui_shadow_distance = 35.0;
-                            self.ui_shadow_bias = 0.002;
-                            self.ui_shadow_strength = 1.0;
+                            self.ui_shadow_distance = default_shadow.distance;
+                            self.ui_shadow_bias = default_shadow.bias;
+                            self.ui_shadow_strength = default_shadow.strength;
+                            self.ui_shadow_cascade_count = default_shadow.cascade_count;
+                            self.ui_shadow_resolution = default_shadow.resolution;
+                            self.ui_shadow_split_lambda = default_shadow.split_lambda;
+                            self.ui_shadow_pcf_radius = default_shadow.pcf_radius;
                             self.ui_environment_intensity = 1.0;
                             ui_environment_intensity = 1.0;
 
@@ -1649,6 +1706,11 @@ impl App {
                             lighting.shadow_distance = self.ui_shadow_distance.clamp(1.0, 500.0);
                             lighting.shadow_bias = self.ui_shadow_bias.clamp(0.00005, 0.05);
                             lighting.shadow_strength = self.ui_shadow_strength.clamp(0.0, 1.0);
+                            lighting.shadow_cascade_count =
+                                self.ui_shadow_cascade_count.clamp(1, MAX_SHADOW_CASCADES as u32);
+                            lighting.shadow_resolution = self.ui_shadow_resolution.clamp(256, 8192);
+                            lighting.shadow_split_lambda = self.ui_shadow_split_lambda.clamp(0.0, 1.0);
+                            lighting.shadow_pcf_radius = self.ui_shadow_pcf_radius.clamp(0.0, 10.0);
                             self.renderer.mark_shadow_settings_dirty();
                         }
                     });
