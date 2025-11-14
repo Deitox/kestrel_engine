@@ -68,50 +68,37 @@ impl AnimationKeyframePanel {
             }
         });
         ui.separator();
-        if state.track_summaries.is_empty() {
-            ui.label("Tracks will appear here once the editor wiring is complete.");
-            ui.small("Milestone task: bind Sprite/Transform/Skeletal tracks and render editable keys.");
-        } else {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for summary in &state.track_summaries {
-                    ui.group(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(&summary.label);
-                            ui.small(format!("{} keys", summary.key_count));
-                        });
-                        if summary.key_details.is_empty() {
-                            ui.small("No key details available yet.");
-                        } else {
-                            egui::Grid::new(format!("key_grid_{}", summary.label)).striped(true).show(
-                                ui,
-                                |ui| {
-                                    ui.label("Index");
-                                    ui.label("Time");
-                                    ui.label("Value");
-                                    ui.end_row();
-                                    for detail in &summary.key_details {
-                                        ui.label(format!("#{}", detail.index));
-                                        ui.label(
-                                            detail
-                                                .time
-                                                .map(|t| format!("{t:.3}s"))
-                                                .unwrap_or_else(|| "-".to_string()),
-                                        );
-                                        ui.label(
-                                            detail
-                                                .value_preview
-                                                .as_deref()
-                                                .unwrap_or("value preview pending"),
-                                        );
-                                        ui.end_row();
-                                    }
-                                },
-                            );
-                        }
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for summary in &state.track_summaries {
+                ui.group(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(&summary.label);
+                        ui.small(format!("{} keys", summary.key_count));
                     });
-                }
-            });
-        }
+                    if summary.key_details.is_empty() {
+                        ui.small("No key details available yet.");
+                    } else {
+                        egui::Grid::new(format!("key_grid_{}", summary.label)).striped(true).show(ui, |ui| {
+                            ui.label("Index");
+                            ui.label("Time");
+                            ui.label("Value");
+                            ui.end_row();
+                            for detail in &summary.key_details {
+                                ui.label(format!("#{}", detail.index));
+                                ui.label(
+                                    detail
+                                        .time
+                                        .map(|t| format!("{t:.3}s"))
+                                        .unwrap_or_else(|| "-".to_string()),
+                                );
+                                ui.label(detail.value_preview.as_deref().unwrap_or("value preview pending"));
+                                ui.end_row();
+                            }
+                        });
+                    }
+                });
+            }
+        });
         ui.separator();
         ui.label(format!(
             "Animation time: scale {:.2}, paused {}, fixed_step {:?}",

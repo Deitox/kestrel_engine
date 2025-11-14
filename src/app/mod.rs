@@ -505,7 +505,11 @@ impl App {
 
     fn sprite_key_details(animation: &SpriteAnimationInfo) -> Vec<KeyframeDetail> {
         (0..animation.frame_count)
-            .map(|index| KeyframeDetail { index, time: None, value_preview: animation.frame_region.clone() })
+            .map(|index| KeyframeDetail {
+                index,
+                time: if index == animation.frame_index { Some(animation.frame_elapsed) } else { None },
+                value_preview: animation.frame_region.clone(),
+            })
             .collect()
     }
 
