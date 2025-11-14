@@ -10,22 +10,22 @@
   - Future updates refresh `perf/gpu_baseline.json` to tighten tolerances as optimizations land.
 
 ## Cascaded Shadow Refinement
-- **Status:** [ ] Pending
+- **Status:** [x] Completed by threading cascade controls through `SceneShadowData`, `config/app.json`, and the editor lighting panel.
 - **Goal:** Close Milestone 12's "advanced lighting" bullet by exposing cascade controls and adding PCF filtering for distant cascades.
 - **Scope:** Promote cascade configuration (count, splits, resolution, PCF radius) into `SceneShadowData` / `config/app.json`, update the lighting panel to edit those values, and implement adaptive split computation per camera.
 - **Implementation Notes:**
-  - Replace the fixed `DEFAULT_CASCADE_SPLITS` with a function that blends uniform/logarithmic splits so near cascades gain precision while far ranges stretch smoothly.
-  - Extend `ShadowUniform` and `sample_shadow` to carry per-cascade texel sizes + PCF radii, then use comparison samplers to suppress shimmer.
-  - Mark shadow resources dirty whenever the cascade config changes so the renderer reshapes its texture array and updates bind groups automatically.
+  - The renderer now blends uniform and logarithmic cascade splits per camera, uploads per-cascade texel sizes/PCF radii, and re-allocates the shadow map array whenever cascade counts or resolution change.
+  - `ShadowUniform`/`sample_shadow` include comparison-sampler PCF filtering with per-cascade radii to suppress shimmer.
+  - Scene metadata + config persist cascade knobs so CI/editor captures stay deterministic.
 
 ## Sprite Zoom Guardrails
-- **Status:** [ ] Pending
+- **Status:** [x] Completed with configurable zoom limits + sprite footprint checks.
 - **Goal:** Prevent the editor from rasterizing enormous quads when zooming too far into sprites.
 - **Scope:** Expose camera zoom limits in config/editor UI, detect when sprites exceed a target on-screen size, and either warn or auto-clamp zoom; optionally add an LOD path for oversize sprites.
 - **Implementation Notes:**
-  - Surface zoom-limit controls near the camera stats readout and persist overrides per scene so preview files remember safe ranges.
-  - During sprite batching, compute each instance's screen footprint using `Camera2D::world_rect_to_screen_bounds`; emit warnings and clamp zoom when footprints exceed a configurable threshold.
-  - Consider follow-up LOD logic that downscales or temporarily disables over-threshold sprites when `guardrails=Strict` to keep perf predictable.
+  - Added `editor` config + UI sliders for min/max orthographic zoom, sprite guardrail thresholds, and guard modes (Off/Warn/Clamp/Strict) so artists can tune limits live.
+  - Sprite batching now measures each instance's on-screen footprint via `Camera2D::world_rect_to_screen_bounds`; warn or auto-clamp zoom when pixels exceed the threshold, or hide offending sprites entirely when guardrails are `Strict`.
+  - Guardrail feedback surfaces directly in the Camera pane so users understand when zoom clamping/culling just occurred.
 
 ## Build & Benchmark Harness
 - **Status:** [x] Completed via `scripts/run_perf_suite.py` and the expanded `.github/workflows/animation-bench.yml` step that publishes the suite artifact.

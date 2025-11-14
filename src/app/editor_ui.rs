@@ -20,6 +20,7 @@ use crate::prefab::{PrefabFormat, PrefabStatusKind, PrefabStatusMessage};
 use crate::renderer::MAX_SHADOW_CASCADES;
 use crate::scene::SceneShadowData;
 
+use crate::config::SpriteGuardrailMode;
 use bevy_ecs::prelude::Entity;
 use egui::{Checkbox, DragAndDrop, Key, SliderClamping};
 use egui_plot as eplot;
@@ -579,6 +580,7 @@ impl App {
         let mesh_pass_metric =
             self.analytics_plugin().and_then(|analytics| analytics.gpu_pass_metric("Mesh pass"));
 
+        let mut editor_settings_dirty = false;
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
             let left_panel =
                 egui::SidePanel::left("kestrel_left_panel").default_width(340.0).show(ctx, |ui| {
@@ -889,6 +891,65 @@ impl App {
                             ui.label(format!("Cursor world: ({:.2}, {:.2})", cursor.x, cursor.y));
                         } else {
                             ui.label("Cursor world: n/a");
+                        }
+                        if let Some(status) = self.sprite_guardrail_status.as_ref() {
+                            ui.colored_label(egui::Color32::from_rgb(255, 180, 80), status);
+                        }
+                        ui.separator();
+                        ui.label("Zoom guardrails");
+                        let mut guardrail_dirty = false;
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut self.ui_camera_zoom_min, 0.05..=10.0)
+                                    .text("Min zoom")
+                                    .logarithmic(true),
+                            )
+                            .changed()
+                        {
+                            guardrail_dirty = true;
+                        }
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut self.ui_camera_zoom_max, 0.1..=20.0)
+                                    .text("Max zoom")
+                                    .logarithmic(true),
+                            )
+                            .changed()
+                        {
+                            guardrail_dirty = true;
+                        }
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut self.ui_sprite_guard_pixels, 256.0..=8192.0)
+                                    .text("Sprite guard (px)")
+                                    .logarithmic(true),
+                            )
+                            .changed()
+                        {
+                            guardrail_dirty = true;
+                        }
+                        let mut guard_mode = self.ui_sprite_guard_mode;
+                        egui::ComboBox::from_id_salt("sprite_guardrail_mode")
+                            .selected_text(guard_mode.label())
+                            .show_ui(ui, |ui| {
+                                for mode in [
+                                    SpriteGuardrailMode::Off,
+                                    SpriteGuardrailMode::Warn,
+                                    SpriteGuardrailMode::Clamp,
+                                    SpriteGuardrailMode::Strict,
+                                ] {
+                                    let label = mode.label();
+                                    if ui.selectable_label(guard_mode == mode, label).clicked() {
+                                        guard_mode = mode;
+                                    }
+                                }
+                            });
+                        if guard_mode != self.ui_sprite_guard_mode {
+                            self.ui_sprite_guard_mode = guard_mode;
+                            guardrail_dirty = true;
+                        }
+                        if guardrail_dirty {
+                            editor_settings_dirty = true;
                         }
                         ui.separator();
                         ui.label("Camera bookmarks");
@@ -2566,6 +2627,10 @@ impl App {
                     self.gpu_metrics_status = Some(format!("GPU timing export failed: {err}"));
                 }
             }
+        }
+
+        if editor_settings_dirty {
+            self.apply_editor_camera_settings();
         }
 
         let approx_eq = |a: f32, b: f32| (a - b).abs() <= 1e-4;

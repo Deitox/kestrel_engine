@@ -16,5 +16,11 @@
     "resolution": 2048,
     "split_lambda": 0.6,
     "pcf_radius": 1.25
+  },
+  "editor": {
+    "camera_zoom_min": 0.25,
+    "camera_zoom_max": 5.0,
+    "sprite_guard_max_pixels": 2048.0,
+    "sprite_guardrail_mode": "warn"
   }
 }

@@ -10,8 +10,8 @@ use crate::assets::AssetManager;
 use crate::audio::{AudioHealthSnapshot, AudioPlugin};
 use crate::camera::Camera2D;
 use crate::camera3d::Camera3D;
-use crate::config::{AppConfig, AppConfigOverrides};
-use crate::ecs::{EcsWorld, InstanceData, MeshLightingInfo, ParticleCaps, SpriteAnimation};
+use crate::config::{AppConfig, AppConfigOverrides, SpriteGuardrailMode};
+use crate::ecs::{EcsWorld, InstanceData, MeshLightingInfo, ParticleCaps, SpriteAnimation, SpriteInstance};
 use crate::environment::EnvironmentRegistry;
 use crate::events::GameEvent;
 use crate::gizmo::{GizmoInteraction, GizmoMode};
@@ -269,6 +269,10 @@ pub struct App {
     ui_shadow_resolution: u32,
     ui_shadow_split_lambda: f32,
     ui_shadow_pcf_radius: f32,
+    ui_camera_zoom_min: f32,
+    ui_camera_zoom_max: f32,
+    ui_sprite_guard_pixels: f32,
+    ui_sprite_guard_mode: SpriteGuardrailMode,
     ui_scale: f32,
     ui_scene_path: String,
     ui_scene_status: Option<String>,
@@ -331,6 +335,9 @@ pub struct App {
 
     sprite_atlas_views: HashMap<String, Arc<wgpu::TextureView>>,
     atlas_hot_reload: Option<AtlasHotReload>,
+    sprite_guardrail_mode: SpriteGuardrailMode,
+    sprite_guardrail_max_pixels: f32,
+    sprite_guardrail_status: Option<String>,
 }
 
 impl App {
@@ -563,6 +570,7 @@ impl App {
         renderer.mark_shadow_settings_dirty();
         let lighting_state = renderer.lighting().clone();
         let particle_config = config.particles.clone();
+        let editor_cfg = config.editor.clone();
         let mut ecs = EcsWorld::new();
         ecs.set_particle_caps(ParticleCaps::new(
             particle_config.max_spawn_per_frame,
@@ -698,6 +706,9 @@ impl App {
             }
         };
 
+        let mut camera = Camera2D::new(CAMERA_BASE_HALF_HEIGHT);
+        camera.set_zoom_limits(editor_cfg.camera_zoom_min, editor_cfg.camera_zoom_max);
+
         let mut app = Self {
             renderer,
             ecs,
@@ -746,6 +757,10 @@ impl App {
             ui_shadow_resolution: lighting_state.shadow_resolution,
             ui_shadow_split_lambda: lighting_state.shadow_split_lambda,
             ui_shadow_pcf_radius: lighting_state.shadow_pcf_radius,
+            ui_camera_zoom_min: editor_cfg.camera_zoom_min,
+            ui_camera_zoom_max: editor_cfg.camera_zoom_max,
+            ui_sprite_guard_pixels: editor_cfg.sprite_guard_max_pixels,
+            ui_sprite_guard_mode: editor_cfg.sprite_guardrail_mode,
             ui_scale: 1.0,
             ui_scene_path: scene_path,
             ui_scene_status: None,
@@ -768,7 +783,7 @@ impl App {
             script_console: VecDeque::with_capacity(SCRIPT_CONSOLE_CAPACITY),
             last_reported_script_error: None,
             plugin_host,
-            camera: Camera2D::new(CAMERA_BASE_HALF_HEIGHT),
+            camera,
             viewport_camera_mode: ViewportCameraMode::default(),
             camera_bookmarks: Vec::new(),
             active_camera_bookmark: None,
@@ -793,6 +808,9 @@ impl App {
             emitter_entity: Some(emitter),
             sprite_atlas_views: HashMap::new(),
             atlas_hot_reload,
+            sprite_guardrail_mode: editor_cfg.sprite_guardrail_mode,
+            sprite_guardrail_max_pixels: editor_cfg.sprite_guard_max_pixels,
+            sprite_guardrail_status: None,
             frame_profiler: FrameProfiler::new(240),
             gpu_timings: Vec::new(),
             gpu_timing_history: VecDeque::with_capacity(240),
@@ -801,6 +819,7 @@ impl App {
             gpu_metrics_status: None,
         };
         app.apply_particle_caps();
+        app.apply_editor_camera_settings();
         app.report_audio_startup_status();
         app
     }
@@ -811,6 +830,112 @@ impl App {
             return;
         }
         self.with_plugins(|plugins, ctx| plugins.handle_events(ctx, &events));
+    }
+
+    fn sprite_screen_extent(&self, instance: &InstanceData, viewport_size: PhysicalSize<u32>) -> Option<f32> {
+        if viewport_size.width == 0 || viewport_size.height == 0 {
+            return None;
+        }
+        let model = Mat4::from_cols_array_2d(&instance.model);
+        let quad = [Vec2::new(-0.5, -0.5), Vec2::new(0.5, -0.5), Vec2::new(0.5, 0.5), Vec2::new(-0.5, 0.5)];
+        let mut min_world = Vec2::splat(f32::INFINITY);
+        let mut max_world = Vec2::splat(f32::NEG_INFINITY);
+        for corner in &quad {
+            let world = model.transform_point3(Vec3::new(corner.x, corner.y, 0.0));
+            let point = Vec2::new(world.x, world.y);
+            min_world = min_world.min(point);
+            max_world = max_world.max(point);
+        }
+        let (min_screen, max_screen) =
+            self.camera.world_rect_to_screen_bounds(min_world, max_world, viewport_size)?;
+        let delta = (max_screen - min_screen).abs();
+        Some(delta.x.max(delta.y))
+    }
+
+    fn apply_sprite_guardrails(
+        &mut self,
+        sprite_instances: Vec<SpriteInstance>,
+        viewport_size: PhysicalSize<u32>,
+    ) -> Vec<SpriteInstance> {
+        if sprite_instances.is_empty()
+            || self.viewport_camera_mode != ViewportCameraMode::Ortho2D
+            || viewport_size.width == 0
+            || viewport_size.height == 0
+            || self.sprite_guardrail_mode == SpriteGuardrailMode::Off
+        {
+            self.sprite_guardrail_status = None;
+            return sprite_instances;
+        }
+
+        let threshold = self.sprite_guardrail_max_pixels.max(64.0);
+        let mut filtered = Vec::with_capacity(sprite_instances.len());
+        let mut largest_hit: f32 = 0.0;
+        let mut culled = 0usize;
+        for instance in sprite_instances {
+            let mut oversized = false;
+            if let Some(extent) = self.sprite_screen_extent(&instance.data, viewport_size) {
+                if extent > threshold {
+                    oversized = true;
+                    largest_hit = largest_hit.max(extent);
+                }
+            }
+            if oversized && self.sprite_guardrail_mode == SpriteGuardrailMode::Strict {
+                culled += 1;
+                continue;
+            }
+            filtered.push(instance);
+        }
+
+        if largest_hit > threshold {
+            let status = match self.sprite_guardrail_mode {
+                SpriteGuardrailMode::Warn => Some(format!(
+                    "Zoom guardrail: sprite spans {:.0}px (limit {:.0}px).",
+                    largest_hit, threshold
+                )),
+                SpriteGuardrailMode::Clamp => {
+                    let prev_zoom = self.camera.zoom;
+                    let ratio = (threshold / largest_hit).clamp(0.1, 1.0);
+                    if ratio < 0.999 {
+                        let desired_zoom = prev_zoom * ratio;
+                        self.camera.set_zoom(desired_zoom);
+                        self.active_camera_bookmark = None;
+                        self.camera_follow_target = None;
+                        Some(format!(
+                            "Zoom guardrail clamped camera to {:.2} (sprite {:.0}px, limit {:.0}px).",
+                            self.camera.zoom, largest_hit, threshold
+                        ))
+                    } else {
+                        Some(format!(
+                            "Zoom guardrail: sprite spans {:.0}px (limit {:.0}px).",
+                            largest_hit, threshold
+                        ))
+                    }
+                }
+                SpriteGuardrailMode::Strict => Some(format!(
+                    "Zoom guardrail hiding {culled} sprite(s) > {:.0}px (limit {:.0}px).",
+                    largest_hit, threshold
+                )),
+                SpriteGuardrailMode::Off => None,
+            };
+            self.sprite_guardrail_status = status;
+        } else {
+            self.sprite_guardrail_status = None;
+        }
+
+        filtered
+    }
+
+    fn apply_editor_camera_settings(&mut self) {
+        self.ui_camera_zoom_min = self.ui_camera_zoom_min.clamp(0.05, 20.0);
+        self.ui_camera_zoom_max = self.ui_camera_zoom_max.max(self.ui_camera_zoom_min + 0.01).min(40.0);
+        self.camera.set_zoom_limits(self.ui_camera_zoom_min, self.ui_camera_zoom_max);
+        self.ui_sprite_guard_pixels = self.ui_sprite_guard_pixels.clamp(256.0, 8192.0);
+        self.sprite_guardrail_mode = self.ui_sprite_guard_mode;
+        self.sprite_guardrail_max_pixels = self.ui_sprite_guard_pixels;
+        self.config.editor.camera_zoom_min = self.ui_camera_zoom_min;
+        self.config.editor.camera_zoom_max = self.ui_camera_zoom_max;
+        self.config.editor.sprite_guard_max_pixels = self.ui_sprite_guard_pixels;
+        self.config.editor.sprite_guardrail_mode = self.ui_sprite_guard_mode;
     }
 
     fn set_prefab_status(&mut self, kind: PrefabStatusKind, message: impl Into<String>) {
@@ -2011,6 +2136,7 @@ impl ApplicationHandler for App {
                 return;
             }
         };
+        let sprite_instances = self.apply_sprite_guardrails(sprite_instances, viewport_size);
         let mut grouped_instances: BTreeMap<String, Vec<InstanceData>> = BTreeMap::new();
         for instance in sprite_instances {
             grouped_instances.entry(instance.atlas).or_default().push(instance.data);

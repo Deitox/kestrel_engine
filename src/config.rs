@@ -22,6 +22,38 @@ pub struct ParticleConfig {
     pub max_emitter_backlog: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpriteGuardrailMode {
+    Off,
+    Warn,
+    Clamp,
+    Strict,
+}
+
+impl SpriteGuardrailMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            SpriteGuardrailMode::Off => "Off",
+            SpriteGuardrailMode::Warn => "Warn",
+            SpriteGuardrailMode::Clamp => "Clamp & Zoom",
+            SpriteGuardrailMode::Strict => "Strict (hide sprites)",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EditorConfig {
+    #[serde(default = "EditorConfig::default_zoom_min")]
+    pub camera_zoom_min: f32,
+    #[serde(default = "EditorConfig::default_zoom_max")]
+    pub camera_zoom_max: f32,
+    #[serde(default = "EditorConfig::default_sprite_guard_max_pixels")]
+    pub sprite_guard_max_pixels: f32,
+    #[serde(default = "EditorConfig::default_guardrail_mode")]
+    pub sprite_guardrail_mode: SpriteGuardrailMode,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ShadowConfig {
     #[serde(default = "ShadowConfig::default_cascade_count")]
@@ -41,6 +73,8 @@ pub struct AppConfig {
     pub particles: ParticleConfig,
     #[serde(default)]
     pub shadow: ShadowConfig,
+    #[serde(default)]
+    pub editor: EditorConfig,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -80,6 +114,35 @@ impl Default for ParticleConfig {
     }
 }
 
+impl EditorConfig {
+    const fn default_zoom_min() -> f32 {
+        0.25
+    }
+
+    const fn default_zoom_max() -> f32 {
+        5.0
+    }
+
+    const fn default_sprite_guard_max_pixels() -> f32 {
+        2048.0
+    }
+
+    fn default_guardrail_mode() -> SpriteGuardrailMode {
+        SpriteGuardrailMode::Warn
+    }
+}
+
+impl Default for EditorConfig {
+    fn default() -> Self {
+        Self {
+            camera_zoom_min: Self::default_zoom_min(),
+            camera_zoom_max: Self::default_zoom_max(),
+            sprite_guard_max_pixels: Self::default_sprite_guard_max_pixels(),
+            sprite_guardrail_mode: Self::default_guardrail_mode(),
+        }
+    }
+}
+
 impl ShadowConfig {
     const fn default_cascade_count() -> u32 {
         4
@@ -115,6 +178,7 @@ impl Default for AppConfig {
             window: WindowConfig::default(),
             particles: ParticleConfig::default(),
             shadow: ShadowConfig::default(),
+            editor: EditorConfig::default(),
         }
     }
 }
