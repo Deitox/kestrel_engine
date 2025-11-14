@@ -243,6 +243,14 @@ pub struct TextureAtlas {
     pub animations: HashMap<String, SpriteTimeline>,
 }
 
+pub struct AtlasSnapshot<'a> {
+    pub width: u32,
+    pub height: u32,
+    pub image_path: &'a Path,
+    pub regions: &'a HashMap<Arc<str>, AtlasRegion>,
+    pub animations: &'a HashMap<String, SpriteTimeline>,
+}
+
 #[derive(Clone)]
 pub struct AtlasRegion {
     pub id: u16,
@@ -929,6 +937,16 @@ impl AssetManager {
             .get(atlas_key)
             .map(|atlas| atlas.animations.keys().cloned().collect())
             .unwrap_or_default()
+    }
+    pub fn atlas_snapshot(&self, key: &str) -> Option<AtlasSnapshot<'_>> {
+        let atlas = self.atlases.get(key)?;
+        Some(AtlasSnapshot {
+            width: atlas.width,
+            height: atlas.height,
+            image_path: atlas.image_path.as_path(),
+            regions: &atlas.regions,
+            animations: &atlas.animations,
+        })
     }
     pub fn has_atlas(&self, key: &str) -> bool {
         self.atlases.contains_key(key)

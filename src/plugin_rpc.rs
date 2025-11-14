@@ -14,6 +14,9 @@ pub enum PluginHostRequest {
     FixedUpdate { dt: f32 },
     OnEvents { events: Vec<RpcGameEvent> },
     QueryEntityInfo { entity: RpcEntity },
+    ReadComponents(RpcReadComponentsRequest),
+    IterEntities(RpcIterEntitiesRequest),
+    AssetReadback(RpcAssetReadbackRequest),
     Shutdown,
 }
 
@@ -37,6 +40,9 @@ pub enum RpcGameEvent {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum RpcResponseData {
     EntityInfo(Option<RpcEntityInfo>),
+    ReadComponents(RpcReadComponentsResponse),
+    IterEntities(RpcIterEntitiesResponse),
+    AssetReadback(RpcAssetReadbackResponse),
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
@@ -59,6 +65,149 @@ pub struct RpcEntityInfo {
 pub struct RpcSpriteInfo {
     pub atlas: String,
     pub region: String,
+}
+
+pub type RpcRequestId = u64;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcReadComponentsRequest {
+    pub request_id: RpcRequestId,
+    pub entity: RpcEntity,
+    pub components: Vec<RpcComponentKind>,
+    pub format: RpcSnapshotFormat,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcReadComponentsResponse {
+    pub request_id: RpcRequestId,
+    pub snapshot: Option<RpcEntitySnapshot>,
+    pub missing_components: Vec<RpcComponentKind>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcIterEntitiesRequest {
+    pub request_id: RpcRequestId,
+    pub filter: RpcEntityFilter,
+    pub cursor: Option<RpcIteratorCursor>,
+    pub limit: u32,
+    pub components: Vec<RpcComponentKind>,
+    pub format: RpcSnapshotFormat,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcIterEntitiesResponse {
+    pub request_id: RpcRequestId,
+    pub snapshots: Vec<RpcEntitySnapshot>,
+    pub next_cursor: Option<RpcIteratorCursor>,
+    pub exhausted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcIteratorCursor {
+    pub last_entity_bits: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RpcEntityFilter {
+    pub components: Vec<RpcComponentKind>,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcEntitySnapshot {
+    pub entity: RpcEntity,
+    pub components: Vec<RpcComponentSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RpcComponentSnapshot {
+    Transform2D(RpcTransformSnapshot),
+    WorldTransform(RpcWorldTransformSnapshot),
+    Sprite(RpcSpriteSnapshot),
+    Hierarchy(RpcHierarchySnapshot),
+    Velocity(RpcVelocitySnapshot),
+    Tint(RpcTintSnapshot),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcTransformSnapshot {
+    pub translation: [f32; 2],
+    pub rotation: f32,
+    pub scale: [f32; 2],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcWorldTransformSnapshot {
+    pub matrix: [[f32; 4]; 4],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcSpriteSnapshot {
+    pub atlas: String,
+    pub region: String,
+    pub frame_index: Option<u32>,
+    pub visible: bool,
+    pub color: [f32; 4],
+    pub flip_x: bool,
+    pub flip_y: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcHierarchySnapshot {
+    pub parent: Option<RpcEntity>,
+    pub child_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcVelocitySnapshot {
+    pub linear: [f32; 2],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcTintSnapshot {
+    pub color: [f32; 4],
+    pub visible: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RpcComponentKind {
+    Transform2D,
+    WorldTransform,
+    Sprite,
+    Hierarchy,
+    Velocity,
+    Tint,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RpcSnapshotFormat {
+    Full,
+    Partial,
+    Lite,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcAssetReadbackRequest {
+    pub request_id: RpcRequestId,
+    pub payload: RpcAssetReadbackPayload,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RpcAssetReadbackPayload {
+    AtlasMeta { atlas_id: String },
+    AtlasBinary { atlas_id: String },
+    BlobRange { blob_id: String, offset: u64, length: u64 },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcAssetReadbackResponse {
+    pub request_id: RpcRequestId,
+    pub content_type: String,
+    pub bytes: Vec<u8>,
+    pub metadata_json: Option<String>,
+    pub byte_length: u64,
 }
 
 impl From<Entity> for RpcEntity {
@@ -211,6 +360,55 @@ mod tests {
                 other => panic!("unexpected payload: {other:?}"),
             },
             other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_components_request_round_trip() {
+        let request = PluginHostRequest::ReadComponents(RpcReadComponentsRequest {
+            request_id: 7,
+            entity: RpcEntity { bits: 99 },
+            components: vec![RpcComponentKind::Transform2D, RpcComponentKind::Sprite],
+            format: RpcSnapshotFormat::Full,
+        });
+        let mut buffer = Vec::new();
+        send_frame(&mut buffer, &request).expect("request serialized");
+        let mut cursor = Cursor::new(buffer);
+        let decoded: PluginHostRequest =
+            recv_frame(&mut cursor).expect("request decoded without corruption");
+        match decoded {
+            PluginHostRequest::ReadComponents(payload) => {
+                assert_eq!(payload.request_id, 7);
+                assert_eq!(payload.components.len(), 2);
+            }
+            other => panic!("unexpected request decoded: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn asset_readback_response_round_trip() {
+        let response = PluginHostResponse::Ok {
+            events: Vec::new(),
+            data: Some(RpcResponseData::AssetReadback(RpcAssetReadbackResponse {
+                request_id: 88,
+                content_type: "application/json".to_string(),
+                bytes: vec![1, 2, 3, 4],
+                metadata_json: Some("{\"frames\":1}".to_string()),
+                byte_length: 4,
+            })),
+        };
+        let mut buffer = Vec::new();
+        send_frame(&mut buffer, &response).expect("response serialized");
+        let mut cursor = std::io::Cursor::new(buffer);
+        let decoded: PluginHostResponse =
+            recv_frame(&mut cursor).expect("response decoded without corruption");
+        match decoded {
+            PluginHostResponse::Ok { data: Some(RpcResponseData::AssetReadback(payload)), .. } => {
+                assert_eq!(payload.request_id, 88);
+                assert_eq!(payload.byte_length, 4);
+                assert_eq!(payload.bytes, vec![1, 2, 3, 4]);
+            }
+            other => panic!("unexpected response decoded: {other:?}"),
         }
     }
 }

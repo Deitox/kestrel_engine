@@ -1,16 +1,24 @@
 use anyhow::{anyhow, bail, Context, Result};
 use bevy_ecs::prelude::Entity;
-use kestrel_engine::assets::AssetManager;
+use bevy_ecs::world::EntityRef;
+use kestrel_engine::assets::{AssetManager, AtlasSnapshot};
 use kestrel_engine::config::WindowConfig;
-use kestrel_engine::ecs::{EcsWorld, EntityInfo, SpriteInfo};
+use kestrel_engine::ecs::{
+    Children, EcsWorld, EntityInfo, Parent, SceneEntityTag, Sprite, SpriteAnimation, SpriteInfo, Tint, Transform,
+    Velocity, WorldTransform,
+};
 use kestrel_engine::environment::EnvironmentRegistry;
 use kestrel_engine::events::GameEvent;
 use kestrel_engine::input::Input;
 use kestrel_engine::material_registry::MaterialRegistry;
 use kestrel_engine::mesh_registry::MeshRegistry;
 use kestrel_engine::plugin_rpc::{
-    recv_frame, send_frame, PluginHostRequest, PluginHostResponse, RpcEntityInfo, RpcGameEvent,
-    RpcResponseData, RpcSpriteInfo,
+    recv_frame, send_frame, PluginHostRequest, PluginHostResponse, RpcAssetReadbackPayload,
+    RpcAssetReadbackRequest, RpcAssetReadbackResponse, RpcComponentKind, RpcComponentSnapshot, RpcEntityFilter,
+    RpcEntityInfo, RpcEntitySnapshot, RpcGameEvent, RpcHierarchySnapshot, RpcIterEntitiesRequest,
+    RpcIterEntitiesResponse, RpcIteratorCursor, RpcReadComponentsRequest, RpcReadComponentsResponse, RpcResponseData,
+    RpcSnapshotFormat, RpcSpriteInfo, RpcSpriteSnapshot, RpcTintSnapshot, RpcTransformSnapshot, RpcVelocitySnapshot,
+    RpcWorldTransformSnapshot,
 };
 use kestrel_engine::plugins::{
     CapabilityTrackerHandle, EnginePlugin, FeatureRegistryHandle, PluginContext, PluginEntryFn,
@@ -20,10 +28,12 @@ use kestrel_engine::renderer::Renderer;
 use kestrel_engine::time::Time;
 use libloading::Library;
 use pollster::block_on;
+use serde::Serialize;
 use std::cell::Cell;
 use std::env;
+use std::fs;
 use std::io::{self, BufReader, BufWriter};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::time::Duration;
 
@@ -162,6 +172,35 @@ impl PluginHostService {
                 };
                 return (response, false);
             }
+            PluginHostRequest::ReadComponents(request) => {
+                let payload = self.engine.read_components(request);
+                let response = PluginHostResponse::Ok {
+                    events: Vec::new(),
+                    data: Some(RpcResponseData::ReadComponents(payload)),
+                };
+                return (response, false);
+            }
+            PluginHostRequest::IterEntities(request) => {
+                let payload = self.engine.iter_entities(request);
+                let response = PluginHostResponse::Ok {
+                    events: Vec::new(),
+                    data: Some(RpcResponseData::IterEntities(payload)),
+                };
+                return (response, false);
+            }
+            PluginHostRequest::AssetReadback(request) => match self.engine.asset_readback(request) {
+                Ok(payload) => {
+                    let response = PluginHostResponse::Ok {
+                        events: Vec::new(),
+                        data: Some(RpcResponseData::AssetReadback(payload)),
+                    };
+                    return (response, false);
+                }
+                Err(err) => {
+                    eprintln!("[isolated-host] asset readback failed: {err:?}");
+                    return (PluginHostResponse::Error(err.to_string()), false);
+                }
+            },
             PluginHostRequest::Build => self.engine.with_context(|ctx| self.plugin.build(ctx)),
             PluginHostRequest::Update { dt } => {
                 self.engine.set_delta(dt);
@@ -284,6 +323,249 @@ impl EngineState {
         let info = self.ecs.entity_info(entity)?;
         Some(entity_info_to_rpc(entity, info))
     }
+
+    fn read_components(&self, request: RpcReadComponentsRequest) -> RpcReadComponentsResponse {
+        let entity = Entity::from(request.entity);
+        let (snapshot, missing) = self.entity_snapshot(entity, &request.components, request.format);
+        RpcReadComponentsResponse { request_id: request.request_id, snapshot, missing_components: missing }
+    }
+
+    fn iter_entities(&self, request: RpcIterEntitiesRequest) -> RpcIterEntitiesResponse {
+        let limit = request.limit.max(1).min(512) as usize;
+        let mut matched_entities = Vec::new();
+        {
+            let world = &self.ecs.world;
+            for entity_ref in world.iter_entities() {
+                if self.matches_filter(&entity_ref, &request.filter) {
+                    matched_entities.push(entity_ref.id());
+                }
+            }
+        }
+        matched_entities.sort_by_key(|entity| entity.to_bits());
+        let cursor_bits = request.cursor.map(|cursor| cursor.last_entity_bits);
+        let mut collected = Vec::new();
+        let mut last_bits = None;
+        let mut remaining_after_limit = false;
+        for entity in matched_entities {
+            if let Some(bits) = cursor_bits {
+                if entity.to_bits() <= bits {
+                    continue;
+                }
+            }
+            if collected.len() >= limit {
+                remaining_after_limit = true;
+                break;
+            }
+            let (snapshot, _) = self.entity_snapshot(entity, &request.components, request.format);
+            if let Some(snapshot) = snapshot {
+                last_bits = Some(entity.to_bits());
+                collected.push(snapshot);
+            }
+        }
+        let next_cursor = if remaining_after_limit {
+            last_bits.map(|bits| RpcIteratorCursor { last_entity_bits: bits })
+        } else {
+            None
+        };
+        RpcIterEntitiesResponse {
+            request_id: request.request_id,
+            snapshots: collected,
+            next_cursor,
+            exhausted: !remaining_after_limit,
+        }
+    }
+
+    fn asset_readback(&self, request: RpcAssetReadbackRequest) -> Result<RpcAssetReadbackResponse> {
+        match request.payload {
+            RpcAssetReadbackPayload::AtlasMeta { atlas_id } => {
+                let snapshot = self
+                    .assets
+                    .atlas_snapshot(&atlas_id)
+                    .ok_or_else(|| anyhow!("atlas '{atlas_id}' not loaded"))?;
+                let json = serialize_atlas_metadata(&atlas_id, snapshot)?;
+                let bytes = json.as_bytes().to_vec();
+                let byte_length = bytes.len() as u64;
+                Ok(RpcAssetReadbackResponse {
+                    request_id: request.request_id,
+                    content_type: "application/json".to_string(),
+                    bytes,
+                    metadata_json: Some(json),
+                    byte_length,
+                })
+            }
+            RpcAssetReadbackPayload::AtlasBinary { atlas_id } => {
+                let snapshot = self
+                    .assets
+                    .atlas_snapshot(&atlas_id)
+                    .ok_or_else(|| anyhow!("atlas '{atlas_id}' not loaded"))?;
+                let bytes = fs::read(snapshot.image_path)
+                    .with_context(|| format!("reading atlas image '{}'", snapshot.image_path.display()))?;
+                let content_type = guess_content_type(snapshot.image_path);
+                Ok(RpcAssetReadbackResponse {
+                    request_id: request.request_id,
+                    content_type: content_type.to_string(),
+                    byte_length: bytes.len() as u64,
+                    bytes,
+                    metadata_json: None,
+                })
+            }
+            RpcAssetReadbackPayload::BlobRange { blob_id, offset, length } => {
+                let path = Path::new(&blob_id);
+                let data =
+                    fs::read(path).with_context(|| format!("reading blob '{}'", path.display()))?;
+                let start = offset.min(data.len() as u64) as usize;
+                let end = if length == 0 {
+                    data.len()
+                } else {
+                    (offset.saturating_add(length)).min(data.len() as u64) as usize
+                };
+                let slice = data[start..end].to_vec();
+                Ok(RpcAssetReadbackResponse {
+                    request_id: request.request_id,
+                    content_type: "application/octet-stream".to_string(),
+                    byte_length: slice.len() as u64,
+                    bytes: slice,
+                    metadata_json: None,
+                })
+            }
+        }
+    }
+
+    fn matches_filter(&self, entity_ref: &EntityRef<'_>, filter: &RpcEntityFilter) -> bool {
+        if !filter.components.is_empty()
+            && !filter
+                .components
+                .iter()
+                .all(|component| self.entity_has_component(entity_ref, *component))
+        {
+            return false;
+        }
+        if filter.tags.is_empty() {
+            return true;
+        }
+        let tag = entity_ref.get::<SceneEntityTag>();
+        if tag.is_none() {
+            return false;
+        }
+        let scene_id = tag.unwrap().id.as_str();
+        filter.tags.iter().any(|needle| needle == scene_id)
+    }
+
+    fn entity_has_component(&self, entity_ref: &EntityRef<'_>, kind: RpcComponentKind) -> bool {
+        match kind {
+            RpcComponentKind::Transform2D => entity_ref.contains::<Transform>(),
+            RpcComponentKind::WorldTransform => entity_ref.contains::<WorldTransform>(),
+            RpcComponentKind::Sprite => entity_ref.contains::<Sprite>(),
+            RpcComponentKind::Hierarchy => {
+                entity_ref.contains::<Parent>() || entity_ref.contains::<Children>()
+            }
+            RpcComponentKind::Velocity => entity_ref.contains::<Velocity>(),
+            RpcComponentKind::Tint => entity_ref.contains::<Tint>(),
+        }
+    }
+
+    fn entity_snapshot(
+        &self,
+        entity: Entity,
+        components: &[RpcComponentKind],
+        format: RpcSnapshotFormat,
+    ) -> (Option<RpcEntitySnapshot>, Vec<RpcComponentKind>) {
+        let _ = format;
+        if !self.ecs.world.entities().contains(entity) {
+            return (None, components.to_vec());
+        }
+        let mut snapshots = Vec::new();
+        let mut missing = Vec::new();
+        for kind in components {
+            match kind {
+                RpcComponentKind::Transform2D => {
+                    if let Some(transform) = self.ecs.world.get::<Transform>(entity) {
+                        snapshots.push(RpcComponentSnapshot::Transform2D(RpcTransformSnapshot {
+                            translation: transform.translation.to_array(),
+                            rotation: transform.rotation,
+                            scale: transform.scale.to_array(),
+                        }));
+                    } else {
+                        missing.push(*kind);
+                    }
+                }
+                RpcComponentKind::WorldTransform => {
+                    if let Some(world_transform) = self.ecs.world.get::<WorldTransform>(entity) {
+                        snapshots.push(RpcComponentSnapshot::WorldTransform(
+                            RpcWorldTransformSnapshot {
+                                matrix: world_transform.0.to_cols_array_2d(),
+                            },
+                        ));
+                    } else {
+                        missing.push(*kind);
+                    }
+                }
+                RpcComponentKind::Sprite => {
+                    if let Some(sprite) = self.ecs.world.get::<Sprite>(entity) {
+                        let animation = self.ecs.world.get::<SpriteAnimation>(entity);
+                        let frame_index =
+                            animation.map(|anim| anim.frame_index as u32);
+                        let tint = self.ecs.world.get::<Tint>(entity).map(|t| t.0.to_array());
+                        snapshots.push(RpcComponentSnapshot::Sprite(RpcSpriteSnapshot {
+                            atlas: sprite.atlas_key.to_string(),
+                            region: sprite.region.to_string(),
+                            frame_index,
+                            visible: true,
+                            color: tint.unwrap_or([1.0, 1.0, 1.0, 1.0]),
+                            flip_x: false,
+                            flip_y: false,
+                        }));
+                    } else {
+                        missing.push(*kind);
+                    }
+                }
+                RpcComponentKind::Hierarchy => {
+                    let parent = self.ecs.world.get::<Parent>(entity).map(|p| p.0.into());
+                    let child_count = self
+                        .ecs
+                        .world
+                        .get::<Children>(entity)
+                        .map(|children| children.0.len() as u32)
+                        .unwrap_or(0);
+                    if parent.is_some() || child_count > 0 {
+                        snapshots.push(RpcComponentSnapshot::Hierarchy(RpcHierarchySnapshot {
+                            parent,
+                            child_count,
+                        }));
+                    } else {
+                        missing.push(*kind);
+                    }
+                }
+                RpcComponentKind::Velocity => {
+                    if let Some(velocity) = self.ecs.world.get::<Velocity>(entity) {
+                        snapshots.push(RpcComponentSnapshot::Velocity(RpcVelocitySnapshot {
+                            linear: velocity.0.to_array(),
+                        }));
+                    } else {
+                        missing.push(*kind);
+                    }
+                }
+                RpcComponentKind::Tint => {
+                    if let Some(tint) = self.ecs.world.get::<Tint>(entity) {
+                        snapshots.push(RpcComponentSnapshot::Tint(RpcTintSnapshot {
+                            color: tint.0.to_array(),
+                            visible: true,
+                        }));
+                    } else {
+                        missing.push(*kind);
+                    }
+                }
+            }
+        }
+        if snapshots.is_empty() {
+            (None, missing)
+        } else {
+            (
+                Some(RpcEntitySnapshot { entity: entity.into(), components: snapshots }),
+                missing,
+            )
+        }
+    }
 }
 
 fn isolated_emit_event(ecs: &mut EcsWorld, event: GameEvent) {
@@ -305,4 +587,92 @@ fn entity_info_to_rpc(entity: Entity, info: EntityInfo) -> RpcEntityInfo {
 
 fn sprite_info_to_rpc(info: SpriteInfo) -> RpcSpriteInfo {
     RpcSpriteInfo { atlas: info.atlas, region: info.region }
+}
+
+#[derive(Serialize)]
+struct AtlasMetaRegionSnapshot {
+    name: String,
+    rect: [u32; 4],
+    uv: [f32; 4],
+    id: u16,
+}
+
+#[derive(Serialize)]
+struct AtlasMetaAnimationFrameSnapshot {
+    region: String,
+    duration: f32,
+    events: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct AtlasMetaAnimationSnapshot {
+    name: String,
+    looped: bool,
+    loop_mode: String,
+    frame_count: usize,
+    frames: Vec<AtlasMetaAnimationFrameSnapshot>,
+}
+
+#[derive(Serialize)]
+struct AtlasMetaDocument {
+    atlas_id: String,
+    width: u32,
+    height: u32,
+    image_path: String,
+    regions: Vec<AtlasMetaRegionSnapshot>,
+    animations: Vec<AtlasMetaAnimationSnapshot>,
+}
+
+fn serialize_atlas_metadata(atlas_id: &str, snapshot: AtlasSnapshot<'_>) -> Result<String> {
+    let mut regions: Vec<AtlasMetaRegionSnapshot> = snapshot
+        .regions
+        .iter()
+        .map(|(name, region)| AtlasMetaRegionSnapshot {
+            name: name.as_ref().to_string(),
+            rect: [region.rect.x, region.rect.y, region.rect.w, region.rect.h],
+            uv: region.uv,
+            id: region.id,
+        })
+        .collect();
+    regions.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let mut animations: Vec<AtlasMetaAnimationSnapshot> = snapshot
+        .animations
+        .iter()
+        .map(|(name, timeline)| AtlasMetaAnimationSnapshot {
+            name: name.clone(),
+            looped: timeline.looped,
+            loop_mode: format!("{:?}", timeline.loop_mode),
+            frame_count: timeline.frames.len(),
+            frames: timeline
+                .frames
+                .iter()
+                .map(|frame| AtlasMetaAnimationFrameSnapshot {
+                    region: frame.region.as_ref().to_string(),
+                    duration: frame.duration,
+                    events: frame.events.iter().map(|evt| evt.as_ref().to_string()).collect(),
+                })
+                .collect(),
+        })
+        .collect();
+    animations.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let doc = AtlasMetaDocument {
+        atlas_id: atlas_id.to_string(),
+        width: snapshot.width,
+        height: snapshot.height,
+        image_path: snapshot.image_path.display().to_string(),
+        regions,
+        animations,
+    };
+    Ok(serde_json::to_string(&doc)?)
+}
+
+fn guess_content_type(path: &Path) -> &'static str {
+    match path.extension().and_then(|ext| ext.to_str()).map(|ext| ext.to_ascii_lowercase()) {
+        Some(ext) if ext == "png" => "image/png",
+        Some(ext) if ext == "jpg" || ext == "jpeg" => "image/jpeg",
+        Some(ext) if ext == "json" => "application/json",
+        _ => "application/octet-stream",
+    }
 }

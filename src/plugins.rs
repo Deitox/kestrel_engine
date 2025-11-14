@@ -6,8 +6,11 @@ use crate::input::Input;
 use crate::material_registry::MaterialRegistry;
 use crate::mesh_registry::MeshRegistry;
 use crate::plugin_rpc::{
-    recv_frame, send_frame, PluginHostRequest, PluginHostResponse, RpcEntityInfo, RpcGameEvent,
-    RpcResponseData, RpcSpriteInfo,
+    recv_frame, send_frame, PluginHostRequest, PluginHostResponse, RpcAssetReadbackPayload,
+    RpcAssetReadbackRequest, RpcAssetReadbackResponse, RpcComponentKind, RpcEntityFilter, RpcEntityInfo,
+    RpcEntitySnapshot, RpcGameEvent, RpcIterEntitiesRequest, RpcIterEntitiesResponse, RpcIteratorCursor,
+    RpcReadComponentsRequest, RpcReadComponentsResponse, RpcRequestId, RpcResponseData, RpcSnapshotFormat,
+    RpcSpriteInfo,
 };
 use crate::renderer::Renderer;
 use crate::time::Time;
@@ -18,7 +21,7 @@ use libloading::Library;
 use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::cell::{Ref, RefCell, RefMut};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs;
 use std::io::{self, BufReader};
@@ -159,6 +162,92 @@ fn default_capability_flags() -> CapabilityFlags {
 pub struct CapabilityViolationLog {
     pub count: u64,
     pub last_capability: Option<PluginCapability>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct AssetReadbackStats {
+    pub requests: u64,
+    pub bytes: u64,
+    pub cache_hits: u64,
+    pub throttled: u64,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+enum AssetCacheKey {
+    AtlasMeta(String),
+    AtlasBinary(String),
+    BlobRange { id: String, offset: u64, length: u64 },
+}
+
+#[derive(Clone)]
+struct AssetCacheEntry {
+    response: RpcAssetReadbackResponse,
+    size_bytes: usize,
+}
+
+struct IsolatedAssetCache {
+    entries: HashMap<AssetCacheKey, AssetCacheEntry>,
+    order: VecDeque<AssetCacheKey>,
+    capacity_bytes: usize,
+    current_bytes: usize,
+}
+
+impl IsolatedAssetCache {
+    fn new(capacity_bytes: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+            capacity_bytes,
+            current_bytes: 0,
+        }
+    }
+
+    fn get(&self, key: &AssetCacheKey) -> Option<RpcAssetReadbackResponse> {
+        self.entries.get(key).map(|entry| entry.response.clone())
+    }
+
+    fn insert(&mut self, key: AssetCacheKey, response: RpcAssetReadbackResponse) {
+        let size = response.bytes.len();
+        if size > self.capacity_bytes {
+            return;
+        }
+        let entry = AssetCacheEntry { response, size_bytes: size };
+        self.current_bytes += size;
+        if let Some(previous) = self.entries.insert(key.clone(), entry) {
+            self.current_bytes = self.current_bytes.saturating_sub(previous.size_bytes);
+        }
+        self.order.retain(|existing| existing != &key);
+        self.order.push_back(key);
+        self.evict_if_needed();
+    }
+
+    fn evict_if_needed(&mut self) {
+        while self.current_bytes > self.capacity_bytes {
+            if let Some(key) = self.order.pop_front() {
+                if let Some(entry) = self.entries.remove(&key) {
+                    self.current_bytes = self.current_bytes.saturating_sub(entry.size_bytes);
+                }
+            } else {
+                break;
+            }
+        }
+    }
+}
+
+impl AssetCacheKey {
+    fn from_payload(payload: &RpcAssetReadbackPayload) -> Self {
+        match payload {
+            RpcAssetReadbackPayload::AtlasMeta { atlas_id } => AssetCacheKey::AtlasMeta(atlas_id.clone()),
+            RpcAssetReadbackPayload::AtlasBinary { atlas_id } => {
+                AssetCacheKey::AtlasBinary(atlas_id.clone())
+            }
+            RpcAssetReadbackPayload::BlobRange { blob_id, offset, length } => AssetCacheKey::BlobRange {
+                id: blob_id.clone(),
+                offset: *offset,
+                length: *length,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -654,6 +743,8 @@ pub struct PluginManager {
     capability_tracker: CapabilityTracker,
     statuses: Vec<PluginStatus>,
     loaded_names: HashSet<String>,
+    asset_cache: IsolatedAssetCache,
+    asset_metrics: HashMap<String, AssetReadbackStats>,
 }
 
 struct PluginSlot {
@@ -665,6 +756,7 @@ struct PluginSlot {
     trust: PluginTrust,
     capabilities: CapabilityFlags,
     capability_list: Vec<PluginCapability>,
+    asset_filters: PluginAssetFilters,
     _library: Option<Library>,
 }
 
@@ -685,6 +777,8 @@ impl Default for PluginManager {
             capability_tracker: CapabilityTracker::new(),
             statuses: Vec::new(),
             loaded_names: HashSet::new(),
+            asset_cache: IsolatedAssetCache::new(32 * 1024 * 1024),
+            asset_metrics: HashMap::new(),
         }
     }
 }
@@ -702,6 +796,10 @@ impl PluginManager {
         self.capability_tracker.snapshot()
     }
 
+    pub fn asset_readback_metrics(&self) -> HashMap<String, AssetReadbackStats> {
+        self.asset_metrics.clone()
+    }
+
     pub fn query_isolated_entity_info(
         &mut self,
         plugin_name: &str,
@@ -716,6 +814,88 @@ impl PluginManager {
             .isolated_proxy()
             .ok_or_else(|| anyhow!("plugin '{plugin_name}' is not running in isolated mode"))?;
         proxy.query_entity_info(entity)
+    }
+
+    pub fn read_isolated_components(
+        &mut self,
+        plugin_name: &str,
+        entity: Entity,
+        components: Vec<RpcComponentKind>,
+        format: RpcSnapshotFormat,
+    ) -> Result<Option<RpcEntitySnapshot>> {
+        let slot = self
+            .plugins
+            .iter_mut()
+            .find(|slot| slot.name == plugin_name)
+            .ok_or_else(|| anyhow!("plugin '{plugin_name}' not registered"))?;
+        let proxy = slot
+            .isolated_proxy()
+            .ok_or_else(|| anyhow!("plugin '{plugin_name}' is not running in isolated mode"))?;
+        let response = proxy.read_components(entity, components, format)?;
+        Ok(response.snapshot)
+    }
+
+    pub fn iter_isolated_entities(
+        &mut self,
+        plugin_name: &str,
+        filter: RpcEntityFilter,
+        cursor: Option<RpcIteratorCursor>,
+        limit: u32,
+        components: Vec<RpcComponentKind>,
+        format: RpcSnapshotFormat,
+    ) -> Result<RpcIterEntitiesResponse> {
+        let slot = self
+            .plugins
+            .iter_mut()
+            .find(|slot| slot.name == plugin_name)
+            .ok_or_else(|| anyhow!("plugin '{plugin_name}' not registered"))?;
+        let proxy = slot
+            .isolated_proxy()
+            .ok_or_else(|| anyhow!("plugin '{plugin_name}' is not running in isolated mode"))?;
+        proxy.iter_entities(filter, cursor, limit, components, format)
+    }
+
+    pub fn asset_readback(
+        &mut self,
+        plugin_name: &str,
+        payload: RpcAssetReadbackPayload,
+    ) -> Result<RpcAssetReadbackResponse> {
+        let key = AssetCacheKey::from_payload(&payload);
+        if let Some(hit) = self.asset_cache.get(&key) {
+            let stats = self.asset_metrics.entry(plugin_name.to_string()).or_default();
+            stats.cache_hits += 1;
+            return Ok(hit);
+        }
+        let slot = self
+            .plugins
+            .iter_mut()
+            .find(|slot| slot.name == plugin_name)
+            .ok_or_else(|| anyhow!("plugin '{plugin_name}' not registered"))?;
+        let capabilities = slot.capabilities;
+        let filters = slot.asset_filters.clone();
+        let proxy = slot
+            .isolated_proxy()
+            .ok_or_else(|| anyhow!("plugin '{plugin_name}' is not running in isolated mode"))?;
+        if !capabilities.contains(PluginCapability::Assets.flag()) {
+            bail!("plugin '{plugin_name}' missing asset capability for readback");
+        }
+        ensure_asset_filter_allows(&filters, &payload)?;
+        match proxy.asset_readback(payload.clone()) {
+            Ok(response) => {
+                let stats = self.asset_metrics.entry(plugin_name.to_string()).or_default();
+                stats.requests += 1;
+                stats.bytes += response.byte_length;
+                self.asset_cache.insert(key, response.clone());
+                Ok(response)
+            }
+            Err(err) => {
+                if err.to_string().contains("asset readback budget exceeded") {
+                    let stats = self.asset_metrics.entry(plugin_name.to_string()).or_default();
+                    stats.throttled += 1;
+                }
+                Err(err)
+            }
+        }
     }
 
     pub fn register(&mut self, plugin: Box<dyn EnginePlugin>, ctx: &mut PluginContext<'_>) -> Result<()> {
@@ -1001,6 +1181,7 @@ impl PluginManager {
             trust,
             capabilities: capability_flags,
             capability_list: capabilities,
+            asset_filters: PluginAssetFilters::default(),
             _library: library,
         });
         Ok(())
@@ -1095,6 +1276,9 @@ impl PluginManager {
             entry.trust,
             ctx,
         )?;
+        if let Some(slot) = self.plugins.iter_mut().find(|slot| slot.name == entry.name) {
+            slot.asset_filters = entry.asset_filters.clone();
+        }
         Ok(entry.name.clone())
     }
 
@@ -1116,6 +1300,55 @@ struct IsolatedPluginProxy {
     stdin: Option<ChildStdin>,
     stdout: BufReader<ChildStdout>,
     terminated: bool,
+    next_request_id: RpcRequestId,
+    asset_budget: AssetReadbackBudget,
+}
+
+struct AssetReadbackBudget {
+    window: Duration,
+    max_requests: u32,
+    max_bytes: u64,
+    requests: u32,
+    bytes: u64,
+    window_start: Instant,
+}
+
+impl AssetReadbackBudget {
+    fn new(max_requests: u32, max_bytes: u64, window: Duration) -> Self {
+        Self {
+            window,
+            max_requests,
+            max_bytes,
+            requests: 0,
+            bytes: 0,
+            window_start: Instant::now(),
+        }
+    }
+
+    fn reset_if_needed(&mut self) {
+        if self.window_start.elapsed() >= self.window {
+            self.window_start = Instant::now();
+            self.requests = 0;
+            self.bytes = 0;
+        }
+    }
+
+    fn begin_request(&mut self) -> Result<()> {
+        self.reset_if_needed();
+        if self.requests >= self.max_requests {
+            bail!("isolated asset readback budget exceeded (request count)");
+        }
+        self.requests += 1;
+        Ok(())
+    }
+
+    fn finalize(&mut self, byte_len: u64) -> Result<()> {
+        self.bytes = self.bytes.saturating_add(byte_len);
+        if self.bytes > self.max_bytes {
+            bail!("isolated asset readback budget exceeded (byte budget)");
+        }
+        Ok(())
+    }
 }
 
 impl IsolatedPluginProxy {
@@ -1150,6 +1383,8 @@ impl IsolatedPluginProxy {
             stdin: Some(stdin),
             stdout: BufReader::new(stdout),
             terminated: false,
+            next_request_id: 1,
+            asset_budget: AssetReadbackBudget::new(8, 4 * 1024 * 1024, Duration::from_millis(16)),
         })
     }
 
@@ -1241,6 +1476,98 @@ impl IsolatedPluginProxy {
             Some(other) => bail!("unexpected payload from isolated host: {other:?}"),
             None => Ok(None),
         }
+    }
+
+    fn read_components(
+        &mut self,
+        entity: Entity,
+        components: Vec<RpcComponentKind>,
+        format: RpcSnapshotFormat,
+    ) -> Result<RpcReadComponentsResponse> {
+        let request_id = self.take_request_id();
+        let request = PluginHostRequest::ReadComponents(RpcReadComponentsRequest {
+            request_id,
+            entity: entity.into(),
+            components,
+            format,
+        });
+        let (events, payload) = self.call_remote(request)?;
+        if !events.is_empty() {
+            eprintln!(
+                "[plugin:{}] read_components returned unexpected events ({})",
+                self.name,
+                events.len()
+            );
+        }
+        match payload {
+            Some(RpcResponseData::ReadComponents(response)) if response.request_id == request_id => {
+                Ok(response)
+            }
+            Some(other) => bail!("unexpected payload from isolated host: {other:?}"),
+            None => bail!("isolated host returned no payload for ReadComponents"),
+        }
+    }
+
+    fn iter_entities(
+        &mut self,
+        filter: RpcEntityFilter,
+        cursor: Option<RpcIteratorCursor>,
+        limit: u32,
+        components: Vec<RpcComponentKind>,
+        format: RpcSnapshotFormat,
+    ) -> Result<RpcIterEntitiesResponse> {
+        let request_id = self.take_request_id();
+        let request = PluginHostRequest::IterEntities(RpcIterEntitiesRequest {
+            request_id,
+            filter,
+            cursor,
+            limit,
+            components,
+            format,
+        });
+        let (events, payload) = self.call_remote(request)?;
+        if !events.is_empty() {
+            eprintln!(
+                "[plugin:{}] iter_entities returned unexpected events ({})",
+                self.name,
+                events.len()
+            );
+        }
+        match payload {
+            Some(RpcResponseData::IterEntities(response)) if response.request_id == request_id => {
+                Ok(response)
+            }
+            Some(other) => bail!("unexpected payload from isolated host: {other:?}"),
+            None => bail!("isolated host returned no payload for IterEntities"),
+        }
+    }
+
+    fn asset_readback(&mut self, payload: RpcAssetReadbackPayload) -> Result<RpcAssetReadbackResponse> {
+        self.asset_budget.begin_request()?;
+        let request_id = self.take_request_id();
+        let request = PluginHostRequest::AssetReadback(RpcAssetReadbackRequest { request_id, payload });
+        let (events, response) = self.call_remote(request)?;
+        if !events.is_empty() {
+            eprintln!(
+                "[plugin:{}] asset_readback returned unexpected events ({})",
+                self.name,
+                events.len()
+            );
+        }
+        match response {
+            Some(RpcResponseData::AssetReadback(payload)) if payload.request_id == request_id => {
+                self.asset_budget.finalize(payload.byte_length)?;
+                Ok(payload)
+            }
+            Some(other) => bail!("unexpected payload from isolated host: {other:?}"),
+            None => bail!("isolated host returned no payload for AssetReadback"),
+        }
+    }
+
+    fn take_request_id(&mut self) -> RpcRequestId {
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.wrapping_add(1).max(1);
+        request_id
     }
 }
 
@@ -1385,10 +1712,69 @@ pub struct PluginManifestEntry {
     pub capabilities: Vec<PluginCapability>,
     #[serde(default)]
     pub trust: PluginTrust,
+    #[serde(default)]
+    pub asset_filters: PluginAssetFilters,
 }
 
 fn default_enabled() -> bool {
     true
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PluginAssetFilters {
+    #[serde(default)]
+    pub atlases: Vec<String>,
+    #[serde(default)]
+    pub blobs: Vec<String>,
+}
+
+impl PluginAssetFilters {
+    pub fn allows_atlas(&self, atlas_id: &str) -> bool {
+        if self.atlases.is_empty() {
+            return true;
+        }
+        self.atlases.iter().any(|pattern| matches_asset_pattern(pattern, atlas_id))
+    }
+
+    pub fn allows_blob(&self, blob_id: &str) -> bool {
+        if self.blobs.is_empty() {
+            return true;
+        }
+        self.blobs.iter().any(|pattern| matches_asset_pattern(pattern, blob_id))
+    }
+}
+
+fn matches_asset_pattern(pattern: &str, value: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        value.starts_with(prefix)
+    } else {
+        pattern == value
+    }
+}
+
+fn ensure_asset_filter_allows(
+    filters: &PluginAssetFilters,
+    payload: &RpcAssetReadbackPayload,
+) -> Result<()> {
+    match payload {
+        RpcAssetReadbackPayload::AtlasMeta { atlas_id } | RpcAssetReadbackPayload::AtlasBinary { atlas_id } => {
+            if filters.allows_atlas(atlas_id) {
+                Ok(())
+            } else {
+                bail!("asset readback blocked by manifest filters for atlas '{atlas_id}'")
+            }
+        }
+        RpcAssetReadbackPayload::BlobRange { blob_id, .. } => {
+            if filters.allows_blob(blob_id) {
+                Ok(())
+            } else {
+                bail!("asset readback blocked by manifest filters for blob '{blob_id}'")
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
