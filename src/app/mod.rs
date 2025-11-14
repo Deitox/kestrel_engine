@@ -75,6 +75,64 @@ pub(crate) enum ViewportCameraMode {
     Perspective3D,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glam::{Vec2, Vec4};
+
+    #[test]
+    fn sprite_key_details_capture_active_frame() {
+        let animation = SpriteAnimationInfo {
+            timeline: "walk".to_string(),
+            playing: true,
+            looped: true,
+            loop_mode: "Loop".to_string(),
+            speed: 1.0,
+            frame_index: 1,
+            frame_count: 3,
+            frame_elapsed: 0.25,
+            frame_duration: 0.5,
+            frame_region: Some("walk_01".to_string()),
+            frame_region_id: Some(42),
+            frame_uv: Some([0.0, 0.0, 0.5, 0.5]),
+            frame_events: vec!["footstep".to_string()],
+            start_offset: 0.0,
+            random_start: false,
+            group: Some("default".to_string()),
+        };
+        let details = App::sprite_key_details(&animation);
+        assert_eq!(details.len(), animation.frame_count);
+        assert_eq!(details[1].time, Some(animation.frame_elapsed));
+        assert_eq!(details[0].value_preview.as_deref(), Some("walk_01"));
+    }
+
+    #[test]
+    fn transform_clip_details_reflect_channels() {
+        let clip = TransformClipInfo {
+            clip_key: "transform_clip".to_string(),
+            playing: true,
+            looped: false,
+            speed: 1.0,
+            time: 0.5,
+            duration: 2.0,
+            group: None,
+            has_translation: true,
+            has_rotation: true,
+            has_scale: false,
+            has_tint: true,
+            sample_translation: Some(Vec2::new(1.0, 2.0)),
+            sample_rotation: Some(45.0),
+            sample_scale: None,
+            sample_tint: Some(Vec4::new(0.1, 0.2, 0.3, 0.9)),
+        };
+        let details = App::transform_key_details(&clip);
+        assert_eq!(details.len(), 3);
+        assert!(details[0].value_preview.as_ref().unwrap().contains("Translation"));
+        assert!(details[1].value_preview.as_ref().unwrap().contains("Rotation"));
+        assert!(details[2].value_preview.as_ref().unwrap().contains("Tint"));
+    }
+}
+
 impl Default for ViewportCameraMode {
     fn default() -> Self {
         ViewportCameraMode::Ortho2D
