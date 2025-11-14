@@ -1,4 +1,5 @@
 pub mod analytics;
+pub mod animation_validation;
 pub mod app;
 pub mod assets;
 pub mod audio;

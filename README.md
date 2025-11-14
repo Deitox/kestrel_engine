@@ -82,3 +82,15 @@ cargo run
 - docs/PLUGINS.md - dynamic plugin manifest format, feature registry rules, and an example cdylib plugin.
 - docs/animation_workflows.md - sprite timeline authoring, Aseprite importer usage, loop-mode tuning, and hot-reload troubleshooting tips.
 
+## Experimental Keyframe Panel
+The Milestone 5 keyframe editor is available behind the `animation_keyframe_panel` feature flag. To preview the current read-only state:
+
+```powershell
+cargo run --features animation_keyframe_panel
+```
+
+- Open the editor and select an entity driven by a sprite timeline or transform clip.
+- In the Stats panel, click the "Open Keyframe Editor" toggle.
+- The panel lists active tracks plus per-key metadata (index, time, value preview). Editing controls are coming in later milestones.
+
+For details, see `docs/keyframe_editor_spec.md` and `docs/animation_milestone_5_plan.md`.

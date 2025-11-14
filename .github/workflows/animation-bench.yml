@@ -34,6 +34,11 @@ jobs:
         run: |
           ./scripts/ci/run_animation_targets.ps1 -OutputDirectory artifacts
 
+      - name: Run isolated plugin telemetry test
+        shell: pwsh
+        run: |
+          cargo test --test plugins isolated_plugin_telemetry_pipeline
+
       - name: Run perf suite
         shell: pwsh
         run: |

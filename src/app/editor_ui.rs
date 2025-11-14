@@ -33,6 +33,7 @@ use winit::dpi::PhysicalSize;
 
 mod entity_inspector;
 
+const ANIMATION_KEYFRAME_PANEL_ENABLED: bool = cfg!(feature = "animation_keyframe_panel");
 #[derive(Clone, Copy)]
 pub(super) struct PrefabDragPayload {
     pub entity: Entity,
@@ -742,6 +743,7 @@ impl App {
             self.analytics_plugin().map(|analytics| analytics.plugin_watchdog_events()).unwrap_or_default();
 
         let mut editor_settings_dirty = false;
+        let keyframe_panel_ctx = ANIMATION_KEYFRAME_PANEL_ENABLED.then(|| self.egui_ctx.clone());
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
             let left_panel =
                 egui::SidePanel::left("kestrel_left_panel").default_width(340.0).show(ctx, |ui| {
@@ -920,6 +922,17 @@ impl App {
                                     event.plugin,
                                     event.capability.label()
                                 ));
+                            }
+                        }
+                        if ANIMATION_KEYFRAME_PANEL_ENABLED {
+                            ui.separator();
+                            let button_label = if self.animation_keyframe_panel.is_open() {
+                                "Hide Keyframe Editor (experimental)"
+                            } else {
+                                "Open Keyframe Editor (experimental)"
+                            };
+                            if ui.button(button_label).clicked() {
+                                self.animation_keyframe_panel.toggle();
                             }
                         }
                         ui.separator();
@@ -1486,7 +1499,6 @@ impl App {
                     });
                 script_debugger.open = debugger_open;
             }
-
             let right_panel =
                 egui::SidePanel::right("kestrel_right_panel").default_width(360.0).show(ctx, |ui| {
                     ui.heading("3D Preview");
@@ -2908,6 +2920,10 @@ impl App {
                 );
             }
         });
+
+        if let Some(ctx) = keyframe_panel_ctx.as_ref() {
+            self.show_animation_keyframe_panel(ctx, &animation_snapshot);
+        }
 
         script_debugger_output.open = script_debugger.open;
         script_debugger_output.repl_input = script_debugger.repl_input.clone();

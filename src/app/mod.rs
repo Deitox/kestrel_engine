@@ -1,17 +1,27 @@
+mod animation_keyframe_panel;
+mod animation_watch;
 mod atlas_watch;
 mod editor_ui;
 mod gizmo_interaction;
 mod plugin_host;
 
+use self::animation_keyframe_panel::{
+    AnimationKeyframePanel, AnimationKeyframePanelState, AnimationTrackSummary, KeyframeDetail,
+};
+use self::animation_watch::{AnimationAssetKind, AnimationAssetWatcher};
 use self::atlas_watch::{normalize_path_for_watch, AtlasHotReload};
 use self::plugin_host::{BuiltinPluginFactory, PluginHost};
 use crate::analytics::AnalyticsPlugin;
+use crate::animation_validation::{AnimationValidationEvent, AnimationValidator};
 use crate::assets::AssetManager;
 use crate::audio::{AudioHealthSnapshot, AudioPlugin};
 use crate::camera::Camera2D;
 use crate::camera3d::Camera3D;
 use crate::config::{AppConfig, AppConfigOverrides, SpriteGuardrailMode};
-use crate::ecs::{EcsWorld, InstanceData, MeshLightingInfo, ParticleCaps, SpriteAnimation, SpriteInstance};
+use crate::ecs::{
+    AnimationTime, EcsWorld, EntityInfo, InstanceData, MeshLightingInfo, ParticleCaps, SpriteAnimation,
+    SpriteAnimationInfo, SpriteInstance, TransformClipInfo,
+};
 use crate::environment::EnvironmentRegistry;
 use crate::events::GameEvent;
 use crate::gizmo::{GizmoInteraction, GizmoMode};
@@ -37,7 +47,7 @@ use glam::{Mat4, Vec2, Vec3, Vec4};
 use anyhow::{anyhow, Context, Result};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
@@ -296,6 +306,7 @@ pub struct App {
     script_repl_history_index: Option<usize>,
     script_console: VecDeque<ScriptConsoleEntry>,
     last_reported_script_error: Option<String>,
+    animation_keyframe_panel: AnimationKeyframePanel,
 
     // Plugins
     plugin_host: PluginHost,
@@ -337,6 +348,7 @@ pub struct App {
 
     sprite_atlas_views: HashMap<String, Arc<wgpu::TextureView>>,
     atlas_hot_reload: Option<AtlasHotReload>,
+    animation_asset_watcher: Option<AnimationAssetWatcher>,
     sprite_guardrail_mode: SpriteGuardrailMode,
     sprite_guardrail_max_pixels: f32,
     sprite_guardrail_status: Option<String>,
@@ -365,6 +377,175 @@ impl App {
         if let Err(err) = watcher.sync(&desired) {
             eprintln!("[assets] failed to sync atlas hot-reload watchers: {err}");
         }
+    }
+
+    fn init_animation_asset_watcher() -> Option<AnimationAssetWatcher> {
+        let mut watcher = match AnimationAssetWatcher::new() {
+            Ok(watcher) => watcher,
+            Err(err) => {
+                eprintln!("[animation] asset watcher disabled: {err:?}");
+                return None;
+            }
+        };
+        let mut registered = false;
+        let watch_roots = [
+            ("assets/animations/clips", AnimationAssetKind::Clip),
+            ("assets/animations/graphs", AnimationAssetKind::Graph),
+            ("assets/animations/skeletal", AnimationAssetKind::Skeletal),
+        ];
+        for (root, kind) in watch_roots {
+            let path = Path::new(root);
+            if !path.exists() {
+                continue;
+            }
+            match watcher.watch_root(path, kind) {
+                Ok(()) => registered = true,
+                Err(err) => {
+                    eprintln!("[animation] failed to watch {} ({}): {err:?}", path.display(), kind.label())
+                }
+            }
+        }
+        if registered {
+            Some(watcher)
+        } else {
+            None
+        }
+    }
+
+    fn process_animation_asset_watchers(&mut self) {
+        let Some(watcher) = self.animation_asset_watcher.as_mut() else {
+            return;
+        };
+        let changes = watcher.drain_changes();
+        if changes.is_empty() {
+            return;
+        }
+        for change in changes {
+            let events = AnimationValidator::validate_path(&change.path);
+            if events.is_empty() {
+                eprintln!(
+                    "[animation] detected change for {} ({}) but no validations ran",
+                    change.path.display(),
+                    change.kind.label()
+                );
+                continue;
+            }
+            for event in events {
+                self.log_animation_validation_event(event);
+            }
+        }
+    }
+
+    fn log_animation_validation_event(&self, event: AnimationValidationEvent) {
+        let severity = event.severity.to_string();
+        eprintln!("[animation] validation {severity} for {}: {}", event.path.display(), event.message);
+    }
+
+    fn show_animation_keyframe_panel(&mut self, ctx: &egui::Context, animation_time: &AnimationTime) {
+        if !self.animation_keyframe_panel.is_open() {
+            return;
+        }
+        let state = AnimationKeyframePanelState {
+            animation_time,
+            selected_entity: self.selected_entity,
+            track_summaries: self.collect_animation_track_summaries(),
+        };
+        self.animation_keyframe_panel.render_window(ctx, state);
+    }
+
+    fn collect_animation_track_summaries(&self) -> Vec<AnimationTrackSummary> {
+        let mut summaries = Vec::new();
+        if let Some(entity) = self.selected_entity {
+            if let Some(info) = self.ecs.entity_info(entity) {
+                summaries.extend(self.collect_sprite_track_summaries(&info));
+                summaries.extend(self.collect_transform_clip_summaries(&info));
+            }
+        }
+        summaries
+    }
+
+    fn collect_sprite_track_summaries(&self, info: &EntityInfo) -> Vec<AnimationTrackSummary> {
+        let mut summaries = Vec::new();
+        if let Some(sprite) = info.sprite.as_ref() {
+            if let Some(animation) = sprite.animation.as_ref() {
+                summaries.push(AnimationTrackSummary {
+                    label: format!("Sprite Timeline ({})", animation.timeline),
+                    key_count: animation.frame_count,
+                    key_details: Self::sprite_key_details(animation),
+                });
+            }
+        }
+        summaries
+    }
+
+    fn collect_transform_clip_summaries(&self, info: &EntityInfo) -> Vec<AnimationTrackSummary> {
+        let mut summaries = Vec::new();
+        if let Some(clip) = info.transform_clip.as_ref() {
+            let mut track_count = 0;
+            if clip.has_translation {
+                track_count += 1;
+            }
+            if clip.has_rotation {
+                track_count += 1;
+            }
+            if clip.has_scale {
+                track_count += 1;
+            }
+            if clip.has_tint {
+                track_count += 1;
+            }
+            summaries.push(AnimationTrackSummary {
+                label: format!("Transform Clip ({})", clip.clip_key),
+                key_count: track_count,
+                key_details: Self::transform_key_details(clip),
+            });
+        }
+        summaries
+    }
+
+    fn sprite_key_details(animation: &SpriteAnimationInfo) -> Vec<KeyframeDetail> {
+        (0..animation.frame_count)
+            .map(|index| KeyframeDetail { index, time: None, value_preview: animation.frame_region.clone() })
+            .collect()
+    }
+
+    fn transform_key_details(clip: &TransformClipInfo) -> Vec<KeyframeDetail> {
+        let mut rows = Vec::new();
+        if clip.has_translation {
+            rows.push(KeyframeDetail {
+                index: rows.len(),
+                time: Some(clip.time),
+                value_preview: clip
+                    .sample_translation
+                    .map(|value| format!("Translation ({:.2}, {:.2})", value.x, value.y)),
+            });
+        }
+        if clip.has_rotation {
+            rows.push(KeyframeDetail {
+                index: rows.len(),
+                time: Some(clip.time),
+                value_preview: clip.sample_rotation.map(|value| format!("Rotation {:.2}", value)),
+            });
+        }
+        if clip.has_scale {
+            rows.push(KeyframeDetail {
+                index: rows.len(),
+                time: Some(clip.time),
+                value_preview: clip
+                    .sample_scale
+                    .map(|value| format!("Scale ({:.2}, {:.2})", value.x, value.y)),
+            });
+        }
+        if clip.has_tint {
+            rows.push(KeyframeDetail {
+                index: rows.len(),
+                time: Some(clip.time),
+                value_preview: clip.sample_tint.map(|value| {
+                    format!("Tint ({:.2}, {:.2}, {:.2}, {:.2})", value.x, value.y, value.z, value.w)
+                }),
+            });
+        }
+        rows
     }
 
     fn process_atlas_hot_reload_events(&mut self) {
@@ -711,6 +892,7 @@ impl App {
                 None
             }
         };
+        let animation_asset_watcher = Self::init_animation_asset_watcher();
 
         let mut camera = Camera2D::new(CAMERA_BASE_HALF_HEIGHT);
         camera.set_zoom_limits(editor_cfg.camera_zoom_min, editor_cfg.camera_zoom_max);
@@ -788,6 +970,7 @@ impl App {
             script_repl_history_index: None,
             script_console: VecDeque::with_capacity(SCRIPT_CONSOLE_CAPACITY),
             last_reported_script_error: None,
+            animation_keyframe_panel: AnimationKeyframePanel::default(),
             plugin_host,
             camera,
             viewport_camera_mode: ViewportCameraMode::default(),
@@ -814,6 +997,7 @@ impl App {
             emitter_entity: Some(emitter),
             sprite_atlas_views: HashMap::new(),
             atlas_hot_reload,
+            animation_asset_watcher,
             sprite_guardrail_mode: editor_cfg.sprite_guardrail_mode,
             sprite_guardrail_max_pixels: editor_cfg.sprite_guard_max_pixels,
             sprite_guardrail_status: None,
@@ -2015,6 +2199,7 @@ impl ApplicationHandler for App {
         self.time.tick();
         self.sync_atlas_hot_reload();
         self.process_atlas_hot_reload_events();
+        self.process_animation_asset_watchers();
         let dt = self.time.delta_seconds();
         self.accumulator += dt;
         if self.accumulator > MAX_FIXED_TIMESTEP_BACKLOG {
