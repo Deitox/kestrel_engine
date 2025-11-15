@@ -1,0 +1,67 @@
+{
+  "metadata": {
+    "viewport": "Ortho2D",
+    "camera2d": {
+      "position": [
+        0.0,
+        0.0
+      ],
+      "zoom": 1.0
+    },
+    "environment": {
+      "key": "environment::default",
+      "intensity": 1.0
+    },
+    "lighting": {
+      "direction": [
+        0.4,
+        0.8,
+        0.4
+      ],
+      "color": [
+        1.0,
+        0.98,
+        0.92
+      ],
+      "ambient": [
+        0.05,
+        0.05,
+        0.05
+      ],
+      "exposure": 1.0
+    }
+  },
+  "dependencies": {
+    "atlases": [
+      {
+        "key": "main",
+        "path": "assets/images/atlas.json"
+      }
+    ],
+    "clips": [],
+    "meshes": [],
+    "materials": [],
+    "environments": [
+      {
+        "key": "environment::default"
+      }
+    ]
+  },
+  "entities": [
+    {
+      "id": "e6e3c48b-3d97-4c83-9b34-312704c0fb49",
+      "name": "skeletal_demo",
+      "transform": {
+        "translation": [
+          0.0,
+          0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ]
+      }
+    }
+  ]
+}

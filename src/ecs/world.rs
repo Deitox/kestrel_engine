@@ -12,8 +12,8 @@ use crate::events::{EventBus, GameEvent};
 use crate::mesh_registry::MeshRegistry;
 use crate::scene::{
     ColliderData, ColorData, MeshData, MeshLightingData, OrbitControllerData, ParticleEmitterData, Scene,
-    SceneDependencies, SceneEntity, SceneEntityId, SpriteAnimationData, SpriteData, Transform3DData,
-    TransformClipData, TransformData,
+    SceneDependencies, SceneEntity, SceneEntityId, SkeletonClipData, SkeletonData, SpriteAnimationData,
+    SpriteData, Transform3DData, TransformClipData, TransformData,
 };
 use anyhow::{anyhow, Result};
 use bevy_ecs::prelude::{Entity, Schedule, With, World};
@@ -2209,6 +2209,26 @@ impl EcsWorld {
             ));
         }
 
+        let mut skeleton_missing = Vec::new();
+        for dep in scene.dependencies.skeleton_dependencies() {
+            if assets.skeleton(dep.key()).is_some() {
+                continue;
+            }
+            if let Some(path) = dep.path() {
+                if let Err(err) = assets.load_skeleton(dep.key(), path) {
+                    skeleton_missing.push(format!("{} ({}): {err}", dep.key(), path));
+                }
+            } else {
+                skeleton_missing.push(format!("{} (no path provided)", dep.key()));
+            }
+        }
+        if !skeleton_missing.is_empty() {
+            return Err(anyhow!(
+                "Scene requires skeletons that could not be loaded: {}",
+                skeleton_missing.join(", ")
+            ));
+        }
+
         let mut mesh_missing = Vec::new();
         for dep in scene.dependencies.mesh_dependencies() {
             if let Err(err) = mesh_loader(dep.key(), dep.path()) {
@@ -2659,6 +2679,24 @@ impl EcsWorld {
             rapier.register_collider_entity(collider, entity_id);
         }
 
+        if let Some(skeleton) = data.skeleton.as_ref() {
+            if !self.set_skeleton(entity_id, assets, &skeleton.key) {
+                return Err(anyhow!("Scene references unknown skeleton '{}'", skeleton.key));
+            }
+            if let Some(clip) = skeleton.clip.as_ref() {
+                if !self.set_skeleton_clip(entity_id, assets, &clip.clip_key) {
+                    return Err(anyhow!("Scene references unknown skeletal clip '{}'", clip.clip_key));
+                }
+                let _ = self.set_skeleton_clip_group(entity_id, clip.group.as_deref());
+                let _ = self.set_skeleton_clip_speed(entity_id, clip.speed);
+                let _ = self.set_skeleton_clip_time(entity_id, clip.time);
+                let _ = self.set_skeleton_clip_playing(entity_id, clip.playing);
+                if let Some(mut instance) = self.world.get_mut::<SkeletonInstance>(entity_id) {
+                    instance.looped = clip.looped;
+                }
+            }
+        }
+
         if let Some(clip) = data.transform_clip.as_ref() {
             if !self.set_transform_clip(entity_id, assets, &clip.clip_key) {
                 return Err(anyhow!("Scene references unknown transform clip '{}'", clip.clip_key));
@@ -2774,6 +2812,17 @@ impl EcsWorld {
                     apply_tint: property_mask.apply_tint,
                 }
             });
+        let skeleton_data = self.world.get::<SkeletonInstance>(entity).map(|instance| {
+            let clip = instance.active_clip_key.as_ref().map(|clip_key| SkeletonClipData {
+                clip_key: clip_key.as_ref().to_string(),
+                playing: instance.playing,
+                looped: instance.looped,
+                speed: instance.speed,
+                time: instance.time,
+                group: instance.group.clone(),
+            });
+            SkeletonData { key: instance.skeleton_key.as_ref().to_string(), clip }
+        });
         let mesh_surface = self.world.get::<MeshSurface>(entity).cloned();
         let scene_entity = SceneEntity {
             id: entity_id.clone(),
@@ -2784,6 +2833,7 @@ impl EcsWorld {
                 transform.scale,
             ),
             transform_clip,
+            skeleton: skeleton_data,
             sprite: self
                 .world
                 .get::<Sprite>(entity)

@@ -1,0 +1,49 @@
+{
+  "metadata": {
+    "viewport": "Ortho2D",
+    "camera2d": {
+      "position": { "x": 0.0, "y": 0.0 },
+      "zoom": 1.0
+    },
+    "camera_bookmarks": [],
+    "lighting": {
+      "direction": { "x": 0.4, "y": 0.8, "z": 0.4 },
+      "color": { "x": 1.0, "y": 0.98, "z": 0.92 },
+      "ambient": { "x": 0.05, "y": 0.05, "z": 0.05 },
+      "exposure": 1.0,
+      "shadow": { "distance": 25.0, "bias": 0.002, "strength": 1.0 }
+    },
+    "environment": { "key": "environment::default", "intensity": 1.0 }
+  },
+  "dependencies": {
+    "atlases": [ { "key": "main", "path": "assets/images/atlas.json" } ],
+    "clips": [],
+    "skeletons": [
+      { "key": "slime", "path": "assets/animations/skeletal/slime_rig.gltf" }
+    ],
+    "meshes": [],
+    "materials": [],
+    "environments": [ "environment::default" ]
+  },
+  "entities": [
+    {
+      "id": "e6e3c48b-3d97-4c83-9b34-312704c0fb49",
+      "name": "skeletal_demo",
+      "transform": {
+        "translation": { "x": 0.0, "y": 0.0 },
+        "rotation": 0.0,
+        "scale": { "x": 1.0, "y": 1.0 }
+      },
+      "skeleton": {
+        "key": "slime",
+        "clip": {
+          "clip_key": "slime::breath",
+          "playing": true,
+          "looped": true,
+          "speed": 1.0,
+          "time": 0.0
+        }
+      }
+    }
+  ]
+}

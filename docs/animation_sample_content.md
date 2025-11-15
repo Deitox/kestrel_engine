@@ -27,6 +27,19 @@ Milestone 5 requires a deterministic scene that exercises the animation stack (s
 - Run `python scripts/capture_animation_samples.py animation_showcase` to emit `artifacts/scene_captures/animation_showcase_capture.json`. The script wraps the `scene_capture` helper so every entity/dependency/metadata field is serialized in a deterministic order.
 - `tests/animation_showcase_scene.rs` loads `animation_showcase.json`, generates a fresh summary via the same code path, and asserts it matches the capture. If it drifts, re-run the script above and inspect the diff.
 
+## Scene: `assets/scenes/skeletal_showcase.json`
+
+This minimal scene keeps the skeletal fixture wired up so the HUD, watchers, and validation tests always have an active rig.
+
+| Entity Name        | Purpose |
+|--------------------|---------|
+| `skeletal_demo`    | Attaches the `slime` skeleton (`assets/animations/skeletal/slime_rig.gltf`) and plays the `slime::breath` clip on loop. Use the inspector to pause, scrub, or swap clips while verifying the HUD’s Skeletal Eval rows and the asset watcher output. |
+
+### Deterministic capture
+
+- Run `python scripts/capture_animation_samples.py skeletal_showcase` to refresh `artifacts/scene_captures/skeletal_showcase_capture.json`.
+- `cargo test animation_showcase_scene` now verifies both the animation and skeletal scene captures, so CI will flag any drift in the serialized skeleton data.
+
 ## Asset quick reference
 
 | Asset | Path | Notes |

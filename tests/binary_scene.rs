@@ -16,6 +16,7 @@ fn binary_scene_roundtrip_preserves_entities() {
             scale: Vec2Data { x: 2.0, y: 0.5 },
         },
         transform_clip: None,
+        skeleton: None,
         sprite: None,
         transform3d: None,
         mesh: None,

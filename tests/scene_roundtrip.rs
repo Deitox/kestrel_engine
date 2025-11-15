@@ -527,6 +527,7 @@ fn scene_clone_subtree_includes_descendants() {
             name: None,
             transform: TransformData::from_components(Vec2::ZERO, 0.0, Vec2::splat(1.0)),
             transform_clip: None,
+            skeleton: None,
             sprite: None,
             transform3d: None,
             mesh: None,

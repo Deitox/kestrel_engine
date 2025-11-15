@@ -76,7 +76,7 @@ Status: ✅ Implemented across clips, skeletons, and graph assets (see `src/app/
 - [x] Asset watchers validate + reload clips/graphs with inspector surfacing.
 - [x] `animation_check` and `migrate_atlas` CLIs documented and running in CI.
 - [x] Analytics HUD shows CPU/GPU animation metrics with budget thresholds (HUD overlay plus `animation_targets_report.json.animation_budget` snapshot for CI trend tracking).
-- [ ] Sample scenes/scripts checked in with automated verification.
+- [x] Sample scenes/scripts checked in with automated verification.
 - [ ] Tutorials + docs updated, referencing the above tooling and CI expectations.
 
 ### Read-only Panel Status

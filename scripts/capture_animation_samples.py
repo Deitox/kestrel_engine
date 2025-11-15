@@ -16,6 +16,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCENES = {
     "animation_showcase": Path("assets/scenes/animation_showcase.json"),
+    "skeletal_showcase": Path("assets/scenes/skeletal_showcase.json"),
 }
 CAPTURE_DIR = REPO_ROOT / "artifacts" / "scene_captures"
 
