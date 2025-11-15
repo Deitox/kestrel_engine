@@ -1,7 +1,7 @@
 use crate::assets::ClipInterpolation;
 use crate::ecs::AnimationTime;
 use bevy_ecs::prelude::Entity;
-use egui::{self, pos2, Color32, FontId, Id, Modifiers, Rect, Sense, Stroke, Ui};
+use egui::{self, pos2, Color32, FontId, Id, Key, Modifiers, Rect, Sense, Stroke, Ui};
 use std::collections::BTreeSet;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -44,16 +44,33 @@ pub enum AnimationTrackKind {
     Tint,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnimationTrackBinding {
+    SpriteTimeline { entity: Entity },
+    TransformChannel { entity: Entity, channel: AnimationTrackKind },
+}
+
+#[derive(Clone, Debug)]
+pub enum AnimationPanelCommand {
+    ScrubTrack { binding: AnimationTrackBinding, time: f32 },
+    InsertKey { binding: AnimationTrackBinding, time: f32 },
+    DeleteKeys { binding: AnimationTrackBinding, indices: Vec<usize> },
+    Undo,
+    Redo,
+}
+
 /// Lightweight summary for each animation track shown in the panel.
 #[derive(Clone)]
 pub struct AnimationTrackSummary {
     pub id: AnimationTrackId,
     pub label: String,
     pub kind: AnimationTrackKind,
+    pub binding: AnimationTrackBinding,
     pub duration: f32,
     pub key_count: usize,
     pub interpolation: Option<ClipInterpolation>,
     pub playhead: Option<f32>,
+    pub dirty: bool,
     pub key_details: Vec<KeyframeDetail>,
 }
 
@@ -70,6 +87,9 @@ pub struct AnimationKeyframePanelState<'a> {
     pub animation_time: &'a AnimationTime,
     pub selected_entity: Option<Entity>,
     pub track_summaries: Vec<AnimationTrackSummary>,
+    pub can_undo: bool,
+    pub can_redo: bool,
+    pub status_message: Option<String>,
 }
 
 #[derive(Default)]
@@ -80,6 +100,7 @@ pub struct AnimationKeyframePanel {
     selected_keys: BTreeSet<KeyframeId>,
     scrub_time: f32,
     visible_duration: f32,
+    pending_commands: Vec<AnimationPanelCommand>,
 }
 
 impl AnimationKeyframePanel {
@@ -89,6 +110,10 @@ impl AnimationKeyframePanel {
 
     pub fn toggle(&mut self) {
         self.open = !self.open;
+    }
+
+    pub fn drain_commands(&mut self) -> Vec<AnimationPanelCommand> {
+        std::mem::take(&mut self.pending_commands)
     }
 
     pub fn render_window(&mut self, ctx: &egui::Context, state: AnimationKeyframePanelState<'_>) {
@@ -105,6 +130,9 @@ impl AnimationKeyframePanel {
 
     fn render_contents(&mut self, ui: &mut Ui, state: &AnimationKeyframePanelState<'_>) {
         ui.heading("Keyframe Timeline");
+        if let Some(status) = &state.status_message {
+            ui.small(status);
+        }
         match state.selected_entity {
             Some(entity) => {
                 ui.label(format!("Entity ID {}", entity.index()));
@@ -123,6 +151,12 @@ impl AnimationKeyframePanel {
             }
             if ui.button("Clear").clicked() {
                 self.track_filter.clear();
+            }
+            if ui.add_enabled(state.can_undo, egui::Button::new("Undo")).clicked() {
+                self.pending_commands.push(AnimationPanelCommand::Undo);
+            }
+            if ui.add_enabled(state.can_redo, egui::Button::new("Redo")).clicked() {
+                self.pending_commands.push(AnimationPanelCommand::Redo);
             }
         });
         ui.add_space(4.0);
@@ -147,10 +181,11 @@ impl AnimationKeyframePanel {
                 .add(egui::Slider::new(&mut self.scrub_time, 0.0..=self.visible_duration).text(scrub_label))
                 .changed()
             {
-                // Future: push into App::ecs for actual playback scrubbing.
+                self.queue_scrub_for_selection(&filtered_tracks);
             }
             if ui.button("Reset").clicked() {
                 self.scrub_time = 0.0;
+                self.queue_scrub_for_selection(&filtered_tracks);
             }
         });
         ui.separator();
@@ -226,10 +261,12 @@ impl AnimationKeyframePanel {
         egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
             for summary in tracks {
                 let selected = self.selected_tracks.contains(&summary.id);
+                let dirty_suffix = if summary.dirty { " *" } else { "" };
                 let text = format!(
-                    "{} ({})\n{} keys | {:.2}s",
+                    "{} ({}){}\n{} keys | {:.2}s",
                     summary.label,
                     self.track_kind_label(summary.kind),
+                    dirty_suffix,
                     summary.key_count,
                     summary.duration
                 );
@@ -243,6 +280,19 @@ impl AnimationKeyframePanel {
                 }
             }
         });
+    }
+
+    fn queue_scrub_for_selection(&mut self, tracks: &[&AnimationTrackSummary]) {
+        if tracks.is_empty() {
+            return;
+        }
+        for summary in tracks {
+            if self.selected_tracks.contains(&summary.id) {
+                let clamped_time = self.scrub_time.min(summary.duration.max(0.0));
+                self.pending_commands
+                    .push(AnimationPanelCommand::ScrubTrack { binding: summary.binding, time: clamped_time });
+            }
+        }
     }
 
     fn render_timeline(&mut self, ui: &mut Ui, tracks: &[&AnimationTrackSummary]) {
@@ -302,6 +352,14 @@ impl AnimationKeyframePanel {
         summary: &AnimationTrackSummary,
         duration: f32,
     ) {
+        let row_id = Id::new(("track_row_canvas", summary.id.raw()));
+        let row_response = ui.interact(rect, row_id, Sense::click());
+        if row_response.double_clicked() {
+            if let Some(pos) = row_response.interact_pointer_pos() {
+                let local_time = self.screen_to_time(rect, duration, pos.x);
+                self.handle_insert_request(summary, local_time);
+            }
+        }
         let is_selected = self.selected_tracks.contains(&summary.id);
         let bg_color = if is_selected {
             ui.visuals().extreme_bg_color.linear_multiply(1.25)
@@ -370,6 +428,18 @@ impl AnimationKeyframePanel {
         } else {
             ui.label(format!("Selected keys: {}", self.selected_keys.len()));
         }
+        let selection_binding = self.selection_binding_and_indices(tracks);
+        let delete_enabled = selection_binding.is_some();
+        let delete_button = ui.add_enabled(delete_enabled, egui::Button::new("Delete Selected Keys"));
+        let delete_request =
+            delete_button.clicked() || (delete_enabled && ui.input(|i| i.key_pressed(Key::Delete)));
+        if delete_request {
+            if let Some((binding, mut indices)) = selection_binding {
+                indices.sort();
+                self.pending_commands.push(AnimationPanelCommand::DeleteKeys { binding, indices });
+                self.selected_keys.clear();
+            }
+        }
     }
 
     fn handle_track_click(&mut self, summary: &AnimationTrackSummary, modifiers: Modifiers) {
@@ -385,6 +455,10 @@ impl AnimationKeyframePanel {
         }
         if let Some(playhead) = summary.playhead {
             self.scrub_time = playhead;
+            self.pending_commands.push(AnimationPanelCommand::ScrubTrack {
+                binding: summary.binding,
+                time: playhead.min(summary.duration.max(0.0)),
+            });
         }
         self.selected_keys.retain(|key| self.selected_tracks.contains(&key.track));
     }
@@ -404,12 +478,35 @@ impl AnimationKeyframePanel {
         }
     }
 
+    fn handle_insert_request(&mut self, summary: &AnimationTrackSummary, time: f32) {
+        if !self.can_edit_track(summary.kind) {
+            return;
+        }
+        self.pending_commands.push(AnimationPanelCommand::InsertKey {
+            binding: summary.binding,
+            time: time.min(summary.duration.max(0.0)),
+        });
+    }
+
+    fn can_edit_track(&self, kind: AnimationTrackKind) -> bool {
+        !matches!(kind, AnimationTrackKind::SpriteTimeline)
+    }
+
     fn time_to_screen(&self, rect: Rect, duration: f32, time: f32) -> f32 {
         if duration <= 0.0 {
             rect.left()
         } else {
             let normalized = (time / duration).clamp(0.0, 1.0);
             rect.left() + normalized * rect.width()
+        }
+    }
+
+    fn screen_to_time(&self, rect: Rect, duration: f32, x: f32) -> f32 {
+        if duration <= 0.0 {
+            0.0
+        } else {
+            let normalized = ((x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+            normalized * duration
         }
     }
 
@@ -450,6 +547,30 @@ impl AnimationKeyframePanel {
             AnimationTrackKind::Tint => "Tint",
         }
     }
+
+    fn selection_binding_and_indices(
+        &self,
+        tracks: &[&AnimationTrackSummary],
+    ) -> Option<(AnimationTrackBinding, Vec<usize>)> {
+        if self.selected_keys.is_empty() {
+            return None;
+        }
+        let mut binding: Option<AnimationTrackBinding> = None;
+        let mut indices = Vec::new();
+        for key in &self.selected_keys {
+            let summary = tracks.iter().find(|summary| summary.id == key.track)?;
+            if !self.can_edit_track(summary.kind) {
+                return None;
+            }
+            match binding {
+                Some(existing) if existing != summary.binding => return None,
+                None => binding = Some(summary.binding),
+                _ => {}
+            }
+            indices.push(key.index as usize);
+        }
+        binding.map(|binding| (binding, indices))
+    }
 }
 
 #[cfg(test)]
@@ -467,23 +588,36 @@ mod tests {
                     id: AnimationTrackId(1),
                     label: "Sprite/Translation".to_string(),
                     kind: AnimationTrackKind::Translation,
+                    binding: AnimationTrackBinding::TransformChannel {
+                        entity: Entity::from_raw(1),
+                        channel: AnimationTrackKind::Translation,
+                    },
                     duration: 1.0,
                     key_count: 12,
                     interpolation: Some(ClipInterpolation::Linear),
                     playhead: Some(0.25),
+                    dirty: false,
                     key_details: Vec::new(),
                 },
                 AnimationTrackSummary {
                     id: AnimationTrackId(2),
                     label: "Sprite/Rotation".to_string(),
                     kind: AnimationTrackKind::Rotation,
+                    binding: AnimationTrackBinding::TransformChannel {
+                        entity: Entity::from_raw(2),
+                        channel: AnimationTrackKind::Rotation,
+                    },
                     duration: 1.0,
                     key_count: 4,
                     interpolation: Some(ClipInterpolation::Linear),
                     playhead: None,
+                    dirty: false,
                     key_details: Vec::new(),
                 },
             ],
+            can_undo: false,
+            can_redo: false,
+            status_message: None,
         };
         assert_eq!(state.track_summaries.len(), 2);
     }
@@ -494,10 +628,15 @@ mod tests {
             id: AnimationTrackId(42),
             label: "Transform Clip".to_string(),
             kind: AnimationTrackKind::Translation,
+            binding: AnimationTrackBinding::TransformChannel {
+                entity: Entity::from_raw(3),
+                channel: AnimationTrackKind::Translation,
+            },
             duration: 2.5,
             key_count: 2,
             interpolation: Some(ClipInterpolation::Linear),
             playhead: Some(0.5),
+            dirty: true,
             key_details: vec![
                 KeyframeDetail {
                     id: KeyframeId::new(AnimationTrackId(42), 0),

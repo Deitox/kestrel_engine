@@ -6,8 +6,8 @@ mod gizmo_interaction;
 mod plugin_host;
 
 use self::animation_keyframe_panel::{
-    AnimationKeyframePanel, AnimationKeyframePanelState, AnimationTrackId, AnimationTrackKind,
-    AnimationTrackSummary, KeyframeDetail, KeyframeId,
+    AnimationKeyframePanel, AnimationKeyframePanelState, AnimationPanelCommand, AnimationTrackBinding,
+    AnimationTrackId, AnimationTrackKind, AnimationTrackSummary, KeyframeDetail, KeyframeId,
 };
 use self::animation_watch::{AnimationAssetKind, AnimationAssetWatcher};
 use self::atlas_watch::{normalize_path_for_watch, AtlasHotReload};
@@ -16,14 +16,17 @@ use crate::analytics::AnalyticsPlugin;
 use crate::animation_validation::{
     AnimationValidationEvent, AnimationValidationSeverity, AnimationValidator,
 };
-use crate::assets::{AssetManager, ClipScalarTrack, ClipVec2Track, ClipVec4Track, SpriteTimeline};
+use crate::assets::{
+    AnimationClip, AssetManager, ClipInterpolation, ClipKeyframe, ClipScalarTrack, ClipSegment,
+    ClipVec2Track, ClipVec4Track, SpriteTimeline,
+};
 use crate::audio::{AudioHealthSnapshot, AudioPlugin};
 use crate::camera::Camera2D;
 use crate::camera3d::Camera3D;
 use crate::config::{AppConfig, AppConfigOverrides, SpriteGuardrailMode};
 use crate::ecs::{
-    AnimationTime, EcsWorld, EntityInfo, InstanceData, MeshLightingInfo, ParticleCaps, SpriteAnimation,
-    SpriteAnimationInfo, SpriteInstance,
+    AnimationTime, ClipInstance, EcsWorld, EntityInfo, InstanceData, MeshLightingInfo, ParticleCaps,
+    SpriteAnimation, SpriteAnimationInfo, SpriteInstance,
 };
 use crate::environment::EnvironmentRegistry;
 use crate::events::GameEvent;
@@ -48,6 +51,7 @@ use bevy_ecs::prelude::Entity;
 use glam::{Mat4, Vec2, Vec3, Vec4};
 
 use anyhow::{anyhow, Context, Result};
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -268,6 +272,18 @@ pub(crate) struct ScriptConsoleEntry {
     pub text: String,
 }
 
+enum TrackEditOperation {
+    Insert { time: f32 },
+    Delete { indices: Vec<usize> },
+}
+
+#[derive(Clone)]
+struct ClipEditRecord {
+    clip_key: String,
+    before: Arc<AnimationClip>,
+    after: Arc<AnimationClip>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScriptConsoleKind {
     Input,
@@ -438,6 +454,11 @@ pub struct App {
     script_console: VecDeque<ScriptConsoleEntry>,
     last_reported_script_error: Option<String>,
     animation_keyframe_panel: AnimationKeyframePanel,
+    clip_dirty: HashSet<String>,
+    clip_edit_history: Vec<ClipEditRecord>,
+    clip_edit_redo: Vec<ClipEditRecord>,
+    animation_clip_status: Option<String>,
+    clip_edit_overrides: HashMap<String, Arc<AnimationClip>>,
     pending_animation_validation_events: Vec<AnimationValidationEvent>,
 
     // Plugins
@@ -560,6 +581,11 @@ impl App {
                     change.path.display(),
                     change.kind.label()
                 );
+                self.animation_clip_status = Some(format!(
+                    "Detected {} change but no validators ran: {}",
+                    change.kind.label(),
+                    change.path.display()
+                ));
                 continue;
             }
             for event in events {
@@ -574,6 +600,7 @@ impl App {
         let formatted =
             format!("[animation] validation {severity} for {}: {}", event.path.display(), event.message);
         eprintln!("{formatted}");
+        self.animation_clip_status = Some(formatted.clone());
         if matches!(event.severity, AnimationValidationSeverity::Warning | AnimationValidationSeverity::Error)
         {
             self.inspector_status = Some(formatted);
@@ -592,8 +619,12 @@ impl App {
             animation_time,
             selected_entity: self.selected_entity,
             track_summaries: self.collect_animation_track_summaries(),
+            can_undo: !self.clip_edit_history.is_empty(),
+            can_redo: !self.clip_edit_redo.is_empty(),
+            status_message: self.animation_clip_status.clone(),
         };
         self.animation_keyframe_panel.render_window(ctx, state);
+        self.process_animation_panel_commands();
     }
 
     fn collect_animation_track_summaries(&self) -> Vec<AnimationTrackSummary> {
@@ -606,6 +637,31 @@ impl App {
             }
         }
         summaries
+    }
+
+    fn process_animation_panel_commands(&mut self) {
+        let commands = self.animation_keyframe_panel.drain_commands();
+        for command in commands {
+            match command {
+                AnimationPanelCommand::ScrubTrack { binding, time } => {
+                    self.handle_scrub_command(binding, time);
+                }
+                AnimationPanelCommand::InsertKey { binding, time } => {
+                    self.apply_track_edit(binding, TrackEditOperation::Insert { time });
+                }
+                AnimationPanelCommand::DeleteKeys { binding, indices } => {
+                    if !indices.is_empty() {
+                        self.apply_track_edit(binding, TrackEditOperation::Delete { indices });
+                    }
+                }
+                AnimationPanelCommand::Undo => {
+                    self.undo_clip_edit();
+                }
+                AnimationPanelCommand::Redo => {
+                    self.redo_clip_edit();
+                }
+            }
+        }
     }
 
     fn collect_sprite_track_summaries(
@@ -641,10 +697,12 @@ impl App {
                     id: track_id,
                     label: format!("Sprite Timeline ({})", animation.timeline),
                     kind: AnimationTrackKind::SpriteTimeline,
+                    binding: AnimationTrackBinding::SpriteTimeline { entity },
                     duration,
                     key_count,
                     interpolation: None,
                     playhead,
+                    dirty: false,
                     key_details: Self::sprite_key_details(track_id, animation, timeline),
                 });
             }
@@ -659,12 +717,13 @@ impl App {
         summaries: &mut Vec<AnimationTrackSummary>,
     ) {
         if let Some(clip) = info.transform_clip.as_ref() {
-            let clip_asset = self.assets.clip(&clip.clip_key);
+            let clip_asset = self.clip_resource(&clip.clip_key);
+            let clip_dirty = self.clip_dirty.contains(&clip.clip_key);
             if clip.has_translation {
                 let track_id = AnimationTrackId::for_entity_slot(entity, *slot_index);
                 *slot_index += 1;
                 let (key_details, key_count, interpolation, duration) = if let Some(track_data) =
-                    clip_asset.and_then(|clip_asset| clip_asset.translation.as_ref())
+                    clip_asset.as_ref().and_then(|clip_asset| clip_asset.translation.as_ref())
                 {
                     let details = Self::vec2_track_details(track_id, track_data);
                     (details, track_data.keyframes.len(), Some(track_data.interpolation), track_data.duration)
@@ -682,10 +741,15 @@ impl App {
                     id: track_id,
                     label: format!("Translation ({})", clip.clip_key),
                     kind: AnimationTrackKind::Translation,
+                    binding: AnimationTrackBinding::TransformChannel {
+                        entity,
+                        channel: AnimationTrackKind::Translation,
+                    },
                     duration,
                     key_count,
                     interpolation,
                     playhead: Some(clip.time),
+                    dirty: clip_dirty,
                     key_details,
                 });
             }
@@ -693,7 +757,7 @@ impl App {
                 let track_id = AnimationTrackId::for_entity_slot(entity, *slot_index);
                 *slot_index += 1;
                 let (key_details, key_count, interpolation, duration) = if let Some(track_data) =
-                    clip_asset.and_then(|clip_asset| clip_asset.rotation.as_ref())
+                    clip_asset.as_ref().and_then(|clip_asset| clip_asset.rotation.as_ref())
                 {
                     let details = Self::scalar_track_details(track_id, track_data);
                     (details, track_data.keyframes.len(), Some(track_data.interpolation), track_data.duration)
@@ -710,10 +774,15 @@ impl App {
                     id: track_id,
                     label: format!("Rotation ({})", clip.clip_key),
                     kind: AnimationTrackKind::Rotation,
+                    binding: AnimationTrackBinding::TransformChannel {
+                        entity,
+                        channel: AnimationTrackKind::Rotation,
+                    },
                     duration,
                     key_count,
                     interpolation,
                     playhead: Some(clip.time),
+                    dirty: clip_dirty,
                     key_details,
                 });
             }
@@ -721,7 +790,7 @@ impl App {
                 let track_id = AnimationTrackId::for_entity_slot(entity, *slot_index);
                 *slot_index += 1;
                 let (key_details, key_count, interpolation, duration) = if let Some(track_data) =
-                    clip_asset.and_then(|clip_asset| clip_asset.scale.as_ref())
+                    clip_asset.as_ref().and_then(|clip_asset| clip_asset.scale.as_ref())
                 {
                     let details = Self::vec2_track_details(track_id, track_data);
                     (details, track_data.keyframes.len(), Some(track_data.interpolation), track_data.duration)
@@ -738,10 +807,15 @@ impl App {
                     id: track_id,
                     label: format!("Scale ({})", clip.clip_key),
                     kind: AnimationTrackKind::Scale,
+                    binding: AnimationTrackBinding::TransformChannel {
+                        entity,
+                        channel: AnimationTrackKind::Scale,
+                    },
                     duration,
                     key_count,
                     interpolation,
                     playhead: Some(clip.time),
+                    dirty: clip_dirty,
                     key_details,
                 });
             }
@@ -749,7 +823,7 @@ impl App {
                 let track_id = AnimationTrackId::for_entity_slot(entity, *slot_index);
                 *slot_index += 1;
                 let (key_details, key_count, interpolation, duration) = if let Some(track_data) =
-                    clip_asset.and_then(|clip_asset| clip_asset.tint.as_ref())
+                    clip_asset.as_ref().and_then(|clip_asset| clip_asset.tint.as_ref())
                 {
                     let details = Self::vec4_track_details(track_id, track_data);
                     (details, track_data.keyframes.len(), Some(track_data.interpolation), track_data.duration)
@@ -768,14 +842,151 @@ impl App {
                     id: track_id,
                     label: format!("Tint ({})", clip.clip_key),
                     kind: AnimationTrackKind::Tint,
+                    binding: AnimationTrackBinding::TransformChannel {
+                        entity,
+                        channel: AnimationTrackKind::Tint,
+                    },
                     duration,
                     key_count,
                     interpolation,
                     playhead: Some(clip.time),
+                    dirty: clip_dirty,
                     key_details,
                 });
             }
         }
+    }
+
+    fn handle_scrub_command(&mut self, binding: AnimationTrackBinding, time: f32) {
+        match binding {
+            AnimationTrackBinding::SpriteTimeline { entity } => self.scrub_sprite_track(entity, time),
+            AnimationTrackBinding::TransformChannel { entity, .. } => {
+                self.scrub_transform_track(entity, time)
+            }
+        }
+    }
+
+    fn scrub_sprite_track(&mut self, entity: Entity, time: f32) {
+        let Some(info) = self.ecs.entity_info(entity) else {
+            return;
+        };
+        let Some(sprite) = info.sprite.as_ref() else {
+            return;
+        };
+        let Some(animation) = sprite.animation.as_ref() else {
+            return;
+        };
+        let Some(timeline) = self.assets.atlas_timeline(&sprite.atlas, animation.timeline.as_str()) else {
+            return;
+        };
+        if timeline.frames.is_empty() {
+            return;
+        }
+        let duration = timeline.total_duration.max(0.0);
+        let wrapped = if timeline.looped && duration > 0.0 {
+            let mut t = time % duration;
+            if t < 0.0 {
+                t += duration;
+            }
+            t
+        } else {
+            time.clamp(0.0, duration)
+        };
+        let mut target_index = timeline.frames.len() - 1;
+        for (index, offset) in timeline.frame_offsets.iter().enumerate() {
+            let span = timeline.durations.get(index).copied().unwrap_or(0.0).max(std::f32::EPSILON);
+            if wrapped <= offset + span || index == timeline.frames.len() - 1 {
+                target_index = index;
+                break;
+            }
+        }
+        let _ = self.ecs.set_sprite_animation_playing(entity, false);
+        let _ = self.ecs.seek_sprite_animation_frame(entity, target_index);
+    }
+
+    fn scrub_transform_track(&mut self, entity: Entity, time: f32) {
+        let Some(info) = self.ecs.entity_info(entity) else {
+            return;
+        };
+        let Some(clip) = info.transform_clip.as_ref() else {
+            return;
+        };
+        let clamped = time.clamp(0.0, clip.duration.max(0.0));
+        let _ = self.ecs.set_transform_clip_playing(entity, false);
+        let _ = self.ecs.set_transform_clip_time(entity, clamped);
+    }
+
+    fn apply_track_edit(&mut self, binding: AnimationTrackBinding, edit: TrackEditOperation) {
+        match binding {
+            AnimationTrackBinding::TransformChannel { entity, channel } => {
+                self.edit_transform_channel(entity, channel, edit)
+            }
+            AnimationTrackBinding::SpriteTimeline { .. } => {}
+        }
+    }
+
+    fn edit_transform_channel(
+        &mut self,
+        entity: Entity,
+        channel: AnimationTrackKind,
+        edit: TrackEditOperation,
+    ) {
+        let Some(info) = self.ecs.entity_info(entity) else {
+            return;
+        };
+        let Some(clip_info) = info.transform_clip.as_ref() else {
+            return;
+        };
+        let Some(source_clip) = self.clip_resource(&clip_info.clip_key) else {
+            return;
+        };
+        let before_arc = Arc::clone(&source_clip);
+        let mut clip = (*source_clip).clone();
+        let mut dirty = false;
+        match channel {
+            AnimationTrackKind::Translation => {
+                dirty = self.edit_vec2_track(
+                    &mut clip.translation,
+                    edit,
+                    clip_info.sample_translation.or(Some(info.translation)),
+                    Vec2::ZERO,
+                );
+            }
+            AnimationTrackKind::Rotation => {
+                dirty = self.edit_scalar_track(
+                    &mut clip.rotation,
+                    edit,
+                    clip_info.sample_rotation.or(Some(info.rotation)),
+                    0.0,
+                );
+            }
+            AnimationTrackKind::Scale => {
+                dirty = self.edit_vec2_track(
+                    &mut clip.scale,
+                    edit,
+                    clip_info.sample_scale.or(Some(info.scale)),
+                    Vec2::ONE,
+                );
+            }
+            AnimationTrackKind::Tint => {
+                dirty = self.edit_vec4_track(
+                    &mut clip.tint,
+                    edit,
+                    clip_info.sample_tint.or(info.tint),
+                    Vec4::ONE,
+                );
+            }
+            AnimationTrackKind::SpriteTimeline => {}
+        }
+        if !dirty {
+            return;
+        }
+        self.recompute_clip_duration(&mut clip);
+        let clip_arc = Arc::new(clip);
+        self.clip_edit_overrides.insert(clip_info.clip_key.clone(), Arc::clone(&clip_arc));
+        self.apply_clip_override_to_instances(&clip_info.clip_key, Arc::clone(&clip_arc));
+        self.record_clip_edit(&clip_info.clip_key, before_arc, Arc::clone(&clip_arc));
+        self.persist_clip_edit(&clip_info.clip_key, clip_arc);
     }
 
     fn sprite_key_details(
@@ -883,6 +1094,386 @@ impl App {
                 }]
             })
             .unwrap_or_else(Vec::new)
+    }
+
+    fn clip_resource(&self, key: &str) -> Option<Arc<AnimationClip>> {
+        if let Some(override_clip) = self.clip_edit_overrides.get(key) {
+            return Some(Arc::clone(override_clip));
+        }
+        self.assets.clip(key).map(|clip| Arc::new(clip.clone()))
+    }
+
+    fn apply_clip_override_to_instances(&mut self, clip_key: &str, clip: Arc<AnimationClip>) {
+        let clip_key_arc: Arc<str> = Arc::from(clip_key.to_string());
+        let mut query = self.ecs.world.query::<&mut ClipInstance>();
+        for mut instance in query.iter_mut(&mut self.ecs.world) {
+            if instance.clip_key.as_ref() == clip_key {
+                instance.replace_clip(Arc::clone(&clip_key_arc), Arc::clone(&clip));
+            }
+        }
+    }
+
+    fn record_clip_edit(&mut self, clip_key: &str, before: Arc<AnimationClip>, after: Arc<AnimationClip>) {
+        self.clip_edit_history.push(ClipEditRecord { clip_key: clip_key.to_string(), before, after });
+        self.clip_edit_redo.clear();
+    }
+
+    fn undo_clip_edit(&mut self) {
+        if let Some(record) = self.clip_edit_history.pop() {
+            self.clip_edit_redo.push(record.clone());
+            self.apply_clip_history_state(&record.clip_key, Arc::clone(&record.before));
+            self.animation_clip_status = Some(format!("Undid edit on '{}'", record.clip_key));
+        }
+    }
+
+    fn redo_clip_edit(&mut self) {
+        if let Some(record) = self.clip_edit_redo.pop() {
+            let clip_key = record.clip_key.clone();
+            self.clip_edit_history.push(record.clone());
+            self.apply_clip_history_state(&clip_key, Arc::clone(&record.after));
+            self.animation_clip_status = Some(format!("Redid edit on '{}'", clip_key));
+        }
+    }
+
+    fn apply_clip_history_state(&mut self, clip_key: &str, clip: Arc<AnimationClip>) {
+        self.clip_edit_overrides.insert(clip_key.to_string(), Arc::clone(&clip));
+        self.apply_clip_override_to_instances(clip_key, Arc::clone(&clip));
+        self.persist_clip_edit(clip_key, clip);
+    }
+
+    fn persist_clip_edit(&mut self, clip_key: &str, clip: Arc<AnimationClip>) {
+        self.clip_dirty.insert(clip_key.to_string());
+        if let Err(err) = self.assets.save_clip(clip_key, clip.as_ref()) {
+            eprintln!("[animation] failed to save clip '{clip_key}': {err:?}");
+            self.animation_clip_status = Some(format!("Failed to save '{clip_key}': {err}"));
+            return;
+        }
+        let mut status_note = format!("Saved clip '{clip_key}'");
+        let clip_path = self.assets.clip_source(clip_key).map(|p| p.to_string());
+        if let Some(path) = clip_path.as_deref() {
+            if let Err(err) = self.assets.load_clip(clip_key, path) {
+                eprintln!("[animation] failed to reload clip '{clip_key}' after save: {err:?}");
+                self.animation_clip_status = Some(format!("Reload failed for '{clip_key}': {err}"));
+                return;
+            }
+        } else {
+            status_note = format!("Saved clip '{clip_key}' (no source metadata available)");
+        }
+        if let Some(updated) = self.assets.clip(clip_key) {
+            let canonical = Arc::new(updated.clone());
+            self.apply_clip_override_to_instances(clip_key, Arc::clone(&canonical));
+            self.clip_edit_overrides.remove(clip_key);
+        }
+        self.clip_dirty.remove(clip_key);
+        self.animation_clip_status = Some(status_note);
+    }
+
+    fn edit_vec2_track(
+        &self,
+        target: &mut Option<ClipVec2Track>,
+        edit: TrackEditOperation,
+        sample: Option<Vec2>,
+        fallback: Vec2,
+    ) -> bool {
+        let interpolation =
+            target.as_ref().map(|track| track.interpolation).unwrap_or(ClipInterpolation::Linear);
+        let mut frames: Vec<ClipKeyframe<Vec2>> =
+            target.as_ref().map(|track| track.keyframes.iter().copied().collect()).unwrap_or_else(Vec::new);
+        match edit {
+            TrackEditOperation::Insert { time } => {
+                frames.push(ClipKeyframe { time, value: sample.unwrap_or(fallback) });
+            }
+            TrackEditOperation::Delete { indices } => Self::remove_key_indices(&mut frames, &indices),
+        }
+        Self::apply_vec2_frames(target, frames, interpolation)
+    }
+
+    fn edit_scalar_track(
+        &self,
+        target: &mut Option<ClipScalarTrack>,
+        edit: TrackEditOperation,
+        sample: Option<f32>,
+        fallback: f32,
+    ) -> bool {
+        let interpolation =
+            target.as_ref().map(|track| track.interpolation).unwrap_or(ClipInterpolation::Linear);
+        let mut frames: Vec<ClipKeyframe<f32>> =
+            target.as_ref().map(|track| track.keyframes.iter().copied().collect()).unwrap_or_else(Vec::new);
+        match edit {
+            TrackEditOperation::Insert { time } => {
+                frames.push(ClipKeyframe { time, value: sample.unwrap_or(fallback) });
+            }
+            TrackEditOperation::Delete { indices } => Self::remove_key_indices(&mut frames, &indices),
+        }
+        Self::apply_scalar_frames(target, frames, interpolation)
+    }
+
+    fn edit_vec4_track(
+        &self,
+        target: &mut Option<ClipVec4Track>,
+        edit: TrackEditOperation,
+        sample: Option<Vec4>,
+        fallback: Vec4,
+    ) -> bool {
+        let interpolation =
+            target.as_ref().map(|track| track.interpolation).unwrap_or(ClipInterpolation::Linear);
+        let mut frames: Vec<ClipKeyframe<Vec4>> =
+            target.as_ref().map(|track| track.keyframes.iter().copied().collect()).unwrap_or_else(Vec::new);
+        match edit {
+            TrackEditOperation::Insert { time } => {
+                frames.push(ClipKeyframe { time, value: sample.unwrap_or(fallback) });
+            }
+            TrackEditOperation::Delete { indices } => Self::remove_key_indices(&mut frames, &indices),
+        }
+        Self::apply_vec4_frames(target, frames, interpolation)
+    }
+
+    fn remove_key_indices<T>(frames: &mut Vec<ClipKeyframe<T>>, indices: &[usize]) {
+        if frames.is_empty() || indices.is_empty() {
+            return;
+        }
+        let mut sorted = indices.to_vec();
+        sorted.sort_unstable_by(|a, b| b.cmp(a));
+        for index in sorted {
+            if index < frames.len() {
+                frames.remove(index);
+            }
+        }
+    }
+
+    fn apply_vec2_frames(
+        target: &mut Option<ClipVec2Track>,
+        frames: Vec<ClipKeyframe<Vec2>>,
+        interpolation: ClipInterpolation,
+    ) -> bool {
+        if frames.is_empty() {
+            let had_track = target.is_some();
+            *target = None;
+            return had_track;
+        }
+        let normalized = Self::normalize_keyframes(frames);
+        let track = Self::build_vec2_track_from_frames(interpolation, normalized);
+        let changed = target
+            .as_ref()
+            .map(|existing| {
+                existing.keyframes.len() != track.keyframes.len() || existing.duration != track.duration
+            })
+            .unwrap_or(true);
+        *target = Some(track);
+        changed
+    }
+
+    fn apply_scalar_frames(
+        target: &mut Option<ClipScalarTrack>,
+        frames: Vec<ClipKeyframe<f32>>,
+        interpolation: ClipInterpolation,
+    ) -> bool {
+        if frames.is_empty() {
+            let had_track = target.is_some();
+            *target = None;
+            return had_track;
+        }
+        let normalized = Self::normalize_keyframes(frames);
+        let track = Self::build_scalar_track_from_frames(interpolation, normalized);
+        let changed = target
+            .as_ref()
+            .map(|existing| {
+                existing.keyframes.len() != track.keyframes.len() || existing.duration != track.duration
+            })
+            .unwrap_or(true);
+        *target = Some(track);
+        changed
+    }
+
+    fn apply_vec4_frames(
+        target: &mut Option<ClipVec4Track>,
+        frames: Vec<ClipKeyframe<Vec4>>,
+        interpolation: ClipInterpolation,
+    ) -> bool {
+        if frames.is_empty() {
+            let had_track = target.is_some();
+            *target = None;
+            return had_track;
+        }
+        let normalized = Self::normalize_keyframes(frames);
+        let track = Self::build_vec4_track_from_frames(interpolation, normalized);
+        let changed = target
+            .as_ref()
+            .map(|existing| {
+                existing.keyframes.len() != track.keyframes.len() || existing.duration != track.duration
+            })
+            .unwrap_or(true);
+        *target = Some(track);
+        changed
+    }
+
+    fn normalize_keyframes<T: Copy>(mut frames: Vec<ClipKeyframe<T>>) -> Vec<ClipKeyframe<T>> {
+        if frames.is_empty() {
+            return frames;
+        }
+        frames.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap_or(Ordering::Equal));
+        let mut normalized: Vec<ClipKeyframe<T>> = Vec::with_capacity(frames.len());
+        for mut frame in frames {
+            frame.time = frame.time.max(0.0);
+            if let Some(last) = normalized.last_mut() {
+                if (last.time - frame.time).abs() < 1e-4 {
+                    *last = frame;
+                    continue;
+                }
+            }
+            normalized.push(frame);
+        }
+        normalized
+    }
+
+    fn build_vec2_track_from_frames(
+        interpolation: ClipInterpolation,
+        frames: Vec<ClipKeyframe<Vec2>>,
+    ) -> ClipVec2Track {
+        let duration = frames.last().map(|frame| frame.time).unwrap_or(0.0);
+        let duration_inv = if duration > 0.0 { 1.0 / duration } else { 0.0 };
+        let (segment_deltas, segments, segment_offsets) = Self::build_segment_cache_vec2(&frames);
+        ClipVec2Track {
+            interpolation,
+            keyframes: Arc::from(frames.into_boxed_slice()),
+            duration,
+            duration_inv,
+            segment_deltas,
+            segments,
+            segment_offsets,
+        }
+    }
+
+    fn build_scalar_track_from_frames(
+        interpolation: ClipInterpolation,
+        frames: Vec<ClipKeyframe<f32>>,
+    ) -> ClipScalarTrack {
+        let duration = frames.last().map(|frame| frame.time).unwrap_or(0.0);
+        let duration_inv = if duration > 0.0 { 1.0 / duration } else { 0.0 };
+        let (segment_deltas, segments, segment_offsets) = Self::build_segment_cache_scalar(&frames);
+        ClipScalarTrack {
+            interpolation,
+            keyframes: Arc::from(frames.into_boxed_slice()),
+            duration,
+            duration_inv,
+            segment_deltas,
+            segments,
+            segment_offsets,
+        }
+    }
+
+    fn build_vec4_track_from_frames(
+        interpolation: ClipInterpolation,
+        frames: Vec<ClipKeyframe<Vec4>>,
+    ) -> ClipVec4Track {
+        let duration = frames.last().map(|frame| frame.time).unwrap_or(0.0);
+        let duration_inv = if duration > 0.0 { 1.0 / duration } else { 0.0 };
+        let (segment_deltas, segments, segment_offsets) = Self::build_segment_cache_vec4(&frames);
+        ClipVec4Track {
+            interpolation,
+            keyframes: Arc::from(frames.into_boxed_slice()),
+            duration,
+            duration_inv,
+            segment_deltas,
+            segments,
+            segment_offsets,
+        }
+    }
+
+    fn build_segment_cache_vec2(
+        frames: &[ClipKeyframe<Vec2>],
+    ) -> (Arc<[Vec2]>, Arc<[ClipSegment<Vec2>]>, Arc<[f32]>) {
+        if frames.len() < 2 {
+            return (Arc::from([]), Arc::from([]), Arc::from([]));
+        }
+        let mut deltas = Vec::with_capacity(frames.len() - 1);
+        let mut segments = Vec::with_capacity(frames.len() - 1);
+        let mut offsets = Vec::with_capacity(frames.len() - 1);
+        for window in frames.windows(2) {
+            let start = &window[0];
+            let end = &window[1];
+            let span = (end.time - start.time).max(std::f32::EPSILON);
+            let inv_span = 1.0 / span;
+            offsets.push(start.time);
+            let delta = end.value - start.value;
+            deltas.push(delta);
+            segments.push(ClipSegment { slope: delta * inv_span, span, inv_span });
+        }
+        (
+            Arc::from(deltas.into_boxed_slice()),
+            Arc::from(segments.into_boxed_slice()),
+            Arc::from(offsets.into_boxed_slice()),
+        )
+    }
+
+    fn build_segment_cache_scalar(
+        frames: &[ClipKeyframe<f32>],
+    ) -> (Arc<[f32]>, Arc<[ClipSegment<f32>]>, Arc<[f32]>) {
+        if frames.len() < 2 {
+            return (Arc::from([]), Arc::from([]), Arc::from([]));
+        }
+        let mut deltas = Vec::with_capacity(frames.len() - 1);
+        let mut segments = Vec::with_capacity(frames.len() - 1);
+        let mut offsets = Vec::with_capacity(frames.len() - 1);
+        for window in frames.windows(2) {
+            let start = &window[0];
+            let end = &window[1];
+            let span = (end.time - start.time).max(std::f32::EPSILON);
+            let inv_span = 1.0 / span;
+            offsets.push(start.time);
+            let delta = end.value - start.value;
+            deltas.push(delta);
+            segments.push(ClipSegment { slope: delta * inv_span, span, inv_span });
+        }
+        (
+            Arc::from(deltas.into_boxed_slice()),
+            Arc::from(segments.into_boxed_slice()),
+            Arc::from(offsets.into_boxed_slice()),
+        )
+    }
+
+    fn build_segment_cache_vec4(
+        frames: &[ClipKeyframe<Vec4>],
+    ) -> (Arc<[Vec4]>, Arc<[ClipSegment<Vec4>]>, Arc<[f32]>) {
+        if frames.len() < 2 {
+            return (Arc::from([]), Arc::from([]), Arc::from([]));
+        }
+        let mut deltas = Vec::with_capacity(frames.len() - 1);
+        let mut segments = Vec::with_capacity(frames.len() - 1);
+        let mut offsets = Vec::with_capacity(frames.len() - 1);
+        for window in frames.windows(2) {
+            let start = &window[0];
+            let end = &window[1];
+            let span = (end.time - start.time).max(std::f32::EPSILON);
+            let inv_span = 1.0 / span;
+            offsets.push(start.time);
+            let delta = end.value - start.value;
+            deltas.push(delta);
+            segments.push(ClipSegment { slope: delta * inv_span, span, inv_span });
+        }
+        (
+            Arc::from(deltas.into_boxed_slice()),
+            Arc::from(segments.into_boxed_slice()),
+            Arc::from(offsets.into_boxed_slice()),
+        )
+    }
+
+    fn recompute_clip_duration(&self, clip: &mut AnimationClip) {
+        let mut duration = 0.0_f32;
+        if let Some(track) = clip.translation.as_ref() {
+            duration = duration.max(track.duration);
+        }
+        if let Some(track) = clip.rotation.as_ref() {
+            duration = duration.max(track.duration);
+        }
+        if let Some(track) = clip.scale.as_ref() {
+            duration = duration.max(track.duration);
+        }
+        if let Some(track) = clip.tint.as_ref() {
+            duration = duration.max(track.duration);
+        }
+        clip.duration = duration;
+        clip.duration_inv = if duration > 0.0 { 1.0 / duration } else { 0.0 };
     }
 
     fn process_atlas_hot_reload_events(&mut self) {
@@ -1308,6 +1899,11 @@ impl App {
             script_console: VecDeque::with_capacity(SCRIPT_CONSOLE_CAPACITY),
             last_reported_script_error: None,
             animation_keyframe_panel: AnimationKeyframePanel::default(),
+            clip_dirty: HashSet::new(),
+            clip_edit_history: Vec::new(),
+            clip_edit_redo: Vec::new(),
+            animation_clip_status: None,
+            clip_edit_overrides: HashMap::new(),
             pending_animation_validation_events: Vec::new(),
             plugin_host,
             camera,

@@ -1,7 +1,7 @@
 use crate::ecs::{SpriteAnimationFrame, SpriteAnimationLoopMode, SpriteFrameHotData};
 use anyhow::{anyhow, Result};
 use glam::{Vec2, Vec4};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs;
@@ -233,6 +233,13 @@ fn convert_interpolation(file: ClipInterpolationFile) -> ClipInterpolation {
     }
 }
 
+fn convert_interpolation_to_file(value: ClipInterpolation) -> ClipInterpolationFile {
+    match value {
+        ClipInterpolation::Linear => ClipInterpolationFile::Linear,
+        ClipInterpolation::Step => ClipInterpolationFile::Step,
+    }
+}
+
 #[derive(Clone)]
 pub struct TextureAtlas {
     pub image_key: String,
@@ -336,7 +343,7 @@ pub struct ClipVec4Track {
     pub segment_offsets: Arc<[f32]>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct ClipKeyframe<T> {
     pub time: f32,
     pub value: T,
@@ -392,7 +399,7 @@ struct AtlasTimelineEventFile {
     name: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct ClipFile {
     version: u32,
     #[serde(default)]
@@ -403,7 +410,7 @@ struct ClipFile {
     tracks: ClipTracksFile,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 struct ClipTracksFile {
     #[serde(default)]
     translation: Option<ClipVec2TrackFile>,
@@ -415,47 +422,47 @@ struct ClipTracksFile {
     tint: Option<ClipVec4TrackFile>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct ClipVec2TrackFile {
     #[serde(default = "default_clip_interpolation")]
     interpolation: ClipInterpolationFile,
     keyframes: Vec<ClipVec2KeyframeFile>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct ClipScalarTrackFile {
     #[serde(default = "default_clip_interpolation")]
     interpolation: ClipInterpolationFile,
     keyframes: Vec<ClipScalarKeyframeFile>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct ClipVec4TrackFile {
     #[serde(default = "default_clip_interpolation")]
     interpolation: ClipInterpolationFile,
     keyframes: Vec<ClipVec4KeyframeFile>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum ClipInterpolationFile {
     Linear,
     Step,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct ClipVec2KeyframeFile {
     time: f32,
     value: [f32; 2],
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct ClipScalarKeyframeFile {
     time: f32,
     value: f32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct ClipVec4KeyframeFile {
     time: f32,
     value: [f32; 4],
@@ -471,6 +478,56 @@ const fn default_frame_duration_ms() -> u32 {
 
 fn default_clip_interpolation() -> ClipInterpolationFile {
     ClipInterpolationFile::Linear
+}
+
+fn clip_to_file(clip: &AnimationClip) -> ClipFile {
+    ClipFile {
+        version: clip.version,
+        name: Some(clip.name.as_ref().to_string()),
+        looped: clip.looped,
+        tracks: ClipTracksFile {
+            translation: clip.translation.as_ref().map(vec2_track_to_file),
+            rotation: clip.rotation.as_ref().map(scalar_track_to_file),
+            scale: clip.scale.as_ref().map(vec2_track_to_file),
+            tint: clip.tint.as_ref().map(vec4_track_to_file),
+        },
+    }
+}
+
+fn vec2_track_to_file(track: &ClipVec2Track) -> ClipVec2TrackFile {
+    ClipVec2TrackFile {
+        interpolation: convert_interpolation_to_file(track.interpolation),
+        keyframes: track
+            .keyframes
+            .iter()
+            .map(|kf| ClipVec2KeyframeFile { time: kf.time, value: [kf.value.x, kf.value.y] })
+            .collect(),
+    }
+}
+
+fn scalar_track_to_file(track: &ClipScalarTrack) -> ClipScalarTrackFile {
+    ClipScalarTrackFile {
+        interpolation: convert_interpolation_to_file(track.interpolation),
+        keyframes: track
+            .keyframes
+            .iter()
+            .map(|kf| ClipScalarKeyframeFile { time: kf.time, value: kf.value })
+            .collect(),
+    }
+}
+
+fn vec4_track_to_file(track: &ClipVec4Track) -> ClipVec4TrackFile {
+    ClipVec4TrackFile {
+        interpolation: convert_interpolation_to_file(track.interpolation),
+        keyframes: track
+            .keyframes
+            .iter()
+            .map(|kf| ClipVec4KeyframeFile {
+                time: kf.time,
+                value: [kf.value.x, kf.value.y, kf.value.z, kf.value.w],
+            })
+            .collect(),
+    }
 }
 
 impl AssetManager {
@@ -750,6 +807,16 @@ impl AssetManager {
             }
         }
         false
+    }
+
+    pub fn save_clip(&self, key: &str, clip: &AnimationClip) -> Result<()> {
+        let Some(path) = self.clip_sources.get(key) else {
+            anyhow::bail!("Clip '{key}' does not have a source path; cannot save");
+        };
+        let clip_file = clip_to_file(clip);
+        let json = serde_json::to_vec_pretty(&clip_file)?;
+        fs::write(path, json)?;
+        Ok(())
     }
     pub fn clip_keys(&self) -> Vec<String> {
         let mut keys: Vec<String> = self.clips.keys().cloned().collect();
