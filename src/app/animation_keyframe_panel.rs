@@ -154,12 +154,39 @@ pub struct AnimationKeyframePanelState<'a> {
     pub status_message: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+struct KeyDragState {
+    binding: AnimationTrackBinding,
+    track_id: AnimationTrackId,
+    indices: Vec<usize>,
+    anchor_start_time: f32,
+    current_delta: f32,
+}
+
+impl KeyDragState {
+    fn affects(&self, key_id: &KeyframeId) -> bool {
+        if key_id.track != self.track_id {
+            return false;
+        }
+        self.indices.iter().any(|index| *index as u32 == key_id.index)
+    }
+
+    fn preview_time(&self, base_time: f32) -> f32 {
+        (base_time + self.current_delta).max(0.0)
+    }
+
+    fn delta(&self) -> f32 {
+        self.current_delta
+    }
+}
+
 #[derive(Default)]
 pub struct AnimationKeyframePanel {
     open: bool,
     track_filter: String,
     selected_tracks: BTreeSet<AnimationTrackId>,
     selected_keys: BTreeSet<KeyframeId>,
+    selection_anchor: Option<KeyframeId>,
     scrub_time: f32,
     visible_duration: f32,
     pending_commands: Vec<AnimationPanelCommand>,
@@ -167,6 +194,7 @@ pub struct AnimationKeyframePanel {
     multi_scalar_offset: f32,
     multi_vec2_offset: [f32; 2],
     multi_vec4_offset: [f32; 4],
+    key_drag: Option<KeyDragState>,
 }
 
 impl AnimationKeyframePanel {
@@ -213,7 +241,7 @@ impl AnimationKeyframePanel {
             let response = ui.text_edit_singleline(&mut self.track_filter);
             if response.changed() && self.track_filter.is_empty() {
                 self.selected_tracks.clear();
-                self.selected_keys.clear();
+                self.clear_key_selection();
             }
             if ui.button("Clear").clicked() {
                 self.track_filter.clear();
@@ -304,7 +332,7 @@ impl AnimationKeyframePanel {
     fn reconcile_selection(&mut self, tracks: &[&AnimationTrackSummary]) {
         if tracks.is_empty() {
             self.selected_tracks.clear();
-            self.selected_keys.clear();
+            self.clear_key_selection();
             return;
         }
         let mut valid_tracks: BTreeSet<AnimationTrackId> = BTreeSet::new();
@@ -313,6 +341,11 @@ impl AnimationKeyframePanel {
         }
         self.selected_tracks.retain(|track_id| valid_tracks.contains(track_id));
         self.selected_keys.retain(|key| valid_tracks.contains(&key.track));
+        if let Some(drag) = &self.key_drag {
+            if !valid_tracks.contains(&drag.track_id) {
+                self.key_drag = None;
+            }
+        }
         if self.selected_tracks.is_empty() {
             if let Some(first) = tracks.first() {
                 self.selected_tracks.insert(first.id);
@@ -321,6 +354,7 @@ impl AnimationKeyframePanel {
                 }
             }
         }
+        self.sync_selection_anchor();
     }
 
     fn render_track_list(&mut self, ui: &mut Ui, tracks: &[&AnimationTrackSummary]) {
@@ -442,9 +476,19 @@ impl AnimationKeyframePanel {
         }
         for detail in &summary.key_details {
             if let Some(time) = detail.time {
-                self.draw_keyframe(ui, painter, rect, duration, summary, detail, time);
+                let display_time = self.key_display_time(detail, time);
+                self.draw_keyframe(ui, painter, rect, duration, summary, detail, display_time);
             }
         }
+    }
+
+    fn key_display_time(&self, detail: &KeyframeDetail, base_time: f32) -> f32 {
+        if let Some(drag) = &self.key_drag {
+            if drag.affects(&detail.id) {
+                return drag.preview_time(base_time);
+            }
+        }
+        base_time
     }
 
     fn draw_keyframe(
@@ -466,8 +510,22 @@ impl AnimationKeyframePanel {
             Color32::from_rgb(110, 170, 255)
         };
         painter.rect_filled(rect, 2.0, base_color);
-        let response = ui.interact(rect, detail.id.egui_id(), Sense::click());
-        if response.clicked() {
+        let response = ui.interact(rect, detail.id.egui_id(), Sense::click_and_drag());
+        if response.drag_started() && self.can_edit_track(summary.kind) {
+            if !self.selected_keys.contains(&detail.id) {
+                self.handle_key_click(detail.id, summary.id, Modifiers::default());
+            }
+            self.begin_key_drag(summary, detail);
+        }
+        if response.dragged() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                let snap = ui.input(|input| input.modifiers.shift);
+                self.update_key_drag(row_rect, duration, pos.x, snap);
+            }
+        }
+        if response.drag_stopped() {
+            self.finish_key_drag(true);
+        } else if response.clicked() {
             let modifiers = ui.input(|input| input.modifiers);
             self.handle_key_click(detail.id, summary.id, modifiers);
         }
@@ -503,12 +561,7 @@ impl AnimationKeyframePanel {
             if let Some((binding, _, mut indices)) = selection_info.clone() {
                 indices.sort();
                 self.pending_commands.push(AnimationPanelCommand::DeleteKeys { binding, indices });
-                self.selected_keys.clear();
-            }
-        }
-        if self.selected_keys.len() > 1 {
-            if let Some(selection) = selection_info.clone() {
-                self.render_multi_edit_controls(ui, selection);
+                self.clear_key_selection();
             }
         }
         if self.selected_keys.len() > 1 {
@@ -616,6 +669,44 @@ impl AnimationKeyframePanel {
         }
     }
 
+    fn clear_key_selection(&mut self) {
+        self.selected_keys.clear();
+        self.selection_anchor = None;
+        self.key_drag = None;
+    }
+
+    fn apply_shift_selection(&mut self, key_id: KeyframeId) {
+        if let Some(anchor) = self.selection_anchor {
+            if anchor.track == key_id.track {
+                let start = anchor.index.min(key_id.index);
+                let end = anchor.index.max(key_id.index);
+                self.selected_keys.retain(|existing| existing.track != key_id.track);
+                for index in start..=end {
+                    self.selected_keys.insert(KeyframeId::new(key_id.track, index as usize));
+                }
+                self.selection_anchor = Some(key_id);
+                return;
+            }
+        }
+        self.clear_key_selection();
+        self.selected_keys.insert(key_id);
+        self.selection_anchor = Some(key_id);
+    }
+
+    fn sync_selection_anchor(&mut self) {
+        if let Some(anchor) = self.selection_anchor {
+            if !self.selected_keys.contains(&anchor) {
+                self.selection_anchor = self.selected_keys.iter().next().copied();
+            }
+        } else if let Some(first) = self.selected_keys.iter().next().copied() {
+            self.selection_anchor = Some(first);
+        }
+        if self.selected_keys.is_empty() {
+            self.selection_anchor = None;
+            self.key_drag = None;
+        }
+    }
+
     fn handle_track_click(&mut self, summary: &AnimationTrackSummary, modifiers: Modifiers) {
         if modifiers.command || modifiers.ctrl {
             if self.selected_tracks.contains(&summary.id) {
@@ -635,21 +726,31 @@ impl AnimationKeyframePanel {
             });
         }
         self.selected_keys.retain(|key| self.selected_tracks.contains(&key.track));
+        self.sync_selection_anchor();
     }
 
     fn handle_key_click(&mut self, key_id: KeyframeId, track_id: AnimationTrackId, modifiers: Modifiers) {
-        if modifiers.command || modifiers.ctrl {
+        if modifiers.shift {
+            self.apply_shift_selection(key_id);
+        } else if modifiers.command || modifiers.ctrl {
             if !self.selected_keys.insert(key_id) {
                 self.selected_keys.remove(&key_id);
+                if self.selection_anchor == Some(key_id) {
+                    self.selection_anchor = self.selected_keys.iter().next().copied();
+                }
+            } else {
+                self.selection_anchor = Some(key_id);
             }
         } else {
-            self.selected_keys.clear();
+            self.clear_key_selection();
             self.selected_keys.insert(key_id);
+            self.selection_anchor = Some(key_id);
         }
         if !self.selected_tracks.contains(&track_id) {
             self.selected_tracks.clear();
             self.selected_tracks.insert(track_id);
         }
+        self.sync_selection_anchor();
     }
 
     fn handle_insert_request(&mut self, summary: &AnimationTrackSummary, time: f32) {
@@ -662,8 +763,92 @@ impl AnimationKeyframePanel {
         });
     }
 
+    fn begin_key_drag(&mut self, summary: &AnimationTrackSummary, detail: &KeyframeDetail) {
+        if self.key_drag.is_some() || !self.can_edit_track(summary.kind) {
+            return;
+        }
+        let Some(time) = detail.time else {
+            return;
+        };
+        let mut indices: Vec<usize> = self
+            .selected_keys
+            .iter()
+            .filter(|key| key.track == summary.id)
+            .map(|key| key.index as usize)
+            .collect();
+        if indices.is_empty() {
+            indices.push(detail.index);
+        }
+        indices.sort_unstable();
+        indices.dedup();
+        self.key_drag = Some(KeyDragState {
+            binding: summary.binding,
+            track_id: summary.id,
+            indices,
+            anchor_start_time: time,
+            current_delta: 0.0,
+        });
+    }
+
+    fn update_key_drag(&mut self, row_rect: Rect, duration: f32, pointer_x: f32, snap: bool) {
+        if self.key_drag.is_none() {
+            return;
+        }
+        let raw_time = self.screen_to_time(row_rect, duration, pointer_x);
+        let new_time = self.apply_snap_if_needed(duration, raw_time, snap);
+        if let Some(drag) = self.key_drag.as_mut() {
+            drag.current_delta = new_time - drag.anchor_start_time;
+        }
+    }
+
+    fn finish_key_drag(&mut self, commit: bool) {
+        let Some(drag) = self.key_drag.take() else {
+            return;
+        };
+        if !commit {
+            return;
+        }
+        let delta = drag.delta();
+        if delta.abs() < 1e-4 {
+            return;
+        }
+        if drag.indices.len() == 1 {
+            let index = drag.indices[0];
+            self.pending_commands.push(AnimationPanelCommand::UpdateKey {
+                binding: drag.binding,
+                index,
+                new_time: Some((drag.anchor_start_time + delta).max(0.0)),
+                new_value: None,
+            });
+        } else {
+            self.pending_commands.push(AnimationPanelCommand::AdjustKeys {
+                binding: drag.binding,
+                indices: drag.indices,
+                time_delta: Some(delta),
+                value_delta: None,
+            });
+        }
+    }
+
     fn can_edit_track(&self, kind: AnimationTrackKind) -> bool {
         !matches!(kind, AnimationTrackKind::SpriteTimeline)
+    }
+
+    fn snap_time(&self, duration: f32, value: f32) -> f32 {
+        if duration <= f32::EPSILON {
+            return value.max(0.0);
+        }
+        let step = (self.tick_step(duration) / 4.0).max(0.0001);
+        (value / step).round() * step
+    }
+
+    fn apply_snap_if_needed(&self, duration: f32, value: f32, snap: bool) -> f32 {
+        let mut time = value.max(0.0);
+        if snap {
+            let snapped = self.snap_time(duration, time);
+            time = snapped.clamp(0.0, duration);
+        }
+        time
     }
 
     fn time_to_screen(&self, rect: Rect, duration: f32, time: f32) -> f32 {
@@ -857,6 +1042,66 @@ impl AnimationKeyframePanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shift_click_selects_range_within_track() {
+        let mut panel = AnimationKeyframePanel::default();
+        let track_id = AnimationTrackId(5);
+        panel.selected_tracks.insert(track_id);
+        panel.handle_key_click(KeyframeId::new(track_id, 0), track_id, Modifiers::default());
+        let mut shift_modifiers = Modifiers::default();
+        shift_modifiers.shift = true;
+        panel.handle_key_click(KeyframeId::new(track_id, 3), track_id, shift_modifiers);
+        assert_eq!(panel.selected_keys.len(), 4);
+        assert!(panel.selected_keys.contains(&KeyframeId::new(track_id, 2)));
+    }
+
+    #[test]
+    fn dragging_key_generates_update_command() {
+        let mut panel = AnimationKeyframePanel::default();
+        let track_id = AnimationTrackId(7);
+        let binding = AnimationTrackBinding::TransformChannel {
+            entity: Entity::from_raw(1),
+            channel: AnimationTrackKind::Translation,
+        };
+        let detail = KeyframeDetail {
+            id: KeyframeId::new(track_id, 0),
+            index: 0,
+            time: Some(0.25),
+            value_preview: None,
+            value: KeyframeValue::Vec2([0.0, 0.0]),
+        };
+        let summary = AnimationTrackSummary {
+            id: track_id,
+            label: "Translation".to_string(),
+            kind: AnimationTrackKind::Translation,
+            binding,
+            duration: 1.0,
+            key_count: 1,
+            interpolation: Some(ClipInterpolation::Linear),
+            playhead: Some(0.0),
+            dirty: false,
+            key_details: vec![detail.clone()],
+        };
+        panel.selected_tracks.insert(track_id);
+        panel.selected_keys.insert(detail.id);
+        panel.begin_key_drag(&summary, &detail);
+        let row_rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(100.0, 20.0));
+        panel.update_key_drag(row_rect, 1.0, 50.0, false);
+        let preview_time = panel.key_display_time(&detail, detail.time.unwrap());
+        assert!((preview_time - 0.5).abs() < 1e-4);
+        panel.finish_key_drag(true);
+        let commands = panel.drain_commands();
+        assert_eq!(commands.len(), 1);
+        match &commands[0] {
+            AnimationPanelCommand::UpdateKey { binding: cmd_binding, index, new_time, .. } => {
+                assert_eq!(*cmd_binding, binding);
+                assert_eq!(*index, 0);
+                assert!(matches!(new_time, Some(t) if (*t - 0.5).abs() < 1e-4));
+            }
+            other => panic!("Unexpected command generated: {other:?}"),
+        }
+    }
 
     #[test]
     fn track_count_matches_summary_vector() {
