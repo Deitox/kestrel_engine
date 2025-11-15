@@ -1,5 +1,8 @@
 use crate::assets::{parse_animation_clip_bytes, AnimationClip};
+use crate::assets::skeletal;
+use serde::Deserialize;
 use serde_json::Value;
+use std::collections::HashSet;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -43,13 +46,7 @@ impl AnimationValidator {
         let ext = path.extension().and_then(|ext| ext.to_str()).map(|ext| ext.to_ascii_lowercase());
         match ext.as_deref() {
             Some("clip") => return Self::validate_clip_from_path(path),
-            Some("gltf") | Some("glb") => {
-                return vec![Self::event(
-                    path,
-                    AnimationValidationSeverity::Info,
-                    "Skeletal asset validation pending implementation.",
-                )];
-            }
+            Some("gltf") | Some("glb") => return Self::validate_skeletal_asset(path),
             _ => {}
         }
         if ext.as_deref() == Some("json") {
@@ -65,16 +62,14 @@ impl AnimationValidator {
             };
             return match Self::classify_json_asset(path, &bytes) {
                 JsonAssetKind::Clip => Self::validate_clip_bytes(path, &bytes),
-                JsonAssetKind::Graph => vec![Self::event(
-                    path,
-                    AnimationValidationSeverity::Info,
-                    "Animation graph validation pending implementation.",
-                )],
-                JsonAssetKind::Unknown => vec![Self::event(
-                    path,
-                    AnimationValidationSeverity::Info,
-                    "No validators available for this JSON file.",
-                )],
+                JsonAssetKind::Graph => Self::validate_graph_bytes(path, &bytes),
+                JsonAssetKind::Unknown => {
+                    vec![Self::event(
+                        path,
+                        AnimationValidationSeverity::Info,
+                        "No validators available for this JSON file.",
+                    )]
+                }
             };
         }
         vec![Self::event(
@@ -107,6 +102,196 @@ impl AnimationValidator {
                 path,
                 AnimationValidationSeverity::Error,
                 format!("{err}"),
+            )],
+        }
+    }
+
+    fn validate_graph_bytes(path: &Path, bytes: &[u8]) -> Vec<AnimationValidationEvent> {
+        let graph: AnimationGraphFile = match serde_json::from_slice(bytes) {
+            Ok(graph) => graph,
+            Err(err) => {
+                return vec![Self::event(
+                    path,
+                    AnimationValidationSeverity::Error,
+                    format!("Failed to parse animation graph: {err}"),
+                )];
+            }
+        };
+        let version = graph.version.unwrap_or(0);
+        if version == 0 {
+            return vec![Self::event(
+                path,
+                AnimationValidationSeverity::Error,
+                "Animation graph version must be >= 1.",
+            )];
+        }
+        if graph.states.is_empty() {
+            return vec![Self::event(
+                path,
+                AnimationValidationSeverity::Error,
+                "Animation graph must define at least one state.",
+            )];
+        }
+        let mut events = Vec::new();
+        let mut state_names = HashSet::new();
+        let mut duplicate_states = Vec::new();
+        for state in &graph.states {
+            if state.name.trim().is_empty() {
+                events.push(Self::event(
+                    path,
+                    AnimationValidationSeverity::Error,
+                    "Animation graph state names cannot be empty.",
+                ));
+            }
+            if !state_names.insert(state.name.to_string()) {
+                duplicate_states.push(state.name.to_string());
+            }
+        }
+        if !duplicate_states.is_empty() {
+            events.push(Self::event(
+                path,
+                AnimationValidationSeverity::Error,
+                format!(
+                    "Animation graph has duplicate states: {}",
+                    duplicate_states.join(", ")
+                ),
+            ));
+        }
+        let entry_state = graph.entry_state.clone().unwrap_or_else(|| graph.states[0].name.clone());
+        if !state_names.contains(&entry_state) {
+            events.push(Self::event(
+                path,
+                AnimationValidationSeverity::Error,
+                format!("Entry state '{entry_state}' is not defined in the graph."),
+            ));
+        }
+        let mut parameter_names = HashSet::new();
+        if let Some(parameters) = graph.parameters.as_ref() {
+            for param in parameters {
+                if !parameter_names.insert(param.name.clone()) {
+                    events.push(Self::event(
+                        path,
+                        AnimationValidationSeverity::Error,
+                        format!("Duplicate parameter '{}' detected.", param.name),
+                    ));
+                }
+            }
+        }
+        for transition in &graph.transitions {
+            if !state_names.contains(&transition.from) {
+                events.push(Self::event(
+                    path,
+                    AnimationValidationSeverity::Error,
+                    format!("Transition references unknown 'from' state '{}'.", transition.from),
+                ));
+            }
+            if !state_names.contains(&transition.to) {
+                events.push(Self::event(
+                    path,
+                    AnimationValidationSeverity::Error,
+                    format!("Transition references unknown 'to' state '{}'.", transition.to),
+                ));
+            }
+            if transition.from == transition.to {
+                events.push(Self::event(
+                    path,
+                    AnimationValidationSeverity::Warning,
+                    format!(
+                        "Transition from '{}' to itself detected; confirm this is intentional.",
+                        transition.from
+                    ),
+                ));
+            }
+        }
+        for state in &graph.states {
+            if state.clip.as_deref().map(|clip| clip.trim().is_empty()).unwrap_or(true) {
+                events.push(Self::event(
+                    path,
+                    AnimationValidationSeverity::Warning,
+                    format!("State '{}' does not reference a clip.", state.name),
+                ));
+            }
+        }
+        if graph.transitions.is_empty() && graph.states.len() > 1 {
+            events.push(Self::event(
+                path,
+                AnimationValidationSeverity::Warning,
+                "Graph has multiple states but no transitions; states other than the entry will never be reached.",
+            ));
+        }
+        if !has_error(&events) {
+            let state_count = graph.states.len();
+            let transition_count = graph.transitions.len();
+            let graph_label =
+                graph.name.as_deref().unwrap_or_else(|| path.file_stem().and_then(|s| s.to_str()).unwrap_or("graph"));
+            events.push(Self::event(
+                path,
+                AnimationValidationSeverity::Info,
+                format!(
+                    "Graph '{}' OK: {} states, {} transitions, entry '{}'.",
+                    graph_label, state_count, transition_count, entry_state
+                ),
+            ));
+        }
+        events
+    }
+
+    fn validate_skeletal_asset(path: &Path) -> Vec<AnimationValidationEvent> {
+        match skeletal::load_skeleton_from_gltf(path) {
+            Ok(import) => {
+                let mut events = Vec::new();
+                let joint_count = import.skeleton.joints.len();
+                if joint_count == 0 {
+                    events.push(Self::event(
+                        path,
+                        AnimationValidationSeverity::Error,
+                        "Skeleton contains zero joints.",
+                    ));
+                }
+                if joint_count > 256 {
+                    events.push(Self::event(
+                        path,
+                        AnimationValidationSeverity::Warning,
+                        format!(
+                            "Skeleton has {} joints which exceeds the 256-joint palette limit; expect GPU splits.",
+                            joint_count
+                        ),
+                    ));
+                }
+                if import.clips.is_empty() {
+                    events.push(Self::event(
+                        path,
+                        AnimationValidationSeverity::Warning,
+                        "Skeleton import did not produce any clips.",
+                    ));
+                } else {
+                    for clip in &import.clips {
+                        if clip.duration <= 0.0 {
+                            events.push(Self::event(
+                                path,
+                                AnimationValidationSeverity::Warning,
+                                format!("Clip '{}' has zero duration.", clip.name),
+                            ));
+                        }
+                    }
+                }
+                if !has_error(&events) {
+                    let clip_count = import.clips.len();
+                    events.push(Self::event(
+                        path,
+                        AnimationValidationSeverity::Info,
+                        format!(
+                            "Skeleton '{}' OK: {} joints, {} clip(s).",
+                            import.skeleton.name, joint_count, clip_count
+                        ),
+                    ));
+                }
+                events
+            }
+            Err(err) => vec![Self::event(
+                path,
+                AnimationValidationSeverity::Error,
+                format!("Failed to import skeleton: {err}"),
             )],
         }
     }
@@ -172,10 +357,12 @@ impl AnimationValidator {
             return JsonAssetKind::Clip;
         }
         if looks_like_clip_json(bytes) {
-            JsonAssetKind::Clip
-        } else {
-            JsonAssetKind::Unknown
+            return JsonAssetKind::Clip;
         }
+        if looks_like_graph_json(bytes) {
+            return JsonAssetKind::Graph;
+        }
+        JsonAssetKind::Unknown
     }
 
     fn event(path: &Path, severity: AnimationValidationSeverity, message: impl Into<String>) -> AnimationValidationEvent {
@@ -183,11 +370,44 @@ impl AnimationValidator {
     }
 }
 
+fn has_error(events: &[AnimationValidationEvent]) -> bool {
+    events.iter().any(|event| matches!(event.severity, AnimationValidationSeverity::Error))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum JsonAssetKind {
     Clip,
     Graph,
     Unknown,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnimationGraphFile {
+    version: Option<u32>,
+    name: Option<String>,
+    entry_state: Option<String>,
+    states: Vec<AnimationGraphState>,
+    #[serde(default)]
+    transitions: Vec<AnimationGraphTransition>,
+    #[serde(default)]
+    parameters: Option<Vec<AnimationGraphParameter>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnimationGraphState {
+    name: String,
+    clip: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnimationGraphTransition {
+    from: String,
+    to: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnimationGraphParameter {
+    name: String,
 }
 
 fn path_contains_segment(path: &Path, needle: &str) -> bool {
@@ -202,17 +422,28 @@ fn looks_like_clip_json(bytes: &[u8]) -> bool {
     false
 }
 
+fn looks_like_graph_json(bytes: &[u8]) -> bool {
+    if let Ok(Value::Object(map)) = serde_json::from_slice::<Value>(bytes) {
+        let states_ok = map.get("states").map(|states| states.is_array()).unwrap_or(false);
+        let transitions_ok = map.get("transitions").map(|transitions| transitions.is_array()).unwrap_or(false);
+        return states_ok && transitions_ok;
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
- 
+    use std::io::Write;
+    use tempfile::Builder;
+
     #[test]
     fn severity_display_formats() {
         assert_eq!(AnimationValidationSeverity::Info.to_string(), "info");
         assert_eq!(AnimationValidationSeverity::Warning.to_string(), "warning");
         assert_eq!(AnimationValidationSeverity::Error.to_string(), "error");
     }
- 
+
     #[test]
     fn validator_reports_missing_file() {
         let events = AnimationValidator::validate_path(Path::new("foo/bar.clip"));
@@ -220,12 +451,64 @@ mod tests {
         assert_eq!(events[0].severity, AnimationValidationSeverity::Warning);
         assert!(events[0].message.contains("not found"));
     }
- 
+
     #[test]
     fn validator_succeeds_on_fixture_clip() {
         let path = Path::new("fixtures/animation_clips/slime_bob.json");
         let events = AnimationValidator::validate_path(path);
         assert!(!events.is_empty());
+        assert!(events.iter().any(|event| event.severity == AnimationValidationSeverity::Info));
+    }
+
+    #[test]
+    fn validator_accepts_graph_file() {
+        let mut file = Builder::new().suffix(".json").tempfile().unwrap();
+        writeln!(
+            file,
+            r#"{{
+                "version": 1,
+                "name": "slime_graph",
+                "entry_state": "Idle",
+                "states": [
+                    {{"name": "Idle", "clip": "idle_clip"}},
+                    {{"name": "Attack", "clip": "attack_clip"}}
+                ],
+                "transitions": [
+                    {{"from": "Idle", "to": "Attack"}},
+                    {{"from": "Attack", "to": "Idle"}}
+                ]
+            }}"#
+        )
+        .unwrap();
+        let events = AnimationValidator::validate_path(file.path());
+        assert!(events.iter().any(|event| event.severity == AnimationValidationSeverity::Info));
+    }
+
+    #[test]
+    fn validator_reports_graph_error_for_unknown_state() {
+        let mut file = Builder::new().suffix(".json").tempfile().unwrap();
+        writeln!(
+            file,
+            r#"{{
+                "version": 1,
+                "states": [{{"name": "Idle", "clip": "idle_clip"}}],
+                "transitions": [{{"from": "Idle", "to": "Missing"}}]
+            }}"#
+        )
+        .unwrap();
+        let events = AnimationValidator::validate_path(file.path());
+        assert!(events.iter().any(|event| event.severity == AnimationValidationSeverity::Error));
+    }
+
+    #[test]
+    fn validator_accepts_skeletal_asset() {
+        let path = Path::new("fixtures/gltf/skeletons/slime_rig.gltf");
+        assert!(
+            path.exists(),
+            "Missing skeletal fixture at {}",
+            path.display()
+        );
+        let events = AnimationValidator::validate_path(path);
         assert!(events.iter().any(|event| event.severity == AnimationValidationSeverity::Info));
     }
 }

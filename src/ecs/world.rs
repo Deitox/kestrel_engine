@@ -857,7 +857,7 @@ impl EcsWorld {
             if let Some(mut instance) = self.world.get_mut::<SkeletonInstance>(entity) {
                 instance.skeleton_key = Arc::clone(&skeleton_key_arc);
                 instance.skeleton = Arc::clone(&skeleton);
-                instance.set_active_clip(None);
+                instance.set_active_clip(None, None);
                 instance.reset_to_rest_pose();
                 instance.clear_dirty();
             } else {
@@ -898,7 +898,8 @@ impl EcsWorld {
             if clip_skeleton != skeleton_name && clip_skeleton != key_name {
                 return false;
             }
-            instance.set_active_clip(Some(Arc::clone(&clip)));
+            let clip_key_arc: Arc<str> = Arc::from(clip_key.to_string());
+            instance.set_active_clip(Some(Arc::clone(&clip_key_arc)), Some(Arc::clone(&clip)));
             instance.set_time(0.0);
         }
         self.refresh_skeleton_pose(entity)
@@ -910,7 +911,7 @@ impl EcsWorld {
                 if instance.active_clip.is_none() {
                     return false;
                 }
-                instance.set_active_clip(None);
+                instance.set_active_clip(None, None);
                 instance.set_time(0.0);
             }
             None => return false,

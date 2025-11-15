@@ -583,7 +583,7 @@ fn seed_skeletal_clips(world: &mut EcsWorld, rigs: usize, bone_count: usize, ran
     let clip = bench_skeletal_clip(Arc::clone(&skeleton_key), bone_count);
     for index in 0..rigs {
         let mut instance = SkeletonInstance::new(Arc::clone(&skeleton_key), Arc::clone(&skeleton));
-        instance.set_active_clip(Some(Arc::clone(&clip)));
+        instance.set_active_clip(None, Some(Arc::clone(&clip)));
         if randomize_phase {
             let duration = instance.clip_duration();
             if duration > 0.0 {

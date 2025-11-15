@@ -868,6 +868,9 @@ impl AssetManager {
         self.skeleton_clip_index.insert(key.to_string(), clip_keys);
         Ok(())
     }
+    pub fn load_skeleton(&mut self, key: &str, gltf_path: &str) -> Result<()> {
+        self.load_skeleton_internal(key, gltf_path)
+    }
     pub fn retain_skeleton(&mut self, key: &str, gltf_path: Option<&str>) -> Result<()> {
         if self.skeletons.contains_key(key) {
             *self.skeleton_refs.entry(key.to_string()).or_insert(0) += 1;
@@ -918,6 +921,20 @@ impl AssetManager {
     }
     pub fn skeleton_source(&self, key: &str) -> Option<&str> {
         self.skeleton_sources.get(key).map(|s| s.as_str())
+    }
+    pub fn skeleton_sources(&self) -> Vec<(String, String)> {
+        self.skeleton_sources.iter().map(|(key, path)| (key.clone(), path.clone())).collect()
+    }
+    pub fn skeleton_key_for_source_path<P: AsRef<Path>>(&self, path: P) -> Option<String> {
+        let target = normalize_asset_path(path.as_ref());
+        self.skeleton_sources.iter().find_map(|(key, stored)| {
+            let stored_path = normalize_asset_path(Path::new(stored));
+            if stored_path == target {
+                Some(key.clone())
+            } else {
+                None
+            }
+        })
     }
     pub fn skeletal_clip(&self, key: &str) -> Option<Arc<skeletal::SkeletalClip>> {
         self.skeletal_clips.get(key).cloned()

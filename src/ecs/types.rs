@@ -2709,7 +2709,7 @@ mod tests {
             channels: Arc::new([]),
             looped: true,
         });
-        instance.set_active_clip(Some(clip));
+        instance.set_active_clip(None, Some(clip));
         let time = instance.set_time(-0.4);
         assert!((time - 0.6).abs() < 1e-6);
     }
@@ -2821,6 +2821,7 @@ impl Default for Transform3D {
 pub struct SkeletonInstance {
     pub skeleton_key: Arc<str>,
     pub skeleton: Arc<SkeletonAsset>,
+    pub active_clip_key: Option<Arc<str>>,
     pub active_clip: Option<Arc<SkeletalClip>>,
     pub time: f32,
     pub playing: bool,
@@ -2861,6 +2862,7 @@ impl SkeletonInstance {
         Self {
             skeleton_key,
             skeleton,
+            active_clip_key: None,
             active_clip: None,
             time: 0.0,
             playing: true,
@@ -2884,7 +2886,8 @@ impl SkeletonInstance {
         self.skeleton.joints.len()
     }
 
-    pub fn set_active_clip(&mut self, clip: Option<Arc<SkeletalClip>>) {
+    pub fn set_active_clip(&mut self, clip_key: Option<Arc<str>>, clip: Option<Arc<SkeletalClip>>) {
+        self.active_clip_key = clip_key;
         if let Some(ref clip) = clip {
             self.looped = clip.looped;
         }

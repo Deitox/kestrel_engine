@@ -28,7 +28,7 @@ use crate::camera3d::Camera3D;
 use crate::config::{AppConfig, AppConfigOverrides, SpriteGuardrailMode};
 use crate::ecs::{
     AnimationTime, ClipInstance, EcsWorld, EntityInfo, InstanceData, MeshLightingInfo, ParticleCaps,
-    SpriteAnimation, SpriteAnimationInfo, SpriteInstance,
+    SkeletonInstance, SpriteAnimation, SpriteAnimationInfo, SpriteInstance,
 };
 use crate::environment::EnvironmentRegistry;
 use crate::events::GameEvent;
@@ -77,6 +77,15 @@ const SCRIPT_CONSOLE_CAPACITY: usize = 200;
 const SCRIPT_HISTORY_CAPACITY: usize = 64;
 const BINARY_PREFABS_ENABLED: bool = cfg!(feature = "binary_scene");
 const MAX_FIXED_TIMESTEP_BACKLOG: f32 = 0.5;
+
+struct SkeletonPlaybackSnapshot {
+    entity: Entity,
+    clip_key: Option<String>,
+    time: f32,
+    playing: bool,
+    speed: f32,
+    group: Option<String>,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ViewportCameraMode {
@@ -537,11 +546,11 @@ impl App {
     }
 
     fn sync_animation_asset_watch_roots(&mut self) {
-        let sources = self.assets.clip_sources();
         let Some(watcher) = self.animation_asset_watcher.as_mut() else {
             return;
         };
-        for (_, source) in sources {
+        let clip_sources = self.assets.clip_sources();
+        for (_, source) in clip_sources {
             let clip_path = PathBuf::from(&source);
             let watch_target = if clip_path.is_dir() {
                 clip_path
@@ -556,6 +565,26 @@ impl App {
             if let Err(err) = watcher.watch_root(&watch_target, AnimationAssetKind::Clip) {
                 eprintln!(
                     "[animation] failed to watch clip directory {}: {err:?}",
+                    watch_target.display()
+                );
+            }
+        }
+        let skeleton_sources = self.assets.skeleton_sources();
+        for (_, source) in skeleton_sources {
+            let skel_path = PathBuf::from(&source);
+            let watch_target = if skel_path.is_dir() {
+                skel_path
+            } else if let Some(parent) = skel_path.parent() {
+                parent.to_path_buf()
+            } else {
+                skel_path
+            };
+            if !watch_target.exists() {
+                continue;
+            }
+            if let Err(err) = watcher.watch_root(&watch_target, AnimationAssetKind::Skeletal) {
+                eprintln!(
+                    "[animation] failed to watch skeleton directory {}: {err:?}",
                     watch_target.display()
                 );
             }
@@ -634,16 +663,22 @@ impl App {
                 }
             }
             AnimationAssetKind::Graph => {
-                eprintln!(
-                    "[animation] graph change detected for {} (reload not yet implemented)",
+                let message = format!(
+                    "Graph change detected for {}; reload will occur once graph runtime support lands.",
                     change.path.display()
                 );
+                eprintln!("[animation] {message}");
+                self.animation_clip_status = Some(message);
             }
             AnimationAssetKind::Skeletal => {
-                eprintln!(
-                    "[animation] skeletal change detected for {} (reload not yet implemented)",
-                    change.path.display()
-                );
+                if let Err(err) = self.reload_skeleton_from_disk(&change.path) {
+                    eprintln!(
+                        "[animation] failed to reload skeleton for {}: {err:?}",
+                        change.path.display()
+                    );
+                    self.animation_clip_status =
+                        Some(format!("Skeleton reload failed for {}: {err}", change.path.display()));
+                }
             }
         }
     }
@@ -662,6 +697,43 @@ impl App {
             self.animation_clip_status =
                 Some(format!("Reloaded clip '{}' from {}", key, path.display()));
         }
+        Ok(())
+    }
+
+    fn reload_skeleton_from_disk(&mut self, path: &Path) -> Result<()> {
+        let Some(key) = self.assets.skeleton_key_for_source_path(path) else {
+            return Err(anyhow!("no loaded skeleton recorded for {}", path.display()));
+        };
+        let path_string = path.to_string_lossy().to_string();
+        self.assets.load_skeleton(&key, &path_string)?;
+        let mut snapshots: Vec<SkeletonPlaybackSnapshot> = Vec::new();
+        {
+            let mut query = self.ecs.world.query::<(Entity, &SkeletonInstance)>();
+            for (entity, instance) in query.iter(&self.ecs.world) {
+                if instance.skeleton_key.as_ref() == key.as_str() {
+                    snapshots.push(SkeletonPlaybackSnapshot {
+                        entity,
+                        clip_key: instance.active_clip_key.as_ref().map(|k| k.as_ref().to_string()),
+                        time: instance.time,
+                        playing: instance.playing,
+                        speed: instance.speed,
+                        group: instance.group.clone(),
+                    });
+                }
+            }
+        }
+        for snapshot in snapshots {
+            self.ecs.set_skeleton(snapshot.entity, &self.assets, &key);
+            if let Some(ref clip_key) = snapshot.clip_key {
+                let _ = self.ecs.set_skeleton_clip(snapshot.entity, &self.assets, clip_key);
+                let _ = self.ecs.set_skeleton_clip_time(snapshot.entity, snapshot.time);
+                let _ = self.ecs.set_skeleton_clip_playing(snapshot.entity, snapshot.playing);
+                let _ = self.ecs.set_skeleton_clip_speed(snapshot.entity, snapshot.speed);
+                let _ = self.ecs.set_skeleton_clip_group(snapshot.entity, snapshot.group.as_deref());
+            }
+        }
+        self.animation_clip_status =
+            Some(format!("Reloaded skeleton '{}' from {}", key, path.display()));
         Ok(())
     }
 

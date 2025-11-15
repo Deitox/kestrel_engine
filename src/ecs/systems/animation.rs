@@ -1355,7 +1355,7 @@ mod tests {
         world.insert_resource(SpriteAnimPerfTelemetry::new(240));
         let skeleton_key = Arc::clone(&fixture.skeleton.name);
         let mut instance = SkeletonInstance::new(skeleton_key, Arc::clone(&fixture.skeleton));
-        instance.set_active_clip(Some(Arc::clone(&fixture.clip)));
+        instance.set_active_clip(None, Some(Arc::clone(&fixture.clip)));
         instance.set_playing(false);
         instance.clear_dirty();
 
