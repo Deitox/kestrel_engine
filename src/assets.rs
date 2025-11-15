@@ -1,5 +1,5 @@
 use crate::ecs::{SpriteAnimationFrame, SpriteAnimationLoopMode, SpriteFrameHotData};
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use glam::{Vec2, Vec4};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -531,6 +531,60 @@ fn vec4_track_to_file(track: &ClipVec4Track) -> ClipVec4TrackFile {
     }
 }
 
+pub fn parse_animation_clip_bytes(bytes: &[u8], key_hint: &str, source_label: &str) -> Result<AnimationClip> {
+    let clip_file: ClipFile =
+        serde_json::from_slice(bytes).with_context(|| format!("parse animation clip JSON ({source_label})"))?;
+    if clip_file.version == 0 {
+        return Err(anyhow!(
+            "Clip '{}' has unsupported version 0 (expected >= 1) in {source_label}",
+            clip_file.name.as_deref().unwrap_or(key_hint)
+        ));
+    }
+    let ClipTracksFile { translation, rotation, scale, tint } = clip_file.tracks;
+    let mut duration = 0.0_f32;
+    let translation = if let Some(track) = translation {
+        let (parsed, track_duration) = build_vec2_track(track)?;
+        duration = duration.max(track_duration);
+        Some(parsed)
+    } else {
+        None
+    };
+    let rotation = if let Some(track) = rotation {
+        let (parsed, track_duration) = build_scalar_track(track)?;
+        duration = duration.max(track_duration);
+        Some(parsed)
+    } else {
+        None
+    };
+    let scale = if let Some(track) = scale {
+        let (parsed, track_duration) = build_vec2_track(track)?;
+        duration = duration.max(track_duration);
+        Some(parsed)
+    } else {
+        None
+    };
+    let tint = if let Some(track) = tint {
+        let (parsed, track_duration) = build_vec4_track(track)?;
+        duration = duration.max(track_duration);
+        Some(parsed)
+    } else {
+        None
+    };
+    let duration = if duration <= 0.0 { 0.0 } else { duration };
+    let name = clip_file.name.unwrap_or_else(|| key_hint.to_string());
+    Ok(AnimationClip {
+        name: Arc::from(name),
+        duration,
+        duration_inv: if duration > 0.0 { 1.0 / duration } else { 0.0 },
+        translation,
+        rotation,
+        scale,
+        tint,
+        looped: clip_file.looped,
+        version: clip_file.version,
+    })
+}
+
 impl AssetManager {
     pub fn new() -> Self {
         Self {
@@ -693,59 +747,7 @@ impl AssetManager {
 
     fn load_clip_internal(&mut self, key: &str, json_path: &str) -> Result<()> {
         let bytes = fs::read(json_path)?;
-        let clip_file: ClipFile = serde_json::from_slice(&bytes)?;
-        if clip_file.version == 0 {
-            return Err(anyhow!("Clip '{key}' has unsupported version 0 (expected >= 1) in {}", json_path));
-        }
-        let interpolation_translation = clip_file.tracks.translation;
-        let interpolation_rotation = clip_file.tracks.rotation;
-        let interpolation_scale = clip_file.tracks.scale;
-        let interpolation_tint = clip_file.tracks.tint;
-
-        let mut duration = 0.0_f32;
-
-        let translation = if let Some(track) = interpolation_translation {
-            let (parsed, track_duration) = build_vec2_track(track)?;
-            duration = duration.max(track_duration);
-            Some(parsed)
-        } else {
-            None
-        };
-        let rotation = if let Some(track) = interpolation_rotation {
-            let (parsed, track_duration) = build_scalar_track(track)?;
-            duration = duration.max(track_duration);
-            Some(parsed)
-        } else {
-            None
-        };
-        let scale = if let Some(track) = interpolation_scale {
-            let (parsed, track_duration) = build_vec2_track(track)?;
-            duration = duration.max(track_duration);
-            Some(parsed)
-        } else {
-            None
-        };
-        let tint = if let Some(track) = interpolation_tint {
-            let (parsed, track_duration) = build_vec4_track(track)?;
-            duration = duration.max(track_duration);
-            Some(parsed)
-        } else {
-            None
-        };
-
-        let duration = if duration <= 0.0 { 0.0 } else { duration };
-        let name = clip_file.name.unwrap_or_else(|| key.to_string());
-        let clip = AnimationClip {
-            name: Arc::from(name),
-            duration,
-            duration_inv: if duration > 0.0 { 1.0 / duration } else { 0.0 },
-            translation,
-            rotation,
-            scale,
-            tint,
-            looped: clip_file.looped,
-            version: clip_file.version,
-        };
+        let clip = parse_animation_clip_bytes(&bytes, key, json_path)?;
         self.clips.insert(key.to_string(), clip);
         self.clip_sources.insert(key.to_string(), json_path.to_string());
         Ok(())
