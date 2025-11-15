@@ -2,6 +2,7 @@
 //! Invoke with `cargo test --release animation_targets_measure -- --ignored --nocapture`.
 
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
+use kestrel_engine::analytics::AnimationBudgetSample;
 use kestrel_engine::assets::skeletal::{
     JointCurve, JointQuatTrack, JointVec3Track, SkeletalClip, SkeletonAsset, SkeletonJoint,
 };
@@ -51,6 +52,7 @@ enum CaseKind {
 #[derive(Serialize)]
 struct BenchReport {
     metadata: BenchMetadata,
+    animation_budget: AnimationBudgetSample,
     cases: Vec<CaseReport>,
 }
 
@@ -74,6 +76,10 @@ struct CaseReport {
     label: &'static str,
     units: &'static str,
     count: usize,
+    #[serde(skip_serializing)]
+    case_kind: &'static str,
+    #[serde(skip_serializing)]
+    bones_per_rig: Option<usize>,
     steps: u32,
     samples: usize,
     dt: f32,
@@ -173,7 +179,9 @@ fn animation_targets_measure() {
         reports.push(report);
     }
 
-    let bench_report = BenchReport { metadata: BenchMetadata::capture(), cases: reports };
+    let metadata = BenchMetadata::capture();
+    let animation_budget = summarize_animation_budget(&reports);
+    let bench_report = BenchReport { metadata, animation_budget, cases: reports };
     if let Err(err) = write_report(&bench_report) {
         eprintln!("[animation_targets] Failed to write report: {err}");
     }
@@ -216,6 +224,15 @@ fn run_case(case: &BudgetCase) -> CaseReport {
         label: case.label,
         units: case.units,
         count: case.count,
+        case_kind: match case.kind {
+            CaseKind::Sprite => "sprite",
+            CaseKind::Transform => "transform",
+            CaseKind::Skeletal { .. } => "skeletal",
+        },
+        bones_per_rig: match case.kind {
+            CaseKind::Skeletal { bones_per_rig } => Some(bones_per_rig),
+            _ => None,
+        },
         steps: STEPS,
         samples: SAMPLES,
         dt: DT,
@@ -224,6 +241,31 @@ fn run_case(case: &BudgetCase) -> CaseReport {
         status,
         sprite_perf,
     }
+}
+
+fn summarize_animation_budget(reports: &[CaseReport]) -> AnimationBudgetSample {
+    let mut snapshot = AnimationBudgetSample::default();
+    for report in reports {
+        match report.case_kind {
+            "sprite" => {
+                snapshot.sprite_eval_ms = report.summary.mean_step_ms as f32;
+                snapshot.sprite_animators = report.count as u32;
+            }
+            "transform" => {
+                snapshot.transform_eval_ms = report.summary.mean_step_ms as f32;
+                snapshot.transform_clip_count = report.count;
+            }
+            "skeletal" => {
+                snapshot.skeletal_eval_ms = report.summary.mean_step_ms as f32;
+                snapshot.skeletal_bone_count = report.count;
+                let bones_per_rig = report.bones_per_rig.unwrap_or(BONES_PER_RIG);
+                let bones_per_rig = bones_per_rig.max(1);
+                snapshot.skeletal_instance_count = (report.count / bones_per_rig).max(1);
+            }
+            _ => {}
+        }
+    }
+    snapshot
 }
 
 fn seed_world(case: &BudgetCase, world: &mut EcsWorld) {

@@ -7,17 +7,20 @@ use crate::plugins::{
 };
 use crate::renderer::GpuPassTiming;
 use anyhow::Result;
+use serde::Serialize;
 use std::any::Any;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::Instant;
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Serialize)]
 pub struct AnimationBudgetSample {
     pub sprite_eval_ms: f32,
     pub sprite_pack_ms: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub sprite_upload_ms: Option<f32>,
     pub transform_eval_ms: f32,
     pub skeletal_eval_ms: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub palette_upload_ms: Option<f32>,
     pub sprite_animators: u32,
     pub transform_clip_count: usize,

@@ -40,7 +40,7 @@ Status: ✅ Implemented across clips, skeletons, and graph assets (see `src/app/
 1. Instrument animation evaluation cost, animator/bone counts, and budget thresholds inside AnalyticsPlugin.
 2. Render those counters in the in-editor HUD/status bar with color coding when budgets are exceeded.
 3. Add GPU palette upload timing to the overlay as described in the roadmap.
-4. Record analytics samples into perf artifacts for CI trend tracking.
+4. Record analytics samples into perf artifacts for CI trend tracking. (`tests/animation_targets.rs` now emits an `animation_budget` snapshot inside `animation_targets_report.json`.)
 
 **Exit:** HUD shows live metrics, turns yellow/red when limits breach, and logs are archived for regression review.
 
@@ -75,7 +75,7 @@ Status: ✅ Implemented across clips, skeletons, and graph assets (see `src/app/
 - [ ] Keyframe editor panel functional & tested.
 - [x] Asset watchers validate + reload clips/graphs with inspector surfacing.
 - [x] `animation_check` and `migrate_atlas` CLIs documented and running in CI.
-- [ ] Analytics HUD shows CPU/GPU animation metrics with budget thresholds.
+- [x] Analytics HUD shows CPU/GPU animation metrics with budget thresholds (HUD overlay plus `animation_targets_report.json.animation_budget` snapshot for CI trend tracking).
 - [ ] Sample scenes/scripts checked in with automated verification.
 - [ ] Tutorials + docs updated, referencing the above tooling and CI expectations.
 
