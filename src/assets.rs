@@ -4,6 +4,7 @@ use glam::{Vec2, Vec4};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -829,6 +830,23 @@ impl AssetManager {
     pub fn clip_source(&self, key: &str) -> Option<&str> {
         self.clip_sources.get(key).map(|s| s.as_str())
     }
+
+    pub fn clip_sources(&self) -> Vec<(String, String)> {
+        self.clip_sources.iter().map(|(key, path)| (key.clone(), path.clone())).collect()
+    }
+
+    pub fn clip_key_for_source_path<P: AsRef<Path>>(&self, path: P) -> Option<String> {
+        let target = normalize_asset_path(path.as_ref());
+        self.clip_sources.iter().find_map(|(key, stored)| {
+            let stored_path = normalize_asset_path(Path::new(stored));
+            if stored_path == target {
+                Some(key.clone())
+            } else {
+                None
+            }
+        })
+    }
+
     fn load_skeleton_internal(&mut self, key: &str, gltf_path: &str) -> Result<()> {
         let skeletal::SkeletonImport { skeleton, clips } = skeletal::load_skeleton_from_gltf(gltf_path)?;
         self.skeletons.insert(key.to_string(), Arc::new(skeleton));
@@ -1061,5 +1079,35 @@ fn resolve_atlas_image_path(json_path: &str, image: &str) -> PathBuf {
     match Path::new(json_path).parent() {
         Some(parent) => parent.join(image_path),
         None => image_path.to_path_buf(),
+    }
+}
+
+fn normalize_asset_path(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    } else if let Ok(cwd) = env::current_dir() {
+        let absolute = cwd.join(path);
+        fs::canonicalize(&absolute).unwrap_or(absolute)
+    } else {
+        path.to_path_buf()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn clip_key_for_source_path_handles_equivalent_paths() {
+        let mut assets = AssetManager::new();
+        assets.clip_sources.insert(
+            "slime".to_string(),
+            "fixtures/animation_clips/slime_bob.json".to_string(),
+        );
+        let relative = PathBuf::from("fixtures/animation_clips/slime_bob.json");
+        let canonical = normalize_asset_path(&relative);
+        assert_eq!(assets.clip_key_for_source_path(&relative).as_deref(), Some("slime"));
+        assert_eq!(assets.clip_key_for_source_path(&canonical).as_deref(), Some("slime"));
     }
 }

@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use notify::event::ModifyKind;
 use notify::{Config as NotifyConfig, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::VecDeque;
+use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver};
 use std::time::Duration;
@@ -56,10 +58,15 @@ impl AnimationAssetWatcher {
         if !root.exists() {
             anyhow::bail!("path '{}' does not exist", root.display());
         }
+        let normalized = normalize_watch_path(root);
+        if self.registrations.iter().any(|(existing, _)| *existing == normalized) {
+            return Ok(());
+        }
+        let mode = if normalized.is_dir() { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
         self.watcher
-            .watch(root, RecursiveMode::Recursive)
-            .with_context(|| format!("watch {}", root.display()))?;
-        self.registrations.push((root.to_path_buf(), kind));
+            .watch(&normalized, mode)
+            .with_context(|| format!("watch {}", normalized.display()))?;
+        self.registrations.push((normalized, kind));
         Ok(())
     }
 
@@ -88,12 +95,11 @@ impl AnimationAssetWatcher {
     }
 
     fn kind_for_path(&self, path: &Path) -> Option<AnimationAssetKind> {
-        for (root, kind) in &self.registrations {
-            if path.starts_with(root) {
-                return Some(*kind);
-            }
-        }
-        None
+        let normalized = normalize_watch_path(path);
+        self.registrations
+            .iter()
+            .find(|(root, _)| normalized.starts_with(root))
+            .map(|(_, kind)| *kind)
     }
 
     fn is_relevant(kind: &EventKind) -> bool {
@@ -105,6 +111,30 @@ impl AnimationAssetWatcher {
                 | EventKind::Create(_)
                 | EventKind::Remove(_)
         )
+    }
+}
+
+fn normalize_watch_path(path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else if let Ok(cwd) = env::current_dir() {
+        cwd.join(path)
+    } else {
+        path.to_path_buf()
+    };
+    match fs::canonicalize(&absolute) {
+        Ok(canonical) => canonical,
+        Err(_) => {
+            if let Some(parent) = absolute.parent() {
+                if let Ok(parent_canon) = fs::canonicalize(parent) {
+                    if let Some(name) = absolute.file_name() {
+                        return parent_canon.join(name);
+                    }
+                    return parent_canon;
+                }
+            }
+            absolute
+        }
     }
 }
 

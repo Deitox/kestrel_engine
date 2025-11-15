@@ -9,7 +9,7 @@ use self::animation_keyframe_panel::{
     AnimationKeyframePanel, AnimationKeyframePanelState, AnimationPanelCommand, AnimationTrackBinding,
     AnimationTrackId, AnimationTrackKind, AnimationTrackSummary, KeyframeDetail, KeyframeId, KeyframeValue,
 };
-use self::animation_watch::{AnimationAssetKind, AnimationAssetWatcher};
+use self::animation_watch::{AnimationAssetChange, AnimationAssetKind, AnimationAssetWatcher};
 use self::atlas_watch::{normalize_path_for_watch, AtlasHotReload};
 use self::plugin_host::{BuiltinPluginFactory, PluginHost};
 use crate::analytics::AnalyticsPlugin;
@@ -534,6 +534,32 @@ impl App {
         }
     }
 
+    fn sync_animation_asset_watch_roots(&mut self) {
+        let sources = self.assets.clip_sources();
+        let Some(watcher) = self.animation_asset_watcher.as_mut() else {
+            return;
+        };
+        for (_, source) in sources {
+            let clip_path = PathBuf::from(&source);
+            let watch_target = if clip_path.is_dir() {
+                clip_path
+            } else if let Some(parent) = clip_path.parent() {
+                parent.to_path_buf()
+            } else {
+                clip_path
+            };
+            if !watch_target.exists() {
+                continue;
+            }
+            if let Err(err) = watcher.watch_root(&watch_target, AnimationAssetKind::Clip) {
+                eprintln!(
+                    "[animation] failed to watch clip directory {}: {err:?}",
+                    watch_target.display()
+                );
+            }
+        }
+    }
+
     fn init_animation_asset_watcher() -> Option<AnimationAssetWatcher> {
         let mut watcher = match AnimationAssetWatcher::new() {
             Ok(watcher) => watcher,
@@ -542,7 +568,6 @@ impl App {
                 return None;
             }
         };
-        let mut registered = false;
         let watch_roots = [
             ("assets/animations/clips", AnimationAssetKind::Clip),
             ("assets/animations/graphs", AnimationAssetKind::Graph),
@@ -553,21 +578,15 @@ impl App {
             if !path.exists() {
                 continue;
             }
-            match watcher.watch_root(path, kind) {
-                Ok(()) => registered = true,
-                Err(err) => {
-                    eprintln!("[animation] failed to watch {} ({}): {err:?}", path.display(), kind.label())
-                }
+            if let Err(err) = watcher.watch_root(path, kind) {
+                eprintln!("[animation] failed to watch {} ({}): {err:?}", path.display(), kind.label())
             }
         }
-        if registered {
-            Some(watcher)
-        } else {
-            None
-        }
+        Some(watcher)
     }
 
     fn process_animation_asset_watchers(&mut self) {
+        self.sync_animation_asset_watch_roots();
         let Some(watcher) = self.animation_asset_watcher.as_mut() else {
             return;
         };
@@ -576,6 +595,7 @@ impl App {
             return;
         }
         for change in changes {
+            self.handle_animation_asset_change(&change);
             let events = AnimationValidator::validate_path(&change.path);
             if events.is_empty() {
                 eprintln!(
@@ -595,6 +615,52 @@ impl App {
                 self.log_animation_validation_event(event);
             }
         }
+    }
+
+    fn handle_animation_asset_change(&mut self, change: &AnimationAssetChange) {
+        match change.kind {
+            AnimationAssetKind::Clip => {
+                if let Err(err) = self.reload_clip_from_disk(&change.path) {
+                    eprintln!(
+                        "[animation] failed to reload clip for {}: {err:?}",
+                        change.path.display()
+                    );
+                    self.animation_clip_status = Some(format!(
+                        "Clip reload failed for {}: {err}",
+                        change.path.display()
+                    ));
+                }
+            }
+            AnimationAssetKind::Graph => {
+                eprintln!(
+                    "[animation] graph change detected for {} (reload not yet implemented)",
+                    change.path.display()
+                );
+            }
+            AnimationAssetKind::Skeletal => {
+                eprintln!(
+                    "[animation] skeletal change detected for {} (reload not yet implemented)",
+                    change.path.display()
+                );
+            }
+        }
+    }
+
+    fn reload_clip_from_disk(&mut self, path: &Path) -> Result<()> {
+        let Some(key) = self.assets.clip_key_for_source_path(path) else {
+            return Err(anyhow!("no loaded clip recorded for {}", path.display()));
+        };
+        let path_string = path.to_string_lossy().to_string();
+        self.assets.load_clip(&key, &path_string)?;
+        if let Some(updated) = self.assets.clip(&key) {
+            let canonical = Arc::new(updated.clone());
+            self.clip_edit_overrides.remove(&key);
+            self.clip_dirty.remove(&key);
+            self.apply_clip_override_to_instances(&key, Arc::clone(&canonical));
+            self.animation_clip_status =
+                Some(format!("Reloaded clip '{}' from {}", key, path.display()));
+        }
+        Ok(())
     }
 
     fn log_animation_validation_event(&mut self, event: AnimationValidationEvent) {
