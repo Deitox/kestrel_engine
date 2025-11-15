@@ -908,7 +908,9 @@ impl AnimationKeyframePanel {
     }
 
     fn paste_clipboard_keys(&mut self, tracks: &[&AnimationTrackSummary]) {
-        let Some(clipboard) = self.clipboard.clone() else { return; };
+        let Some(clipboard) = self.clipboard.clone() else {
+            return;
+        };
         if clipboard.entries.is_empty() {
             return;
         }

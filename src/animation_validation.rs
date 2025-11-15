@@ -1,7 +1,7 @@
+use crate::assets::skeletal;
 use crate::assets::{
     parse_animation_clip_bytes, parse_animation_graph_bytes, AnimationClip, AnimationGraphAsset,
 };
-use crate::assets::skeletal;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::fmt;
@@ -92,26 +92,16 @@ impl AnimationValidator {
     }
 
     fn validate_clip_bytes(path: &Path, bytes: &[u8]) -> Vec<AnimationValidationEvent> {
-        let key_hint = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or("animation_clip");
+        let key_hint = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("animation_clip");
         let source_label = path.display().to_string();
         match parse_animation_clip_bytes(bytes, key_hint, &source_label) {
             Ok(clip) => Self::clip_success_events(path, &clip),
-            Err(err) => vec![Self::event(
-                path,
-                AnimationValidationSeverity::Error,
-                format!("{err}"),
-            )],
+            Err(err) => vec![Self::event(path, AnimationValidationSeverity::Error, format!("{err}"))],
         }
     }
 
     fn validate_graph_bytes(path: &Path, bytes: &[u8]) -> Vec<AnimationValidationEvent> {
-        let key_hint = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or("animation_graph");
+        let key_hint = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("animation_graph");
         let source_label = path.display().to_string();
         match parse_animation_graph_bytes(bytes, key_hint, &source_label) {
             Ok(graph) => Self::graph_success_events(path, &graph),
@@ -207,10 +197,7 @@ impl AnimationValidator {
         events.push(Self::event(
             path,
             AnimationValidationSeverity::Info,
-            format!(
-                "Clip '{}' OK: duration {:.3}s, tracks {summary}",
-                clip.name, clip.duration
-            ),
+            format!("Clip '{}' OK: duration {:.3}s, tracks {summary}", clip.name, clip.duration),
         ));
         events
     }
@@ -236,10 +223,7 @@ impl AnimationValidator {
             events.push(Self::event(
                 path,
                 AnimationValidationSeverity::Error,
-                format!(
-                    "Animation graph has duplicate states: {}",
-                    duplicate_states.join(", ")
-                ),
+                format!("Animation graph has duplicate states: {}", duplicate_states.join(", ")),
             ));
         }
         let entry_state = graph.entry_state.as_ref();
@@ -282,9 +266,7 @@ impl AnimationValidator {
                 events.push(Self::event(
                     path,
                     AnimationValidationSeverity::Warning,
-                    format!(
-                        "Transition from '{from}' to itself detected; confirm this is intentional."
-                    ),
+                    format!("Transition from '{from}' to itself detected; confirm this is intentional."),
                 ));
             }
         }
@@ -358,7 +340,11 @@ impl AnimationValidator {
         JsonAssetKind::Unknown
     }
 
-    fn event(path: &Path, severity: AnimationValidationSeverity, message: impl Into<String>) -> AnimationValidationEvent {
+    fn event(
+        path: &Path,
+        severity: AnimationValidationSeverity,
+        message: impl Into<String>,
+    ) -> AnimationValidationEvent {
         AnimationValidationEvent { severity, path: path.to_path_buf(), message: message.into() }
     }
 }
@@ -389,7 +375,8 @@ fn looks_like_clip_json(bytes: &[u8]) -> bool {
 fn looks_like_graph_json(bytes: &[u8]) -> bool {
     if let Ok(Value::Object(map)) = serde_json::from_slice::<Value>(bytes) {
         let states_ok = map.get("states").map(|states| states.is_array()).unwrap_or(false);
-        let transitions_ok = map.get("transitions").map(|transitions| transitions.is_array()).unwrap_or(false);
+        let transitions_ok =
+            map.get("transitions").map(|transitions| transitions.is_array()).unwrap_or(false);
         return states_ok && transitions_ok;
     }
     false
@@ -467,11 +454,7 @@ mod tests {
     #[test]
     fn validator_accepts_skeletal_asset() {
         let path = Path::new("fixtures/gltf/skeletons/slime_rig.gltf");
-        assert!(
-            path.exists(),
-            "Missing skeletal fixture at {}",
-            path.display()
-        );
+        assert!(path.exists(), "Missing skeletal fixture at {}", path.display());
         let events = AnimationValidator::validate_path(path);
         assert!(events.iter().any(|event| event.severity == AnimationValidationSeverity::Info));
     }

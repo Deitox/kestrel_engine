@@ -2,11 +2,11 @@ use super::{
     plugin_host::PluginHost, App, CameraBookmark, FrameTimingSample, MeshControlMode, ScriptConsoleEntry,
     ScriptConsoleKind, ViewportCameraMode,
 };
-use crate::animation_validation::AnimationValidationSeverity;
 use crate::analytics::{
     AnimationBudgetSample, KeyframeEditorEvent, KeyframeEditorEventKind, KeyframeEditorTrackKind,
     KeyframeEditorUsageSnapshot,
 };
+use crate::animation_validation::AnimationValidationSeverity;
 use crate::audio::{AudioHealthSnapshot, AudioPlugin};
 use crate::camera3d::Camera3D;
 use crate::ecs::{
@@ -189,10 +189,7 @@ fn render_keyframe_editor_usage(
     events: &[KeyframeEditorEvent],
 ) {
     ui.label("Keyframe Editor Usage");
-    ui.label(format!(
-        "Opened {} | Closed {}",
-        usage.panel_open_count, usage.panel_close_count
-    ));
+    ui.label(format!("Opened {} | Closed {}", usage.panel_open_count, usage.panel_close_count));
     ui.label(format!(
         "Scrubs {} | Inserts {} | Deletes {} ({} keys)",
         usage.scrub_count, usage.insert_count, usage.delete_count, usage.delete_key_total
@@ -241,11 +238,7 @@ fn format_keyframe_event(event: &KeyframeEditorEventKind) -> String {
             if details.is_empty() {
                 format!("Updated {}", keyframe_track_label(*track))
             } else {
-                format!(
-                    "Updated {} ({})",
-                    keyframe_track_label(*track),
-                    details.join(" + ")
-                )
+                format!("Updated {} ({})", keyframe_track_label(*track), details.join(" + "))
             }
         }
         KeyframeEditorEventKind::AdjustKeys { track, count, time_delta, value_delta } => {
@@ -256,16 +249,8 @@ fn format_keyframe_event(event: &KeyframeEditorEventKind) -> String {
             if *value_delta {
                 details.push("value offset");
             }
-            let descriptor = if details.is_empty() {
-                "offset".to_string()
-            } else {
-                details.join(" & ")
-            };
-            format!(
-                "Adjusted {} key(s) on {} ({descriptor})",
-                count,
-                keyframe_track_label(*track)
-            )
+            let descriptor = if details.is_empty() { "offset".to_string() } else { details.join(" & ") };
+            format!("Adjusted {} key(s) on {} ({descriptor})", count, keyframe_track_label(*track))
         }
         KeyframeEditorEventKind::Undo => "Undo edit".to_string(),
         KeyframeEditorEventKind::Redo => "Redo edit".to_string(),
@@ -895,132 +880,167 @@ impl App {
                             ));
                         });
                         ui.label("Target: 16.7ms for 60 FPS");
+                        ui.separator();
                         if shadow_pass_metric.is_some() || mesh_pass_metric.is_some() {
+                            egui::CollapsingHeader::new("GPU Pass Baselines").default_open(false).show(
+                                ui,
+                                |ui| {
+                                    for metric in [shadow_pass_metric, mesh_pass_metric].into_iter().flatten()
+                                    {
+                                        ui.label(format!(
+                                            "{:<12} {:>5.2} ms (avg {:>5.2} ms over {} frames)",
+                                            metric.label,
+                                            metric.latest_ms,
+                                            metric.average_ms,
+                                            metric.sample_count
+                                        ));
+                                    }
+                                },
+                            );
                             ui.separator();
-                            ui.label("GPU Pass Baselines");
-                            for metric in [shadow_pass_metric, mesh_pass_metric].into_iter().flatten() {
-                                ui.label(format!(
-                                    "{:<12} {:>5.2} ms (avg {:>5.2} ms over {} frames)",
-                                    metric.label, metric.latest_ms, metric.average_ms, metric.sample_count
-                                ));
-                            }
                         }
                         if let Some(metrics) = particle_budget {
-                            ui.separator();
-                            ui.label("Particle Budget");
-                            let utilization = metrics.cap_utilization() * 100.0;
-                            ui.label(format!(
-                                "Active: {} / {} ({utilization:.1}%)",
-                                metrics.active_particles, metrics.max_total
-                            ));
-                            ui.label(format!(
-                                "Spawn budget: {} / {} available",
-                                metrics.available_spawn_this_frame, metrics.max_spawn_per_frame
-                            ));
-                            if metrics.total_emitters > 0 {
-                                ui.label(format!(
-                                    "Emitters: {} (avg backlog {:.1} / {:.0}, max {:.1})",
-                                    metrics.total_emitters,
-                                    metrics.average_backlog(),
-                                    metrics.emitter_backlog_limit,
-                                    metrics.emitter_backlog_max_observed
-                                ));
-                            } else {
-                                ui.label("Emitters: none active");
-                            }
-                        }
-                        ui.separator();
-                        ui.label("Sprite Animation Perf");
-                        let warn_color = egui::Color32::from_rgb(255, 140, 0);
-                        if let Some(perf) = sprite_perf_sample {
-                            if perf.total_animators() == 0 {
-                                ui.label("No sprite animators updated last frame.");
-                            } else {
-                                let slow_pct = perf.slow_ratio() * 100.0;
-                                let slow_text =
-                                    format!("Slow bucket: {} ({slow_pct:.2}%)", perf.slow_animators);
-                                if perf.slow_ratio_streak >= 60 && slow_pct > 1.0 {
-                                    ui.colored_label(warn_color, slow_text);
-                                } else {
-                                    ui.label(slow_text);
-                                }
-                                ui.label(format!("Fast bucket: {}", perf.fast_animators));
-                                ui.label(format!(
-                                    "Δt mix – variable: {} | fixed: {}",
-                                    perf.var_dt_animators, perf.const_dt_animators
-                                ));
-                                ui.label(format!(
-                                    "Ping-pong: {} | Event-heavy: {}",
-                                    perf.ping_pong_animators, perf.events_heavy_animators
-                                ));
-                                ui.label(format!(
-                                    "Events emitted: {} (coalesced {})",
-                                    perf.events_emitted, perf.events_coalesced
-                                ));
-                                ui.label(format!("Modulo fallbacks: {}", perf.mod_or_div_calls));
-                                if perf.simd_supported && perf.fast_animators > 0 {
-                                    let tail_pct = perf.tail_scalar_ratio() * 100.0;
-                                    let lanes_text = format!(
-                                        "SIMD lanes 8/4/tail: {}/{}/{} (tail {:.1}%)",
-                                        perf.simd_lanes_8, perf.simd_lanes_4, perf.simd_tail_scalar, tail_pct
-                                    );
-                                    if perf.tail_scalar_streak >= 60 && tail_pct > 5.0 {
-                                        ui.colored_label(warn_color, lanes_text);
+                            egui::CollapsingHeader::new("Particle Budget").default_open(false).show(
+                                ui,
+                                |ui| {
+                                    let utilization = metrics.cap_utilization() * 100.0;
+                                    ui.label(format!(
+                                        "Active: {} / {} ({utilization:.1}%)",
+                                        metrics.active_particles, metrics.max_total
+                                    ));
+                                    ui.label(format!(
+                                        "Spawn budget: {} / {} available",
+                                        metrics.available_spawn_this_frame, metrics.max_spawn_per_frame
+                                    ));
+                                    if metrics.total_emitters > 0 {
+                                        ui.label(format!(
+                                            "Emitters: {} (avg backlog {:.1} / {:.0}, max {:.1})",
+                                            metrics.total_emitters,
+                                            metrics.average_backlog(),
+                                            metrics.emitter_backlog_limit,
+                                            metrics.emitter_backlog_max_observed
+                                        ));
                                     } else {
-                                        ui.label(lanes_text);
+                                        ui.label("Emitters: none active");
                                     }
-                                } else if perf.simd_supported {
-                                    ui.label("SIMD lanes: no fast animators recorded");
+                                },
+                            );
+                            ui.separator();
+                        }
+                        egui::CollapsingHeader::new("Sprite Animation Perf").default_open(false).show(
+                            ui,
+                            |ui| {
+                                let warn_color = egui::Color32::from_rgb(255, 140, 0);
+                                if let Some(perf) = sprite_perf_sample {
+                                    if perf.total_animators() == 0 {
+                                        ui.label("No sprite animators updated last frame.");
+                                    } else {
+                                        let slow_pct = perf.slow_ratio() * 100.0;
+                                        let slow_text =
+                                            format!("Slow bucket: {} ({slow_pct:.2}%)", perf.slow_animators);
+                                        if perf.slow_ratio_streak >= 60 && slow_pct > 1.0 {
+                                            ui.colored_label(warn_color, slow_text);
+                                        } else {
+                                            ui.label(slow_text);
+                                        }
+                                        ui.label(format!("Fast bucket: {}", perf.fast_animators));
+                                        ui.label(format!(
+                                            "Δt mix – variable: {} | fixed: {}",
+                                            perf.var_dt_animators, perf.const_dt_animators
+                                        ));
+                                        ui.label(format!(
+                                            "Ping-pong: {} | Event-heavy: {}",
+                                            perf.ping_pong_animators, perf.events_heavy_animators
+                                        ));
+                                        ui.label(format!(
+                                            "Events emitted: {} (coalesced {})",
+                                            perf.events_emitted, perf.events_coalesced
+                                        ));
+                                        ui.label(format!("Modulo fallbacks: {}", perf.mod_or_div_calls));
+                                        if perf.simd_supported && perf.fast_animators > 0 {
+                                            let tail_pct = perf.tail_scalar_ratio() * 100.0;
+                                            let lanes_text = format!(
+                                                "SIMD lanes 8/4/tail: {}/{}/{} (tail {:.1}%)",
+                                                perf.simd_lanes_8,
+                                                perf.simd_lanes_4,
+                                                perf.simd_tail_scalar,
+                                                tail_pct
+                                            );
+                                            if perf.tail_scalar_streak >= 60 && tail_pct > 5.0 {
+                                                ui.colored_label(warn_color, lanes_text);
+                                            } else {
+                                                ui.label(lanes_text);
+                                            }
+                                        } else if perf.simd_supported {
+                                            ui.label("SIMD lanes: no fast animators recorded");
+                                        } else {
+                                            ui.label("SIMD lanes: scalar path (feature disabled)");
+                                        }
+                                    }
                                 } else {
-                                    ui.label("SIMD lanes: scalar path (feature disabled)");
+                                    ui.label("No sprite perf samples recorded yet.");
                                 }
-                            }
-                        } else {
-                            ui.label("No sprite perf samples recorded yet.");
-                        }
+                            },
+                        );
                         ui.separator();
-                        ui.label("Sprite Stage Timings");
-                        sprite_stage_bar(ui, "Eval (sys_drive_sprite_animations)", sprite_eval_ms, 0.205);
-                        sprite_stage_bar(ui, "Pack (sys_apply_sprite_frame_states)", sprite_pack_ms, 0.050);
-                        sprite_stage_bar(ui, "Upload (Sprite GPU pass)", sprite_upload_ms, 0.100);
+                        egui::CollapsingHeader::new("Sprite Stage Timings").default_open(false).show(
+                            ui,
+                            |ui| {
+                                sprite_stage_bar(
+                                    ui,
+                                    "Eval (sys_drive_sprite_animations)",
+                                    sprite_eval_ms,
+                                    0.205,
+                                );
+                                sprite_stage_bar(
+                                    ui,
+                                    "Pack (sys_apply_sprite_frame_states)",
+                                    sprite_pack_ms,
+                                    0.050,
+                                );
+                                sprite_stage_bar(ui, "Upload (Sprite GPU pass)", sprite_upload_ms, 0.100);
+                            },
+                        );
                         ui.separator();
-                        ui.label("Spatial Index");
-                        if let Some(metrics) = spatial_metrics {
-                            ui.label(format!(
-                                "Mode: {:?} | Cells: {} | Avg occ {:.2} | Max {}",
-                                metrics.mode,
-                                metrics.occupied_cells,
-                                metrics.average_occupancy,
-                                metrics.max_cell_occupancy
-                            ));
-                            if metrics.mode == SpatialMode::Quadtree {
-                                ui.label(format!("Quadtree nodes: {}", metrics.quadtree_nodes));
-                            }
-                        } else {
-                            ui.label("Metrics unavailable.");
-                        }
-                        if ui.checkbox(&mut ui_spatial_use_quadtree, "Enable quadtree fallback").changed() {
-                            self.inspector_status = Some(if ui_spatial_use_quadtree {
-                                "Quadtree fallback enabled.".to_string()
+                        egui::CollapsingHeader::new("Spatial Index").default_open(false).show(ui, |ui| {
+                            if let Some(metrics) = spatial_metrics {
+                                ui.label(format!(
+                                    "Mode: {:?} | Cells: {} | Avg occ {:.2} | Max {}",
+                                    metrics.mode,
+                                    metrics.occupied_cells,
+                                    metrics.average_occupancy,
+                                    metrics.max_cell_occupancy
+                                ));
+                                if metrics.mode == SpatialMode::Quadtree {
+                                    ui.label(format!("Quadtree nodes: {}", metrics.quadtree_nodes));
+                                }
                             } else {
-                                "Quadtree fallback disabled.".to_string()
-                            });
-                        }
-                        let mut threshold = ui_spatial_density_threshold;
-                        if ui
-                            .add(
-                                egui::DragValue::new(&mut threshold)
-                                    .speed(0.1)
-                                    .range(1.0..=64.0)
-                                    .prefix("Density threshold "),
-                            )
-                            .changed()
-                        {
-                            ui_spatial_density_threshold = threshold.max(1.0);
-                        }
-                        if ui.button("Find entity by ID...").clicked() {
-                            id_lookup_active = true;
-                        }
+                                ui.label("Metrics unavailable.");
+                            }
+                            if ui.checkbox(&mut ui_spatial_use_quadtree, "Enable quadtree fallback").changed()
+                            {
+                                self.inspector_status = Some(if ui_spatial_use_quadtree {
+                                    "Quadtree fallback enabled.".to_string()
+                                } else {
+                                    "Quadtree fallback disabled.".to_string()
+                                });
+                            }
+                            let mut threshold = ui_spatial_density_threshold;
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut threshold)
+                                        .speed(0.1)
+                                        .range(1.0..=64.0)
+                                        .prefix("Density threshold "),
+                                )
+                                .changed()
+                            {
+                                ui_spatial_density_threshold = threshold.max(1.0);
+                            }
+                            if ui.button("Find entity by ID...").clicked() {
+                                id_lookup_active = true;
+                            }
+                        });
                         if !plugin_capability_metrics_snapshot.is_empty() {
                             ui.separator();
                             ui.label("Plugin Capability Metrics");
@@ -1213,7 +1233,7 @@ impl App {
                         ui.checkbox(&mut debug_show_colliders, "Collider bounds");
                     });
 
-                    egui::CollapsingHeader::new("UI & Camera").default_open(true).show(ui, |ui| {
+                    egui::CollapsingHeader::new("UI & Camera").default_open(false).show(ui, |ui| {
                         if ui.add(egui::Slider::new(&mut ui_scale, 0.5..=2.0).text("UI scale")).changed() {
                             ui_scale = ui_scale.clamp(0.5, 2.0);
                             self.egui_ctx.set_pixels_per_point(base_pixels_per_point * ui_scale);
@@ -1931,215 +1951,222 @@ impl App {
                     });
 
                     ui.separator();
-                    egui::CollapsingHeader::new("Lighting & Environment").default_open(true).show(ui, |ui| {
-                        let mut lighting_dirty = false;
-                        let default_dir = glam::Vec3::new(0.4, 0.8, 0.35).normalize();
-                        let mut light_dir = self.ui_light_direction;
-                        ui.horizontal(|ui| {
-                            ui.label("Direction (XYZ)");
-                            let mut changed = false;
-                            changed |= ui
-                                .add(egui::DragValue::new(&mut light_dir.x).speed(0.01).range(-1.0..=1.0))
-                                .changed();
-                            changed |= ui
-                                .add(egui::DragValue::new(&mut light_dir.y).speed(0.01).range(-1.0..=1.0))
-                                .changed();
-                            changed |= ui
-                                .add(egui::DragValue::new(&mut light_dir.z).speed(0.01).range(-1.0..=1.0))
-                                .changed();
-                            if changed {
-                                if !light_dir.is_finite() || light_dir.length_squared() < 1e-4 {
-                                    light_dir = default_dir;
-                                } else {
-                                    light_dir = light_dir.normalize_or_zero();
-                                    if light_dir.length_squared() < 1e-4 {
+                    egui::CollapsingHeader::new("Lighting & Environment").default_open(false).show(
+                        ui,
+                        |ui| {
+                            let mut lighting_dirty = false;
+                            let default_dir = glam::Vec3::new(0.4, 0.8, 0.35).normalize();
+                            let mut light_dir = self.ui_light_direction;
+                            ui.horizontal(|ui| {
+                                ui.label("Direction (XYZ)");
+                                let mut changed = false;
+                                changed |= ui
+                                    .add(egui::DragValue::new(&mut light_dir.x).speed(0.01).range(-1.0..=1.0))
+                                    .changed();
+                                changed |= ui
+                                    .add(egui::DragValue::new(&mut light_dir.y).speed(0.01).range(-1.0..=1.0))
+                                    .changed();
+                                changed |= ui
+                                    .add(egui::DragValue::new(&mut light_dir.z).speed(0.01).range(-1.0..=1.0))
+                                    .changed();
+                                if changed {
+                                    if !light_dir.is_finite() || light_dir.length_squared() < 1e-4 {
                                         light_dir = default_dir;
+                                    } else {
+                                        light_dir = light_dir.normalize_or_zero();
+                                        if light_dir.length_squared() < 1e-4 {
+                                            light_dir = default_dir;
+                                        }
                                     }
+                                    self.ui_light_direction = light_dir;
+                                    lighting_dirty = true;
                                 }
-                                self.ui_light_direction = light_dir;
-                                lighting_dirty = true;
-                            }
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Color");
-                            let mut color_arr = self.ui_light_color.to_array();
-                            if ui.color_edit_button_rgb(&mut color_arr).changed() {
-                                self.ui_light_color = Vec3::from_array(color_arr);
-                                lighting_dirty = true;
-                            }
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Ambient");
-                            let mut ambient_arr = self.ui_light_ambient.to_array();
-                            if ui.color_edit_button_rgb(&mut ambient_arr).changed() {
-                                self.ui_light_ambient = Vec3::from_array(ambient_arr);
-                                lighting_dirty = true;
-                            }
-                        });
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut self.ui_light_exposure, 0.1..=5.0)
-                                    .text("Exposure")
-                                    .logarithmic(true),
-                            )
-                            .changed()
-                        {
-                            self.ui_light_exposure = self.ui_light_exposure.clamp(0.1, 20.0);
-                            lighting_dirty = true;
-                        }
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut self.ui_shadow_distance, 5.0..=200.0)
-                                    .text("Shadow distance"),
-                            )
-                            .changed()
-                        {
-                            self.ui_shadow_distance = self.ui_shadow_distance.clamp(5.0, 200.0);
-                            lighting_dirty = true;
-                        }
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut self.ui_shadow_bias, 0.0001..=0.02)
-                                    .text("Shadow bias")
-                                    .logarithmic(true),
-                            )
-                            .changed()
-                        {
-                            self.ui_shadow_bias = self.ui_shadow_bias.clamp(0.0001, 0.02);
-                            lighting_dirty = true;
-                        }
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut self.ui_shadow_strength, 0.0..=1.0)
-                                    .text("Shadow strength"),
-                            )
-                            .changed()
-                        {
-                            self.ui_shadow_strength = self.ui_shadow_strength.clamp(0.0, 1.0);
-                            lighting_dirty = true;
-                        }
-                        if ui
-                            .add(
-                                egui::Slider::new(
-                                    &mut self.ui_shadow_cascade_count,
-                                    1..=MAX_SHADOW_CASCADES as u32,
-                                )
-                                .text("Shadow cascades"),
-                            )
-                            .changed()
-                        {
-                            lighting_dirty = true;
-                        }
-                        let mut resolution_changed = false;
-                        ui.horizontal(|ui| {
-                            ui.label("Shadow resolution");
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Color");
+                                let mut color_arr = self.ui_light_color.to_array();
+                                if ui.color_edit_button_rgb(&mut color_arr).changed() {
+                                    self.ui_light_color = Vec3::from_array(color_arr);
+                                    lighting_dirty = true;
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Ambient");
+                                let mut ambient_arr = self.ui_light_ambient.to_array();
+                                if ui.color_edit_button_rgb(&mut ambient_arr).changed() {
+                                    self.ui_light_ambient = Vec3::from_array(ambient_arr);
+                                    lighting_dirty = true;
+                                }
+                            });
                             if ui
                                 .add(
-                                    egui::DragValue::new(&mut self.ui_shadow_resolution)
-                                        .suffix(" px")
-                                        .speed(64.0),
+                                    egui::Slider::new(&mut self.ui_light_exposure, 0.1..=5.0)
+                                        .text("Exposure")
+                                        .logarithmic(true),
                                 )
                                 .changed()
                             {
-                                resolution_changed = true;
+                                self.ui_light_exposure = self.ui_light_exposure.clamp(0.1, 20.0);
+                                lighting_dirty = true;
                             }
-                        });
-                        if resolution_changed {
-                            self.ui_shadow_resolution = self.ui_shadow_resolution.clamp(256, 8192);
-                            lighting_dirty = true;
-                        }
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut self.ui_shadow_split_lambda, 0.0..=1.0)
-                                    .text("Cascade split bias"),
-                            )
-                            .changed()
-                        {
-                            self.ui_shadow_split_lambda = self.ui_shadow_split_lambda.clamp(0.0, 1.0);
-                            lighting_dirty = true;
-                        }
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut self.ui_shadow_pcf_radius, 0.0..=4.0)
-                                    .text("PCF radius"),
-                            )
-                            .changed()
-                        {
-                            self.ui_shadow_pcf_radius = self.ui_shadow_pcf_radius.clamp(0.0, 10.0);
-                            lighting_dirty = true;
-                        }
-
-                        ui.separator();
-                        ui.label("Environment");
-                        if environment_options.is_empty() {
-                            ui.label("No environments available.");
-                        } else {
-                            let mut selected_environment = active_environment.clone();
-                            let current_label = environment_options
-                                .iter()
-                                .find(|(key, _)| key == &selected_environment)
-                                .map(|(_, label)| label.as_str())
-                                .unwrap_or(selected_environment.as_str());
-                            egui::ComboBox::from_id_salt("environment_select")
-                                .selected_text(current_label)
-                                .show_ui(ui, |ui| {
-                                    for (key, label) in &environment_options {
-                                        ui.selectable_value(&mut selected_environment, key.clone(), label);
-                                    }
-                                });
-                            if selected_environment != active_environment {
-                                environment_selection_request = Some(selected_environment);
+                            if ui
+                                .add(
+                                    egui::Slider::new(&mut self.ui_shadow_distance, 5.0..=200.0)
+                                        .text("Shadow distance"),
+                                )
+                                .changed()
+                            {
+                                self.ui_shadow_distance = self.ui_shadow_distance.clamp(5.0, 200.0);
+                                lighting_dirty = true;
                             }
-                        }
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut ui_environment_intensity, 0.0..=5.0)
-                                    .text("Environment intensity")
-                                    .logarithmic(true),
-                            )
-                            .changed()
-                        {
-                            ui_environment_intensity = ui_environment_intensity.clamp(0.0, 20.0);
-                        }
+                            if ui
+                                .add(
+                                    egui::Slider::new(&mut self.ui_shadow_bias, 0.0001..=0.02)
+                                        .text("Shadow bias")
+                                        .logarithmic(true),
+                                )
+                                .changed()
+                            {
+                                self.ui_shadow_bias = self.ui_shadow_bias.clamp(0.0001, 0.02);
+                                lighting_dirty = true;
+                            }
+                            if ui
+                                .add(
+                                    egui::Slider::new(&mut self.ui_shadow_strength, 0.0..=1.0)
+                                        .text("Shadow strength"),
+                                )
+                                .changed()
+                            {
+                                self.ui_shadow_strength = self.ui_shadow_strength.clamp(0.0, 1.0);
+                                lighting_dirty = true;
+                            }
+                            if ui
+                                .add(
+                                    egui::Slider::new(
+                                        &mut self.ui_shadow_cascade_count,
+                                        1..=MAX_SHADOW_CASCADES as u32,
+                                    )
+                                    .text("Shadow cascades"),
+                                )
+                                .changed()
+                            {
+                                lighting_dirty = true;
+                            }
+                            let mut resolution_changed = false;
+                            ui.horizontal(|ui| {
+                                ui.label("Shadow resolution");
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut self.ui_shadow_resolution)
+                                            .suffix(" px")
+                                            .speed(64.0),
+                                    )
+                                    .changed()
+                                {
+                                    resolution_changed = true;
+                                }
+                            });
+                            if resolution_changed {
+                                self.ui_shadow_resolution = self.ui_shadow_resolution.clamp(256, 8192);
+                                lighting_dirty = true;
+                            }
+                            if ui
+                                .add(
+                                    egui::Slider::new(&mut self.ui_shadow_split_lambda, 0.0..=1.0)
+                                        .text("Cascade split bias"),
+                                )
+                                .changed()
+                            {
+                                self.ui_shadow_split_lambda = self.ui_shadow_split_lambda.clamp(0.0, 1.0);
+                                lighting_dirty = true;
+                            }
+                            if ui
+                                .add(
+                                    egui::Slider::new(&mut self.ui_shadow_pcf_radius, 0.0..=4.0)
+                                        .text("PCF radius"),
+                                )
+                                .changed()
+                            {
+                                self.ui_shadow_pcf_radius = self.ui_shadow_pcf_radius.clamp(0.0, 10.0);
+                                lighting_dirty = true;
+                            }
 
-                        if ui.button("Reset lighting").clicked() {
-                            let default_shadow = SceneShadowData::default();
-                            self.ui_light_direction = default_dir;
-                            self.ui_light_color = Vec3::new(1.05, 0.98, 0.92);
-                            self.ui_light_ambient = Vec3::splat(0.03);
-                            self.ui_light_exposure = 1.0;
-                            self.ui_shadow_distance = default_shadow.distance;
-                            self.ui_shadow_bias = default_shadow.bias;
-                            self.ui_shadow_strength = default_shadow.strength;
-                            self.ui_shadow_cascade_count = default_shadow.cascade_count;
-                            self.ui_shadow_resolution = default_shadow.resolution;
-                            self.ui_shadow_split_lambda = default_shadow.split_lambda;
-                            self.ui_shadow_pcf_radius = default_shadow.pcf_radius;
-                            self.ui_environment_intensity = 1.0;
-                            ui_environment_intensity = 1.0;
+                            ui.separator();
+                            ui.label("Environment");
+                            if environment_options.is_empty() {
+                                ui.label("No environments available.");
+                            } else {
+                                let mut selected_environment = active_environment.clone();
+                                let current_label = environment_options
+                                    .iter()
+                                    .find(|(key, _)| key == &selected_environment)
+                                    .map(|(_, label)| label.as_str())
+                                    .unwrap_or(selected_environment.as_str());
+                                egui::ComboBox::from_id_salt("environment_select")
+                                    .selected_text(current_label)
+                                    .show_ui(ui, |ui| {
+                                        for (key, label) in &environment_options {
+                                            ui.selectable_value(
+                                                &mut selected_environment,
+                                                key.clone(),
+                                                label,
+                                            );
+                                        }
+                                    });
+                                if selected_environment != active_environment {
+                                    environment_selection_request = Some(selected_environment);
+                                }
+                            }
+                            if ui
+                                .add(
+                                    egui::Slider::new(&mut ui_environment_intensity, 0.0..=5.0)
+                                        .text("Environment intensity")
+                                        .logarithmic(true),
+                                )
+                                .changed()
+                            {
+                                ui_environment_intensity = ui_environment_intensity.clamp(0.0, 20.0);
+                            }
 
-                            lighting_dirty = true;
-                        }
-                        if lighting_dirty {
-                            let lighting = self.renderer.lighting_mut();
-                            lighting.direction = self.ui_light_direction;
-                            lighting.color = self.ui_light_color;
-                            lighting.ambient = self.ui_light_ambient;
-                            lighting.exposure = self.ui_light_exposure;
-                            lighting.shadow_distance = self.ui_shadow_distance.clamp(1.0, 500.0);
-                            lighting.shadow_bias = self.ui_shadow_bias.clamp(0.00005, 0.05);
-                            lighting.shadow_strength = self.ui_shadow_strength.clamp(0.0, 1.0);
-                            lighting.shadow_cascade_count =
-                                self.ui_shadow_cascade_count.clamp(1, MAX_SHADOW_CASCADES as u32);
-                            lighting.shadow_resolution = self.ui_shadow_resolution.clamp(256, 8192);
-                            lighting.shadow_split_lambda = self.ui_shadow_split_lambda.clamp(0.0, 1.0);
-                            lighting.shadow_pcf_radius = self.ui_shadow_pcf_radius.clamp(0.0, 10.0);
-                            self.renderer.mark_shadow_settings_dirty();
-                        }
-                    });
+                            if ui.button("Reset lighting").clicked() {
+                                let default_shadow = SceneShadowData::default();
+                                self.ui_light_direction = default_dir;
+                                self.ui_light_color = Vec3::new(1.05, 0.98, 0.92);
+                                self.ui_light_ambient = Vec3::splat(0.03);
+                                self.ui_light_exposure = 1.0;
+                                self.ui_shadow_distance = default_shadow.distance;
+                                self.ui_shadow_bias = default_shadow.bias;
+                                self.ui_shadow_strength = default_shadow.strength;
+                                self.ui_shadow_cascade_count = default_shadow.cascade_count;
+                                self.ui_shadow_resolution = default_shadow.resolution;
+                                self.ui_shadow_split_lambda = default_shadow.split_lambda;
+                                self.ui_shadow_pcf_radius = default_shadow.pcf_radius;
+                                self.ui_environment_intensity = 1.0;
+                                ui_environment_intensity = 1.0;
+
+                                lighting_dirty = true;
+                            }
+                            if lighting_dirty {
+                                let lighting = self.renderer.lighting_mut();
+                                lighting.direction = self.ui_light_direction;
+                                lighting.color = self.ui_light_color;
+                                lighting.ambient = self.ui_light_ambient;
+                                lighting.exposure = self.ui_light_exposure;
+                                lighting.shadow_distance = self.ui_shadow_distance.clamp(1.0, 500.0);
+                                lighting.shadow_bias = self.ui_shadow_bias.clamp(0.00005, 0.05);
+                                lighting.shadow_strength = self.ui_shadow_strength.clamp(0.0, 1.0);
+                                lighting.shadow_cascade_count =
+                                    self.ui_shadow_cascade_count.clamp(1, MAX_SHADOW_CASCADES as u32);
+                                lighting.shadow_resolution = self.ui_shadow_resolution.clamp(256, 8192);
+                                lighting.shadow_split_lambda = self.ui_shadow_split_lambda.clamp(0.0, 1.0);
+                                lighting.shadow_pcf_radius = self.ui_shadow_pcf_radius.clamp(0.0, 10.0);
+                                self.renderer.mark_shadow_settings_dirty();
+                            }
+                        },
+                    );
 
                     ui.separator();
-                    egui::CollapsingHeader::new("Spawn & Emitters").default_open(true).show(ui, |ui| {
+                    egui::CollapsingHeader::new("Spawn & Emitters").default_open(false).show(ui, |ui| {
                         ui.add(egui::Slider::new(&mut ui_cell_size, 0.05..=0.8).text("Spatial cell size"));
                         ui.add(egui::Slider::new(&mut ui_spawn_per_press, 1..=5000).text("Spawn per press"));
                         ui.add(
@@ -3276,13 +3303,7 @@ fn draw_animation_budget_overlay(
                     String::new(),
                 );
                 if let Some(upload) = sample.sprite_upload_ms {
-                    hud_budget_row(
-                        ui,
-                        "Sprite Upload",
-                        upload,
-                        SPRITE_UPLOAD_BUDGET_MS,
-                        String::new(),
-                    );
+                    hud_budget_row(ui, "Sprite Upload", upload, SPRITE_UPLOAD_BUDGET_MS, String::new());
                 } else {
                     ui.small("Sprite Upload: GPU timers disabled");
                 }
@@ -3299,10 +3320,7 @@ fn draw_animation_budget_overlay(
                     "Skeletal Eval",
                     sample.skeletal_eval_ms,
                     SKELETAL_EVAL_BUDGET_MS,
-                    format!(
-                        "{} rigs / {} bones",
-                        sample.skeletal_instance_count, sample.skeletal_bone_count
-                    ),
+                    format!("{} rigs / {} bones", sample.skeletal_instance_count, sample.skeletal_bone_count),
                 );
                 if let Some(palette_ms) = sample.palette_upload_ms {
                     hud_budget_row(
@@ -3322,13 +3340,7 @@ fn draw_animation_budget_overlay(
         });
 }
 
-fn hud_budget_row(
-    ui: &mut egui::Ui,
-    label: &str,
-    value_ms: f32,
-    budget_ms: f32,
-    detail: String,
-) {
+fn hud_budget_row(ui: &mut egui::Ui, label: &str, value_ms: f32, budget_ms: f32, detail: String) {
     let color = budget_color(value_ms, budget_ms);
     ui.colored_label(
         color,

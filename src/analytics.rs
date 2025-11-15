@@ -100,17 +100,8 @@ pub enum KeyframeEditorEventKind {
     Scrub { track: KeyframeEditorTrackKind },
     InsertKey { track: KeyframeEditorTrackKind },
     DeleteKeys { track: KeyframeEditorTrackKind, count: usize },
-    UpdateKey {
-        track: KeyframeEditorTrackKind,
-        changed_time: bool,
-        changed_value: bool,
-    },
-    AdjustKeys {
-        track: KeyframeEditorTrackKind,
-        count: usize,
-        time_delta: bool,
-        value_delta: bool,
-    },
+    UpdateKey { track: KeyframeEditorTrackKind, changed_time: bool, changed_value: bool },
+    AdjustKeys { track: KeyframeEditorTrackKind, count: usize, time_delta: bool, value_delta: bool },
     Undo,
     Redo,
 }
@@ -299,10 +290,7 @@ impl AnalyticsPlugin {
 
     pub fn record_keyframe_editor_event(&mut self, kind: KeyframeEditorEventKind) {
         self.keyframe_editor_usage.register(&kind);
-        self.keyframe_editor_events.push_front(KeyframeEditorEvent {
-            timestamp: Instant::now(),
-            kind,
-        });
+        self.keyframe_editor_events.push_front(KeyframeEditorEvent { timestamp: Instant::now(), kind });
         if self.keyframe_editor_events.len() > KEYFRAME_EVENT_CAPACITY {
             self.keyframe_editor_events.pop_back();
         }
@@ -425,9 +413,6 @@ mod tests {
         assert_eq!(usage.update_time_edits, 1);
         let events = analytics.keyframe_editor_events();
         assert_eq!(events.len(), 3);
-        assert!(matches!(
-            events[0].kind,
-            KeyframeEditorEventKind::UpdateKey { changed_time: true, .. }
-        ));
+        assert!(matches!(events[0].kind, KeyframeEditorEventKind::UpdateKey { changed_time: true, .. }));
     }
 }

@@ -22,6 +22,11 @@ Milestone 5 requires a deterministic scene that exercises the animation stack (s
 - **Transform clip authoring:** Select `transform_clip_demo`, open the Keyframe Editor, and edit the translation/scale keys. Saving adds a new entry to `assets/animations/clips/slime_idle.json`, suppresses duplicate watcher events, reloads the clip, and re-runs validators so the inspector banner always shows the latest status.
 - **HUD / analytics validation:** With the scene loaded, hit play and observe the HUD entries for Sprite Eval/Pack/Upload plus Transform/Skeletal/Palette rows. These numbers now mirror the `animation_budget` section emitted in `target/animation_targets_report.json`.
 
+### Deterministic capture
+
+- Run `python scripts/capture_animation_samples.py animation_showcase` to emit `artifacts/scene_captures/animation_showcase_capture.json`. The script wraps the `scene_capture` helper so every entity/dependency/metadata field is serialized in a deterministic order.
+- `tests/animation_showcase_scene.rs` loads `animation_showcase.json`, generates a fresh summary via the same code path, and asserts it matches the capture. If it drifts, re-run the script above and inspect the diff.
+
 ## Asset quick reference
 
 | Asset | Path | Notes |

@@ -22,6 +22,7 @@ pub mod plugins;
 pub mod prefab;
 pub mod renderer;
 pub mod scene;
+pub mod scene_capture;
 pub mod scripts;
 pub mod time;
 

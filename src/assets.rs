@@ -600,8 +600,8 @@ fn vec4_track_to_file(track: &ClipVec4Track) -> ClipVec4TrackFile {
 }
 
 pub fn parse_animation_clip_bytes(bytes: &[u8], key_hint: &str, source_label: &str) -> Result<AnimationClip> {
-    let clip_file: ClipFile =
-        serde_json::from_slice(bytes).with_context(|| format!("parse animation clip JSON ({source_label})"))?;
+    let clip_file: ClipFile = serde_json::from_slice(bytes)
+        .with_context(|| format!("parse animation clip JSON ({source_label})"))?;
     if clip_file.version == 0 {
         return Err(anyhow!(
             "Clip '{}' has unsupported version 0 (expected >= 1) in {source_label}",
@@ -658,8 +658,8 @@ pub fn parse_animation_graph_bytes(
     key_hint: &str,
     source_label: &str,
 ) -> Result<AnimationGraphAsset> {
-    let file: AnimationGraphFile =
-        serde_json::from_slice(bytes).with_context(|| format!("parse animation graph JSON ({source_label})"))?;
+    let file: AnimationGraphFile = serde_json::from_slice(bytes)
+        .with_context(|| format!("parse animation graph JSON ({source_label})"))?;
     let version = file.version.unwrap_or(1);
     if version == 0 {
         return Err(anyhow!(
@@ -1283,10 +1283,9 @@ mod tests {
     #[test]
     fn clip_key_for_source_path_handles_equivalent_paths() {
         let mut assets = AssetManager::new();
-        assets.clip_sources.insert(
-            "slime".to_string(),
-            "fixtures/animation_clips/slime_bob.json".to_string(),
-        );
+        assets
+            .clip_sources
+            .insert("slime".to_string(), "fixtures/animation_clips/slime_bob.json".to_string());
         let relative = PathBuf::from("fixtures/animation_clips/slime_bob.json");
         let canonical = normalize_asset_path(&relative);
         assert_eq!(assets.clip_key_for_source_path(&relative).as_deref(), Some("slime"));
@@ -1296,10 +1295,9 @@ mod tests {
     #[test]
     fn graph_key_for_source_path_handles_equivalent_paths() {
         let mut assets = AssetManager::new();
-        assets.animation_graph_sources.insert(
-            "example".to_string(),
-            "assets/animations/graphs/example.json".to_string(),
-        );
+        assets
+            .animation_graph_sources
+            .insert("example".to_string(), "assets/animations/graphs/example.json".to_string());
         let relative = PathBuf::from("assets/animations/graphs/example.json");
         let canonical = normalize_asset_path(&relative);
         assert_eq!(assets.graph_key_for_source_path(&relative).as_deref(), Some("example"));

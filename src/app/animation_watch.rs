@@ -63,9 +63,7 @@ impl AnimationAssetWatcher {
             return Ok(());
         }
         let mode = if normalized.is_dir() { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
-        self.watcher
-            .watch(&normalized, mode)
-            .with_context(|| format!("watch {}", normalized.display()))?;
+        self.watcher.watch(&normalized, mode).with_context(|| format!("watch {}", normalized.display()))?;
         self.registrations.push((normalized, kind));
         Ok(())
     }
@@ -96,10 +94,7 @@ impl AnimationAssetWatcher {
 
     fn kind_for_path(&self, path: &Path) -> Option<AnimationAssetKind> {
         let normalized = normalize_watch_path(path);
-        self.registrations
-            .iter()
-            .find(|(root, _)| normalized.starts_with(root))
-            .map(|(_, kind)| *kind)
+        self.registrations.iter().find(|(root, _)| normalized.starts_with(root)).map(|(_, kind)| *kind)
     }
 
     fn is_relevant(kind: &EventKind) -> bool {

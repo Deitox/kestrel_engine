@@ -56,10 +56,7 @@ fn run() -> Result<RunSummary> {
             }
         }
     }
-    println!(
-        "Checked {} assets ({} warnings, {} errors)",
-        summary.checked, summary.warnings, summary.errors
-    );
+    println!("Checked {} assets ({} warnings, {} errors)", summary.checked, summary.warnings, summary.errors);
     Ok(summary)
 }
 
@@ -88,15 +85,11 @@ fn collect_targets(inputs: &[String]) -> Result<Vec<PathBuf>> {
             if should_validate(&path) {
                 add_target(path, &mut seen, &mut files)?;
             } else {
-                eprintln!(
-                    "[animation_check] skipping '{}' (unsupported extension)",
-                    path.display()
-                );
+                eprintln!("[animation_check] skipping '{}' (unsupported extension)", path.display());
             }
         } else if path.is_dir() {
-            walk_dir(&path, &mut seen, &mut files).with_context(|| {
-                format!("failed to enumerate directory '{}'", path.display())
-            })?;
+            walk_dir(&path, &mut seen, &mut files)
+                .with_context(|| format!("failed to enumerate directory '{}'", path.display()))?;
         } else {
             return Err(anyhow!("path '{}' is neither file nor directory", input));
         }

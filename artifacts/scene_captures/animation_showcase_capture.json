@@ -1,0 +1,153 @@
+{
+  "metadata": {
+    "viewport": "Ortho2D",
+    "camera2d": {
+      "position": [
+        0.0,
+        0.0
+      ],
+      "zoom": 1.0
+    },
+    "environment": {
+      "key": "environment::default",
+      "intensity": 1.0
+    },
+    "lighting": {
+      "direction": [
+        0.4,
+        0.8,
+        0.4
+      ],
+      "color": [
+        1.0,
+        0.98,
+        0.92
+      ],
+      "ambient": [
+        0.05,
+        0.05,
+        0.05
+      ],
+      "exposure": 1.0
+    }
+  },
+  "dependencies": {
+    "atlases": [
+      {
+        "key": "main",
+        "path": "assets/images/atlas.json"
+      },
+      {
+        "key": "slime_idle",
+        "path": "assets/images/slime_idle_atlas.json"
+      }
+    ],
+    "clips": [
+      {
+        "key": "slime_idle",
+        "path": "assets/animations/clips/slime_idle.json"
+      }
+    ],
+    "meshes": [],
+    "materials": [],
+    "environments": [
+      {
+        "key": "environment::default"
+      }
+    ]
+  },
+  "entities": [
+    {
+      "id": "c4b3babe-9e7e-4bcd-a39f-0321f0bfbb91",
+      "name": "palette_upload_probe",
+      "transform": {
+        "translation": [
+          0.85,
+          0.35
+        ],
+        "rotation": 0.0,
+        "scale": [
+          0.55,
+          0.55
+        ]
+      },
+      "sprite": {
+        "atlas": "main",
+        "region": "redorb"
+      },
+      "tint": [
+        0.8,
+        0.9,
+        1.0,
+        0.85
+      ],
+      "spin": 0.6
+    },
+    {
+      "id": "a0f143e1-1b83-4dd6-9156-0f3b35fd0f9d",
+      "name": "sprite_timeline_demo",
+      "transform": {
+        "translation": [
+          -0.75,
+          0.2
+        ],
+        "rotation": 0.0,
+        "scale": [
+          0.9,
+          0.9
+        ]
+      },
+      "sprite": {
+        "atlas": "slime_idle",
+        "region": "slime_idle_0",
+        "animation": {
+          "timeline": "idle",
+          "speed": 1.0,
+          "looped": true,
+          "playing": true,
+          "loop_mode": "loop",
+          "group": "slime_idle_demo"
+        }
+      },
+      "tint": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "id": "1a077df9-5091-4b6f-86c9-2f77b7b6aa0c",
+      "name": "transform_clip_demo",
+      "transform": {
+        "translation": [
+          0.0,
+          -0.25
+        ],
+        "rotation": 0.0,
+        "scale": [
+          0.7,
+          0.7
+        ]
+      },
+      "sprite": {
+        "atlas": "main",
+        "region": "checker"
+      },
+      "transform_clip": {
+        "clip_key": "slime_idle",
+        "playing": true,
+        "looped": true,
+        "speed": 1.0,
+        "time": 0.0,
+        "group": "clip_demo",
+        "mask": {
+          "translation": true,
+          "rotation": true,
+          "scale": true,
+          "tint": true
+        }
+      }
+    }
+  ]
+}

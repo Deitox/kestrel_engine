@@ -13,7 +13,7 @@ use self::animation_watch::{AnimationAssetChange, AnimationAssetKind, AnimationA
 use self::atlas_watch::{normalize_path_for_watch, AtlasHotReload};
 use self::plugin_host::{BuiltinPluginFactory, PluginHost};
 use crate::analytics::{
-    AnimationBudgetSample, AnalyticsPlugin, KeyframeEditorEventKind, KeyframeEditorTrackKind,
+    AnalyticsPlugin, AnimationBudgetSample, KeyframeEditorEventKind, KeyframeEditorTrackKind,
 };
 use crate::animation_validation::{
     AnimationValidationEvent, AnimationValidationSeverity, AnimationValidator,
@@ -570,10 +570,7 @@ impl App {
                 continue;
             }
             if let Err(err) = watcher.watch_root(&watch_target, AnimationAssetKind::Clip) {
-                eprintln!(
-                    "[animation] failed to watch clip directory {}: {err:?}",
-                    watch_target.display()
-                );
+                eprintln!("[animation] failed to watch clip directory {}: {err:?}", watch_target.display());
             }
         }
         let skeleton_sources = self.assets.skeleton_sources();
@@ -609,10 +606,7 @@ impl App {
                 continue;
             }
             if let Err(err) = watcher.watch_root(&watch_target, AnimationAssetKind::Graph) {
-                eprintln!(
-                    "[animation] failed to watch graph directory {}: {err:?}",
-                    watch_target.display()
-                );
+                eprintln!("[animation] failed to watch graph directory {}: {err:?}", watch_target.display());
             }
         }
     }
@@ -695,32 +689,21 @@ impl App {
         match change.kind {
             AnimationAssetKind::Clip => {
                 if let Err(err) = self.reload_clip_from_disk(&change.path) {
-                    eprintln!(
-                        "[animation] failed to reload clip for {}: {err:?}",
-                        change.path.display()
-                    );
-                    self.animation_clip_status = Some(format!(
-                        "Clip reload failed for {}: {err}",
-                        change.path.display()
-                    ));
+                    eprintln!("[animation] failed to reload clip for {}: {err:?}", change.path.display());
+                    self.animation_clip_status =
+                        Some(format!("Clip reload failed for {}: {err}", change.path.display()));
                 }
             }
             AnimationAssetKind::Graph => {
                 if let Err(err) = self.reload_graph_from_disk(&change.path) {
-                    eprintln!(
-                        "[animation] failed to reload graph for {}: {err:?}",
-                        change.path.display()
-                    );
+                    eprintln!("[animation] failed to reload graph for {}: {err:?}", change.path.display());
                     self.animation_clip_status =
                         Some(format!("Graph reload failed for {}: {err}", change.path.display()));
                 }
             }
             AnimationAssetKind::Skeletal => {
                 if let Err(err) = self.reload_skeleton_from_disk(&change.path) {
-                    eprintln!(
-                        "[animation] failed to reload skeleton for {}: {err:?}",
-                        change.path.display()
-                    );
+                    eprintln!("[animation] failed to reload skeleton for {}: {err:?}", change.path.display());
                     self.animation_clip_status =
                         Some(format!("Skeleton reload failed for {}: {err}", change.path.display()));
                 }
@@ -739,8 +722,7 @@ impl App {
             self.clip_edit_overrides.remove(&key);
             self.clip_dirty.remove(&key);
             self.apply_clip_override_to_instances(&key, Arc::clone(&canonical));
-            self.animation_clip_status =
-                Some(format!("Reloaded clip '{}' from {}", key, path.display()));
+            self.animation_clip_status = Some(format!("Reloaded clip '{}' from {}", key, path.display()));
         }
         Ok(())
     }
@@ -777,16 +759,12 @@ impl App {
                 let _ = self.ecs.set_skeleton_clip_group(snapshot.entity, snapshot.group.as_deref());
             }
         }
-        self.animation_clip_status =
-            Some(format!("Reloaded skeleton '{}' from {}", key, path.display()));
+        self.animation_clip_status = Some(format!("Reloaded skeleton '{}' from {}", key, path.display()));
         Ok(())
     }
 
     fn reload_graph_from_disk(&mut self, path: &Path) -> Result<()> {
-        let key = self
-            .assets
-            .graph_key_for_source_path(path)
-            .unwrap_or_else(|| default_graph_key(path));
+        let key = self.assets.graph_key_for_source_path(path).unwrap_or_else(|| default_graph_key(path));
         let path_string = path.to_string_lossy().to_string();
         self.assets.load_animation_graph(&key, &path_string)?;
         self.animation_clip_status =
@@ -1535,10 +1513,7 @@ impl App {
             target.as_ref().map(|track| track.keyframes.iter().copied().collect()).unwrap_or_else(Vec::new);
         match edit {
             TrackEditOperation::Insert { time, value } => {
-                let insert_value = value
-                    .and_then(|v| v.as_scalar())
-                    .or(sample)
-                    .unwrap_or(fallback);
+                let insert_value = value.and_then(|v| v.as_scalar()).or(sample).unwrap_or(fallback);
                 frames.push(ClipKeyframe { time, value: insert_value });
             }
             TrackEditOperation::Delete { indices } => Self::remove_key_indices(&mut frames, &indices),

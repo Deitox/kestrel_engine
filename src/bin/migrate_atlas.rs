@@ -55,9 +55,7 @@ fn run() -> Result<()> {
     let verb = if check_only { "would change" } else { "updated" };
     println!("Processed {} files ({} {})", total, updated, verb);
     if check_only && updated > 0 {
-        return Err(anyhow!(
-            "{updated} file(s) require migration; rerun without --check to rewrite assets."
-        ));
+        return Err(anyhow!("{updated} file(s) require migration; rerun without --check to rewrite assets."));
     }
     Ok(())
 }
@@ -88,10 +86,7 @@ fn collect_targets(inputs: &[String]) -> Result<Vec<PathBuf>> {
             if should_consider(&path) {
                 add_target(path, &mut seen, &mut files)?;
             } else {
-                eprintln!(
-                    "[migrate_atlas] skipping '{}' (unsupported extension)",
-                    path.display()
-                );
+                eprintln!("[migrate_atlas] skipping '{}' (unsupported extension)", path.display());
             }
         } else if path.is_dir() {
             walk_dir(&path, &mut seen, &mut files)
@@ -125,10 +120,7 @@ fn add_target(path: PathBuf, seen: &mut HashSet<PathBuf>, files: &mut Vec<PathBu
 }
 
 fn should_consider(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.eq_ignore_ascii_case("json"))
-        .unwrap_or(false)
+    path.extension().and_then(|ext| ext.to_str()).map(|ext| ext.eq_ignore_ascii_case("json")).unwrap_or(false)
 }
 
 fn normalize_path(path: &Path) -> Result<PathBuf> {
@@ -144,8 +136,8 @@ fn normalize_path(path: &Path) -> Result<PathBuf> {
 }
 
 fn migrate_file(path: &Path, check_only: bool) -> Result<bool> {
-    let contents = fs::read_to_string(path)
-        .with_context(|| format!("failed to read '{}'", path.display()))?;
+    let contents =
+        fs::read_to_string(path).with_context(|| format!("failed to read '{}'", path.display()))?;
     let mut doc: AtlasDocument =
         serde_json::from_str(&contents).with_context(|| "file does not match atlas schema")?;
     let mut changed = false;
@@ -159,8 +151,7 @@ fn migrate_file(path: &Path, check_only: bool) -> Result<bool> {
         }
     }
     if changed && !check_only {
-        let serialized =
-            serde_json::to_string_pretty(&doc).context("failed to serialize migrated atlas")?;
+        let serialized = serde_json::to_string_pretty(&doc).context("failed to serialize migrated atlas")?;
         fs::write(path, format!("{serialized}\n"))
             .with_context(|| format!("failed to write '{}'", path.display()))?;
     }
@@ -352,26 +343,12 @@ mod tests {
             looped: true,
             loop_mode: Some("loop".to_string()),
             frames: vec![
-                TimelineFrameDocument {
-                    name: None,
-                    region: "a".to_string(),
-                    duration_ms: 100,
-                },
-                TimelineFrameDocument {
-                    name: None,
-                    region: "b".to_string(),
-                    duration_ms: 100,
-                },
+                TimelineFrameDocument { name: None, region: "a".to_string(), duration_ms: 100 },
+                TimelineFrameDocument { name: None, region: "b".to_string(), duration_ms: 100 },
             ],
             events: vec![
-                TimelineEventDocument {
-                    frame: 0,
-                    name: "footstep".to_string(),
-                },
-                TimelineEventDocument {
-                    frame: 4,
-                    name: "bad".to_string(),
-                },
+                TimelineEventDocument { frame: 0, name: "footstep".to_string() },
+                TimelineEventDocument { frame: 4, name: "bad".to_string() },
             ],
         };
         assert!(sanitize_events("demo", &mut timeline));
@@ -385,16 +362,8 @@ mod tests {
             looped: true,
             loop_mode: Some("loop".to_string()),
             frames: vec![
-                TimelineFrameDocument {
-                    name: None,
-                    region: "a".to_string(),
-                    duration_ms: 0,
-                },
-                TimelineFrameDocument {
-                    name: None,
-                    region: "b".to_string(),
-                    duration_ms: 50,
-                },
+                TimelineFrameDocument { name: None, region: "a".to_string(), duration_ms: 0 },
+                TimelineFrameDocument { name: None, region: "b".to_string(), duration_ms: 50 },
             ],
             events: Vec::new(),
         };
