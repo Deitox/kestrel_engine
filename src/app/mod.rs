@@ -87,6 +87,13 @@ struct SkeletonPlaybackSnapshot {
     group: Option<String>,
 }
 
+fn default_graph_key(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(|stem| stem.to_string())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ViewportCameraMode {
     Ortho2D,
@@ -549,8 +556,7 @@ impl App {
         let Some(watcher) = self.animation_asset_watcher.as_mut() else {
             return;
         };
-        let clip_sources = self.assets.clip_sources();
-        for (_, source) in clip_sources {
+        for (_, source) in self.assets.clip_sources() {
             let clip_path = PathBuf::from(&source);
             let watch_target = if clip_path.is_dir() {
                 clip_path
@@ -585,6 +591,25 @@ impl App {
             if let Err(err) = watcher.watch_root(&watch_target, AnimationAssetKind::Skeletal) {
                 eprintln!(
                     "[animation] failed to watch skeleton directory {}: {err:?}",
+                    watch_target.display()
+                );
+            }
+        }
+        for (_, source) in self.assets.animation_graph_sources() {
+            let graph_path = PathBuf::from(&source);
+            let watch_target = if graph_path.is_dir() {
+                graph_path
+            } else if let Some(parent) = graph_path.parent() {
+                parent.to_path_buf()
+            } else {
+                graph_path
+            };
+            if !watch_target.exists() {
+                continue;
+            }
+            if let Err(err) = watcher.watch_root(&watch_target, AnimationAssetKind::Graph) {
+                eprintln!(
+                    "[animation] failed to watch graph directory {}: {err:?}",
                     watch_target.display()
                 );
             }
@@ -663,12 +688,14 @@ impl App {
                 }
             }
             AnimationAssetKind::Graph => {
-                let message = format!(
-                    "Graph change detected for {}; reload will occur once graph runtime support lands.",
-                    change.path.display()
-                );
-                eprintln!("[animation] {message}");
-                self.animation_clip_status = Some(message);
+                if let Err(err) = self.reload_graph_from_disk(&change.path) {
+                    eprintln!(
+                        "[animation] failed to reload graph for {}: {err:?}",
+                        change.path.display()
+                    );
+                    self.animation_clip_status =
+                        Some(format!("Graph reload failed for {}: {err}", change.path.display()));
+                }
             }
             AnimationAssetKind::Skeletal => {
                 if let Err(err) = self.reload_skeleton_from_disk(&change.path) {
@@ -734,6 +761,18 @@ impl App {
         }
         self.animation_clip_status =
             Some(format!("Reloaded skeleton '{}' from {}", key, path.display()));
+        Ok(())
+    }
+
+    fn reload_graph_from_disk(&mut self, path: &Path) -> Result<()> {
+        let key = self
+            .assets
+            .graph_key_for_source_path(path)
+            .unwrap_or_else(|| default_graph_key(path));
+        let path_string = path.to_string_lossy().to_string();
+        self.assets.load_animation_graph(&key, &path_string)?;
+        self.animation_clip_status =
+            Some(format!("Reloaded animation graph '{}' from {}", key, path.display()));
         Ok(())
     }
 

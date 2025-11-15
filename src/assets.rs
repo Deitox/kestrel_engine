@@ -14,6 +14,7 @@ pub mod skeletal;
 pub struct AssetManager {
     atlases: HashMap<String, TextureAtlas>,
     clips: HashMap<String, AnimationClip>,
+    animation_graphs: HashMap<String, AnimationGraphAsset>,
     skeletons: HashMap<String, Arc<skeletal::SkeletonAsset>>,
     skeletal_clips: HashMap<String, Arc<skeletal::SkeletalClip>>,
     sampler: Option<wgpu::Sampler>,
@@ -24,6 +25,7 @@ pub struct AssetManager {
     atlas_refs: HashMap<String, usize>,
     clip_sources: HashMap<String, String>,
     clip_refs: HashMap<String, usize>,
+    animation_graph_sources: HashMap<String, String>,
     skeleton_sources: HashMap<String, String>,
     skeleton_refs: HashMap<String, usize>,
     skeletal_clip_sources: HashMap<String, String>,
@@ -356,6 +358,41 @@ pub enum ClipInterpolation {
     Linear,
 }
 
+#[derive(Clone)]
+pub struct AnimationGraphAsset {
+    pub name: Arc<str>,
+    pub version: u32,
+    pub entry_state: Arc<str>,
+    pub states: Arc<[AnimationGraphState]>,
+    pub transitions: Arc<[AnimationGraphTransition]>,
+    pub parameters: Arc<[AnimationGraphParameter]>,
+}
+
+#[derive(Clone)]
+pub struct AnimationGraphState {
+    pub name: Arc<str>,
+    pub clip: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct AnimationGraphTransition {
+    pub from: Arc<str>,
+    pub to: Arc<str>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AnimationGraphParameterKind {
+    Bool,
+    Float,
+}
+
+#[derive(Clone)]
+pub struct AnimationGraphParameter {
+    pub name: Arc<str>,
+    pub kind: AnimationGraphParameterKind,
+}
+
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub struct Rect {
     pub x: u32,
@@ -467,6 +504,37 @@ struct ClipScalarKeyframeFile {
 struct ClipVec4KeyframeFile {
     time: f32,
     value: [f32; 4],
+}
+
+#[derive(Debug, Deserialize)]
+struct AnimationGraphFile {
+    version: Option<u32>,
+    name: Option<String>,
+    entry_state: Option<String>,
+    states: Vec<AnimationGraphStateFile>,
+    #[serde(default)]
+    transitions: Vec<AnimationGraphTransitionFile>,
+    #[serde(default)]
+    parameters: Vec<AnimationGraphParameterFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnimationGraphStateFile {
+    name: String,
+    clip: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnimationGraphTransitionFile {
+    from: String,
+    to: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnimationGraphParameterFile {
+    name: String,
+    #[serde(default)]
+    kind: Option<AnimationGraphParameterKind>,
 }
 
 const fn default_timeline_loop() -> bool {
@@ -585,11 +653,71 @@ pub fn parse_animation_clip_bytes(bytes: &[u8], key_hint: &str, source_label: &s
     })
 }
 
+pub fn parse_animation_graph_bytes(
+    bytes: &[u8],
+    key_hint: &str,
+    source_label: &str,
+) -> Result<AnimationGraphAsset> {
+    let file: AnimationGraphFile =
+        serde_json::from_slice(bytes).with_context(|| format!("parse animation graph JSON ({source_label})"))?;
+    let version = file.version.unwrap_or(1);
+    if version == 0 {
+        return Err(anyhow!(
+            "Graph '{}' has unsupported version 0 (expected >= 1) in {source_label}",
+            file.name.as_deref().unwrap_or(key_hint)
+        ));
+    }
+    if file.states.is_empty() {
+        return Err(anyhow!("Graph '{}' does not define any states in {source_label}", key_hint));
+    }
+    let mut states: Vec<AnimationGraphState> = Vec::with_capacity(file.states.len());
+    for state in file.states {
+        if state.name.trim().is_empty() {
+            return Err(anyhow!("Animation graph contains a state with an empty name in {source_label}"));
+        }
+        states.push(AnimationGraphState { name: Arc::from(state.name), clip: state.clip });
+    }
+    let mut transitions: Vec<AnimationGraphTransition> = Vec::new();
+    for transition in file.transitions {
+        if transition.from.trim().is_empty() || transition.to.trim().is_empty() {
+            return Err(anyhow!("Animation graph transition names cannot be empty in {source_label}"));
+        }
+        transitions.push(AnimationGraphTransition {
+            from: Arc::from(transition.from),
+            to: Arc::from(transition.to),
+        });
+    }
+    let mut parameters: Vec<AnimationGraphParameter> = Vec::new();
+    for param in file.parameters {
+        if param.name.trim().is_empty() {
+            return Err(anyhow!("Animation graph parameter names cannot be empty in {source_label}"));
+        }
+        parameters.push(AnimationGraphParameter {
+            name: Arc::from(param.name),
+            kind: param.kind.unwrap_or(AnimationGraphParameterKind::Float),
+        });
+    }
+    let entry_state = file
+        .entry_state
+        .or_else(|| states.first().map(|state| state.name.to_string()))
+        .ok_or_else(|| anyhow!("Animation graph could not determine entry state in {source_label}"))?;
+    let graph_name = file.name.unwrap_or_else(|| key_hint.to_string());
+    Ok(AnimationGraphAsset {
+        name: Arc::from(graph_name),
+        version,
+        entry_state: Arc::from(entry_state),
+        states: Arc::from(states.into_boxed_slice()),
+        transitions: Arc::from(transitions.into_boxed_slice()),
+        parameters: Arc::from(parameters.into_boxed_slice()),
+    })
+}
+
 impl AssetManager {
     pub fn new() -> Self {
         Self {
             atlases: HashMap::new(),
             clips: HashMap::new(),
+            animation_graphs: HashMap::new(),
             skeletons: HashMap::new(),
             skeletal_clips: HashMap::new(),
             sampler: None,
@@ -600,6 +728,7 @@ impl AssetManager {
             atlas_refs: HashMap::new(),
             clip_sources: HashMap::new(),
             clip_refs: HashMap::new(),
+            animation_graph_sources: HashMap::new(),
             skeleton_sources: HashMap::new(),
             skeleton_refs: HashMap::new(),
             skeletal_clip_sources: HashMap::new(),
@@ -840,6 +969,40 @@ impl AssetManager {
     pub fn clip_key_for_source_path<P: AsRef<Path>>(&self, path: P) -> Option<String> {
         let target = normalize_asset_path(path.as_ref());
         self.clip_sources.iter().find_map(|(key, stored)| {
+            let stored_path = normalize_asset_path(Path::new(stored));
+            if stored_path == target {
+                Some(key.clone())
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn load_animation_graph(&mut self, key: &str, json_path: &str) -> Result<()> {
+        let bytes = fs::read(json_path)?;
+        let graph = parse_animation_graph_bytes(&bytes, key, json_path)?;
+        self.animation_graphs.insert(key.to_string(), graph);
+        self.animation_graph_sources.insert(key.to_string(), json_path.to_string());
+        Ok(())
+    }
+
+    pub fn animation_graph(&self, key: &str) -> Option<&AnimationGraphAsset> {
+        self.animation_graphs.get(key)
+    }
+
+    pub fn animation_graph_sources(&self) -> Vec<(String, String)> {
+        self.animation_graph_sources.iter().map(|(key, path)| (key.clone(), path.clone())).collect()
+    }
+
+    pub fn animation_graph_keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self.animation_graphs.keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+
+    pub fn graph_key_for_source_path<P: AsRef<Path>>(&self, path: P) -> Option<String> {
+        let target = normalize_asset_path(path.as_ref());
+        self.animation_graph_sources.iter().find_map(|(key, stored)| {
             let stored_path = normalize_asset_path(Path::new(stored));
             if stored_path == target {
                 Some(key.clone())
@@ -1128,5 +1291,18 @@ mod tests {
         let canonical = normalize_asset_path(&relative);
         assert_eq!(assets.clip_key_for_source_path(&relative).as_deref(), Some("slime"));
         assert_eq!(assets.clip_key_for_source_path(&canonical).as_deref(), Some("slime"));
+    }
+
+    #[test]
+    fn graph_key_for_source_path_handles_equivalent_paths() {
+        let mut assets = AssetManager::new();
+        assets.animation_graph_sources.insert(
+            "example".to_string(),
+            "assets/animations/graphs/example.json".to_string(),
+        );
+        let relative = PathBuf::from("assets/animations/graphs/example.json");
+        let canonical = normalize_asset_path(&relative);
+        assert_eq!(assets.graph_key_for_source_path(&relative).as_deref(), Some("example"));
+        assert_eq!(assets.graph_key_for_source_path(&canonical).as_deref(), Some("example"));
     }
 }

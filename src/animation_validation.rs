@@ -1,6 +1,7 @@
-use crate::assets::{parse_animation_clip_bytes, AnimationClip};
+use crate::assets::{
+    parse_animation_clip_bytes, parse_animation_graph_bytes, AnimationClip, AnimationGraphAsset,
+};
 use crate::assets::skeletal;
-use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::fmt;
@@ -107,133 +108,19 @@ impl AnimationValidator {
     }
 
     fn validate_graph_bytes(path: &Path, bytes: &[u8]) -> Vec<AnimationValidationEvent> {
-        let graph: AnimationGraphFile = match serde_json::from_slice(bytes) {
-            Ok(graph) => graph,
-            Err(err) => {
-                return vec![Self::event(
-                    path,
-                    AnimationValidationSeverity::Error,
-                    format!("Failed to parse animation graph: {err}"),
-                )];
-            }
-        };
-        let version = graph.version.unwrap_or(0);
-        if version == 0 {
-            return vec![Self::event(
+        let key_hint = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("animation_graph");
+        let source_label = path.display().to_string();
+        match parse_animation_graph_bytes(bytes, key_hint, &source_label) {
+            Ok(graph) => Self::graph_success_events(path, &graph),
+            Err(err) => vec![Self::event(
                 path,
                 AnimationValidationSeverity::Error,
-                "Animation graph version must be >= 1.",
-            )];
+                format!("Failed to parse animation graph: {err}"),
+            )],
         }
-        if graph.states.is_empty() {
-            return vec![Self::event(
-                path,
-                AnimationValidationSeverity::Error,
-                "Animation graph must define at least one state.",
-            )];
-        }
-        let mut events = Vec::new();
-        let mut state_names = HashSet::new();
-        let mut duplicate_states = Vec::new();
-        for state in &graph.states {
-            if state.name.trim().is_empty() {
-                events.push(Self::event(
-                    path,
-                    AnimationValidationSeverity::Error,
-                    "Animation graph state names cannot be empty.",
-                ));
-            }
-            if !state_names.insert(state.name.to_string()) {
-                duplicate_states.push(state.name.to_string());
-            }
-        }
-        if !duplicate_states.is_empty() {
-            events.push(Self::event(
-                path,
-                AnimationValidationSeverity::Error,
-                format!(
-                    "Animation graph has duplicate states: {}",
-                    duplicate_states.join(", ")
-                ),
-            ));
-        }
-        let entry_state = graph.entry_state.clone().unwrap_or_else(|| graph.states[0].name.clone());
-        if !state_names.contains(&entry_state) {
-            events.push(Self::event(
-                path,
-                AnimationValidationSeverity::Error,
-                format!("Entry state '{entry_state}' is not defined in the graph."),
-            ));
-        }
-        let mut parameter_names = HashSet::new();
-        if let Some(parameters) = graph.parameters.as_ref() {
-            for param in parameters {
-                if !parameter_names.insert(param.name.clone()) {
-                    events.push(Self::event(
-                        path,
-                        AnimationValidationSeverity::Error,
-                        format!("Duplicate parameter '{}' detected.", param.name),
-                    ));
-                }
-            }
-        }
-        for transition in &graph.transitions {
-            if !state_names.contains(&transition.from) {
-                events.push(Self::event(
-                    path,
-                    AnimationValidationSeverity::Error,
-                    format!("Transition references unknown 'from' state '{}'.", transition.from),
-                ));
-            }
-            if !state_names.contains(&transition.to) {
-                events.push(Self::event(
-                    path,
-                    AnimationValidationSeverity::Error,
-                    format!("Transition references unknown 'to' state '{}'.", transition.to),
-                ));
-            }
-            if transition.from == transition.to {
-                events.push(Self::event(
-                    path,
-                    AnimationValidationSeverity::Warning,
-                    format!(
-                        "Transition from '{}' to itself detected; confirm this is intentional.",
-                        transition.from
-                    ),
-                ));
-            }
-        }
-        for state in &graph.states {
-            if state.clip.as_deref().map(|clip| clip.trim().is_empty()).unwrap_or(true) {
-                events.push(Self::event(
-                    path,
-                    AnimationValidationSeverity::Warning,
-                    format!("State '{}' does not reference a clip.", state.name),
-                ));
-            }
-        }
-        if graph.transitions.is_empty() && graph.states.len() > 1 {
-            events.push(Self::event(
-                path,
-                AnimationValidationSeverity::Warning,
-                "Graph has multiple states but no transitions; states other than the entry will never be reached.",
-            ));
-        }
-        if !has_error(&events) {
-            let state_count = graph.states.len();
-            let transition_count = graph.transitions.len();
-            let graph_label =
-                graph.name.as_deref().unwrap_or_else(|| path.file_stem().and_then(|s| s.to_str()).unwrap_or("graph"));
-            events.push(Self::event(
-                path,
-                AnimationValidationSeverity::Info,
-                format!(
-                    "Graph '{}' OK: {} states, {} transitions, entry '{}'.",
-                    graph_label, state_count, transition_count, entry_state
-                ),
-            ));
-        }
-        events
     }
 
     fn validate_skeletal_asset(path: &Path) -> Vec<AnimationValidationEvent> {
@@ -328,6 +215,112 @@ impl AnimationValidator {
         events
     }
 
+    fn graph_success_events(path: &Path, graph: &AnimationGraphAsset) -> Vec<AnimationValidationEvent> {
+        let mut events = Vec::new();
+        let mut state_names = HashSet::new();
+        let mut duplicate_states = Vec::new();
+        for state in graph.states.iter() {
+            let name = state.name.as_ref();
+            if name.trim().is_empty() {
+                events.push(Self::event(
+                    path,
+                    AnimationValidationSeverity::Error,
+                    "Animation graph state names cannot be empty.",
+                ));
+            }
+            if !state_names.insert(name.to_string()) {
+                duplicate_states.push(name.to_string());
+            }
+        }
+        if !duplicate_states.is_empty() {
+            events.push(Self::event(
+                path,
+                AnimationValidationSeverity::Error,
+                format!(
+                    "Animation graph has duplicate states: {}",
+                    duplicate_states.join(", ")
+                ),
+            ));
+        }
+        let entry_state = graph.entry_state.as_ref();
+        if !state_names.contains(entry_state) {
+            events.push(Self::event(
+                path,
+                AnimationValidationSeverity::Error,
+                format!("Entry state '{entry_state}' is not defined in the graph."),
+            ));
+        }
+        let mut parameter_names = HashSet::new();
+        for parameter in graph.parameters.iter() {
+            let name = parameter.name.as_ref();
+            if !parameter_names.insert(name.to_string()) {
+                events.push(Self::event(
+                    path,
+                    AnimationValidationSeverity::Error,
+                    format!("Duplicate parameter '{name}' detected."),
+                ));
+            }
+        }
+        for transition in graph.transitions.iter() {
+            let from = transition.from.as_ref();
+            let to = transition.to.as_ref();
+            if !state_names.contains(from) {
+                events.push(Self::event(
+                    path,
+                    AnimationValidationSeverity::Error,
+                    format!("Transition references unknown 'from' state '{from}'."),
+                ));
+            }
+            if !state_names.contains(to) {
+                events.push(Self::event(
+                    path,
+                    AnimationValidationSeverity::Error,
+                    format!("Transition references unknown 'to' state '{to}'."),
+                ));
+            }
+            if from == to {
+                events.push(Self::event(
+                    path,
+                    AnimationValidationSeverity::Warning,
+                    format!(
+                        "Transition from '{from}' to itself detected; confirm this is intentional."
+                    ),
+                ));
+            }
+        }
+        for state in graph.states.iter() {
+            let clip_empty = state.clip.as_deref().map(|clip| clip.trim().is_empty()).unwrap_or(true);
+            if clip_empty {
+                events.push(Self::event(
+                    path,
+                    AnimationValidationSeverity::Warning,
+                    format!("State '{}' does not reference a clip.", state.name),
+                ));
+            }
+        }
+        if graph.transitions.is_empty() && graph.states.len() > 1 {
+            events.push(Self::event(
+                path,
+                AnimationValidationSeverity::Warning,
+                "Graph has multiple states but no transitions; states other than the entry will never be reached.",
+            ));
+        }
+        if !has_error(&events) {
+            events.push(Self::event(
+                path,
+                AnimationValidationSeverity::Info,
+                format!(
+                    "Graph '{}' OK: {} states, {} transitions, entry '{}'.",
+                    graph.name.as_ref(),
+                    graph.states.len(),
+                    graph.transitions.len(),
+                    entry_state
+                ),
+            ));
+        }
+        events
+    }
+
     fn track_summary(clip: &AnimationClip) -> String {
         let mut segments = Vec::new();
         if let Some(track) = clip.translation.as_ref() {
@@ -379,35 +372,6 @@ enum JsonAssetKind {
     Clip,
     Graph,
     Unknown,
-}
-
-#[derive(Debug, Deserialize)]
-struct AnimationGraphFile {
-    version: Option<u32>,
-    name: Option<String>,
-    entry_state: Option<String>,
-    states: Vec<AnimationGraphState>,
-    #[serde(default)]
-    transitions: Vec<AnimationGraphTransition>,
-    #[serde(default)]
-    parameters: Option<Vec<AnimationGraphParameter>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AnimationGraphState {
-    name: String,
-    clip: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AnimationGraphTransition {
-    from: String,
-    to: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct AnimationGraphParameter {
-    name: String,
 }
 
 fn path_contains_segment(path: &Path, needle: &str) -> bool {
