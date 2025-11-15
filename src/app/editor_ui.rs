@@ -2,6 +2,7 @@ use super::{
     plugin_host::PluginHost, App, CameraBookmark, FrameTimingSample, MeshControlMode, ScriptConsoleEntry,
     ScriptConsoleKind, ViewportCameraMode,
 };
+use crate::animation_validation::AnimationValidationSeverity;
 use crate::audio::{AudioHealthSnapshot, AudioPlugin};
 use crate::camera3d::Camera3D;
 use crate::ecs::{
@@ -162,6 +163,14 @@ fn capability_violation_summary(log: Option<&CapabilityViolationLog>) -> (egui::
         }
     }
     (egui::Color32::from_rgb(120, 200, 120), "Capability violations: 0".to_string())
+}
+
+fn animation_validation_color(severity: AnimationValidationSeverity) -> egui::Color32 {
+    match severity {
+        AnimationValidationSeverity::Info => egui::Color32::from_rgb(140, 200, 255),
+        AnimationValidationSeverity::Warning => egui::Color32::from_rgb(230, 200, 120),
+        AnimationValidationSeverity::Error => egui::Color32::from_rgb(240, 120, 120),
+    }
 }
 
 fn show_capability_badges(ui: &mut egui::Ui, caps: &[PluginCapability]) {
@@ -741,6 +750,10 @@ impl App {
             self.analytics_plugin().map(|analytics| analytics.plugin_asset_readbacks()).unwrap_or_default();
         let plugin_watchdog_log =
             self.analytics_plugin().map(|analytics| analytics.plugin_watchdog_events()).unwrap_or_default();
+        let animation_validation_log = self
+            .analytics_plugin()
+            .map(|analytics| analytics.animation_validation_events())
+            .unwrap_or_default();
 
         let mut editor_settings_dirty = false;
         let keyframe_panel_ctx = ANIMATION_KEYFRAME_PANEL_ENABLED.then(|| self.egui_ctx.clone());
@@ -922,6 +935,22 @@ impl App {
                                     event.plugin,
                                     event.capability.label()
                                 ));
+                            }
+                        }
+                        if !animation_validation_log.is_empty() {
+                            ui.separator();
+                            ui.label("Animation Validation Alerts");
+                            for event in animation_validation_log.iter().take(6) {
+                                let color = animation_validation_color(event.severity);
+                                ui.colored_label(
+                                    color,
+                                    format!(
+                                        "[{}] {} - {}",
+                                        event.severity,
+                                        event.path.display(),
+                                        event.message
+                                    ),
+                                );
                             }
                         }
                         if ANIMATION_KEYFRAME_PANEL_ENABLED {

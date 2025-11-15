@@ -12,7 +12,9 @@ use self::animation_watch::{AnimationAssetKind, AnimationAssetWatcher};
 use self::atlas_watch::{normalize_path_for_watch, AtlasHotReload};
 use self::plugin_host::{BuiltinPluginFactory, PluginHost};
 use crate::analytics::AnalyticsPlugin;
-use crate::animation_validation::{AnimationValidationEvent, AnimationValidator};
+use crate::animation_validation::{
+    AnimationValidationEvent, AnimationValidationSeverity, AnimationValidator,
+};
 use crate::assets::AssetManager;
 use crate::audio::{AudioHealthSnapshot, AudioPlugin};
 use crate::camera::Camera2D;
@@ -365,6 +367,7 @@ pub struct App {
     script_console: VecDeque<ScriptConsoleEntry>,
     last_reported_script_error: Option<String>,
     animation_keyframe_panel: AnimationKeyframePanel,
+    pending_animation_validation_events: Vec<AnimationValidationEvent>,
 
     // Plugins
     plugin_host: PluginHost,
@@ -489,14 +492,25 @@ impl App {
                 continue;
             }
             for event in events {
+                self.pending_animation_validation_events.push(event.clone());
                 self.log_animation_validation_event(event);
             }
         }
     }
 
-    fn log_animation_validation_event(&self, event: AnimationValidationEvent) {
+    fn log_animation_validation_event(&mut self, event: AnimationValidationEvent) {
         let severity = event.severity.to_string();
-        eprintln!("[animation] validation {severity} for {}: {}", event.path.display(), event.message);
+        let formatted =
+            format!("[animation] validation {severity} for {}: {}", event.path.display(), event.message);
+        eprintln!("{formatted}");
+        if matches!(event.severity, AnimationValidationSeverity::Warning | AnimationValidationSeverity::Error)
+        {
+            self.inspector_status = Some(formatted);
+        }
+    }
+
+    fn drain_animation_validation_events(&mut self) -> Vec<AnimationValidationEvent> {
+        std::mem::take(&mut self.pending_animation_validation_events)
     }
 
     fn show_animation_keyframe_panel(&mut self, ctx: &egui::Context, animation_time: &AnimationTime) {
@@ -1033,6 +1047,7 @@ impl App {
             script_console: VecDeque::with_capacity(SCRIPT_CONSOLE_CAPACITY),
             last_reported_script_error: None,
             animation_keyframe_panel: AnimationKeyframePanel::default(),
+            pending_animation_validation_events: Vec::new(),
             plugin_host,
             camera,
             viewport_camera_mode: ViewportCameraMode::default(),
@@ -2303,6 +2318,7 @@ impl ApplicationHandler for App {
         let capability_events = self.plugin_host.drain_capability_events();
         let watchdog_alerts = self.plugin_host.drain_watchdog_events();
         let asset_readback_alerts = self.plugin_host.drain_asset_readback_events();
+        let animation_validation_alerts = self.drain_animation_validation_events();
         if let Some(analytics) = self.analytics_plugin_mut() {
             analytics.record_plugin_capability_metrics(capability_metrics);
             if !capability_events.is_empty() {
@@ -2313,6 +2329,9 @@ impl ApplicationHandler for App {
             }
             if !watchdog_alerts.is_empty() {
                 analytics.record_plugin_watchdog_events(watchdog_alerts);
+            }
+            if !animation_validation_alerts.is_empty() {
+                analytics.record_animation_validation_events(animation_validation_alerts);
             }
         }
 

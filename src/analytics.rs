@@ -1,3 +1,4 @@
+use crate::animation_validation::AnimationValidationEvent;
 use crate::ecs::{ParticleBudgetMetrics, SpatialMetrics};
 use crate::events::GameEvent;
 use crate::plugins::{
@@ -22,6 +23,7 @@ pub struct AnalyticsPlugin {
     plugin_capability_events: VecDeque<PluginCapabilityEvent>,
     plugin_asset_readbacks: VecDeque<PluginAssetReadbackEvent>,
     plugin_watchdog_events: VecDeque<PluginWatchdogEvent>,
+    animation_validation_events: VecDeque<AnimationValidationEvent>,
 }
 
 const SECURITY_EVENT_CAPACITY: usize = 64;
@@ -41,6 +43,7 @@ impl AnalyticsPlugin {
             plugin_capability_events: VecDeque::with_capacity(SECURITY_EVENT_CAPACITY),
             plugin_asset_readbacks: VecDeque::with_capacity(32),
             plugin_watchdog_events: VecDeque::with_capacity(32),
+            animation_validation_events: VecDeque::with_capacity(SECURITY_EVENT_CAPACITY),
         }
     }
 
@@ -151,6 +154,22 @@ impl AnalyticsPlugin {
     pub fn plugin_watchdog_events(&self) -> Vec<PluginWatchdogEvent> {
         self.plugin_watchdog_events.iter().cloned().collect()
     }
+
+    pub fn record_animation_validation_events(
+        &mut self,
+        events: impl IntoIterator<Item = AnimationValidationEvent>,
+    ) {
+        for event in events {
+            self.animation_validation_events.push_front(event);
+            if self.animation_validation_events.len() > SECURITY_EVENT_CAPACITY {
+                self.animation_validation_events.pop_back();
+            }
+        }
+    }
+
+    pub fn animation_validation_events(&self) -> Vec<AnimationValidationEvent> {
+        self.animation_validation_events.iter().cloned().collect()
+    }
 }
 
 impl Default for AnalyticsPlugin {
@@ -197,6 +216,9 @@ impl EnginePlugin for AnalyticsPlugin {
         self.spatial_metrics = None;
         self.gpu_timings.clear();
         self.plugin_capability_events.clear();
+        self.plugin_asset_readbacks.clear();
+        self.plugin_watchdog_events.clear();
+        self.animation_validation_events.clear();
         Ok(())
     }
 
@@ -215,4 +237,24 @@ pub struct GpuPassMetric {
     pub latest_ms: f32,
     pub average_ms: f32,
     pub sample_count: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::animation_validation::{AnimationValidationEvent, AnimationValidationSeverity};
+    use std::path::PathBuf;
+
+    #[test]
+    fn animation_validation_events_recorded() {
+        let mut analytics = AnalyticsPlugin::default();
+        analytics.record_animation_validation_events(vec![AnimationValidationEvent {
+            severity: AnimationValidationSeverity::Warning,
+            path: PathBuf::from("assets/animations/example.clip"),
+            message: "Test warning".to_string(),
+        }]);
+        let events = analytics.animation_validation_events();
+        assert_eq!(events.len(), 1);
+        assert!(events[0].message.contains("Test warning"));
+    }
 }
