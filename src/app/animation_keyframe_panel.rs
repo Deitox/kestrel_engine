@@ -2,6 +2,7 @@ use crate::assets::ClipInterpolation;
 use crate::ecs::AnimationTime;
 use bevy_ecs::prelude::Entity;
 use egui::{self, pos2, Color32, FontId, Id, Key, Modifiers, Rect, Sense, Stroke, Ui};
+use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -99,6 +100,7 @@ pub enum AnimationPanelCommand {
     InsertKey {
         binding: AnimationTrackBinding,
         time: f32,
+        value: Option<KeyframeValue>,
     },
     DeleteKeys {
         binding: AnimationTrackBinding,
@@ -180,6 +182,18 @@ impl KeyDragState {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct KeyClipboardEntry {
+    time_offset: f32,
+    value: KeyframeValue,
+}
+
+#[derive(Clone, Debug)]
+struct KeyClipboard {
+    kind: AnimationTrackKind,
+    entries: Vec<KeyClipboardEntry>,
+}
+
 #[derive(Default)]
 pub struct AnimationKeyframePanel {
     open: bool,
@@ -195,6 +209,7 @@ pub struct AnimationKeyframePanel {
     multi_vec2_offset: [f32; 2],
     multi_vec4_offset: [f32; 4],
     key_drag: Option<KeyDragState>,
+    clipboard: Option<KeyClipboard>,
 }
 
 impl AnimationKeyframePanel {
@@ -256,6 +271,7 @@ impl AnimationKeyframePanel {
         ui.add_space(4.0);
         let filtered_tracks = self.filtered_tracks(state);
         self.reconcile_selection(&filtered_tracks);
+        self.handle_keyboard_shortcuts(ui, &filtered_tracks);
         if filtered_tracks.is_empty() {
             ui.label("No animation tracks match the current filter.");
             return;
@@ -326,6 +342,25 @@ impl AnimationKeyframePanel {
                 .iter()
                 .filter(|summary| summary.label.to_lowercase().contains(&filter))
                 .collect()
+        }
+    }
+
+    fn handle_keyboard_shortcuts(&mut self, ui: &Ui, tracks: &[&AnimationTrackSummary]) {
+        if tracks.is_empty() {
+            return;
+        }
+        let (copy_requested, paste_requested) = ui.input(|input| {
+            let command = input.modifiers.command || input.modifiers.ctrl;
+            (
+                command && input.key_pressed(Key::C),
+                command && input.key_pressed(Key::V),
+            )
+        });
+        if copy_requested {
+            self.copy_selected_keys(tracks);
+        }
+        if paste_requested {
+            self.paste_clipboard_keys(tracks);
         }
     }
 
@@ -534,8 +569,13 @@ impl AnimationKeyframePanel {
     }
 
     fn render_selection_overview(&mut self, ui: &mut Ui, tracks: &[&AnimationTrackSummary]) {
-        if let Some(track_id) = self.selected_tracks.iter().next().copied() {
-            if let Some(summary) = tracks.iter().find(|summary| summary.id == track_id) {
+        let selected_summary = self
+            .selected_tracks
+            .iter()
+            .next()
+            .and_then(|track_id| tracks.iter().copied().find(|summary| summary.id == *track_id));
+        if let Some(summary) = selected_summary {
+            ui.horizontal(|ui| {
                 ui.label(format!(
                     "Selected track: {} ({}) • {} keys • {}",
                     summary.label,
@@ -543,7 +583,17 @@ impl AnimationKeyframePanel {
                     summary.key_count,
                     self.interpolation_label(summary.interpolation)
                 ));
-            }
+                if self.can_edit_track(summary.kind) {
+                    if ui.button("Insert Key at Scrub").clicked() {
+                        let clamped = self.scrub_time.min(summary.duration.max(0.0));
+                        self.pending_commands.push(AnimationPanelCommand::InsertKey {
+                            binding: summary.binding,
+                            time: clamped,
+                            value: None,
+                        });
+                    }
+                }
+            });
         } else {
             ui.label("Selected track: none");
         }
@@ -729,6 +779,94 @@ impl AnimationKeyframePanel {
         self.sync_selection_anchor();
     }
 
+    fn selected_key_details<'a>(
+        &'a self,
+        tracks: &[&'a AnimationTrackSummary],
+    ) -> Option<(&'a AnimationTrackSummary, Vec<&'a KeyframeDetail>)> {
+        if self.selected_keys.is_empty() {
+            return None;
+        }
+        let mut iter = self.selected_keys.iter();
+        let first = iter.next()?;
+        let summary = tracks.iter().copied().find(|summary| summary.id == first.track)?;
+        if !self.can_edit_track(summary.kind) {
+            return None;
+        }
+        let mut details = Vec::new();
+        for key in &self.selected_keys {
+            if key.track != summary.id {
+                return None;
+            }
+            if let Some(detail) = summary.key_details.iter().find(|detail| detail.id == *key) {
+                details.push(detail);
+            }
+        }
+        if details.is_empty() {
+            return None;
+        }
+        Some((summary, details))
+    }
+
+    fn primary_selected_track_summary<'a>(
+        &self,
+        tracks: &[&'a AnimationTrackSummary],
+    ) -> Option<&'a AnimationTrackSummary> {
+        let track_id = self.selected_tracks.iter().next().copied()?;
+        tracks.iter().copied().find(|summary| summary.id == track_id)
+    }
+
+    fn copy_selected_keys(&mut self, tracks: &[&AnimationTrackSummary]) {
+        let Some((summary, details)) = self.selected_key_details(tracks) else {
+            return;
+        };
+        let mut ordered: Vec<&KeyframeDetail> =
+            details.into_iter().filter(|detail| detail.time.is_some()).collect();
+        if ordered.is_empty() {
+            return;
+        }
+        ordered.sort_by(|a, b| {
+            let at = a.time.unwrap();
+            let bt = b.time.unwrap();
+            at.partial_cmp(&bt).unwrap_or(Ordering::Equal)
+        });
+        let anchor = ordered.first().and_then(|detail| detail.time).unwrap_or(0.0);
+        let mut entries: Vec<KeyClipboardEntry> = Vec::new();
+        for detail in ordered {
+            if matches!(detail.value, KeyframeValue::None) {
+                continue;
+            }
+            if let Some(time) = detail.time {
+                entries.push(KeyClipboardEntry { time_offset: time - anchor, value: detail.value });
+            }
+        }
+        if entries.is_empty() {
+            return;
+        }
+        self.clipboard = Some(KeyClipboard { kind: summary.kind, entries });
+    }
+
+    fn paste_clipboard_keys(&mut self, tracks: &[&AnimationTrackSummary]) {
+        let Some(clipboard) = self.clipboard.clone() else { return; };
+        if clipboard.entries.is_empty() {
+            return;
+        }
+        let Some(target) = self.primary_selected_track_summary(tracks) else {
+            return;
+        };
+        if target.kind != clipboard.kind || !self.can_edit_track(target.kind) {
+            return;
+        }
+        let max_duration = target.duration.max(0.0);
+        for entry in clipboard.entries {
+            let time = (self.scrub_time + entry.time_offset).max(0.0).min(max_duration);
+            self.pending_commands.push(AnimationPanelCommand::InsertKey {
+                binding: target.binding,
+                time,
+                value: Some(entry.value),
+            });
+        }
+    }
+
     fn handle_key_click(&mut self, key_id: KeyframeId, track_id: AnimationTrackId, modifiers: Modifiers) {
         if modifiers.shift {
             self.apply_shift_selection(key_id);
@@ -760,6 +898,7 @@ impl AnimationKeyframePanel {
         self.pending_commands.push(AnimationPanelCommand::InsertKey {
             binding: summary.binding,
             time: time.min(summary.duration.max(0.0)),
+            value: None,
         });
     }
 
@@ -1182,5 +1321,92 @@ mod tests {
         };
         assert_eq!(summary.key_details.len(), 2);
         assert_eq!(summary.key_details[1].time, Some(1.0));
+    }
+
+    #[test]
+    fn copy_selected_keys_populates_clipboard() {
+        let mut panel = AnimationKeyframePanel::default();
+        let track_id = AnimationTrackId(5);
+        panel.selected_tracks.insert(track_id);
+        panel.selected_keys.insert(KeyframeId::new(track_id, 0));
+        panel.selected_keys.insert(KeyframeId::new(track_id, 1));
+        let summary = AnimationTrackSummary {
+            id: track_id,
+            label: "Translation".to_string(),
+            kind: AnimationTrackKind::Translation,
+            binding: AnimationTrackBinding::TransformChannel {
+                entity: Entity::from_raw(1),
+                channel: AnimationTrackKind::Translation,
+            },
+            duration: 1.0,
+            key_count: 2,
+            interpolation: Some(ClipInterpolation::Linear),
+            playhead: Some(0.0),
+            dirty: false,
+            key_details: vec![
+                KeyframeDetail {
+                    id: KeyframeId::new(track_id, 0),
+                    index: 0,
+                    time: Some(0.1),
+                    value_preview: None,
+                    value: KeyframeValue::Vec2([0.0, 0.0]),
+                },
+                KeyframeDetail {
+                    id: KeyframeId::new(track_id, 1),
+                    index: 1,
+                    time: Some(0.4),
+                    value_preview: None,
+                    value: KeyframeValue::Vec2([1.0, 2.0]),
+                },
+            ],
+        };
+        let tracks = vec![&summary];
+        panel.copy_selected_keys(&tracks);
+        let clipboard = panel.clipboard.expect("clipboard populated");
+        assert_eq!(clipboard.kind, AnimationTrackKind::Translation);
+        assert_eq!(clipboard.entries.len(), 2);
+        assert!(clipboard.entries[1].time_offset > clipboard.entries[0].time_offset);
+    }
+
+    #[test]
+    fn paste_clipboard_generates_insert_commands() {
+        let mut panel = AnimationKeyframePanel::default();
+        let track_id = AnimationTrackId(9);
+        panel.selected_tracks.insert(track_id);
+        panel.scrub_time = 0.2;
+        panel.clipboard = Some(KeyClipboard {
+            kind: AnimationTrackKind::Rotation,
+            entries: vec![KeyClipboardEntry { time_offset: 0.0, value: KeyframeValue::Scalar(45.0) }],
+        });
+        let summary = AnimationTrackSummary {
+            id: track_id,
+            label: "Rotation".to_string(),
+            kind: AnimationTrackKind::Rotation,
+            binding: AnimationTrackBinding::TransformChannel {
+                entity: Entity::from_raw(2),
+                channel: AnimationTrackKind::Rotation,
+            },
+            duration: 1.0,
+            key_count: 0,
+            interpolation: Some(ClipInterpolation::Linear),
+            playhead: Some(0.0),
+            dirty: false,
+            key_details: Vec::new(),
+        };
+        let tracks = vec![&summary];
+        panel.paste_clipboard_keys(&tracks);
+        let mut commands = panel.drain_commands();
+        assert_eq!(commands.len(), 1);
+        match commands.remove(0) {
+            AnimationPanelCommand::InsertKey { binding, time, value } => {
+                assert_eq!(time, 0.2);
+                assert!(matches!(value, Some(KeyframeValue::Scalar(v)) if (v - 45.0).abs() < 1e-4));
+                assert!(matches!(
+                    binding,
+                    AnimationTrackBinding::TransformChannel { channel: AnimationTrackKind::Rotation, .. }
+                ));
+            }
+            other => panic!("Unexpected command from paste: {other:?}"),
+        }
     }
 }

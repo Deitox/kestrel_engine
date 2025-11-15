@@ -86,7 +86,7 @@ Status: ✅ Implemented across clips, skeletons, and graph assets (see `src/app/
 - [x] Transform channels support double-click insert + delete for keys (runtime override only).
 - [x] Undo/redo + dirty badges + autosave feedback wired to the clip editor.
 - [x] Multi-key adjustments (time/value offsets) available for transform channels.
-- [ ] Expose per-key editing interactions.
+- [x] Expose per-key editing interactions (per-key inspector controls, copy/paste, insert-at-scrub button).
 - [ ] Persist edits via watchers/validators.
 
 

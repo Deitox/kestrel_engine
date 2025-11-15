@@ -291,7 +291,7 @@ pub(crate) struct ScriptConsoleEntry {
 }
 
 enum TrackEditOperation {
-    Insert { time: f32 },
+    Insert { time: f32, value: Option<KeyframeValue> },
     Delete { indices: Vec<usize> },
     Update { index: usize, new_time: Option<f32>, new_value: Option<KeyframeValue> },
     Adjust { indices: Vec<usize>, time_delta: Option<f32>, value_delta: Option<KeyframeValue> },
@@ -829,9 +829,9 @@ impl App {
                     self.handle_scrub_command(binding, time);
                     self.log_keyframe_editor_event(KeyframeEditorEventKind::Scrub { track: track_kind });
                 }
-                AnimationPanelCommand::InsertKey { binding, time } => {
+                AnimationPanelCommand::InsertKey { binding, time, value } => {
                     let track_kind = Self::analytics_track_kind(&binding);
-                    self.apply_track_edit(binding, TrackEditOperation::Insert { time });
+                    self.apply_track_edit(binding, TrackEditOperation::Insert { time, value });
                     self.log_keyframe_editor_event(KeyframeEditorEventKind::InsertKey { track: track_kind });
                 }
                 AnimationPanelCommand::DeleteKeys { binding, indices } => {
@@ -1433,8 +1433,13 @@ impl App {
         let mut frames: Vec<ClipKeyframe<Vec2>> =
             target.as_ref().map(|track| track.keyframes.iter().copied().collect()).unwrap_or_else(Vec::new);
         match edit {
-            TrackEditOperation::Insert { time } => {
-                frames.push(ClipKeyframe { time, value: sample.unwrap_or(fallback) });
+            TrackEditOperation::Insert { time, value } => {
+                let insert_value = value
+                    .and_then(|v| v.as_vec2())
+                    .map(|arr| Vec2::new(arr[0], arr[1]))
+                    .or(sample)
+                    .unwrap_or(fallback);
+                frames.push(ClipKeyframe { time, value: insert_value });
             }
             TrackEditOperation::Delete { indices } => Self::remove_key_indices(&mut frames, &indices),
             TrackEditOperation::Update { index, new_time, new_value } => {
@@ -1505,8 +1510,12 @@ impl App {
         let mut frames: Vec<ClipKeyframe<f32>> =
             target.as_ref().map(|track| track.keyframes.iter().copied().collect()).unwrap_or_else(Vec::new);
         match edit {
-            TrackEditOperation::Insert { time } => {
-                frames.push(ClipKeyframe { time, value: sample.unwrap_or(fallback) });
+            TrackEditOperation::Insert { time, value } => {
+                let insert_value = value
+                    .and_then(|v| v.as_scalar())
+                    .or(sample)
+                    .unwrap_or(fallback);
+                frames.push(ClipKeyframe { time, value: insert_value });
             }
             TrackEditOperation::Delete { indices } => Self::remove_key_indices(&mut frames, &indices),
             TrackEditOperation::Update { index, new_time, new_value } => {
@@ -1575,8 +1584,13 @@ impl App {
         let mut frames: Vec<ClipKeyframe<Vec4>> =
             target.as_ref().map(|track| track.keyframes.iter().copied().collect()).unwrap_or_else(Vec::new);
         match edit {
-            TrackEditOperation::Insert { time } => {
-                frames.push(ClipKeyframe { time, value: sample.unwrap_or(fallback) });
+            TrackEditOperation::Insert { time, value } => {
+                let insert_value = value
+                    .and_then(|v| v.as_vec4())
+                    .map(|arr| Vec4::new(arr[0], arr[1], arr[2], arr[3]))
+                    .or(sample)
+                    .unwrap_or(fallback);
+                frames.push(ClipKeyframe { time, value: insert_value });
             }
             TrackEditOperation::Delete { indices } => Self::remove_key_indices(&mut frames, &indices),
             TrackEditOperation::Update { index, new_time, new_value } => {
