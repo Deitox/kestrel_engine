@@ -14,6 +14,7 @@
 - Scene I/O guardrails - Mesh-aware helpers (save_scene_to_path_with_mesh_source, load_scene_with_mesh) ensure custom assets keep their source paths and metadata during save/load workflows.
 - Particle telemetry - The Stats panel now surfaces particle budget metrics (active count, spawn budget, emitter backlog) so runaway emitters are obvious without diving into the ECS.
 - Animation workflow polish - Sprite timelines now support explicit loop modes (loop, ping-pong, once-hold, once-stop) plus per-frame events that surface through the `GameEvent` bus. A command-line Aseprite importer (`cargo run --bin aseprite_to_atlas`) converts authoring exports into engine-ready atlases, complete with optional loop overrides and timeline event metadata, and hot-reload keeps running scenes in sync with file edits.
+- Animation monitoring - Transform clip/skeletal watchers reload assets instantly, validators log through the inspector + analytics queue, and the viewport HUD mirrors sprite/transform/skeletal budgets (including GPU palette uploads) so perf regressions are obvious without digging through logs.
 
 ## Core Systems
 - Physics - Rapier2D simulates rigid bodies. ECS components (Transform, Velocity, RapierBody, RapierCollider) mirror state back into the world every fixed step.
@@ -41,6 +42,15 @@
 - Type Rhai commands into the REPL field and press **Enter** or **Run**; commands execute against the live `World` just like the main script, so you can tweak emitters, spawn sprites, or inspect state at runtime.
 - Arrow keys cycle through command history, and the History list lets you click to rehydrate older commands for editing. The input box auto-focuses whenever a script error occurs so you can fix issues quickly.
 - Errors that occur during REPL execution or regular script updates automatically reopen the debugger and highlight the failure, keeping the workflow tight during iteration.
+
+## Animation Tooling & Validation
+- The viewport HUD (toggle from **Stats -> Viewport Overlays**) now shows running budgets for sprite evaluation/packing/upload, transform clips, skeletal rigs, and GPU palette uploads. Entries stay green while under budget, turn amber as they approach the limit, and flip red when exceeding the roadmap targets. Labels also report live counts (sprite animators, transform clips, skeletons/bones, palette uploads) so perf investigations start with concrete numbers.
+- Animation asset watchers monitor `assets/animations/{clips,graphs,skeletal}`. Saving a clip or skeletal graph reloads it, re-runs schema/semantic validators, and pushes the results into the inspector banner plus the analytics log, keeping authors informed without spelunking console output.
+- Run the same validators headlessly via:
+  ```shell
+  cargo run --bin animation_check -- assets/animations
+  ```
+  Provide one or more files/directories. The tool walks subdirectories, validates every `.json`, `.clip`, `.gltf`, or `.glb` animation asset, prints Info/Warn/Error entries, and returns a non-zero exit code when blocking issues are found—ideal for CI hooks.
 
 ## Scene Formats
 - JSON scenes (`.json`) remain human-readable and are always supported.

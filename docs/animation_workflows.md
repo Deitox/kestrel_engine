@@ -26,11 +26,24 @@
   - Invalid tag ranges log the offending indices; confirm tag start/end frames in the tag dialog.
   - If hot reload does not trigger, ensure the atlas is retained in-scene (`Scene > Atlas refs`) and the watcher path matches the edited file.
 
-## Sprite Animation Perf HUD
-- Open **Stats → Sprite Animation Perf** in the editor to inspect runtime telemetry. The panel lists fast/slow bucket counts, Δt mix (`var_dt` vs `const_dt`), ping-pong/event-heavy animator totals, emitted/coalesced event counts, and modulo/division fallbacks. Values update every frame without allocations, so you can leave the panel open while iterating.
-- The HUD highlights `%slow > 1%` streaks and SIMD tail-scalar ratios >5% (both require 60 consecutive frames before the warning turns orange). Use these cues to spot regressions caused by new atlas content, event storms, or clip settings.
-- Eval/Pack/Upload progress bars visualize `sys_drive_sprite_animations`, `sys_apply_sprite_frame_states`, and the GPU sprite pass respectively. Budgets default to 0.305 ms / 0.050 ms / 0.100 ms; the bars turn orange when a stage exceeds its budget for the most recent frame.
-- Need raw samples? Call `sprite_anim_perf_history()` from the REPL or test harness to fetch the ring buffer, or `sprite_anim_perf_sample()` to read the most recent frame. Both helpers live on `EcsWorld`.
+## Animation HUD & Perf Counters
+- Open **Stats → Sprite Animation Perf** in the editor to inspect runtime telemetry. The panel lists fast/slow bucket counts, Δt mix (ar_dt vs const_dt), ping-pong/event-heavy animator totals, emitted/coalesced event counts, and modulo/division fallbacks. Values update every frame without allocations, so you can leave the panel open while iterating.
+- The viewport HUD (toggle **Stats → Viewport Overlays**) mirrors the roadmap budgets with color-coded bars:
+  - **Sprite Eval/Pack/Upload**: CPU time for sys_drive_sprite_animations, sys_apply_sprite_frame_states, and the GPU sprite pass (budgets 0.30 / 0.05 / 0.10 ms).
+  - **Transform Clips**: CPU time for sys_drive_transform_clips, plus active clip counts (target ≤ 0.40 ms for 2 000 clips).
+  - **Skeletal Eval**: CPU time for sys_drive_skeletal_clips, rig counts, and total bones (target ≤ 1.20 ms for 1 000 bones).
+  - **Palette Uploads**: GPU joint palette staging cost and upload frequency (target ≤ 0.50 ms).
+  Bars stay green under budget, flip amber between 80%–100%, and red once the budget is exceeded. Labels include the current animator/clip/bone totals so perf investigations start with concrete data.
+- Need raw samples? Call sprite_anim_perf_history() from the REPL or test harness to fetch the ring buffer, or sprite_anim_perf_sample() to read the latest frame. Both helpers live on EcsWorld. Transform/skeletal timings surface via EcsWorld::system_timings() summaries if you need historical values outside the HUD.
+
+## Automation & Validation
+- **Watchers:** `assets/images/*.json` (atlases), `assets/animations/clips/**/*.json`, `assets/animations/graphs/**/*.json`, and `assets/animations/skeletal/**/*.json` are watched automatically inside the editor. Saving a file reloads the asset, reruns schema/semantic validators, and surfaces the results in both the inspector banner and the analytics log. Keep clip sources under `assets/animations/` so the watcher can resolve canonical paths; the inspector's status line confirms each reload (e.g., `Validated clip slime_bob.json`).
+- **CLI validation:**
+  ```shell
+  cargo run --bin animation_check -- assets/animations
+  ```
+  Provide any mix of files or directories. The CLI walks subdirectories, filters animation asset extensions (`.json`, `.clip`, `.gltf`, `.glb`), prints Info/Warn/Error records, and exits with code `2` when blocking errors occur. Wire this into CI so broken clips fail fast; locally, run it before committing to catch schema drift.
+- **Troubleshooting:** Validation events include absolute paths and severity in the console/analytics log. If a watched folder fails to register, confirm it exists (watch roots are skipped silently when missing) or run `animation_check` explicitly to get path-by-path diagnostics.
 
 ## Transform & Property Clips
 - **Milestone status:** The `AnimationClip` loader and fixtures are live on `main`; playback systems, inspector controls, and ECS glue land across Milestone 2. Build clips now so content is ready as the runtime merges.
@@ -154,6 +167,7 @@
 - If the export fails, inspect the status string directly under the button; file-system errors (e.g., read-only builds) are reported there.
 
 ## Change Log
+- 2025-11-15: Documented animation HUD budgets, watcher behavior, and the nimation_check CLI validation workflow.
 - 2025-10-28: Added Aseprite importer workflow and CLI usage.
 - 2025-11-02: Documented animation phase controls and AnimationTime integration.
 - 2025-11-08: Added inspector playback controls, event preview details, and hot-reload continuity guarantees.
