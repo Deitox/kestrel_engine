@@ -83,6 +83,7 @@ This plan breaks Milestone 5 (“Tooling, Automation, and Analytics”) into con
 - [x] Scrub slider drives runtime playback (sprite timelines + transform clips).
 - [x] Transform channels support double-click insert + delete for keys (runtime override only).
 - [x] Undo/redo + dirty badges + autosave feedback wired to the clip editor.
+- [x] Multi-key adjustments (time/value offsets) available for transform channels.
 - [ ] Expose per-key editing interactions.
 - [ ] Persist edits via watchers/validators.
 

@@ -110,6 +110,12 @@ pub enum AnimationPanelCommand {
         new_time: Option<f32>,
         new_value: Option<KeyframeValue>,
     },
+    AdjustKeys {
+        binding: AnimationTrackBinding,
+        indices: Vec<usize>,
+        time_delta: Option<f32>,
+        value_delta: Option<KeyframeValue>,
+    },
     Undo,
     Redo,
 }
@@ -157,6 +163,10 @@ pub struct AnimationKeyframePanel {
     scrub_time: f32,
     visible_duration: f32,
     pending_commands: Vec<AnimationPanelCommand>,
+    multi_time_offset: f32,
+    multi_scalar_offset: f32,
+    multi_vec2_offset: [f32; 2],
+    multi_vec4_offset: [f32; 4],
 }
 
 impl AnimationKeyframePanel {
@@ -479,21 +489,31 @@ impl AnimationKeyframePanel {
         } else {
             ui.label("Selected track: none");
         }
+        let selection_info = self.selection_binding_and_indices(tracks);
         if self.selected_keys.is_empty() {
             ui.label("Selected keys: none");
         } else {
             ui.label(format!("Selected keys: {}", self.selected_keys.len()));
         }
-        let selection_binding = self.selection_binding_and_indices(tracks);
-        let delete_enabled = selection_binding.is_some();
+        let delete_enabled = selection_info.is_some();
         let delete_button = ui.add_enabled(delete_enabled, egui::Button::new("Delete Selected Keys"));
         let delete_request =
             delete_button.clicked() || (delete_enabled && ui.input(|i| i.key_pressed(Key::Delete)));
         if delete_request {
-            if let Some((binding, mut indices)) = selection_binding {
+            if let Some((binding, _, mut indices)) = selection_info.clone() {
                 indices.sort();
                 self.pending_commands.push(AnimationPanelCommand::DeleteKeys { binding, indices });
                 self.selected_keys.clear();
+            }
+        }
+        if self.selected_keys.len() > 1 {
+            if let Some(selection) = selection_info.clone() {
+                self.render_multi_edit_controls(ui, selection);
+            }
+        }
+        if self.selected_keys.len() > 1 {
+            if let Some(selection) = selection_info.clone() {
+                self.render_multi_edit_controls(ui, selection);
             }
         }
         self.render_key_editor(ui, tracks);
@@ -705,11 +725,12 @@ impl AnimationKeyframePanel {
     fn selection_binding_and_indices(
         &self,
         tracks: &[&AnimationTrackSummary],
-    ) -> Option<(AnimationTrackBinding, Vec<usize>)> {
+    ) -> Option<(AnimationTrackBinding, AnimationTrackKind, Vec<usize>)> {
         if self.selected_keys.is_empty() {
             return None;
         }
         let mut binding: Option<AnimationTrackBinding> = None;
+        let mut kind: Option<AnimationTrackKind> = None;
         let mut indices = Vec::new();
         for key in &self.selected_keys {
             let summary = tracks.iter().find(|summary| summary.id == key.track)?;
@@ -718,12 +739,15 @@ impl AnimationKeyframePanel {
             }
             match binding {
                 Some(existing) if existing != summary.binding => return None,
-                None => binding = Some(summary.binding),
+                None => {
+                    binding = Some(summary.binding);
+                    kind = Some(summary.kind);
+                }
                 _ => {}
             }
             indices.push(key.index as usize);
         }
-        binding.map(|binding| (binding, indices))
+        binding.and_then(|binding| kind.map(|kind| (binding, kind, indices)))
     }
 
     fn primary_selected_key<'a>(
@@ -734,6 +758,99 @@ impl AnimationKeyframePanel {
         let summary = tracks.iter().find(|summary| summary.id == key.track)?;
         let detail = summary.key_details.iter().find(|detail| detail.id == *key)?;
         Some((summary, detail))
+    }
+
+    fn render_multi_edit_controls(
+        &mut self,
+        ui: &mut Ui,
+        selection: (AnimationTrackBinding, AnimationTrackKind, Vec<usize>),
+    ) {
+        let (binding, kind, indices) = selection;
+        if indices.len() < 2 || matches!(kind, AnimationTrackKind::SpriteTimeline) {
+            return;
+        }
+        ui.separator();
+        ui.strong("Multi-Key Adjustments");
+        ui.horizontal(|ui| {
+            ui.label("Time Offset (s)");
+            ui.add(egui::DragValue::new(&mut self.multi_time_offset).speed(0.01));
+            if ui.button("Apply Time Offset").clicked() && self.multi_time_offset != 0.0 {
+                self.pending_commands.push(AnimationPanelCommand::AdjustKeys {
+                    binding,
+                    indices: indices.clone(),
+                    time_delta: Some(self.multi_time_offset),
+                    value_delta: None,
+                });
+                self.multi_time_offset = 0.0;
+            }
+            if ui.button("Reset").clicked() {
+                self.multi_time_offset = 0.0;
+            }
+        });
+        match kind {
+            AnimationTrackKind::Translation | AnimationTrackKind::Scale => {
+                ui.horizontal(|ui| {
+                    ui.label("Value Offset (X,Y)");
+                    ui.add(egui::DragValue::new(&mut self.multi_vec2_offset[0]).speed(0.01));
+                    ui.add(egui::DragValue::new(&mut self.multi_vec2_offset[1]).speed(0.01));
+                    if ui.button("Apply Value Offset").clicked()
+                        && (self.multi_vec2_offset[0] != 0.0 || self.multi_vec2_offset[1] != 0.0)
+                    {
+                        self.pending_commands.push(AnimationPanelCommand::AdjustKeys {
+                            binding,
+                            indices: indices.clone(),
+                            time_delta: None,
+                            value_delta: Some(KeyframeValue::Vec2(self.multi_vec2_offset)),
+                        });
+                        self.multi_vec2_offset = [0.0; 2];
+                    }
+                    if ui.button("Reset Vec2").clicked() {
+                        self.multi_vec2_offset = [0.0; 2];
+                    }
+                });
+            }
+            AnimationTrackKind::Rotation => {
+                ui.horizontal(|ui| {
+                    ui.label("Value Offset (degrees)");
+                    ui.add(egui::DragValue::new(&mut self.multi_scalar_offset).speed(0.1));
+                    if ui.button("Apply Rotation Offset").clicked() && self.multi_scalar_offset != 0.0 {
+                        self.pending_commands.push(AnimationPanelCommand::AdjustKeys {
+                            binding,
+                            indices: indices.clone(),
+                            time_delta: None,
+                            value_delta: Some(KeyframeValue::Scalar(self.multi_scalar_offset)),
+                        });
+                        self.multi_scalar_offset = 0.0;
+                    }
+                    if ui.button("Reset Scalar").clicked() {
+                        self.multi_scalar_offset = 0.0;
+                    }
+                });
+            }
+            AnimationTrackKind::Tint => {
+                ui.horizontal(|ui| {
+                    ui.label("Value Offset (RGBA)");
+                    for component in self.multi_vec4_offset.iter_mut() {
+                        ui.add(egui::DragValue::new(component).speed(0.01));
+                    }
+                    if ui.button("Apply Tint Offset").clicked()
+                        && self.multi_vec4_offset.iter().any(|&v| v != 0.0)
+                    {
+                        self.pending_commands.push(AnimationPanelCommand::AdjustKeys {
+                            binding,
+                            indices: indices.clone(),
+                            time_delta: None,
+                            value_delta: Some(KeyframeValue::Vec4(self.multi_vec4_offset)),
+                        });
+                        self.multi_vec4_offset = [0.0; 4];
+                    }
+                    if ui.button("Reset Tint Offset").clicked() {
+                        self.multi_vec4_offset = [0.0; 4];
+                    }
+                });
+            }
+            AnimationTrackKind::SpriteTimeline => {}
+        }
     }
 }
 

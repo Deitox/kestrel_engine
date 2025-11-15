@@ -276,6 +276,7 @@ enum TrackEditOperation {
     Insert { time: f32 },
     Delete { indices: Vec<usize> },
     Update { index: usize, new_time: Option<f32>, new_value: Option<KeyframeValue> },
+    Adjust { indices: Vec<usize>, time_delta: Option<f32>, value_delta: Option<KeyframeValue> },
 }
 
 #[derive(Clone)]
@@ -657,6 +658,14 @@ impl App {
                 }
                 AnimationPanelCommand::UpdateKey { binding, index, new_time, new_value } => {
                     self.apply_track_edit(binding, TrackEditOperation::Update { index, new_time, new_value });
+                }
+                AnimationPanelCommand::AdjustKeys { binding, indices, time_delta, value_delta } => {
+                    if !indices.is_empty() {
+                        self.apply_track_edit(
+                            binding,
+                            TrackEditOperation::Adjust { indices, time_delta, value_delta },
+                        );
+                    }
                 }
                 AnimationPanelCommand::Undo => {
                     self.undo_clip_edit();
@@ -1217,6 +1226,35 @@ impl App {
                     return false;
                 }
             }
+            TrackEditOperation::Adjust { indices, time_delta, value_delta } => {
+                if frames.is_empty() {
+                    return false;
+                }
+                let mut changed = false;
+                for index in indices {
+                    if index >= frames.len() {
+                        continue;
+                    }
+                    if let Some(delta) = time_delta {
+                        let clamped = (frames[index].time + delta).max(0.0);
+                        if (frames[index].time - clamped).abs() > f32::EPSILON {
+                            frames[index].time = clamped;
+                            changed = true;
+                        }
+                    }
+                    if let Some(KeyframeValue::Vec2(offset)) = value_delta {
+                        let offset_vec = Vec2::new(offset[0], offset[1]);
+                        let new_value = frames[index].value + offset_vec;
+                        if frames[index].value != new_value {
+                            frames[index].value = new_value;
+                            changed = true;
+                        }
+                    }
+                }
+                if !changed {
+                    return false;
+                }
+            }
         }
         Self::apply_vec2_frames(target, frames, interpolation)
     }
@@ -1253,6 +1291,34 @@ impl App {
                     if (frames[index].value - value).abs() > f32::EPSILON {
                         frames[index].value = value;
                         changed = true;
+                    }
+                }
+                if !changed {
+                    return false;
+                }
+            }
+            TrackEditOperation::Adjust { indices, time_delta, value_delta } => {
+                if frames.is_empty() {
+                    return false;
+                }
+                let mut changed = false;
+                for index in indices {
+                    if index >= frames.len() {
+                        continue;
+                    }
+                    if let Some(delta) = time_delta {
+                        let clamped = (frames[index].time + delta).max(0.0);
+                        if (frames[index].time - clamped).abs() > f32::EPSILON {
+                            frames[index].time = clamped;
+                            changed = true;
+                        }
+                    }
+                    if let Some(KeyframeValue::Scalar(offset)) = value_delta {
+                        let new_value = frames[index].value + offset;
+                        if (frames[index].value - new_value).abs() > f32::EPSILON {
+                            frames[index].value = new_value;
+                            changed = true;
+                        }
                     }
                 }
                 if !changed {
@@ -1296,6 +1362,35 @@ impl App {
                     if frames[index].value != new_vec {
                         frames[index].value = new_vec;
                         changed = true;
+                    }
+                }
+                if !changed {
+                    return false;
+                }
+            }
+            TrackEditOperation::Adjust { indices, time_delta, value_delta } => {
+                if frames.is_empty() {
+                    return false;
+                }
+                let mut changed = false;
+                for index in indices {
+                    if index >= frames.len() {
+                        continue;
+                    }
+                    if let Some(delta) = time_delta {
+                        let clamped = (frames[index].time + delta).max(0.0);
+                        if (frames[index].time - clamped).abs() > f32::EPSILON {
+                            frames[index].time = clamped;
+                            changed = true;
+                        }
+                    }
+                    if let Some(KeyframeValue::Vec4(offset)) = value_delta {
+                        let offset_vec = Vec4::new(offset[0], offset[1], offset[2], offset[3]);
+                        let new_value = frames[index].value + offset_vec;
+                        if frames[index].value != new_value {
+                            frames[index].value = new_value;
+                            changed = true;
+                        }
                     }
                 }
                 if !changed {
