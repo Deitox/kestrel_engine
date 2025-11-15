@@ -44,13 +44,11 @@
 - Errors that occur during REPL execution or regular script updates automatically reopen the debugger and highlight the failure, keeping the workflow tight during iteration.
 
 ## Animation Tooling & Validation
-- The viewport HUD (toggle from **Stats -> Viewport Overlays**) now shows running budgets for sprite evaluation/packing/upload, transform clips, skeletal rigs, and GPU palette uploads. Entries stay green while under budget, turn amber as they approach the limit, and flip red when exceeding the roadmap targets. Labels also report live counts (sprite animators, transform clips, skeletons/bones, palette uploads) so perf investigations start with concrete numbers.
-- Animation asset watchers monitor `assets/animations/{clips,graphs,skeletal}`. Saving a clip or skeletal graph reloads it, re-runs schema/semantic validators, and pushes the results into the inspector banner plus the analytics log, keeping authors informed without spelunking console output.
-- Run the same validators headlessly via:
-  ```shell
-  cargo run --bin animation_check -- assets/animations
-  ```
-  Provide one or more files/directories. The tool walks subdirectories, validates every `.json`, `.clip`, `.gltf`, or `.glb` animation asset, prints Info/Warn/Error entries, and returns a non-zero exit code when blocking issues are found—ideal for CI hooks.
+- The viewport HUD (toggle from **Stats -> Viewport Overlays**) surfaces sprite/transform/skeletal/GPU palette budgets so perf regressions are visible at a glance.
+- Asset watchers cover `assets/images/*.json`, `assets/animations/{clips,graphs}/**/*.json`, and `assets/animations/skeletal/**/*.gltf`. Saving any of these reloads the asset, reruns schema + semantic validators, and posts `AnimationValidationEvent` entries to the inspector banner and Stats sidebar.
+- Skeleton reloads preserve playback state (active clip, time, playing flag, speed, group tags) so iteration never forces manual reseeding. Graph JSON files reimport immediately, keeping authored graphs validated even before the runtime consumes them.
+- Run the same validators headlessly (and in CI) via `cargo run --bin animation_check -- assets/animations`; the CLI walks directories, filters supported extensions (`.json`, `.clip`, `.gltf`, `.glb`), prints Info/Warn/Error lines, and exits non-zero when blocking issues are detected.
+- Keep sprite atlases on the current schema with `cargo run --bin migrate_atlas -- assets/images`. The helper walks directories of JSON files, injects canonical `loop_mode` data, trims orphaned timeline events, clamps invalid durations, and bumps the file version so CI bots and local editors agree on the data they ingest.
 
 ## Scene Formats
 - JSON scenes (`.json`) remain human-readable and are always supported.

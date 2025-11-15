@@ -19,18 +19,20 @@ This plan breaks Milestone 5 (“Tooling, Automation, and Analytics”) into con
 **Exit:** Artists can open the panel, edit keys in real time, and see playback respond immediately without errors.
 
 ### 2. Asset Watchers & Validators
-1. Extend the existing atlas/clip watchers to observe transform clips and animation graphs.
-2. Reuse importer infrastructure to trigger schema validators on change.
-3. Surface validation errors in inspector + EventBus, with actionable messages.
-4. Add regression tests for watcher reload + validation flows (simulate file edits).
+Status: ✅ Implemented across clips, skeletons, and graph assets (see `src/app/mod.rs`, `src/assets.rs`, and `src/animation_validation.rs`).
 
-**Exit:** Saving a clip/graph file reloads the asset, runs validators, and reports failures deterministically.
+1. ✅ Extend the existing atlas/clip watchers to observe transform clips, animation graphs, and skeletal GLTF sources. Reload paths now preserve in-flight playback state.
+2. ✅ Reuse importer infrastructure to trigger schema validators on change. Validators share the clip/graph/skeletal parsers so CLI + watcher results match.
+3. ✅ Surface validation errors in the inspector banner and analytics log. Warnings/errors from `AnimationValidator` now populate the Stats panel and `animation_check`.
+4. ✅ Add regression tests for watcher reload + validation flows (path resolution tests in `src/assets.rs`, validator fixtures in `src/animation_validation.rs`).
+
+**Exit:** Saving a clip/graph file reloads the asset, runs validators, and reports failures deterministically. *(Met in editor + `animation_check` as of 2025-11-15.)*
 
 ### 3. CLI Utilities & Automation
 1. Ship `animation_check` (schema + perf validator) that can target directories or manifests.
-2. Ship `migrate_atlas` helper to bump schema versions / fix known issues.
+2. Ship `migrate_atlas` helper (`cargo run --bin migrate_atlas -- <paths>`) to bump atlas schema versions, normalize loop modes, and cull invalid events across whole directories. *(Done in this drop.)*
 3. Add roadmap checkpoint harness wiring so `animation_targets_measure` emits JSON perf captures on demand.
-4. Document CLI usage and integrate into CI smoke tests.
+4. Document CLI usage and integrate into CI smoke tests. *(README + `docs/animation_workflows.md` now cover `animation_check` + `migrate_atlas`; CI wiring remains.)*
 
 **Exit:** CI/bots can run the new commands, and docs tell authors when to use each tool.
 
@@ -71,7 +73,7 @@ This plan breaks Milestone 5 (“Tooling, Automation, and Analytics”) into con
 
 ## Milestone Exit Checklist
 - [ ] Keyframe editor panel functional & tested.
-- [ ] Asset watchers validate + reload clips/graphs with inspector surfacing.
+- [x] Asset watchers validate + reload clips/graphs with inspector surfacing.
 - [ ] `animation_check` and `migrate_atlas` CLIs documented and running in CI.
 - [ ] Analytics HUD shows CPU/GPU animation metrics with budget thresholds.
 - [ ] Sample scenes/scripts checked in with automated verification.

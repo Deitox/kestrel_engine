@@ -37,13 +37,20 @@
 - Need raw samples? Call sprite_anim_perf_history() from the REPL or test harness to fetch the ring buffer, or sprite_anim_perf_sample() to read the latest frame. Both helpers live on EcsWorld. Transform/skeletal timings surface via EcsWorld::system_timings() summaries if you need historical values outside the HUD.
 
 ## Automation & Validation
-- **Watchers:** `assets/images/*.json` (atlases), `assets/animations/clips/**/*.json`, `assets/animations/graphs/**/*.json`, and `assets/animations/skeletal/**/*.json` are watched automatically inside the editor. Saving a file reloads the asset, reruns schema/semantic validators, and surfaces the results in both the inspector banner and the analytics log. Keep clip sources under `assets/animations/` so the watcher can resolve canonical paths; the inspector's status line confirms each reload (e.g., `Validated clip slime_bob.json`).
-- **CLI validation:**
+- **Watchers:** `assets/images/*.json` (atlases), `assets/animations/clips/**/*.json`, `assets/animations/graphs/**/*.json`, and `assets/animations/skeletal/**/*.json` are observed automatically inside the editor. Saving a file reloads the asset, reruns schema + semantic validators, and surfaces results both in the inspector banner and the Stats panel’s “Animation Validation Alerts”. Keep assets under `assets/animations/` so canonical paths are recorded; the inspector status line confirms each reload (e.g., `Reloaded clip 'slime_bob' from …`).
+- **State preservation:** Clip saves preserve scrub/play state. Skeletal GLTF reloads restore each entity’s active clip, time, playing flag, speed, and group tag so iteration never forces you to re-seed rigs manually.
+- **Graph workflow:** Animation graph JSON reimports immediately. Even before graph runtime features ship, this keeps authored graphs validated and ready for CLI/CI enforcement.
+- **CLI validation:** Use the same pipeline headlessly via `animation_check`:
   ```shell
   cargo run --bin animation_check -- assets/animations
   ```
-  Provide any mix of files or directories. The CLI walks subdirectories, filters animation asset extensions (`.json`, `.clip`, `.gltf`, `.glb`), prints Info/Warn/Error records, and exits with code `2` when blocking errors occur. Wire this into CI so broken clips fail fast; locally, run it before committing to catch schema drift.
-- **Troubleshooting:** Validation events include absolute paths and severity in the console/analytics log. If a watched folder fails to register, confirm it exists (watch roots are skipped silently when missing) or run `animation_check` explicitly to get path-by-path diagnostics.
+  Provide files and/or directories. The command walks subdirectories, filters supported extensions (`.json`, `.clip`, `.gltf`, `.glb`), prints `INFO/WARN/ERROR` lines, and exits with code `2` when blocking errors exist. CI will run this exact command after animation asset changes.
+- **Atlas migrations:** Normalize sprite atlases with `migrate_atlas` whenever loop mode semantics or schema versions change:
+  ```shell
+  cargo run --bin migrate_atlas -- assets/images
+  ```
+  The CLI rewrites each atlas JSON in place, injecting canonical `loop_mode` strings (based on the old `looped` flag), clamping zero-duration frames to 1 ms, trimming duplicate/out-of-range timeline events, and bumping the root `version` to `2`. Point it at individual files or directories; unsupported JSON files are skipped with a warning so you can run it across entire content roots.
+- **Troubleshooting:** Validation events include absolute paths and severity in the console plus analytics log. If a watched folder fails to register, confirm it exists (missing directories are skipped silently) or run `animation_check` against the problematic path to get detailed diagnostics.
 
 ## Transform & Property Clips
 - **Milestone status:** The `AnimationClip` loader and fixtures are live on `main`; playback systems, inspector controls, and ECS glue land across Milestone 2. Build clips now so content is ready as the runtime merges.

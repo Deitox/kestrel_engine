@@ -1,5 +1,7 @@
 # Animation Asset Watcher & Validation Strategy
 
+*Status (2025-11-15): Implemented. Asset watchers now cover clips, graphs, and skeletal GLTF sources (see `src/app/mod.rs`, `src/app/animation_watch.rs`, `src/assets.rs`). Validators share the same parsing helpers used by the runtime, and CLI/editor paths emit identical `AnimationValidationEvent` records.*
+
 Milestone 5 requires the editor to automatically reload animation clips/graphs, run validators, and surface actionable feedback. This document outlines the required behaviors and dependencies before implementation begins.
 
 ## Goals
@@ -50,9 +52,9 @@ Validators must be callable headlessly via `animation_check`:
 - Record validation events (asset, severity, duration) into Analytics plugin.
 - Add metrics to Stats HUD for “Last validation status” and “Pending validation count”.
 
-## Next Steps
-1. Add `AnimationValidationEvent` struct + analytics plumbing.
-2. Implement watcher scaffolding (likely `animation_watch.rs`) that subscribes to `notify`.
-3. Wire reload hooks in `AssetManager` or dedicated animation loader modules.
-4. Build validator stubs returning “Not Implemented” so later work can fill in logic.
-5. Add initial tests: simulated file change triggering validator and ensuring analytics receives event.
+## Implementation Notes
+1. `AnimationValidationEvent` plus analytics surfacing landed in `src/animation_validation.rs` / `src/analytics.rs`; warnings/errors appear in the Stats panel and inspector banner.
+2. `AnimationAssetWatcher` (see `src/app/animation_watch.rs`) subscribes to clips, graphs, and skeletal directories, canonicalizes paths, and triggers reload/validation on the main thread.
+3. Reload hooks live in `src/app/mod.rs` (`reload_clip_from_disk`, `reload_graph_from_disk`, `reload_skeleton_from_disk`) and reuse the shared parsing helpers in `src/assets.rs`. Skeleton reloads preserve active clip/time/playing state.
+4. Validators now perform full schema + semantic checks (clip timelines, graph states/transitions, skeletal joint counts) and are exercised by fixture tests.
+5. CLI coverage: `cargo run --bin animation_check -- assets/animations` runs the same pipeline; a regression test suite (`cargo test animation_validation`) keeps the validators in sync with asset formats.
