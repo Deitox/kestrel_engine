@@ -47,6 +47,7 @@ Milestone 5 requires the editor to automatically reload animation clips/graphs, 
 Validators must be callable headlessly via `animation_check`:
 1. CLI accepts file/dir/glob, runs same validator pipeline, prints structured output, and returns non-zero on errors.
 2. CI stage runs `animation_check assets/animations` after asset changes.
+3. Canonical fixtures live in-repo under `assets/animations/{clips,graphs,skeletal}` (e.g., `slime_idle.json`, `slime_idle_graph.json`, `slime_rig.gltf`) so both local runs and CI always have deterministic assets to validate.
 
 ## Telemetry
 - Record validation events (asset, severity, duration) into Analytics plugin.

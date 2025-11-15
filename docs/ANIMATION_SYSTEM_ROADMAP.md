@@ -125,14 +125,15 @@ Benchmarks emit CSV summaries for CI. Failing budgets block the milestone exit.
 ### Scope
 - Lightweight keyframe editor in `editor_ui`: layer list, per-track key display, add/move/delete for Step/Linear keys, live scrubbing.
 - Asset watchers that auto-reload clips/graphs and run validators (reuse importer infrastructure). Watch `assets/animations/{clips,graphs,skeletal}` so saving a `.json` immediately refreshes the editor, logs validation events, and updates analytics counters.
-- CLI utilities: `animation_check` (validate schemas, budgets), `migrate_atlas` (bump versions), roadmap checkpoint harness (`animation_targets_measure`) for JSON perf captures. `animation_check` must accept files or directories (e.g. `cargo run --bin animation_check -- assets/animations`) and return non-zero when blocking errors are detected so CI can gate on it.
+- CLI utilities: `animation_check` (validate schemas, budgets), `migrate_atlas` (bump versions), roadmap checkpoint harness (`animation_targets_measure`) for JSON perf captures. `animation_check` must accept files or directories (e.g. `cargo run --bin animation_check -- assets/animations`) and return non-zero when blocking errors are detected so CI can gate on it. `migrate_atlas` ships with a `--check` mode so CI can assert `assets/images/*.json` are on the current schema (`cargo run --bin migrate_atlas -- --check assets/images`).
 - Analytics overlay: display animation evaluation cost, animator count, bone count, palette upload timing, and budget thresholds in the HUD/status bar (green/yellow/red based on roadmap budgets).
 - Sample content: curated scenes showcasing sprite timelines, transform tracks, skeletal rigs, and graph-driven characters.
 - Documentation: updated tutorials, troubleshooting guides, and scripting best practices.
+- Repository seeds canonical animation assets under `assets/animations/{clips,graphs,skeletal}` (slime idle clip, idle graph, skeletal rig) so both the editor and `animation_check`/watcher flows always have deterministic fixtures.
 
 ### Exit Criteria
 - Animation HUD shows sprite/transform/skeletal/palette metrics and is referenced in README/docs.
-- CI executes `animation_check` against repo assets and fails on schema/semantic regressions.
+- CI executes `animation_check` against repo assets (e.g. `assets/animations`) and `migrate_atlas --check assets/images`, failing on schema/semantic regressions or outdated atlases before perf/bench stages run.
 - Authoring workflow documented end-to-end; tutorial verified by sample project.
 - CI executes validation + bench suites and surfaces metrics in logs.
 - Playback visualization test generates hashed frame dumps to guard against regressions.
