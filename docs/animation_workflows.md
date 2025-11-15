@@ -206,6 +206,7 @@
 - If the export fails, inspect the status string directly under the button; file-system errors (e.g., read-only builds) are reported there.
 
 ## Change Log
+- 2025-11-16: Added End-to-End Authoring Tutorial, Troubleshooting & Scripting Best Practices, and CI/perf capture guidance referencing the sample scenes.
 - 2025-11-15: Documented animation HUD budgets, watcher behavior, and the nimation_check CLI validation workflow.
 - 2025-10-28: Added Aseprite importer workflow and CLI usage.
 - 2025-11-02: Documented animation phase controls and AnimationTime integration.

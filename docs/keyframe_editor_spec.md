@@ -66,7 +66,7 @@ This document captures the interaction model and layout for the Milestone 5 keyf
 3. How do we reconcile live scrubbing with script-driven animation overrides? Needs coordination with scripting team.
 
 ## Next Steps
-1. Wire up panel scaffolding + feature flag in `editor_ui.rs`.
+1. Wire up panel scaffolding in `editor_ui.rs` (landed; panel now ships enabled by default—use this spec for future refinements).
 2. Define data conversion layer between clip assets and editable key structures.
 3. Build incremental functionality: selection -> manipulation -> insertion -> inspector editing -> undo/redo.
 4. Add automated UI regression tests plus docs/screencasts once feature is interactive.

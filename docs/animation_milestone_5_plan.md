@@ -78,7 +78,7 @@ Status: ✅ Implemented across clips, skeletons, and graph assets (see `src/app/
 - [x] `animation_check` and `migrate_atlas` CLIs documented and running in CI.
 - [x] Analytics HUD shows CPU/GPU animation metrics with budget thresholds (HUD overlay plus `animation_targets_report.json.animation_budget` snapshot for CI trend tracking).
 - [x] Sample scenes/scripts checked in with automated verification.
-- [ ] Tutorials + docs updated, referencing the above tooling and CI expectations.
+- [x] Tutorials + docs updated, referencing the above tooling and CI expectations (see `docs/animation_workflows.md#end-to-end-authoring-tutorial` & `#troubleshooting--scripting-best-practices`, plus README/Roadmap cross-links).
 
 ### Read-only Panel Status
 - [x] Panel surfaces live track summaries (sprite timelines + transform clips).
