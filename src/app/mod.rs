@@ -12,7 +12,9 @@ use self::animation_keyframe_panel::{
 use self::animation_watch::{AnimationAssetChange, AnimationAssetKind, AnimationAssetWatcher};
 use self::atlas_watch::{normalize_path_for_watch, AtlasHotReload};
 use self::plugin_host::{BuiltinPluginFactory, PluginHost};
-use crate::analytics::{AnimationBudgetSample, AnalyticsPlugin};
+use crate::analytics::{
+    AnimationBudgetSample, AnalyticsPlugin, KeyframeEditorEventKind, KeyframeEditorTrackKind,
+};
 use crate::animation_validation::{
     AnimationValidationEvent, AnimationValidationSeverity, AnimationValidator,
 };
@@ -712,34 +714,89 @@ impl App {
         for command in commands {
             match command {
                 AnimationPanelCommand::ScrubTrack { binding, time } => {
+                    let track_kind = Self::analytics_track_kind(&binding);
                     self.handle_scrub_command(binding, time);
+                    self.log_keyframe_editor_event(KeyframeEditorEventKind::Scrub { track: track_kind });
                 }
                 AnimationPanelCommand::InsertKey { binding, time } => {
+                    let track_kind = Self::analytics_track_kind(&binding);
                     self.apply_track_edit(binding, TrackEditOperation::Insert { time });
+                    self.log_keyframe_editor_event(KeyframeEditorEventKind::InsertKey { track: track_kind });
                 }
                 AnimationPanelCommand::DeleteKeys { binding, indices } => {
                     if !indices.is_empty() {
+                        let track_kind = Self::analytics_track_kind(&binding);
+                        let count = indices.len();
                         self.apply_track_edit(binding, TrackEditOperation::Delete { indices });
+                        self.log_keyframe_editor_event(KeyframeEditorEventKind::DeleteKeys {
+                            track: track_kind,
+                            count,
+                        });
                     }
                 }
                 AnimationPanelCommand::UpdateKey { binding, index, new_time, new_value } => {
+                    let track_kind = Self::analytics_track_kind(&binding);
+                    let changed_time = new_time.is_some();
+                    let changed_value = new_value.is_some();
                     self.apply_track_edit(binding, TrackEditOperation::Update { index, new_time, new_value });
+                    self.log_keyframe_editor_event(KeyframeEditorEventKind::UpdateKey {
+                        track: track_kind,
+                        changed_time,
+                        changed_value,
+                    });
                 }
                 AnimationPanelCommand::AdjustKeys { binding, indices, time_delta, value_delta } => {
                     if !indices.is_empty() {
+                        let track_kind = Self::analytics_track_kind(&binding);
+                        let count = indices.len();
+                        let time_changed = time_delta.is_some();
+                        let value_changed = value_delta.is_some();
                         self.apply_track_edit(
                             binding,
                             TrackEditOperation::Adjust { indices, time_delta, value_delta },
                         );
+                        self.log_keyframe_editor_event(KeyframeEditorEventKind::AdjustKeys {
+                            track: track_kind,
+                            count,
+                            time_delta: time_changed,
+                            value_delta: value_changed,
+                        });
                     }
                 }
                 AnimationPanelCommand::Undo => {
                     self.undo_clip_edit();
+                    self.log_keyframe_editor_event(KeyframeEditorEventKind::Undo);
                 }
                 AnimationPanelCommand::Redo => {
                     self.redo_clip_edit();
+                    self.log_keyframe_editor_event(KeyframeEditorEventKind::Redo);
                 }
             }
+        }
+    }
+
+    fn analytics_track_kind(binding: &AnimationTrackBinding) -> KeyframeEditorTrackKind {
+        match binding {
+            AnimationTrackBinding::SpriteTimeline { .. } => KeyframeEditorTrackKind::SpriteTimeline,
+            AnimationTrackBinding::TransformChannel { channel, .. } => {
+                Self::analytics_track_kind_from_channel(*channel)
+            }
+        }
+    }
+
+    fn analytics_track_kind_from_channel(channel: AnimationTrackKind) -> KeyframeEditorTrackKind {
+        match channel {
+            AnimationTrackKind::SpriteTimeline => KeyframeEditorTrackKind::SpriteTimeline,
+            AnimationTrackKind::Translation => KeyframeEditorTrackKind::Translation,
+            AnimationTrackKind::Rotation => KeyframeEditorTrackKind::Rotation,
+            AnimationTrackKind::Scale => KeyframeEditorTrackKind::Scale,
+            AnimationTrackKind::Tint => KeyframeEditorTrackKind::Tint,
+        }
+    }
+
+    fn log_keyframe_editor_event(&mut self, event: KeyframeEditorEventKind) {
+        if let Some(analytics) = self.analytics_plugin_mut() {
+            analytics.record_keyframe_editor_event(event);
         }
     }
 

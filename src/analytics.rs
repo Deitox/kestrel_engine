@@ -9,6 +9,7 @@ use crate::renderer::GpuPassTiming;
 use anyhow::Result;
 use std::any::Any;
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AnimationBudgetSample {
@@ -26,6 +27,97 @@ pub struct AnimationBudgetSample {
     pub palette_uploaded_joints: u32,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct KeyframeEditorUsageSnapshot {
+    pub panel_open_count: u64,
+    pub panel_close_count: u64,
+    pub scrub_count: u64,
+    pub insert_count: u64,
+    pub delete_count: u64,
+    pub delete_key_total: u64,
+    pub update_count: u64,
+    pub update_time_edits: u64,
+    pub update_value_edits: u64,
+    pub adjust_count: u64,
+    pub adjust_time_edits: u64,
+    pub adjust_value_edits: u64,
+    pub undo_count: u64,
+    pub redo_count: u64,
+}
+
+impl KeyframeEditorUsageSnapshot {
+    fn register(&mut self, event: &KeyframeEditorEventKind) {
+        match event {
+            KeyframeEditorEventKind::PanelOpened => self.panel_open_count += 1,
+            KeyframeEditorEventKind::PanelClosed => self.panel_close_count += 1,
+            KeyframeEditorEventKind::Scrub { .. } => self.scrub_count += 1,
+            KeyframeEditorEventKind::InsertKey { .. } => self.insert_count += 1,
+            KeyframeEditorEventKind::DeleteKeys { count, .. } => {
+                self.delete_count += 1;
+                self.delete_key_total += *count as u64;
+            }
+            KeyframeEditorEventKind::UpdateKey { changed_time, changed_value, .. } => {
+                self.update_count += 1;
+                if *changed_time {
+                    self.update_time_edits += 1;
+                }
+                if *changed_value {
+                    self.update_value_edits += 1;
+                }
+            }
+            KeyframeEditorEventKind::AdjustKeys { time_delta, value_delta, .. } => {
+                self.adjust_count += 1;
+                if *time_delta {
+                    self.adjust_time_edits += 1;
+                }
+                if *value_delta {
+                    self.adjust_value_edits += 1;
+                }
+            }
+            KeyframeEditorEventKind::Undo => self.undo_count += 1,
+            KeyframeEditorEventKind::Redo => self.redo_count += 1,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyframeEditorTrackKind {
+    SpriteTimeline,
+    Translation,
+    Rotation,
+    Scale,
+    Tint,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum KeyframeEditorEventKind {
+    PanelOpened,
+    PanelClosed,
+    Scrub { track: KeyframeEditorTrackKind },
+    InsertKey { track: KeyframeEditorTrackKind },
+    DeleteKeys { track: KeyframeEditorTrackKind, count: usize },
+    UpdateKey {
+        track: KeyframeEditorTrackKind,
+        changed_time: bool,
+        changed_value: bool,
+    },
+    AdjustKeys {
+        track: KeyframeEditorTrackKind,
+        count: usize,
+        time_delta: bool,
+        value_delta: bool,
+    },
+    Undo,
+    Redo,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct KeyframeEditorEvent {
+    pub timestamp: Instant,
+    pub kind: KeyframeEditorEventKind,
+}
+
 pub struct AnalyticsPlugin {
     frame_hist: Vec<f32>,
     frame_capacity: usize,
@@ -41,9 +133,12 @@ pub struct AnalyticsPlugin {
     plugin_watchdog_events: VecDeque<PluginWatchdogEvent>,
     animation_validation_events: VecDeque<AnimationValidationEvent>,
     animation_budget_sample: Option<AnimationBudgetSample>,
+    keyframe_editor_usage: KeyframeEditorUsageSnapshot,
+    keyframe_editor_events: VecDeque<KeyframeEditorEvent>,
 }
 
 const SECURITY_EVENT_CAPACITY: usize = 64;
+const KEYFRAME_EVENT_CAPACITY: usize = 32;
 
 impl AnalyticsPlugin {
     pub fn new(frame_capacity: usize, event_capacity: usize) -> Self {
@@ -62,6 +157,8 @@ impl AnalyticsPlugin {
             plugin_watchdog_events: VecDeque::with_capacity(32),
             animation_validation_events: VecDeque::with_capacity(SECURITY_EVENT_CAPACITY),
             animation_budget_sample: None,
+            keyframe_editor_usage: KeyframeEditorUsageSnapshot::default(),
+            keyframe_editor_events: VecDeque::with_capacity(KEYFRAME_EVENT_CAPACITY),
         }
     }
 
@@ -196,6 +293,25 @@ impl AnalyticsPlugin {
     pub fn animation_budget_sample(&self) -> Option<AnimationBudgetSample> {
         self.animation_budget_sample
     }
+
+    pub fn record_keyframe_editor_event(&mut self, kind: KeyframeEditorEventKind) {
+        self.keyframe_editor_usage.register(&kind);
+        self.keyframe_editor_events.push_front(KeyframeEditorEvent {
+            timestamp: Instant::now(),
+            kind,
+        });
+        if self.keyframe_editor_events.len() > KEYFRAME_EVENT_CAPACITY {
+            self.keyframe_editor_events.pop_back();
+        }
+    }
+
+    pub fn keyframe_editor_usage(&self) -> KeyframeEditorUsageSnapshot {
+        self.keyframe_editor_usage
+    }
+
+    pub fn keyframe_editor_events(&self) -> Vec<KeyframeEditorEvent> {
+        self.keyframe_editor_events.iter().cloned().collect()
+    }
 }
 
 impl Default for AnalyticsPlugin {
@@ -246,6 +362,8 @@ impl EnginePlugin for AnalyticsPlugin {
         self.plugin_watchdog_events.clear();
         self.animation_validation_events.clear();
         self.animation_budget_sample = None;
+        self.keyframe_editor_events.clear();
+        self.keyframe_editor_usage = KeyframeEditorUsageSnapshot::default();
         Ok(())
     }
 
@@ -283,5 +401,30 @@ mod tests {
         let events = analytics.animation_validation_events();
         assert_eq!(events.len(), 1);
         assert!(events[0].message.contains("Test warning"));
+    }
+
+    #[test]
+    fn keyframe_editor_events_recorded() {
+        let mut analytics = AnalyticsPlugin::default();
+        analytics.record_keyframe_editor_event(KeyframeEditorEventKind::PanelOpened);
+        analytics.record_keyframe_editor_event(KeyframeEditorEventKind::InsertKey {
+            track: KeyframeEditorTrackKind::Translation,
+        });
+        analytics.record_keyframe_editor_event(KeyframeEditorEventKind::UpdateKey {
+            track: KeyframeEditorTrackKind::Translation,
+            changed_time: true,
+            changed_value: false,
+        });
+        let usage = analytics.keyframe_editor_usage();
+        assert_eq!(usage.panel_open_count, 1);
+        assert_eq!(usage.insert_count, 1);
+        assert_eq!(usage.update_count, 1);
+        assert_eq!(usage.update_time_edits, 1);
+        let events = analytics.keyframe_editor_events();
+        assert_eq!(events.len(), 3);
+        assert!(matches!(
+            events[0].kind,
+            KeyframeEditorEventKind::UpdateKey { changed_time: true, .. }
+        ));
     }
 }

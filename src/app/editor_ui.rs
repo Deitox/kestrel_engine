@@ -3,7 +3,10 @@ use super::{
     ScriptConsoleKind, ViewportCameraMode,
 };
 use crate::animation_validation::AnimationValidationSeverity;
-use crate::analytics::AnimationBudgetSample;
+use crate::analytics::{
+    AnimationBudgetSample, KeyframeEditorEvent, KeyframeEditorEventKind, KeyframeEditorTrackKind,
+    KeyframeEditorUsageSnapshot,
+};
 use crate::audio::{AudioHealthSnapshot, AudioPlugin};
 use crate::camera3d::Camera3D;
 use crate::ecs::{
@@ -177,6 +180,106 @@ fn animation_validation_color(severity: AnimationValidationSeverity) -> egui::Co
         AnimationValidationSeverity::Info => egui::Color32::from_rgb(140, 200, 255),
         AnimationValidationSeverity::Warning => egui::Color32::from_rgb(230, 200, 120),
         AnimationValidationSeverity::Error => egui::Color32::from_rgb(240, 120, 120),
+    }
+}
+
+fn render_keyframe_editor_usage(
+    ui: &mut egui::Ui,
+    usage: KeyframeEditorUsageSnapshot,
+    events: &[KeyframeEditorEvent],
+) {
+    ui.label("Keyframe Editor Usage");
+    ui.label(format!(
+        "Opened {} | Closed {}",
+        usage.panel_open_count, usage.panel_close_count
+    ));
+    ui.label(format!(
+        "Scrubs {} | Inserts {} | Deletes {} ({} keys)",
+        usage.scrub_count, usage.insert_count, usage.delete_count, usage.delete_key_total
+    ));
+    ui.label(format!(
+        "Updates {} (time {} | value {})",
+        usage.update_count, usage.update_time_edits, usage.update_value_edits
+    ));
+    ui.label(format!(
+        "Adjustments {} (time {} | value {})",
+        usage.adjust_count, usage.adjust_time_edits, usage.adjust_value_edits
+    ));
+    ui.label(format!("Undo {} | Redo {}", usage.undo_count, usage.redo_count));
+    if events.is_empty() {
+        ui.small("No recent keyframe events.");
+    } else {
+        ui.label("Recent events:");
+        for event in events.iter().take(5) {
+            let ago = event.timestamp.elapsed().as_secs_f32();
+            ui.small(format!("[{ago:>4.1}s ago] {}", format_keyframe_event(&event.kind)));
+        }
+    }
+}
+
+fn format_keyframe_event(event: &KeyframeEditorEventKind) -> String {
+    match event {
+        KeyframeEditorEventKind::PanelOpened => "Panel opened".to_string(),
+        KeyframeEditorEventKind::PanelClosed => "Panel closed".to_string(),
+        KeyframeEditorEventKind::Scrub { track } => {
+            format!("Scrubbed {}", keyframe_track_label(*track))
+        }
+        KeyframeEditorEventKind::InsertKey { track } => {
+            format!("Inserted key on {}", keyframe_track_label(*track))
+        }
+        KeyframeEditorEventKind::DeleteKeys { track, count } => {
+            format!("Deleted {count} key(s) from {}", keyframe_track_label(*track))
+        }
+        KeyframeEditorEventKind::UpdateKey { track, changed_time, changed_value } => {
+            let mut details = Vec::new();
+            if *changed_time {
+                details.push("time");
+            }
+            if *changed_value {
+                details.push("value");
+            }
+            if details.is_empty() {
+                format!("Updated {}", keyframe_track_label(*track))
+            } else {
+                format!(
+                    "Updated {} ({})",
+                    keyframe_track_label(*track),
+                    details.join(" + ")
+                )
+            }
+        }
+        KeyframeEditorEventKind::AdjustKeys { track, count, time_delta, value_delta } => {
+            let mut details = Vec::new();
+            if *time_delta {
+                details.push("time offset");
+            }
+            if *value_delta {
+                details.push("value offset");
+            }
+            let descriptor = if details.is_empty() {
+                "offset".to_string()
+            } else {
+                details.join(" & ")
+            };
+            format!(
+                "Adjusted {} key(s) on {} ({descriptor})",
+                count,
+                keyframe_track_label(*track)
+            )
+        }
+        KeyframeEditorEventKind::Undo => "Undo edit".to_string(),
+        KeyframeEditorEventKind::Redo => "Redo edit".to_string(),
+    }
+}
+
+fn keyframe_track_label(track: KeyframeEditorTrackKind) -> &'static str {
+    match track {
+        KeyframeEditorTrackKind::SpriteTimeline => "Sprite Timeline",
+        KeyframeEditorTrackKind::Translation => "Translation",
+        KeyframeEditorTrackKind::Rotation => "Rotation",
+        KeyframeEditorTrackKind::Scale => "Scale",
+        KeyframeEditorTrackKind::Tint => "Tint",
+        KeyframeEditorTrackKind::Unknown => "Unknown track",
     }
 }
 
@@ -763,7 +866,12 @@ impl App {
             .unwrap_or_default();
         let animation_budget_sample =
             self.analytics_plugin().and_then(|analytics| analytics.animation_budget_sample());
+        let keyframe_editor_usage =
+            self.analytics_plugin().map(|analytics| analytics.keyframe_editor_usage());
+        let keyframe_event_log =
+            self.analytics_plugin().map(|analytics| analytics.keyframe_editor_events()).unwrap_or_default();
 
+        let mut keyframe_panel_toggle_event: Option<KeyframeEditorEventKind> = None;
         let mut editor_settings_dirty = false;
         let keyframe_panel_ctx = ANIMATION_KEYFRAME_PANEL_ENABLED.then(|| self.egui_ctx.clone());
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
@@ -964,13 +1072,23 @@ impl App {
                         }
                         if ANIMATION_KEYFRAME_PANEL_ENABLED {
                             ui.separator();
-                            let button_label = if self.animation_keyframe_panel.is_open() {
+                            let panel_open = self.animation_keyframe_panel.is_open();
+                            let button_label = if panel_open {
                                 "Hide Keyframe Editor (experimental)"
                             } else {
                                 "Open Keyframe Editor (experimental)"
                             };
                             if ui.button(button_label).clicked() {
                                 self.animation_keyframe_panel.toggle();
+                                let event = if panel_open {
+                                    KeyframeEditorEventKind::PanelClosed
+                                } else {
+                                    KeyframeEditorEventKind::PanelOpened
+                                };
+                                keyframe_panel_toggle_event = Some(event);
+                            }
+                            if let Some(usage) = keyframe_editor_usage {
+                                render_keyframe_editor_usage(ui, usage, &keyframe_event_log);
                             }
                         }
                         ui.separator();
@@ -2961,7 +3079,9 @@ impl App {
                 );
             }
         });
-
+        if let Some(event) = keyframe_panel_toggle_event {
+            self.log_keyframe_editor_event(event);
+        }
         if let Some(ctx) = keyframe_panel_ctx.as_ref() {
             self.show_animation_keyframe_panel(ctx, &animation_snapshot);
         }
