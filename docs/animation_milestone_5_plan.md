@@ -10,6 +10,7 @@ This plan breaks Milestone 5 (“Tooling, Automation, and Analytics”) into con
 ## Workstreams & Tasks
 
 ### 1. Keyframe Editor UX
+Status: done - Panel ships enabled by default (feature flag removed and Stats toggle live as of 2025-11-16; see README “Keyframe Editor” section).
 1. Define UI/UX spec for the layer list, per-track key display, and interactive controls (`docs/keyframe_editor_spec.md`).
 2. Implement the editor panel (render tracks, select/add/move/delete Step + Linear keys, live scrubbing).
 3. Persist per-track selection state and expose undo/redo hooks.
@@ -52,9 +53,9 @@ Status: ✅ Implemented across clips, skeletons, and graph assets (see `src/app/
 **Exit:** Samples live under `assets/` (or fixtures) and are referenced by docs + automated tests.
 
 ### 6. Documentation & Tutorials
-1. Expand `docs/animation_workflows.md` with end-to-end authoring tutorial covering new tooling.
-2. Add troubleshooting and scripting best practices sections.
-3. Cross-link README + roadmap with the new plan, tools, and CI expectations.
+1. Expand `docs/animation_workflows.md` with end-to-end authoring tutorial covering new tooling. *(Done: `docs/animation_workflows.md` now includes **End-to-End Authoring Tutorial** as of 2025-11-16.)*
+2. Add troubleshooting and scripting best practices sections. *(Done: see **Troubleshooting & Scripting Best Practices** in `docs/animation_workflows.md`.)*
+3. Cross-link README + roadmap with the new plan, tools, and CI expectations. *(Done: README highlights + docs/ANIMATION_SYSTEM_ROADMAP.md now link to the tutorial/troubleshooting sections and milestone plan.)*
 
 **Exit:** Following the tutorial from a clean checkout reproduces the milestone deliverables.
 
@@ -72,7 +73,7 @@ Status: ✅ Implemented across clips, skeletons, and graph assets (see `src/app/
 - Extend `docs/SPRITE_ANIMATION_PERF_PLAN.md` to reference HUD counters and the new CI gates.
 
 ## Milestone Exit Checklist
-- [ ] Keyframe editor panel functional & tested.
+- [x] Keyframe editor panel functional & tested (panel enabled by default, see unit tests in `src/app/animation_keyframe_panel.rs`).
 - [x] Asset watchers validate + reload clips/graphs with inspector surfacing.
 - [x] `animation_check` and `migrate_atlas` CLIs documented and running in CI.
 - [x] Analytics HUD shows CPU/GPU animation metrics with budget thresholds (HUD overlay plus `animation_targets_report.json.animation_budget` snapshot for CI trend tracking).

@@ -13,8 +13,8 @@
 - Scene toolbar upgrades - Quick path history, dependency health readouts, and one-click retain buttons make Save/Load workflows safer.
 - Scene I/O guardrails - Mesh-aware helpers (save_scene_to_path_with_mesh_source, load_scene_with_mesh) ensure custom assets keep their source paths and metadata during save/load workflows.
 - Particle telemetry - The Stats panel now surfaces particle budget metrics (active count, spawn budget, emitter backlog) so runaway emitters are obvious without diving into the ECS.
-- Animation workflow polish - Sprite timelines now support explicit loop modes (loop, ping-pong, once-hold, once-stop) plus per-frame events that surface through the `GameEvent` bus. A command-line Aseprite importer (`cargo run --bin aseprite_to_atlas`) converts authoring exports into engine-ready atlases, complete with optional loop overrides and timeline event metadata, and hot-reload keeps running scenes in sync with file edits.
-- Animation monitoring - Transform clip/skeletal watchers reload assets instantly, validators log through the inspector + analytics queue, and the viewport HUD mirrors sprite/transform/skeletal budgets (including GPU palette uploads) so perf regressions are obvious without digging through logs.
+- Animation workflow polish - Sprite timelines now support explicit loop modes (loop, ping-pong, once-hold, once-stop) plus per-frame events that surface through the `GameEvent` bus. A command-line Aseprite importer (`cargo run --bin aseprite_to_atlas`) converts authoring exports into engine-ready atlases, complete with optional loop overrides and timeline event metadata, and hot-reload keeps running scenes in sync with file edits. Follow the [End-to-End Authoring Tutorial](docs/animation_workflows.md#end-to-end-authoring-tutorial) for the importer/editor/CI loop that reproduces this pipeline from a clean checkout.
+- Animation monitoring - Transform clip/skeletal watchers reload assets instantly, validators log through the inspector + analytics queue, and the viewport HUD mirrors sprite/transform/skeletal budgets (including GPU palette uploads) so perf regressions are obvious without digging through logs. The [Troubleshooting & Scripting Best Practices](docs/animation_workflows.md#troubleshooting--scripting-best-practices) section documents how to diagnose watcher gaps, run `animation_check`/`migrate_atlas`, and capture anim_stats when CI budgets drift.
 
 ## Core Systems
 - Physics - Rapier2D simulates rigid bodies. ECS components (Transform, Velocity, RapierBody, RapierCollider) mirror state back into the world every fixed step.
@@ -92,18 +92,12 @@ cargo run
 - docs/DECISIONS.md - crate and technology choices (e.g., winit, wgpu, gltf, Rapier).
 - docs/CODE_STYLE.md - formatting, linting, and error-handling guidelines.
 - docs/PLUGINS.md - dynamic plugin manifest format, feature registry rules, and an example cdylib plugin.
-- docs/animation_workflows.md - sprite timeline authoring, Aseprite importer usage, loop-mode tuning, and hot-reload troubleshooting tips.
+- docs/animation_workflows.md - End-to-End Authoring Tutorial, CLI validation steps (`animation_check`, `migrate_atlas`), and Troubleshooting/Scripting guides that mirror the Milestone 5 plan + CI expectations.
 
-## Experimental Keyframe Panel
-The Milestone 5 keyframe editor is available behind the `animation_keyframe_panel` feature flag. To try the current interactive build:
-
-```powershell
-cargo run --features animation_keyframe_panel
-```
-
-- Open the editor and select an entity driven by a sprite timeline or transform clip.
-- In the Stats panel, click the "Open Keyframe Editor" toggle.
-- The panel lists active tracks plus per-key metadata, and now supports inserting, deleting, dragging, copy/paste, and undo/redo for Translation/Rotation/Scale/Tint tracks. Double-click empty timeline space (or press `Insert Key at Scrub`) to add a key, drag keys to retime, and hold Shift while dragging/scrubbing to snap to the time grid. Use Ctrl/Cmd+C and Ctrl/Cmd+V to duplicate selections, Delete to remove, Ctrl/Cmd+Z to undo, and Ctrl/Cmd+Y (or Shift+Ctrl/Cmd+Z) to redo.
-- Scrub playback either with the slider or by dragging the time axis in the panel header to preview edits in real time.
+## Keyframe Editor
+- Launch the editor (`cargo run`), select an entity driven by a sprite timeline or transform clip (the animation showcase scenes make this easy), and open the Stats panel.
+- Click **Open Keyframe Editor** to toggle the panel; it stays docked even while playing the scene so you can iterate without losing context.
+- The panel lists active tracks plus per-key metadata, and supports inserting, deleting, dragging, copy/paste, and undo/redo for Translation/Rotation/Scale/Tint tracks. Double-click empty timeline space (or press `Insert Key at Scrub`) to add a key, drag keys to retime, and hold Shift while dragging/scrubbing to snap to the time grid. Use Ctrl/Cmd+C and Ctrl/Cmd+V to duplicate selections, Delete to remove, Ctrl/Cmd+Z to undo, and Ctrl/Cmd+Y (or Shift+Ctrl/Cmd+Z) to redo.
+- Scrub playback either with the slider or by dragging the time axis in the panel header to preview edits in real time; scrubbing records analytics events so the Stats panel usage metrics stay up to date.
 
 For details, see `docs/keyframe_editor_spec.md` and `docs/animation_milestone_5_plan.md`.

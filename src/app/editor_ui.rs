@@ -37,8 +37,6 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use winit::dpi::PhysicalSize;
 
 mod entity_inspector;
-
-const ANIMATION_KEYFRAME_PANEL_ENABLED: bool = cfg!(feature = "animation_keyframe_panel");
 const SPRITE_EVAL_BUDGET_MS: f32 = 0.30;
 const SPRITE_PACK_BUDGET_MS: f32 = 0.05;
 const SPRITE_UPLOAD_BUDGET_MS: f32 = 0.10;
@@ -858,7 +856,7 @@ impl App {
 
         let mut keyframe_panel_toggle_event: Option<KeyframeEditorEventKind> = None;
         let mut editor_settings_dirty = false;
-        let keyframe_panel_ctx = ANIMATION_KEYFRAME_PANEL_ENABLED.then(|| self.egui_ctx.clone());
+        let keyframe_panel_ctx = self.egui_ctx.clone();
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
             let left_panel =
                 egui::SidePanel::left("kestrel_left_panel").default_width(340.0).show(ctx, |ui| {
@@ -1090,26 +1088,24 @@ impl App {
                                 );
                             }
                         }
-                        if ANIMATION_KEYFRAME_PANEL_ENABLED {
-                            ui.separator();
-                            let panel_open = self.animation_keyframe_panel.is_open();
-                            let button_label = if panel_open {
-                                "Hide Keyframe Editor (experimental)"
+                        ui.separator();
+                        let panel_open = self.animation_keyframe_panel.is_open();
+                        let button_label = if panel_open {
+                            "Hide Keyframe Editor"
+                        } else {
+                            "Open Keyframe Editor"
+                        };
+                        if ui.button(button_label).clicked() {
+                            self.animation_keyframe_panel.toggle();
+                            let event = if panel_open {
+                                KeyframeEditorEventKind::PanelClosed
                             } else {
-                                "Open Keyframe Editor (experimental)"
+                                KeyframeEditorEventKind::PanelOpened
                             };
-                            if ui.button(button_label).clicked() {
-                                self.animation_keyframe_panel.toggle();
-                                let event = if panel_open {
-                                    KeyframeEditorEventKind::PanelClosed
-                                } else {
-                                    KeyframeEditorEventKind::PanelOpened
-                                };
-                                keyframe_panel_toggle_event = Some(event);
-                            }
-                            if let Some(usage) = keyframe_editor_usage {
-                                render_keyframe_editor_usage(ui, usage, &keyframe_event_log);
-                            }
+                            keyframe_panel_toggle_event = Some(event);
+                        }
+                        if let Some(usage) = keyframe_editor_usage {
+                            render_keyframe_editor_usage(ui, usage, &keyframe_event_log);
                         }
                         ui.separator();
                         egui::CollapsingHeader::new("Animation Time").default_open(false).show(ui, |ui| {
@@ -3109,9 +3105,7 @@ impl App {
         if let Some(event) = keyframe_panel_toggle_event {
             self.log_keyframe_editor_event(event);
         }
-        if let Some(ctx) = keyframe_panel_ctx.as_ref() {
-            self.show_animation_keyframe_panel(ctx, &animation_snapshot);
-        }
+        self.show_animation_keyframe_panel(&keyframe_panel_ctx, &animation_snapshot);
 
         script_debugger_output.open = script_debugger.open;
         script_debugger_output.repl_input = script_debugger.repl_input.clone();

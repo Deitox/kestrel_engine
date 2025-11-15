@@ -56,7 +56,7 @@ This document captures the interaction model and layout for the Milestone 5 keyf
 - Dirty indicator appears in header when in-memory clip diverges from disk.
 
 ## Technical Notes
-- Panel lives under `editor_ui::AnimationKeyframePanel` gated behind the Milestone 5 feature flag until stable.
+- Panel lives under `editor_ui::AnimationKeyframePanel` and ships enabled by default.
 - Requires access to `AnimationTime`, selected entity context, and asset handles for clips/graphs.
 - Rendering implemented via egui primitives; timeline virtualization required for >100 tracks.
 

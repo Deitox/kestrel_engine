@@ -5,6 +5,31 @@
 - Capture examples for sprite timelines, transform clips, skeletal rigs, and graph configuration.
 - Track prerequisites, tooling commands, and troubleshooting tips as features mature.
 
+## End-to-End Authoring Tutorial
+1. **Prep the workspace**
+   - From a clean checkout run `cargo fetch --locked` and `cargo check -p kestrel_editor -p animation_check` so the editor binary, CLIs, and watcher plumbing are ready before touching assets.
+   - Skim `docs/animation_sample_content.md` for the entity/asset names referenced below; all steps point at those fixtures so CI can replay the workflow exactly.
+2. **Convert sprite source to an atlas**
+   - Export the slime sheet from Aseprite using the prerequisites listed later in this file, then run `cargo run --bin aseprite_to_atlas -- fixtures/aseprite/slime_idle.json assets/images/slime_idle_atlas.json --atlas-key slime --events-file fixtures/aseprite/slime_idle_events.json`.
+   - Inspect the CLI output for dropped tags or duplicate frame warnings, then commit the generated JSON under `assets/images/` so watchers and CI can consume it.
+3. **Validate atlases, clips, graphs, and rigs**
+   - Run `cargo run --bin animation_check assets/images/slime_idle_atlas.json assets/animations/clips/slime_idle.json assets/animations/graphs/slime_idle_graph.json assets/animations/skeletal/slime_rig.gltf --fail-on-warn` to exercise schema validators across every asset type touched by this tutorial.
+   - If the atlas schema changed recently, follow up with `cargo run --bin migrate_atlas -- assets/images/slime_idle_atlas.json --check`; CI uses the same CLI with `--fix` when migrations land.
+4. **Load the showcase scene and bind content**
+   - Launch the editor via `cargo run` and choose **File + Open Scene → assets/scenes/animation_showcase.json**.
+   - Select `sprite_timeline_demo`, click **Load & Assign**, enter `slime` for the atlas key plus `assets/images/slime_idle_atlas.json` for the path, and pick the `idle` timeline. The inspector log prints `Sprite atlas set to slime`, and playback starts immediately.
+   - Toggle **Stats + Viewport Overlays** and confirm the Sprite Eval/Pack/Upload HUD rows reflect the new animator load.
+5. **Author the transform clip**
+   - With `transform_clip_demo` selected, open the Keyframe Editor and tweak a translation key (or press **Insert Key at Scrub**). Saving updates `assets/animations/clips/slime_idle.json`, triggers the watcher, and reruns validators without duplicate reloads.
+   - Run `cargo test animation_clip transform_clip` afterwards to lock in the edits against the golden interpolation suite.
+6. **Exercise the skeletal fixture**
+   - Load `assets/scenes/skeletal_showcase.json` so `skeletal_demo` plays `slime::breath`.
+   - In the inspector assign (or confirm) the `slime` skeleton, scrub the clip, and watch the Skeletal Eval + Palette Upload HUD rows for timing regressions.
+   - From a terminal run `cargo test --test skeletal_import` to reverify GLTF skeleton/clip extraction after edits.
+7. **Record deterministic captures and perf baselines**
+   - Run `python scripts/capture_animation_samples.py animation_showcase` and `python scripts/capture_animation_samples.py skeletal_showcase` so `artifacts/scene_captures/*.json` stay in sync with the authored content.
+   - Execute `cargo test --release --features anim_stats animation_targets_measure -- --ignored --exact --nocapture` to refresh `target/animation_targets_report.json`, then archive the `sprite_perf` / `animation_budget` blocks with the updated assets for reviewers.
+
 ## Sprite Atlas Timelines
 - **Authoring prerequisites:** export sprite sheets from Aseprite using `File > Export Sprite Sheet` with `Layout: Packed`, `JSON Data` enabled (Array format), and frame tags for every animation you intend to drive.
 - **Run importer CLI:** `cargo run --bin aseprite_to_atlas -- <input.json> <output.json> [--atlas-key name] [--default-loop-mode loop|once_hold|once_stop|pingpong] [--reverse-loop-mode loop|once_hold|once_stop|pingpong]`
@@ -151,6 +176,13 @@
 
 ## Animation Graph Authoring
 - _Stub section - document state machine graphs, parameter wiring, and scripting hooks when available._
+
+## Troubleshooting & Scripting Best Practices
+- **Watcher reload gaps:** If an edit fails to appear in the editor, open `Scene > Atlas refs` (sprite timelines) or the clip dependency list to confirm the asset is retained. Watchers only fire for live references, so keep sample entities or bootstrap scripts retaining every atlas/clip/rig you plan to edit.
+- **CLI validation noise:** Run `cargo run --bin animation_check <paths> --fail-on-warn --report-stats` when triaging schema errors; the JSON snippets it prints identify the exact track, joint, or tag that failed validation. For migrations, prefer `cargo run --bin migrate_atlas -- <files> --check` locally and `--fix` when you need to rewrite legacy atlases.
+- **Keyframe/editor drift:** Errors like `Clip keyframe time cannot be negative` surface the offending key index. Use the Keyframe Editor scrubber to jump there, or patch the JSON manually and rerun `cargo test transform_clip` before relaunching the editor.
+- **Scripting hooks:** Retain assets during startup (`AssetManager::retain_clip/retain_skeleton`), drive playback through `AnimationCommands`, and group crowds with `AnimationTime::set_group_speed`. Mirroring the editor’s wiring guarantees watcher reloads hit every runtime path.
+- **Perf regressions:** The **Stats + Sprite Animation Perf** panel shows whether animators are in the fast loop or the event-heavy path. If numbers spike, rerun `python scripts/capture_sprite_perf.py --label repro --runs 3` and inspect the emitted anim_stats JSON to pinpoint the regressing system.
 
 ## Testing Checklist
 - Hot-reload sanity steps.
