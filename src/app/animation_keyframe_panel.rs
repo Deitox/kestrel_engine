@@ -199,6 +199,7 @@ pub struct AnimationKeyframePanel {
     open: bool,
     track_filter: String,
     selected_tracks: BTreeSet<AnimationTrackId>,
+    last_selected_track: Option<AnimationTrackId>,
     selected_keys: BTreeSet<KeyframeId>,
     selection_anchor: Option<KeyframeId>,
     scrub_time: f32,
@@ -271,7 +272,7 @@ impl AnimationKeyframePanel {
         ui.add_space(4.0);
         let filtered_tracks = self.filtered_tracks(state);
         self.reconcile_selection(&filtered_tracks);
-        self.handle_keyboard_shortcuts(ui, &filtered_tracks);
+        self.handle_keyboard_shortcuts(ui, &filtered_tracks, state.can_undo, state.can_redo);
         if filtered_tracks.is_empty() {
             ui.label("No animation tracks match the current filter.");
             return;
@@ -345,16 +346,26 @@ impl AnimationKeyframePanel {
         }
     }
 
-    fn handle_keyboard_shortcuts(&mut self, ui: &Ui, tracks: &[&AnimationTrackSummary]) {
+    fn handle_keyboard_shortcuts(
+        &mut self,
+        ui: &Ui,
+        tracks: &[&AnimationTrackSummary],
+        can_undo: bool,
+        can_redo: bool,
+    ) {
         if tracks.is_empty() {
             return;
         }
-        let (copy_requested, paste_requested) = ui.input(|input| {
+        let (copy_requested, paste_requested, undo_requested, redo_requested) = ui.input(|input| {
             let command = input.modifiers.command || input.modifiers.ctrl;
-            (
-                command && input.key_pressed(Key::C),
-                command && input.key_pressed(Key::V),
-            )
+            let shift = input.modifiers.shift;
+            let copy = command && input.key_pressed(Key::C);
+            let paste = command && input.key_pressed(Key::V);
+            let z_pressed = input.key_pressed(Key::Z);
+            let y_pressed = input.key_pressed(Key::Y);
+            let undo = command && z_pressed && !shift;
+            let redo = command && (y_pressed || (shift && z_pressed));
+            (copy, paste, undo, redo)
         });
         if copy_requested {
             self.copy_selected_keys(tracks);
@@ -362,12 +373,19 @@ impl AnimationKeyframePanel {
         if paste_requested {
             self.paste_clipboard_keys(tracks);
         }
+        if undo_requested && can_undo {
+            self.pending_commands.push(AnimationPanelCommand::Undo);
+        }
+        if redo_requested && can_redo {
+            self.pending_commands.push(AnimationPanelCommand::Redo);
+        }
     }
 
     fn reconcile_selection(&mut self, tracks: &[&AnimationTrackSummary]) {
         if tracks.is_empty() {
             self.selected_tracks.clear();
             self.clear_key_selection();
+            self.last_selected_track = None;
             return;
         }
         let mut valid_tracks: BTreeSet<AnimationTrackId> = BTreeSet::new();
@@ -381,6 +399,18 @@ impl AnimationKeyframePanel {
                 self.key_drag = None;
             }
         }
+        if let Some(last_selected) = self.last_selected_track {
+            if !valid_tracks.contains(&last_selected) {
+                self.last_selected_track = None;
+            }
+        }
+        if self.selected_tracks.is_empty() {
+            if let Some(last) = self.last_selected_track {
+                if valid_tracks.contains(&last) {
+                    self.selected_tracks.insert(last);
+                }
+            }
+        }
         if self.selected_tracks.is_empty() {
             if let Some(first) = tracks.first() {
                 self.selected_tracks.insert(first.id);
@@ -388,6 +418,9 @@ impl AnimationKeyframePanel {
                     self.scrub_time = playhead;
                 }
             }
+        }
+        if self.last_selected_track.is_none() {
+            self.last_selected_track = self.selected_tracks.iter().next().copied();
         }
         self.sync_selection_anchor();
     }
@@ -430,6 +463,23 @@ impl AnimationKeyframePanel {
         }
     }
 
+    fn scrub_via_pointer(
+        &mut self,
+        ui: &Ui,
+        rect: Rect,
+        duration: f32,
+        pointer_x: f32,
+        tracks: &[&AnimationTrackSummary],
+    ) {
+        let raw_time = self.screen_to_time(rect, duration, pointer_x);
+        let snap = ui.input(|input| input.modifiers.shift);
+        let new_time = self.apply_snap_if_needed(duration, raw_time, snap);
+        if (new_time - self.scrub_time).abs() > 1e-4 {
+            self.scrub_time = new_time;
+            self.queue_scrub_for_selection(tracks);
+        }
+    }
+
     fn render_timeline(&mut self, ui: &mut Ui, tracks: &[&AnimationTrackSummary]) {
         let axis_height = 26.0;
         let track_height = 36.0;
@@ -440,6 +490,13 @@ impl AnimationKeyframePanel {
         let axis_rect = Rect::from_min_max(rect.left_top(), pos2(rect.right(), rect.top() + axis_height));
         let duration = self.visible_duration.max(0.001);
         self.draw_time_axis(&painter, axis_rect, duration, ui);
+        let axis_id = Id::new("timeline_axis_scrub_region");
+        let axis_response = ui.interact(axis_rect, axis_id, Sense::click_and_drag());
+        if axis_response.clicked() || axis_response.dragged() {
+            if let Some(pos) = axis_response.interact_pointer_pos() {
+                self.scrub_via_pointer(ui, rect, duration, pos.x, tracks);
+            }
+        }
         let mut row_top = axis_rect.bottom();
         for summary in tracks {
             let row_rect =
@@ -767,6 +824,11 @@ impl AnimationKeyframePanel {
         } else {
             self.selected_tracks.clear();
             self.selected_tracks.insert(summary.id);
+        }
+        if self.selected_tracks.contains(&summary.id) {
+            self.last_selected_track = Some(summary.id);
+        } else {
+            self.last_selected_track = self.selected_tracks.iter().next().copied();
         }
         if let Some(playhead) = summary.playhead {
             self.scrub_time = playhead;
@@ -1180,6 +1242,7 @@ impl AnimationKeyframePanel {
 
 #[cfg(test)]
 mod tests {
+    #![allow(deprecated)]
     use super::*;
 
     #[test]
@@ -1408,5 +1471,89 @@ mod tests {
             }
             other => panic!("Unexpected command from paste: {other:?}"),
         }
+    }
+
+    #[test]
+    fn reconcile_selection_reuses_last_track() {
+        let mut panel = AnimationKeyframePanel::default();
+        let track_a = AnimationTrackSummary {
+            id: AnimationTrackId(1),
+            label: "Translation".to_string(),
+            kind: AnimationTrackKind::Translation,
+            binding: AnimationTrackBinding::TransformChannel {
+                entity: Entity::from_raw(1),
+                channel: AnimationTrackKind::Translation,
+            },
+            duration: 1.0,
+            key_count: 0,
+            interpolation: Some(ClipInterpolation::Linear),
+            playhead: Some(0.0),
+            dirty: false,
+            key_details: Vec::new(),
+        };
+        let track_b = AnimationTrackSummary {
+            id: AnimationTrackId(2),
+            label: "Rotation".to_string(),
+            kind: AnimationTrackKind::Rotation,
+            binding: AnimationTrackBinding::TransformChannel {
+                entity: Entity::from_raw(1),
+                channel: AnimationTrackKind::Rotation,
+            },
+            duration: 1.0,
+            key_count: 0,
+            interpolation: Some(ClipInterpolation::Linear),
+            playhead: Some(0.0),
+            dirty: false,
+            key_details: Vec::new(),
+        };
+        let mut tracks = vec![&track_a, &track_b];
+        panel.selected_tracks.insert(track_b.id);
+        panel.last_selected_track = Some(track_b.id);
+        panel.reconcile_selection(&tracks);
+        assert!(panel.selected_tracks.contains(&track_b.id));
+        panel.selected_tracks.clear();
+        panel.reconcile_selection(&tracks);
+        assert!(panel.selected_tracks.contains(&track_b.id));
+        tracks.pop();
+        panel.reconcile_selection(&tracks);
+        assert!(panel.selected_tracks.contains(&track_a.id));
+    }
+
+    #[test]
+    fn dragging_axis_scrubs_selected_tracks() {
+        let mut panel = AnimationKeyframePanel::default();
+        panel.visible_duration = 1.0;
+        let track_id = AnimationTrackId(3);
+        panel.selected_tracks.insert(track_id);
+        panel.last_selected_track = Some(track_id);
+        let summary = AnimationTrackSummary {
+            id: track_id,
+            label: "Scale".to_string(),
+            kind: AnimationTrackKind::Scale,
+            binding: AnimationTrackBinding::TransformChannel {
+                entity: Entity::from_raw(4),
+                channel: AnimationTrackKind::Scale,
+            },
+            duration: 1.0,
+            key_count: 0,
+            interpolation: Some(ClipInterpolation::Linear),
+            playhead: Some(0.0),
+            dirty: false,
+            key_details: Vec::new(),
+        };
+        let tracks = vec![&summary];
+        let ctx = egui::Context::default();
+        ctx.begin_frame(Default::default());
+        egui::CentralPanel::default().show(&ctx, |ui| {
+            let rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(320.0, 120.0));
+            panel.scrub_via_pointer(ui, rect, summary.duration, rect.center().x, &tracks);
+        });
+        let _ = ctx.end_frame();
+        assert!(panel.scrub_time > 0.0);
+        let commands = panel.drain_commands();
+        assert!(
+            commands.iter().any(|command| matches!(command, AnimationPanelCommand::ScrubTrack { .. })),
+            "Expected scrub command after dragging axis"
+        );
     }
 }

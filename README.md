@@ -93,7 +93,7 @@ cargo run
 - docs/animation_workflows.md - sprite timeline authoring, Aseprite importer usage, loop-mode tuning, and hot-reload troubleshooting tips.
 
 ## Experimental Keyframe Panel
-The Milestone 5 keyframe editor is available behind the `animation_keyframe_panel` feature flag. To preview the current read-only state:
+The Milestone 5 keyframe editor is available behind the `animation_keyframe_panel` feature flag. To try the current interactive build:
 
 ```powershell
 cargo run --features animation_keyframe_panel
@@ -101,6 +101,7 @@ cargo run --features animation_keyframe_panel
 
 - Open the editor and select an entity driven by a sprite timeline or transform clip.
 - In the Stats panel, click the "Open Keyframe Editor" toggle.
-- The panel lists active tracks plus per-key metadata (index, time, value preview). Editing controls are coming in later milestones.
+- The panel lists active tracks plus per-key metadata, and now supports inserting, deleting, dragging, copy/paste, and undo/redo for Translation/Rotation/Scale/Tint tracks. Double-click empty timeline space (or press `Insert Key at Scrub`) to add a key, drag keys to retime, and hold Shift while dragging/scrubbing to snap to the time grid. Use Ctrl/Cmd+C and Ctrl/Cmd+V to duplicate selections, Delete to remove, Ctrl/Cmd+Z to undo, and Ctrl/Cmd+Y (or Shift+Ctrl/Cmd+Z) to redo.
+- Scrub playback either with the slider or by dragging the time axis in the panel header to preview edits in real time.
 
 For details, see `docs/keyframe_editor_spec.md` and `docs/animation_milestone_5_plan.md`.
