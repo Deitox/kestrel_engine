@@ -15,28 +15,50 @@ fn main() {
 }
 
 fn run() -> Result<()> {
-    let args: Vec<String> = env::args().skip(1).collect();
-    if args.is_empty() || args.iter().any(|arg| arg == "--help" || arg == "-h") {
+    let mut check_only = false;
+    let mut inputs = Vec::new();
+    let mut show_help = false;
+    for arg in env::args().skip(1) {
+        match arg.as_str() {
+            "--help" | "-h" => show_help = true,
+            "--check" => check_only = true,
+            other => inputs.push(other.to_string()),
+        }
+    }
+    if show_help || inputs.is_empty() {
         print_usage();
+        if inputs.is_empty() {
+            return Ok(());
+        }
         return Ok(());
     }
-    let targets = collect_targets(&args)?;
+    let targets = collect_targets(&inputs)?;
     if targets.is_empty() {
         return Err(anyhow!("no atlas JSON files found in provided paths"));
     }
     let total = targets.len();
     let mut updated = 0_usize;
     for path in &targets {
-        let changed =
-            migrate_file(path.as_path()).with_context(|| format!("failed to migrate '{}'", path.display()))?;
+        let changed = migrate_file(path.as_path(), check_only)
+            .with_context(|| format!("failed to migrate '{}'", path.display()))?;
         if changed {
-            println!("Updated {}", path.display());
+            if check_only {
+                println!("Would update {}", path.display());
+            } else {
+                println!("Updated {}", path.display());
+            }
             updated += 1;
         } else {
             println!("No changes needed {}", path.display());
         }
     }
-    println!("Processed {} files ({} updated)", total, updated);
+    let verb = if check_only { "would change" } else { "updated" };
+    println!("Processed {} files ({} {})", total, updated, verb);
+    if check_only && updated > 0 {
+        return Err(anyhow!(
+            "{updated} file(s) require migration; rerun without --check to rewrite assets."
+        ));
+    }
     Ok(())
 }
 
@@ -45,10 +67,11 @@ fn print_usage() {
         "migrate_atlas
 
 Usage:
-  migrate_atlas <path> [<path>...]
+  migrate_atlas [--check] <path> [<path>...]
 
 Each <path> may be a JSON file or directory. Directories are walked recursively
 and atlas documents are rewritten in place with the latest schema patches.
+Use --check to verify cleanliness without modifying files (CI safe).
 "
     );
 }
@@ -120,7 +143,7 @@ fn normalize_path(path: &Path) -> Result<PathBuf> {
     }
 }
 
-fn migrate_file(path: &Path) -> Result<bool> {
+fn migrate_file(path: &Path, check_only: bool) -> Result<bool> {
     let contents = fs::read_to_string(path)
         .with_context(|| format!("failed to read '{}'", path.display()))?;
     let mut doc: AtlasDocument =
@@ -135,7 +158,7 @@ fn migrate_file(path: &Path) -> Result<bool> {
             changed = true;
         }
     }
-    if changed {
+    if changed && !check_only {
         let serialized =
             serde_json::to_string_pretty(&doc).context("failed to serialize migrated atlas")?;
         fs::write(path, format!("{serialized}\n"))
@@ -306,6 +329,8 @@ impl LoopMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
     #[test]
     fn canonical_mode_falls_back_when_missing() {
@@ -376,5 +401,43 @@ mod tests {
         assert!(sanitize_frames(&mut timeline));
         assert_eq!(timeline.frames[0].duration_ms, 1);
         assert_eq!(timeline.frames[1].duration_ms, 50);
+    }
+
+    #[test]
+    fn check_mode_detects_needed_changes_without_writing() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"{{
+    "image": "atlas.png",
+    "width": 4,
+    "height": 4,
+    "regions": {{
+        "a": {{ "x": 0, "y": 0, "w": 2, "h": 2 }}
+    }},
+    "animations": {{
+        "idle": {{
+            "looped": true,
+            "frames": [
+                {{ "region": "a", "duration_ms": 0 }}
+            ],
+            "events": [
+                {{ "frame": 2, "name": "bad" }}
+            ]
+        }}
+    }}
+}}"#
+        )
+        .unwrap();
+        let path = file.path();
+        let contents_before = fs::read_to_string(path).unwrap();
+        assert!(migrate_file(path, true).unwrap());
+        let contents_after_check = fs::read_to_string(path).unwrap();
+        assert_eq!(contents_before, contents_after_check, "check mode must not rewrite files");
+        assert!(migrate_file(path, false).unwrap());
+        let contents_after_write = fs::read_to_string(path).unwrap();
+        assert!(contents_after_write.contains("\"loop_mode\""));
+        assert!(contents_after_write.contains("\"duration_ms\": 1"));
+        assert!(!contents_after_write.contains("\"frame\": 2"));
     }
 }

@@ -49,7 +49,7 @@
   ```shell
   cargo run --bin migrate_atlas -- assets/images
   ```
-  The CLI rewrites each atlas JSON in place, injecting canonical `loop_mode` strings (based on the old `looped` flag), clamping zero-duration frames to 1 ms, trimming duplicate/out-of-range timeline events, and bumping the root `version` to `2`. Point it at individual files or directories; unsupported JSON files are skipped with a warning so you can run it across entire content roots.
+  Add `--check` to keep runs read-only (CI safe) while still reporting which files would have been touched. The CLI rewrites each atlas JSON in place, injecting canonical `loop_mode` strings (based on the old `looped` flag), clamping zero-duration frames to 1 ms, trimming duplicate/out-of-range timeline events, and bumping the root `version` to `2`. Point it at individual files or directories; unsupported JSON files are skipped with a warning so you can run it across entire content roots.
 - **Troubleshooting:** Validation events include absolute paths and severity in the console plus analytics log. If a watched folder fails to register, confirm it exists (missing directories are skipped silently) or run `animation_check` against the problematic path to get detailed diagnostics.
 
 ## Transform & Property Clips

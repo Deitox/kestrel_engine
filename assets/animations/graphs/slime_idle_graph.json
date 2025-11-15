@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "slime_idle_graph",
+  "entry_state": "Idle",
+  "states": [
+    { "name": "Idle", "clip": "slime_idle" }
+  ],
+  "transitions": [],
+  "parameters": []
+}

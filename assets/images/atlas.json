@@ -1,63 +1,73 @@
 {
+  "version": 2,
   "image": "atlas.png",
   "width": 416,
   "height": 160,
   "regions": {
-    "checker": {
-      "x": 16,
-      "y": 16,
-      "w": 128,
-      "h": 128
-    },
-    "redorb": {
-      "x": 160,
-      "y": 32,
-      "w": 96,
-      "h": 96
-    },
     "bluebox": {
       "x": 272,
       "y": 48,
       "w": 64,
       "h": 64
     },
+    "checker": {
+      "x": 16,
+      "y": 16,
+      "w": 128,
+      "h": 128
+    },
     "green": {
       "x": 352,
       "y": 56,
       "w": 48,
       "h": 48
+    },
+    "redorb": {
+      "x": 160,
+      "y": 32,
+      "w": 96,
+      "h": 96
     }
   },
   "animations": {
-    "demo_cycle": {
-      "looped": true,
-      "frames": [
-        {
-          "region": "redorb",
-          "duration_ms": 120
-        },
-        {
-          "region": "bluebox",
-          "duration_ms": 120
-        },
-        {
-          "region": "green",
-          "duration_ms": 120
-        }
-      ]
-    },
     "checker_pulse": {
       "looped": true,
+      "loop_mode": "loop",
       "frames": [
         {
+          "name": null,
           "region": "checker",
           "duration_ms": 180
         },
         {
+          "name": null,
           "region": "green",
           "duration_ms": 80
         }
-      ]
+      ],
+      "events": []
+    },
+    "demo_cycle": {
+      "looped": true,
+      "loop_mode": "loop",
+      "frames": [
+        {
+          "name": null,
+          "region": "redorb",
+          "duration_ms": 120
+        },
+        {
+          "name": null,
+          "region": "bluebox",
+          "duration_ms": 120
+        },
+        {
+          "name": null,
+          "region": "green",
+          "duration_ms": 120
+        }
+      ],
+      "events": []
     }
   }
 }

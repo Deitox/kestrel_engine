@@ -48,7 +48,7 @@
 - Asset watchers cover `assets/images/*.json`, `assets/animations/{clips,graphs}/**/*.json`, and `assets/animations/skeletal/**/*.gltf`. Saving any of these reloads the asset, reruns schema + semantic validators, and posts `AnimationValidationEvent` entries to the inspector banner and Stats sidebar.
 - Skeleton reloads preserve playback state (active clip, time, playing flag, speed, group tags) so iteration never forces manual reseeding. Graph JSON files reimport immediately, keeping authored graphs validated even before the runtime consumes them.
 - Run the same validators headlessly (and in CI) via `cargo run --bin animation_check -- assets/animations`; the CLI walks directories, filters supported extensions (`.json`, `.clip`, `.gltf`, `.glb`), prints Info/Warn/Error lines, and exits non-zero when blocking issues are detected.
-- Keep sprite atlases on the current schema with `cargo run --bin migrate_atlas -- assets/images`. The helper walks directories of JSON files, injects canonical `loop_mode` data, trims orphaned timeline events, clamps invalid durations, and bumps the file version so CI bots and local editors agree on the data they ingest.
+- Keep sprite atlases on the current schema with `cargo run --bin migrate_atlas -- assets/images`. Append `--check` when you need a read-only verification (e.g., CI): the helper walks directories of JSON files, injects canonical `loop_mode` data, trims orphaned timeline events, clamps invalid durations, and bumps the file version so CI bots and local editors agree on the data they ingest.
 
 ## Scene Formats
 - JSON scenes (`.json`) remain human-readable and are always supported.

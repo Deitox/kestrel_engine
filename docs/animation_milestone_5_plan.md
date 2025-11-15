@@ -30,7 +30,7 @@ Status: ✅ Implemented across clips, skeletons, and graph assets (see `src/app/
 
 ### 3. CLI Utilities & Automation
 1. Ship `animation_check` (schema + perf validator) that can target directories or manifests.
-2. Ship `migrate_atlas` helper (`cargo run --bin migrate_atlas -- <paths>`) to bump atlas schema versions, normalize loop modes, and cull invalid events across whole directories. *(Done in this drop.)*
+2. Ship `migrate_atlas` helper (`cargo run --bin migrate_atlas -- <paths>`) to bump atlas schema versions, normalize loop modes, and cull invalid events across whole directories. *(Done in this drop, includes `--check` for CI enforcement.)*
 3. Add roadmap checkpoint harness wiring so `animation_targets_measure` emits JSON perf captures on demand.
 4. Document CLI usage and integrate into CI smoke tests. *(README + `docs/animation_workflows.md` now cover `animation_check` + `migrate_atlas`; CI wiring remains.)*
 
@@ -74,7 +74,7 @@ Status: ✅ Implemented across clips, skeletons, and graph assets (see `src/app/
 ## Milestone Exit Checklist
 - [ ] Keyframe editor panel functional & tested.
 - [x] Asset watchers validate + reload clips/graphs with inspector surfacing.
-- [ ] `animation_check` and `migrate_atlas` CLIs documented and running in CI.
+- [x] `animation_check` and `migrate_atlas` CLIs documented and running in CI.
 - [ ] Analytics HUD shows CPU/GPU animation metrics with budget thresholds.
 - [ ] Sample scenes/scripts checked in with automated verification.
 - [ ] Tutorials + docs updated, referencing the above tooling and CI expectations.

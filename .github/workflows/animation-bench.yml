@@ -29,6 +29,16 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Run animation_check on assets
+        shell: pwsh
+        run: |
+          cargo run --bin animation_check -- assets/animations
+
+      - name: Verify atlas schemas (migrate_atlas --check)
+        shell: pwsh
+        run: |
+          cargo run --bin migrate_atlas -- --check assets/images
+
       - name: Run animation target measurement
         shell: pwsh
         run: |

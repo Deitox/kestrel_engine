@@ -1,6 +1,67 @@
 {
+  "version": 2,
+  "image": "slime.png",
+  "width": 192,
+  "height": 32,
+  "regions": {
+    "slime_attack_0": {
+      "x": 64,
+      "y": 0,
+      "w": 32,
+      "h": 32
+    },
+    "slime_attack_1": {
+      "x": 96,
+      "y": 0,
+      "w": 32,
+      "h": 32
+    },
+    "slime_attack_2": {
+      "x": 128,
+      "y": 0,
+      "w": 32,
+      "h": 32
+    },
+    "slime_hit": {
+      "x": 160,
+      "y": 0,
+      "w": 32,
+      "h": 32
+    },
+    "slime_idle_0": {
+      "x": 0,
+      "y": 0,
+      "w": 32,
+      "h": 32
+    },
+    "slime_idle_1": {
+      "x": 32,
+      "y": 0,
+      "w": 32,
+      "h": 32
+    }
+  },
   "animations": {
     "attack": {
+      "looped": true,
+      "loop_mode": "loop",
+      "frames": [
+        {
+          "name": null,
+          "region": "slime_attack_0",
+          "duration_ms": 80
+        },
+        {
+          "name": null,
+          "region": "slime_attack_1",
+          "duration_ms": 60
+        },
+        {
+          "name": null,
+          "region": "slime_attack_2",
+          "duration_ms": 80
+        }
+      ],
       "events": [
         {
           "frame": 1,
@@ -10,95 +71,41 @@
           "frame": 2,
           "name": "impact"
         }
-      ],
-      "frames": [
-        {
-          "duration_ms": 80,
-          "region": "slime_attack_0"
-        },
-        {
-          "duration_ms": 60,
-          "region": "slime_attack_1"
-        },
-        {
-          "duration_ms": 80,
-          "region": "slime_attack_2"
-        }
-      ],
-      "loop_mode": "loop",
-      "looped": true
+      ]
     },
     "hit": {
+      "looped": true,
+      "loop_mode": "loop",
+      "frames": [
+        {
+          "name": null,
+          "region": "slime_hit",
+          "duration_ms": 200
+        }
+      ],
       "events": [
         {
           "frame": 0,
           "name": "stun"
         }
-      ],
-      "frames": [
-        {
-          "duration_ms": 200,
-          "region": "slime_hit"
-        }
-      ],
-      "loop_mode": "loop",
-      "looped": true
+      ]
     },
     "idle": {
+      "looped": true,
+      "loop_mode": "loop",
       "frames": [
         {
-          "duration_ms": 120,
-          "region": "slime_idle_0"
+          "name": null,
+          "region": "slime_idle_0",
+          "duration_ms": 120
         },
         {
-          "duration_ms": 120,
-          "region": "slime_idle_1"
+          "name": null,
+          "region": "slime_idle_1",
+          "duration_ms": 120
         }
       ],
-      "loop_mode": "loop",
-      "looped": true
+      "events": []
     }
-  },
-  "atlas_key": "main",
-  "height": 32,
-  "image": "slime.png",
-  "regions": {
-    "slime_attack_0": {
-      "h": 32,
-      "w": 32,
-      "x": 64,
-      "y": 0
-    },
-    "slime_attack_1": {
-      "h": 32,
-      "w": 32,
-      "x": 96,
-      "y": 0
-    },
-    "slime_attack_2": {
-      "h": 32,
-      "w": 32,
-      "x": 128,
-      "y": 0
-    },
-    "slime_hit": {
-      "h": 32,
-      "w": 32,
-      "x": 160,
-      "y": 0
-    },
-    "slime_idle_0": {
-      "h": 32,
-      "w": 32,
-      "x": 0,
-      "y": 0
-    },
-    "slime_idle_1": {
-      "h": 32,
-      "w": 32,
-      "x": 32,
-      "y": 0
-    }
-  },
-  "width": 192
+  }
 }
