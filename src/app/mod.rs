@@ -7,7 +7,7 @@ mod plugin_host;
 
 use self::animation_keyframe_panel::{
     AnimationKeyframePanel, AnimationKeyframePanelState, AnimationPanelCommand, AnimationTrackBinding,
-    AnimationTrackId, AnimationTrackKind, AnimationTrackSummary, KeyframeDetail, KeyframeId,
+    AnimationTrackId, AnimationTrackKind, AnimationTrackSummary, KeyframeDetail, KeyframeId, KeyframeValue,
 };
 use self::animation_watch::{AnimationAssetKind, AnimationAssetWatcher};
 use self::atlas_watch::{normalize_path_for_watch, AtlasHotReload};
@@ -275,6 +275,7 @@ pub(crate) struct ScriptConsoleEntry {
 enum TrackEditOperation {
     Insert { time: f32 },
     Delete { indices: Vec<usize> },
+    Update { index: usize, new_time: Option<f32>, new_value: Option<KeyframeValue> },
 }
 
 #[derive(Clone)]
@@ -654,6 +655,9 @@ impl App {
                         self.apply_track_edit(binding, TrackEditOperation::Delete { indices });
                     }
                 }
+                AnimationPanelCommand::UpdateKey { binding, index, new_time, new_value } => {
+                    self.apply_track_edit(binding, TrackEditOperation::Update { index, new_time, new_value });
+                }
                 AnimationPanelCommand::Undo => {
                     self.undo_clip_edit();
                 }
@@ -1016,6 +1020,7 @@ impl App {
                         index,
                         time,
                         value_preview: Some(preview),
+                        value: KeyframeValue::None,
                     }
                 })
                 .collect()
@@ -1026,6 +1031,7 @@ impl App {
                     index,
                     time: if index == animation.frame_index { Some(animation.frame_elapsed) } else { None },
                     value_preview: animation.frame_region.clone(),
+                    value: KeyframeValue::None,
                 })
                 .collect()
         }
@@ -1041,6 +1047,7 @@ impl App {
                 index,
                 time: Some(keyframe.time),
                 value_preview: Some(format!("({:.2}, {:.2})", keyframe.value.x, keyframe.value.y)),
+                value: KeyframeValue::Vec2([keyframe.value.x, keyframe.value.y]),
             })
             .collect()
     }
@@ -1055,6 +1062,7 @@ impl App {
                 index,
                 time: Some(keyframe.time),
                 value_preview: Some(format!("{:.2}", keyframe.value)),
+                value: KeyframeValue::Scalar(keyframe.value),
             })
             .collect()
     }
@@ -1074,6 +1082,7 @@ impl App {
                         "({:.2}, {:.2}, {:.2}, {:.2})",
                         value.x, value.y, value.z, value.w
                     )),
+                    value: KeyframeValue::Vec4([value.x, value.y, value.z, value.w]),
                 }
             })
             .collect()
@@ -1091,6 +1100,7 @@ impl App {
                     index: 0,
                     time: Some(time),
                     value_preview: Some(preview),
+                    value: KeyframeValue::None,
                 }]
             })
             .unwrap_or_else(Vec::new)
@@ -1184,6 +1194,29 @@ impl App {
                 frames.push(ClipKeyframe { time, value: sample.unwrap_or(fallback) });
             }
             TrackEditOperation::Delete { indices } => Self::remove_key_indices(&mut frames, &indices),
+            TrackEditOperation::Update { index, new_time, new_value } => {
+                if frames.is_empty() || index >= frames.len() {
+                    return false;
+                }
+                let mut changed = false;
+                if let Some(time) = new_time {
+                    let clamped = time.max(0.0);
+                    if (frames[index].time - clamped).abs() > f32::EPSILON {
+                        frames[index].time = clamped;
+                        changed = true;
+                    }
+                }
+                if let Some(KeyframeValue::Vec2(value)) = new_value {
+                    let new_vec = Vec2::new(value[0], value[1]);
+                    if frames[index].value != new_vec {
+                        frames[index].value = new_vec;
+                        changed = true;
+                    }
+                }
+                if !changed {
+                    return false;
+                }
+            }
         }
         Self::apply_vec2_frames(target, frames, interpolation)
     }
@@ -1204,6 +1237,28 @@ impl App {
                 frames.push(ClipKeyframe { time, value: sample.unwrap_or(fallback) });
             }
             TrackEditOperation::Delete { indices } => Self::remove_key_indices(&mut frames, &indices),
+            TrackEditOperation::Update { index, new_time, new_value } => {
+                if frames.is_empty() || index >= frames.len() {
+                    return false;
+                }
+                let mut changed = false;
+                if let Some(time) = new_time {
+                    let clamped = time.max(0.0);
+                    if (frames[index].time - clamped).abs() > f32::EPSILON {
+                        frames[index].time = clamped;
+                        changed = true;
+                    }
+                }
+                if let Some(KeyframeValue::Scalar(value)) = new_value {
+                    if (frames[index].value - value).abs() > f32::EPSILON {
+                        frames[index].value = value;
+                        changed = true;
+                    }
+                }
+                if !changed {
+                    return false;
+                }
+            }
         }
         Self::apply_scalar_frames(target, frames, interpolation)
     }
@@ -1224,6 +1279,29 @@ impl App {
                 frames.push(ClipKeyframe { time, value: sample.unwrap_or(fallback) });
             }
             TrackEditOperation::Delete { indices } => Self::remove_key_indices(&mut frames, &indices),
+            TrackEditOperation::Update { index, new_time, new_value } => {
+                if frames.is_empty() || index >= frames.len() {
+                    return false;
+                }
+                let mut changed = false;
+                if let Some(time) = new_time {
+                    let clamped = time.max(0.0);
+                    if (frames[index].time - clamped).abs() > f32::EPSILON {
+                        frames[index].time = clamped;
+                        changed = true;
+                    }
+                }
+                if let Some(KeyframeValue::Vec4(value)) = new_value {
+                    let new_vec = Vec4::new(value[0], value[1], value[2], value[3]);
+                    if frames[index].value != new_vec {
+                        frames[index].value = new_vec;
+                        changed = true;
+                    }
+                }
+                if !changed {
+                    return false;
+                }
+            }
         }
         Self::apply_vec4_frames(target, frames, interpolation)
     }

@@ -44,6 +44,46 @@ pub enum AnimationTrackKind {
     Tint,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum KeyframeValue {
+    None,
+    Scalar(f32),
+    Vec2([f32; 2]),
+    Vec4([f32; 4]),
+}
+
+impl Default for KeyframeValue {
+    fn default() -> Self {
+        KeyframeValue::None
+    }
+}
+
+impl KeyframeValue {
+    pub fn as_scalar(self) -> Option<f32> {
+        if let KeyframeValue::Scalar(value) = self {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_vec2(self) -> Option<[f32; 2]> {
+        if let KeyframeValue::Vec2(value) = self {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_vec4(self) -> Option<[f32; 4]> {
+        if let KeyframeValue::Vec4(value) = self {
+            Some(value)
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AnimationTrackBinding {
     SpriteTimeline { entity: Entity },
@@ -52,9 +92,24 @@ pub enum AnimationTrackBinding {
 
 #[derive(Clone, Debug)]
 pub enum AnimationPanelCommand {
-    ScrubTrack { binding: AnimationTrackBinding, time: f32 },
-    InsertKey { binding: AnimationTrackBinding, time: f32 },
-    DeleteKeys { binding: AnimationTrackBinding, indices: Vec<usize> },
+    ScrubTrack {
+        binding: AnimationTrackBinding,
+        time: f32,
+    },
+    InsertKey {
+        binding: AnimationTrackBinding,
+        time: f32,
+    },
+    DeleteKeys {
+        binding: AnimationTrackBinding,
+        indices: Vec<usize>,
+    },
+    UpdateKey {
+        binding: AnimationTrackBinding,
+        index: usize,
+        new_time: Option<f32>,
+        new_value: Option<KeyframeValue>,
+    },
     Undo,
     Redo,
 }
@@ -80,6 +135,7 @@ pub struct KeyframeDetail {
     pub index: usize,
     pub time: Option<f32>,
     pub value_preview: Option<String>,
+    pub value: KeyframeValue,
 }
 
 /// Snapshot of editor state passed into the panel each frame.
@@ -440,6 +496,104 @@ impl AnimationKeyframePanel {
                 self.selected_keys.clear();
             }
         }
+        self.render_key_editor(ui, tracks);
+    }
+
+    fn render_key_editor(&mut self, ui: &mut Ui, tracks: &[&AnimationTrackSummary]) {
+        if self.selected_keys.len() != 1 {
+            return;
+        }
+        let Some((summary, detail)) = self.primary_selected_key(tracks) else {
+            return;
+        };
+        if matches!(summary.kind, AnimationTrackKind::SpriteTimeline) {
+            ui.label("Sprite keys are read-only.");
+            return;
+        }
+        ui.separator();
+        ui.strong("Key Editor");
+        if let Some(mut time) = detail.time {
+            let mut changed = false;
+            let mut time_widget = egui::DragValue::new(&mut time).speed(0.01);
+            time_widget = time_widget.prefix("Time ");
+            if ui.add(time_widget).changed() {
+                changed = true;
+            }
+            if changed {
+                self.pending_commands.push(AnimationPanelCommand::UpdateKey {
+                    binding: summary.binding,
+                    index: detail.index,
+                    new_time: Some(time.max(0.0)),
+                    new_value: None,
+                });
+            }
+        } else {
+            ui.label("Key time unavailable.");
+        }
+        match summary.kind {
+            AnimationTrackKind::Translation | AnimationTrackKind::Scale => {
+                if let Some(mut value) = detail.value.as_vec2() {
+                    let mut changed = false;
+                    ui.horizontal(|ui| {
+                        ui.label("Value (X,Y)");
+                        if ui.add(egui::DragValue::new(&mut value[0]).speed(0.01)).changed() {
+                            changed = true;
+                        }
+                        if ui.add(egui::DragValue::new(&mut value[1]).speed(0.01)).changed() {
+                            changed = true;
+                        }
+                    });
+                    if changed {
+                        self.pending_commands.push(AnimationPanelCommand::UpdateKey {
+                            binding: summary.binding,
+                            index: detail.index,
+                            new_time: None,
+                            new_value: Some(KeyframeValue::Vec2(value)),
+                        });
+                    }
+                } else {
+                    ui.label("Value unavailable.");
+                }
+            }
+            AnimationTrackKind::Rotation => {
+                if let Some(mut value) = detail.value.as_scalar() {
+                    if ui.add(egui::DragValue::new(&mut value).speed(0.01).prefix("Degrees ")).changed() {
+                        self.pending_commands.push(AnimationPanelCommand::UpdateKey {
+                            binding: summary.binding,
+                            index: detail.index,
+                            new_time: None,
+                            new_value: Some(KeyframeValue::Scalar(value)),
+                        });
+                    }
+                } else {
+                    ui.label("Value unavailable.");
+                }
+            }
+            AnimationTrackKind::Tint => {
+                if let Some(mut value) = detail.value.as_vec4() {
+                    let mut changed = false;
+                    ui.horizontal(|ui| {
+                        ui.label("RGBA");
+                        for channel in value.iter_mut() {
+                            if ui.add(egui::DragValue::new(channel).speed(0.01)).changed() {
+                                changed = true;
+                            }
+                        }
+                    });
+                    if changed {
+                        self.pending_commands.push(AnimationPanelCommand::UpdateKey {
+                            binding: summary.binding,
+                            index: detail.index,
+                            new_time: None,
+                            new_value: Some(KeyframeValue::Vec4(value)),
+                        });
+                    }
+                } else {
+                    ui.label("Value unavailable.");
+                }
+            }
+            AnimationTrackKind::SpriteTimeline => {}
+        }
     }
 
     fn handle_track_click(&mut self, summary: &AnimationTrackSummary, modifiers: Modifiers) {
@@ -571,6 +725,16 @@ impl AnimationKeyframePanel {
         }
         binding.map(|binding| (binding, indices))
     }
+
+    fn primary_selected_key<'a>(
+        &self,
+        tracks: &[&'a AnimationTrackSummary],
+    ) -> Option<(&'a AnimationTrackSummary, &'a KeyframeDetail)> {
+        let key = self.selected_keys.iter().next()?;
+        let summary = tracks.iter().find(|summary| summary.id == key.track)?;
+        let detail = summary.key_details.iter().find(|detail| detail.id == *key)?;
+        Some((summary, detail))
+    }
 }
 
 #[cfg(test)]
@@ -643,12 +807,14 @@ mod tests {
                     index: 0,
                     time: Some(0.0),
                     value_preview: Some("Translation (0,0)".to_string()),
+                    value: KeyframeValue::Vec2([0.0, 0.0]),
                 },
                 KeyframeDetail {
                     id: KeyframeId::new(AnimationTrackId(42), 1),
                     index: 1,
                     time: Some(1.0),
                     value_preview: Some("Rotation 90deg".to_string()),
+                    value: KeyframeValue::Scalar(90.0),
                 },
             ],
         };
