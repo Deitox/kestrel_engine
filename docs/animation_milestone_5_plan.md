@@ -87,7 +87,7 @@ Status: ✅ Implemented across clips, skeletons, and graph assets (see `src/app/
 - [x] Undo/redo + dirty badges + autosave feedback wired to the clip editor.
 - [x] Multi-key adjustments (time/value offsets) available for transform channels.
 - [x] Expose per-key editing interactions (per-key inspector controls, copy/paste, insert-at-scrub button).
-- [ ] Persist edits via watchers/validators.
+- [x] Persist edits via watchers/validators (in-editor saves immediately write to disk, reimport clips, and run validators while suppressing duplicate watcher events).
 
 
 

@@ -23,6 +23,7 @@ Milestone 5 requires the editor to automatically reload animation clips/graphs, 
    - File change event -> canonicalize path -> match against asset registry.
    - If asset recognized, schedule reload on the main thread (avoid cross-thread ECS mutations).
    - After reload, call the validator pipeline (see below).
+   - Editor-initiated saves (keyframe panel edits) invoke the same validation pipeline immediately after writing to disk while suppressing duplicate watcher events, so authors see inspection banners without waiting for the OS file event.
 3. **Debounce**: 100–200 ms debounce window to coalesce multiple save events.
 4. **Error Handling**: If reload or validation fails, log via `EventBus`, show inspector warning, and display banner in Stats panel.
 

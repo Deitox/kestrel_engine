@@ -480,6 +480,7 @@ pub struct App {
     animation_clip_status: Option<String>,
     clip_edit_overrides: HashMap<String, Arc<AnimationClip>>,
     pending_animation_validation_events: Vec<AnimationValidationEvent>,
+    suppressed_validation_paths: HashSet<PathBuf>,
 
     // Plugins
     plugin_host: PluginHost,
@@ -652,25 +653,42 @@ impl App {
         }
         for change in changes {
             self.handle_animation_asset_change(&change);
-            let events = AnimationValidator::validate_path(&change.path);
-            if events.is_empty() {
-                eprintln!(
-                    "[animation] detected change for {} ({}) but no validations ran",
-                    change.path.display(),
-                    change.kind.label()
-                );
-                self.animation_clip_status = Some(format!(
-                    "Detected {} change but no validators ran: {}",
-                    change.kind.label(),
-                    change.path.display()
-                ));
+            if self.consume_validation_suppression(&change.path) {
                 continue;
             }
-            for event in events {
-                self.pending_animation_validation_events.push(event.clone());
-                self.log_animation_validation_event(event);
-            }
+            self.run_animation_validators_for_path(&change.path, change.kind.label());
         }
+    }
+
+    fn run_animation_validators_for_path(&mut self, path: &Path, context: &str) {
+        let events = AnimationValidator::validate_path(path);
+        if events.is_empty() {
+            eprintln!(
+                "[animation] detected change for {} ({context}) but no validations ran",
+                path.display()
+            );
+            self.animation_clip_status =
+                Some(format!("Detected {context} change but no validators ran: {}", path.display()));
+            return;
+        }
+        for event in events {
+            self.pending_animation_validation_events.push(event.clone());
+            self.log_animation_validation_event(event);
+        }
+    }
+
+    fn suppress_validation_for_path(&mut self, path: &Path) {
+        let normalized = Self::normalize_validation_path(path);
+        self.suppressed_validation_paths.insert(normalized);
+    }
+
+    fn consume_validation_suppression(&mut self, path: &Path) -> bool {
+        let normalized = Self::normalize_validation_path(path);
+        self.suppressed_validation_paths.remove(&normalized)
+    }
+
+    fn normalize_validation_path(path: &Path) -> PathBuf {
+        fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
     }
 
     fn handle_animation_asset_change(&mut self, change: &AnimationAssetChange) {
@@ -1396,14 +1414,17 @@ impl App {
 
     fn persist_clip_edit(&mut self, clip_key: &str, clip: Arc<AnimationClip>) {
         self.clip_dirty.insert(clip_key.to_string());
+        let clip_source_path = self.assets.clip_source(clip_key).map(|p| p.to_string());
+        if let Some(path) = clip_source_path.as_deref() {
+            self.suppress_validation_for_path(Path::new(path));
+        }
         if let Err(err) = self.assets.save_clip(clip_key, clip.as_ref()) {
             eprintln!("[animation] failed to save clip '{clip_key}': {err:?}");
             self.animation_clip_status = Some(format!("Failed to save '{clip_key}': {err}"));
             return;
         }
         let mut status_note = format!("Saved clip '{clip_key}'");
-        let clip_path = self.assets.clip_source(clip_key).map(|p| p.to_string());
-        if let Some(path) = clip_path.as_deref() {
+        if let Some(path) = clip_source_path.as_deref() {
             if let Err(err) = self.assets.load_clip(clip_key, path) {
                 eprintln!("[animation] failed to reload clip '{clip_key}' after save: {err:?}");
                 self.animation_clip_status = Some(format!("Reload failed for '{clip_key}': {err}"));
@@ -1418,6 +1439,9 @@ impl App {
             self.clip_edit_overrides.remove(clip_key);
         }
         self.clip_dirty.remove(clip_key);
+        if let Some(path) = clip_source_path {
+            self.run_animation_validators_for_path(Path::new(&path), "clip edit");
+        }
         self.animation_clip_status = Some(status_note);
     }
 
@@ -2326,6 +2350,7 @@ impl App {
             animation_clip_status: None,
             clip_edit_overrides: HashMap::new(),
             pending_animation_validation_events: Vec::new(),
+            suppressed_validation_paths: HashSet::new(),
             plugin_host,
             camera,
             viewport_camera_mode: ViewportCameraMode::default(),
