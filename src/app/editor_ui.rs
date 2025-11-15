@@ -3,6 +3,7 @@ use super::{
     ScriptConsoleKind, ViewportCameraMode,
 };
 use crate::animation_validation::AnimationValidationSeverity;
+use crate::analytics::AnimationBudgetSample;
 use crate::audio::{AudioHealthSnapshot, AudioPlugin};
 use crate::camera3d::Camera3D;
 use crate::ecs::{
@@ -35,6 +36,12 @@ use winit::dpi::PhysicalSize;
 mod entity_inspector;
 
 const ANIMATION_KEYFRAME_PANEL_ENABLED: bool = cfg!(feature = "animation_keyframe_panel");
+const SPRITE_EVAL_BUDGET_MS: f32 = 0.30;
+const SPRITE_PACK_BUDGET_MS: f32 = 0.05;
+const SPRITE_UPLOAD_BUDGET_MS: f32 = 0.10;
+const TRANSFORM_CLIP_BUDGET_MS: f32 = 0.40;
+const SKELETAL_EVAL_BUDGET_MS: f32 = 1.20;
+const GPU_PALETTE_UPLOAD_BUDGET_MS: f32 = 0.50;
 #[derive(Clone, Copy)]
 pub(super) struct PrefabDragPayload {
     pub entity: Entity,
@@ -754,6 +761,8 @@ impl App {
             .analytics_plugin()
             .map(|analytics| analytics.animation_validation_events())
             .unwrap_or_default();
+        let animation_budget_sample =
+            self.analytics_plugin().and_then(|analytics| analytics.animation_budget_sample());
 
         let mut editor_settings_dirty = false;
         let keyframe_panel_ctx = ANIMATION_KEYFRAME_PANEL_ENABLED.then(|| self.egui_ctx.clone());
@@ -2777,6 +2786,9 @@ impl App {
                         }
                     }
                 }
+                if let Some(sample) = animation_budget_sample {
+                    draw_animation_budget_overlay(ctx, viewport_outline, sample);
+                }
             }
             let active_scale_handle_kind =
                 self.gizmo_interaction.as_ref().and_then(|interaction| match interaction {
@@ -3103,6 +3115,117 @@ fn sprite_stage_bar(ui: &mut egui::Ui, label: &str, value_ms: Option<f32>, budge
                 ui.label(format!("{label}: timing unavailable"));
             }
         }
+    }
+}
+
+fn draw_animation_budget_overlay(
+    ctx: &egui::Context,
+    viewport_rect: egui::Rect,
+    sample: AnimationBudgetSample,
+) {
+    let pos = egui::pos2(viewport_rect.left() + 10.0, viewport_rect.top() + 10.0);
+    egui::Area::new(egui::Id::new("animation_budget_overlay"))
+        .order(egui::Order::Foreground)
+        .interactable(false)
+        .movable(false)
+        .fixed_pos(pos)
+        .show(ctx, |ui| {
+            let frame = egui::Frame::new()
+                .fill(ui.visuals().extreme_bg_color.gamma_multiply(0.9))
+                .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color))
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::symmetric(10, 6));
+            frame.show(ui, |ui| {
+                ui.set_width(240.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(egui::RichText::new("Animation HUD").strong());
+                });
+                ui.add_space(4.0);
+                hud_budget_row(
+                    ui,
+                    "Sprite Eval",
+                    sample.sprite_eval_ms,
+                    SPRITE_EVAL_BUDGET_MS,
+                    format!("{} animators", sample.sprite_animators),
+                );
+                hud_budget_row(
+                    ui,
+                    "Sprite Pack",
+                    sample.sprite_pack_ms,
+                    SPRITE_PACK_BUDGET_MS,
+                    String::new(),
+                );
+                if let Some(upload) = sample.sprite_upload_ms {
+                    hud_budget_row(
+                        ui,
+                        "Sprite Upload",
+                        upload,
+                        SPRITE_UPLOAD_BUDGET_MS,
+                        String::new(),
+                    );
+                } else {
+                    ui.small("Sprite Upload: GPU timers disabled");
+                }
+                ui.separator();
+                hud_budget_row(
+                    ui,
+                    "Transform Clips",
+                    sample.transform_eval_ms,
+                    TRANSFORM_CLIP_BUDGET_MS,
+                    format!("{} active clips", sample.transform_clip_count),
+                );
+                hud_budget_row(
+                    ui,
+                    "Skeletal Eval",
+                    sample.skeletal_eval_ms,
+                    SKELETAL_EVAL_BUDGET_MS,
+                    format!(
+                        "{} rigs / {} bones",
+                        sample.skeletal_instance_count, sample.skeletal_bone_count
+                    ),
+                );
+                if let Some(palette_ms) = sample.palette_upload_ms {
+                    hud_budget_row(
+                        ui,
+                        "Palette Upload",
+                        palette_ms,
+                        GPU_PALETTE_UPLOAD_BUDGET_MS,
+                        format!(
+                            "{} uploads ({} joints)",
+                            sample.palette_upload_calls, sample.palette_uploaded_joints
+                        ),
+                    );
+                } else {
+                    ui.small("Palette Upload: no skinning this frame");
+                }
+            });
+        });
+}
+
+fn hud_budget_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    value_ms: f32,
+    budget_ms: f32,
+    detail: String,
+) {
+    let color = budget_color(value_ms, budget_ms);
+    ui.colored_label(
+        color,
+        format!("{label}: {value:.3} ms (budget {budget:.3} ms)", value = value_ms, budget = budget_ms),
+    );
+    if !detail.is_empty() {
+        ui.small(detail);
+    }
+}
+
+fn budget_color(value: f32, budget: f32) -> egui::Color32 {
+    if value <= budget * 0.8 {
+        egui::Color32::from_rgb(120, 200, 120)
+    } else if value <= budget {
+        egui::Color32::from_rgb(255, 200, 80)
+    } else {
+        egui::Color32::from_rgb(255, 120, 80)
     }
 }
 

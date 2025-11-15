@@ -9,6 +9,7 @@ use glam::{Mat4, Vec3, Vec4};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
+use std::time::Instant;
 use wgpu::util::DeviceExt;
 use winit::dpi::PhysicalSize;
 use winit::event_loop::ActiveEventLoop;
@@ -355,6 +356,24 @@ struct MeshPipelineResources {
     environment_bgl: Arc<wgpu::BindGroupLayout>,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PaletteUploadStats {
+    pub calls: u32,
+    pub joints_uploaded: u32,
+    pub total_cpu_ms: f32,
+}
+
+impl PaletteUploadStats {
+    fn record(&mut self, joints: usize, cpu_ms: f32) {
+        if joints == 0 {
+            return;
+        }
+        self.calls = self.calls.saturating_add(1);
+        self.joints_uploaded = self.joints_uploaded.saturating_add(joints as u32);
+        self.total_cpu_ms += cpu_ms;
+    }
+}
+
 #[derive(Default)]
 struct MeshPass {
     resources: Option<MeshPipelineResources>,
@@ -510,6 +529,7 @@ pub struct Renderer {
     headless_target: Option<HeadlessTarget>,
     #[cfg(test)]
     surface_error_injector: Option<wgpu::SurfaceError>,
+    palette_stats_frame: PaletteUploadStats,
 }
 
 const DEFAULT_PRESENT_MODES: [wgpu::PresentMode; 1] = [wgpu::PresentMode::Fifo];
@@ -559,6 +579,7 @@ impl Renderer {
             headless_target: None,
             #[cfg(test)]
             surface_error_injector: None,
+            palette_stats_frame: PaletteUploadStats::default(),
         }
     }
 
@@ -1482,7 +1503,10 @@ impl Renderer {
                     self.mesh_pass.skinning_palette_bind_groups.push(bind_group);
                 }
                 let buffer = &self.mesh_pass.skinning_palette_buffers[slot];
+                let upload_start = Instant::now();
                 queue.write_buffer(buffer, 0, bytemuck::cast_slice(&self.mesh_pass.palette_staging));
+                let elapsed_ms = upload_start.elapsed().as_secs_f32() * 1000.0;
+                self.palette_stats_frame.record(joint_count, elapsed_ms);
                 let bind_group = &self.mesh_pass.skinning_palette_bind_groups[slot];
                 pass.set_bind_group(2, bind_group, &[]);
             } else {
@@ -2007,7 +2031,10 @@ impl Renderer {
                         self.shadow_pass.skinning_palette_bind_groups.push(bind_group);
                     }
                     let buffer = &self.shadow_pass.skinning_palette_buffers[slot];
+                    let upload_start = Instant::now();
                     queue.write_buffer(buffer, 0, bytemuck::cast_slice(&self.shadow_pass.palette_staging));
+                    let elapsed_ms = upload_start.elapsed().as_secs_f32() * 1000.0;
+                    self.palette_stats_frame.record(joint_count, elapsed_ms);
                     let bind_group = &self.shadow_pass.skinning_palette_bind_groups[slot];
                     pass.set_bind_group(2, bind_group, &[]);
                 } else {
@@ -2026,6 +2053,12 @@ impl Renderer {
         );
 
         Ok(())
+    }
+
+    pub fn take_palette_upload_metrics(&mut self) -> PaletteUploadStats {
+        let stats = self.palette_stats_frame;
+        self.palette_stats_frame = PaletteUploadStats::default();
+        stats
     }
 
     pub fn window(&self) -> Option<&Window> {
@@ -2380,6 +2413,7 @@ impl Renderer {
         mesh_draws: &[MeshDraw],
         mesh_camera: Option<&Camera3D>,
     ) -> Result<SurfaceFrame> {
+        self.palette_stats_frame = PaletteUploadStats::default();
         {
             let queue = self.queue.as_ref().context("GPU queue not initialized")?;
             let globals = self.globals_buf.as_ref().context("Globals buffer missing")?;

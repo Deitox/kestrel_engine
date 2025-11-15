@@ -10,6 +10,22 @@ use anyhow::Result;
 use std::any::Any;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AnimationBudgetSample {
+    pub sprite_eval_ms: f32,
+    pub sprite_pack_ms: f32,
+    pub sprite_upload_ms: Option<f32>,
+    pub transform_eval_ms: f32,
+    pub skeletal_eval_ms: f32,
+    pub palette_upload_ms: Option<f32>,
+    pub sprite_animators: u32,
+    pub transform_clip_count: usize,
+    pub skeletal_instance_count: usize,
+    pub skeletal_bone_count: usize,
+    pub palette_upload_calls: u32,
+    pub palette_uploaded_joints: u32,
+}
+
 pub struct AnalyticsPlugin {
     frame_hist: Vec<f32>,
     frame_capacity: usize,
@@ -24,6 +40,7 @@ pub struct AnalyticsPlugin {
     plugin_asset_readbacks: VecDeque<PluginAssetReadbackEvent>,
     plugin_watchdog_events: VecDeque<PluginWatchdogEvent>,
     animation_validation_events: VecDeque<AnimationValidationEvent>,
+    animation_budget_sample: Option<AnimationBudgetSample>,
 }
 
 const SECURITY_EVENT_CAPACITY: usize = 64;
@@ -44,6 +61,7 @@ impl AnalyticsPlugin {
             plugin_asset_readbacks: VecDeque::with_capacity(32),
             plugin_watchdog_events: VecDeque::with_capacity(32),
             animation_validation_events: VecDeque::with_capacity(SECURITY_EVENT_CAPACITY),
+            animation_budget_sample: None,
         }
     }
 
@@ -170,6 +188,14 @@ impl AnalyticsPlugin {
     pub fn animation_validation_events(&self) -> Vec<AnimationValidationEvent> {
         self.animation_validation_events.iter().cloned().collect()
     }
+
+    pub fn record_animation_budget_sample(&mut self, sample: AnimationBudgetSample) {
+        self.animation_budget_sample = Some(sample);
+    }
+
+    pub fn animation_budget_sample(&self) -> Option<AnimationBudgetSample> {
+        self.animation_budget_sample
+    }
 }
 
 impl Default for AnalyticsPlugin {
@@ -219,6 +245,7 @@ impl EnginePlugin for AnalyticsPlugin {
         self.plugin_asset_readbacks.clear();
         self.plugin_watchdog_events.clear();
         self.animation_validation_events.clear();
+        self.animation_budget_sample = None;
         Ok(())
     }
 

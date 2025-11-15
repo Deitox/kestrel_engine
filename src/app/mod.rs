@@ -12,7 +12,7 @@ use self::animation_keyframe_panel::{
 use self::animation_watch::{AnimationAssetChange, AnimationAssetKind, AnimationAssetWatcher};
 use self::atlas_watch::{normalize_path_for_watch, AtlasHotReload};
 use self::plugin_host::{BuiltinPluginFactory, PluginHost};
-use crate::analytics::AnalyticsPlugin;
+use crate::analytics::{AnimationBudgetSample, AnalyticsPlugin};
 use crate::animation_validation::{
     AnimationValidationEvent, AnimationValidationSeverity, AnimationValidator,
 };
@@ -3718,6 +3718,8 @@ impl ApplicationHandler for App {
         };
         render_time_ms = render_start.elapsed().as_secs_f32() * 1000.0;
 
+        let palette_upload_stats = self.renderer.take_palette_upload_metrics();
+
         if self.egui_winit.is_none() {
             frame.present();
             let frame_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
@@ -3825,6 +3827,37 @@ impl ApplicationHandler for App {
             };
         if !BINARY_PREFABS_ENABLED && self.prefab_format == PrefabFormat::Binary {
             self.prefab_format = PrefabFormat::Json;
+        }
+        let transform_metrics = self.ecs.transform_clip_metrics();
+        let skeletal_metrics = self.ecs.skeletal_metrics();
+        let transform_eval_ms = system_timings
+            .iter()
+            .find(|timing| timing.name == "sys_drive_transform_clips")
+            .map(|timing| timing.last_ms)
+            .unwrap_or(0.0);
+        let skeletal_eval_ms = system_timings
+            .iter()
+            .find(|timing| timing.name == "sys_drive_skeletal_clips")
+            .map(|timing| timing.last_ms)
+            .unwrap_or(0.0);
+        let sprite_animator_count = sprite_perf_sample.map(|perf| perf.total_animators()).unwrap_or(0);
+        let palette_upload_ms =
+            if palette_upload_stats.calls > 0 { Some(palette_upload_stats.total_cpu_ms) } else { None };
+        if let Some(analytics) = self.analytics_plugin_mut() {
+            analytics.record_animation_budget_sample(AnimationBudgetSample {
+                sprite_eval_ms: sprite_eval_ms.unwrap_or(0.0),
+                sprite_pack_ms: sprite_pack_ms.unwrap_or(0.0),
+                sprite_upload_ms,
+                transform_eval_ms,
+                skeletal_eval_ms,
+                palette_upload_ms,
+                sprite_animators: sprite_animator_count,
+                transform_clip_count: transform_metrics.clip_count,
+                skeletal_instance_count: skeletal_metrics.skeleton_count,
+                skeletal_bone_count: skeletal_metrics.bone_count,
+                palette_upload_calls: palette_upload_stats.calls,
+                palette_uploaded_joints: palette_upload_stats.joints_uploaded,
+            });
         }
         let prefab_entries: Vec<editor_ui::PrefabShelfEntry> = self
             .prefab_library

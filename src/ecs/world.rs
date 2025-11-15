@@ -35,6 +35,22 @@ pub struct EmitterSnapshot {
     pub end_size: f32,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TransformClipMetrics {
+    pub clip_count: usize,
+    pub translation_tracks: usize,
+    pub rotation_tracks: usize,
+    pub scale_tracks: usize,
+    pub tint_tracks: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SkeletalMetrics {
+    pub skeleton_count: usize,
+    pub bone_count: usize,
+    pub clips_playing: usize,
+}
+
 // ---------- World container ----------
 pub struct EcsWorld {
     pub world: World,
@@ -1697,6 +1713,41 @@ impl EcsWorld {
         let boundary = self.world.resource::<RapierState>().boundary_entity();
         self.world.iter_entities().filter(|entity_ref| entity_ref.id() != boundary).count()
     }
+
+    pub fn transform_clip_metrics(&mut self) -> TransformClipMetrics {
+        let mut metrics = TransformClipMetrics::default();
+        let mut query = self.world.query::<&ClipInstance>();
+        for instance in query.iter(&self.world) {
+            metrics.clip_count += 1;
+            if instance.clip.translation.is_some() {
+                metrics.translation_tracks += 1;
+            }
+            if instance.clip.rotation.is_some() {
+                metrics.rotation_tracks += 1;
+            }
+            if instance.clip.scale.is_some() {
+                metrics.scale_tracks += 1;
+            }
+            if instance.clip.tint.is_some() {
+                metrics.tint_tracks += 1;
+            }
+        }
+        metrics
+    }
+
+    pub fn skeletal_metrics(&mut self) -> SkeletalMetrics {
+        let mut metrics = SkeletalMetrics::default();
+        let mut query = self.world.query::<&SkeletonInstance>();
+        for instance in query.iter(&self.world) {
+            metrics.skeleton_count += 1;
+            metrics.bone_count += instance.joint_count();
+            if instance.active_clip.is_some() {
+                metrics.clips_playing += 1;
+            }
+        }
+        metrics
+    }
+
     pub fn set_spatial_cell(&mut self, cell: f32) {
         let mut grid = self.world.resource_mut::<SpatialHash>();
         grid.cell = cell;
