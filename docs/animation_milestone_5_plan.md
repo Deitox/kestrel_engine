@@ -45,7 +45,7 @@ Status: ✅ Implemented across clips, skeletons, and graph assets (see `src/app/
 **Exit:** HUD shows live metrics, turns yellow/red when limits breach, and logs are archived for regression review.
 
 ### 5. Sample Content & Fixtures
-1. Build/curate scenes showcasing sprite timelines, transform tracks, skeletal rigs, and graph-driven characters.
+1. Build/curate scenes showcasing sprite timelines, transform tracks, skeletal rigs, and graph-driven characters. *(Initial scene lives at `assets/scenes/animation_showcase.json`; see `docs/animation_sample_content.md` for details.)*
 2. Ensure each scene has deterministic capture scripts (for docs + tests).
 3. Add automated scene load tests to prevent regressions in the demo content.
 

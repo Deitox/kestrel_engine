@@ -49,6 +49,7 @@
 - Skeleton reloads preserve playback state (active clip, time, playing flag, speed, group tags) so iteration never forces manual reseeding. Graph JSON files reimport immediately, keeping authored graphs validated even before the runtime consumes them.
 - Run the same validators headlessly (and in CI) via `cargo run --bin animation_check -- assets/animations`; the CLI walks directories, filters supported extensions (`.json`, `.clip`, `.gltf`, `.glb`), prints Info/Warn/Error lines, and exits non-zero when blocking issues are detected.
 - Keep sprite atlases on the current schema with `cargo run --bin migrate_atlas -- assets/images`. Append `--check` when you need a read-only verification (e.g., CI): the helper walks directories of JSON files, injects canonical `loop_mode` data, trims orphaned timeline events, clamps invalid durations, and bumps the file version so CI bots and local editors agree on the data they ingest.
+- Load `assets/scenes/animation_showcase.json` (documented in `docs/animation_sample_content.md`) for a ready-to-edit scene that exercises the sprite timeline, transform clip, and palette upload counters used throughout the milestone tutorials.
 
 ## Scene Formats
 - JSON scenes (`.json`) remain human-readable and are always supported.
