@@ -6,7 +6,8 @@ mod gizmo_interaction;
 mod plugin_host;
 
 use self::animation_keyframe_panel::{
-    AnimationKeyframePanel, AnimationKeyframePanelState, AnimationTrackSummary, KeyframeDetail,
+    AnimationKeyframePanel, AnimationKeyframePanelState, AnimationTrackId, AnimationTrackKind,
+    AnimationTrackSummary, KeyframeDetail, KeyframeId,
 };
 use self::animation_watch::{AnimationAssetKind, AnimationAssetWatcher};
 use self::atlas_watch::{normalize_path_for_watch, AtlasHotReload};
@@ -15,14 +16,14 @@ use crate::analytics::AnalyticsPlugin;
 use crate::animation_validation::{
     AnimationValidationEvent, AnimationValidationSeverity, AnimationValidator,
 };
-use crate::assets::AssetManager;
+use crate::assets::{AssetManager, ClipScalarTrack, ClipVec2Track, ClipVec4Track, SpriteTimeline};
 use crate::audio::{AudioHealthSnapshot, AudioPlugin};
 use crate::camera::Camera2D;
 use crate::camera3d::Camera3D;
 use crate::config::{AppConfig, AppConfigOverrides, SpriteGuardrailMode};
 use crate::ecs::{
     AnimationTime, EcsWorld, EntityInfo, InstanceData, MeshLightingInfo, ParticleCaps, SpriteAnimation,
-    SpriteAnimationInfo, SpriteInstance, TransformClipInfo,
+    SpriteAnimationInfo, SpriteInstance,
 };
 use crate::environment::EnvironmentRegistry;
 use crate::events::GameEvent;
@@ -80,7 +81,9 @@ pub(crate) enum ViewportCameraMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ecs::{SpriteAnimationFrame, SpriteAnimationLoopMode, SpriteFrameHotData, TransformClipInfo};
     use glam::{Vec2, Vec4};
+    use std::sync::Arc;
 
     #[test]
     fn sprite_key_details_capture_active_frame() {
@@ -102,7 +105,8 @@ mod tests {
             random_start: false,
             group: Some("default".to_string()),
         };
-        let details = App::sprite_key_details(&animation);
+        let track_id = AnimationTrackId::for_entity_slot(Entity::from_raw(1), 0);
+        let details = App::sprite_key_details(track_id, &animation, None);
         assert_eq!(details.len(), animation.frame_count);
         assert_eq!(details[1].time, Some(animation.frame_elapsed));
         assert_eq!(details[0].value_preview.as_deref(), Some("walk_01"));
@@ -127,11 +131,78 @@ mod tests {
             sample_scale: None,
             sample_tint: Some(Vec4::new(0.1, 0.2, 0.3, 0.9)),
         };
-        let details = App::transform_key_details(&clip);
-        assert_eq!(details.len(), 3);
-        assert!(details[0].value_preview.as_ref().unwrap().contains("Translation"));
-        assert!(details[1].value_preview.as_ref().unwrap().contains("Rotation"));
-        assert!(details[2].value_preview.as_ref().unwrap().contains("Tint"));
+        let track_id = AnimationTrackId::for_entity_slot(Entity::from_raw(1), 1);
+        let details = App::transform_channel_details(
+            track_id,
+            clip.time,
+            clip.sample_tint.map(|value| {
+                format!("Tint ({:.2}, {:.2}, {:.2}, {:.2})", value.x, value.y, value.z, value.w)
+            }),
+        );
+        assert_eq!(details.len(), 1);
+        assert_eq!(details[0].time, Some(clip.time));
+        assert!(details[0].value_preview.as_ref().unwrap().contains("Tint"));
+    }
+
+    #[test]
+    fn sprite_key_details_use_timeline_offsets() {
+        let animation = SpriteAnimationInfo {
+            timeline: "run".to_string(),
+            playing: true,
+            looped: true,
+            loop_mode: "Loop".to_string(),
+            speed: 1.0,
+            frame_index: 1,
+            frame_count: 2,
+            frame_elapsed: 0.2,
+            frame_duration: 0.4,
+            frame_region: Some("run_01".to_string()),
+            frame_region_id: Some(1),
+            frame_uv: Some([0.0, 0.0, 1.0, 1.0]),
+            frame_events: Vec::new(),
+            start_offset: 0.0,
+            random_start: false,
+            group: None,
+        };
+        let frames = vec![
+            SpriteAnimationFrame {
+                name: Arc::from("run_00"),
+                region: Arc::from("run_00"),
+                region_id: 0,
+                duration: 0.5,
+                uv: [0.0; 4],
+                events: Arc::from(Vec::new()),
+            },
+            SpriteAnimationFrame {
+                name: Arc::from("run_01"),
+                region: Arc::from("run_01"),
+                region_id: 1,
+                duration: 0.75,
+                uv: [0.0; 4],
+                events: Arc::from(Vec::new()),
+            },
+        ];
+        let hot_frames = vec![
+            SpriteFrameHotData { region_id: 0, uv: [0.0; 4] },
+            SpriteFrameHotData { region_id: 1, uv: [0.0; 4] },
+        ];
+        let timeline = SpriteTimeline {
+            name: Arc::from("run"),
+            looped: true,
+            loop_mode: SpriteAnimationLoopMode::Loop,
+            frames: Arc::from(frames),
+            hot_frames: Arc::from(hot_frames),
+            durations: Arc::from(vec![0.5, 0.75].into_boxed_slice()),
+            frame_offsets: Arc::from(vec![0.0, 0.5].into_boxed_slice()),
+            total_duration: 1.25,
+            total_duration_inv: 0.8,
+        };
+        let track_id = AnimationTrackId::for_entity_slot(Entity::from_raw(2), 0);
+        let details = App::sprite_key_details(track_id, &animation, Some(&timeline));
+        assert_eq!(details.len(), 2);
+        assert_eq!(details[0].time, Some(0.0));
+        assert_eq!(details[1].time, Some(0.5));
+        assert!(details[1].value_preview.as_ref().unwrap().contains("0.75"));
     }
 }
 
@@ -529,99 +600,289 @@ impl App {
         let mut summaries = Vec::new();
         if let Some(entity) = self.selected_entity {
             if let Some(info) = self.ecs.entity_info(entity) {
-                summaries.extend(self.collect_sprite_track_summaries(&info));
-                summaries.extend(self.collect_transform_clip_summaries(&info));
+                let mut slot_index = 0_u32;
+                self.collect_sprite_track_summaries(entity, &info, &mut slot_index, &mut summaries);
+                self.collect_transform_clip_summaries(entity, &info, &mut slot_index, &mut summaries);
             }
         }
         summaries
     }
 
-    fn collect_sprite_track_summaries(&self, info: &EntityInfo) -> Vec<AnimationTrackSummary> {
-        let mut summaries = Vec::new();
+    fn collect_sprite_track_summaries(
+        &self,
+        entity: Entity,
+        info: &EntityInfo,
+        slot_index: &mut u32,
+        summaries: &mut Vec<AnimationTrackSummary>,
+    ) {
         if let Some(sprite) = info.sprite.as_ref() {
             if let Some(animation) = sprite.animation.as_ref() {
+                let track_id = AnimationTrackId::for_entity_slot(entity, *slot_index);
+                *slot_index += 1;
+                let timeline = self.assets.atlas_timeline(sprite.atlas.as_str(), animation.timeline.as_str());
+                let duration = timeline
+                    .map(|timeline| timeline.total_duration)
+                    .unwrap_or(animation.frame_duration * animation.frame_count as f32);
+                let key_count =
+                    timeline.map(|timeline| timeline.frames.len()).unwrap_or(animation.frame_count);
+                let playhead = timeline
+                    .and_then(|timeline| {
+                        if timeline.frames.is_empty() {
+                            None
+                        } else {
+                            let clamped_index =
+                                animation.frame_index.min(timeline.frames.len().saturating_sub(1));
+                            let offset = timeline.frame_offsets.get(clamped_index).copied().unwrap_or(0.0);
+                            Some((offset + animation.frame_elapsed).min(timeline.total_duration))
+                        }
+                    })
+                    .or(Some(animation.frame_elapsed));
                 summaries.push(AnimationTrackSummary {
+                    id: track_id,
                     label: format!("Sprite Timeline ({})", animation.timeline),
-                    key_count: animation.frame_count,
-                    key_details: Self::sprite_key_details(animation),
+                    kind: AnimationTrackKind::SpriteTimeline,
+                    duration,
+                    key_count,
+                    interpolation: None,
+                    playhead,
+                    key_details: Self::sprite_key_details(track_id, animation, timeline),
                 });
             }
         }
-        summaries
     }
 
-    fn collect_transform_clip_summaries(&self, info: &EntityInfo) -> Vec<AnimationTrackSummary> {
-        let mut summaries = Vec::new();
+    fn collect_transform_clip_summaries(
+        &self,
+        entity: Entity,
+        info: &EntityInfo,
+        slot_index: &mut u32,
+        summaries: &mut Vec<AnimationTrackSummary>,
+    ) {
         if let Some(clip) = info.transform_clip.as_ref() {
-            let mut track_count = 0;
+            let clip_asset = self.assets.clip(&clip.clip_key);
             if clip.has_translation {
-                track_count += 1;
+                let track_id = AnimationTrackId::for_entity_slot(entity, *slot_index);
+                *slot_index += 1;
+                let (key_details, key_count, interpolation, duration) = if let Some(track_data) =
+                    clip_asset.and_then(|clip_asset| clip_asset.translation.as_ref())
+                {
+                    let details = Self::vec2_track_details(track_id, track_data);
+                    (details, track_data.keyframes.len(), Some(track_data.interpolation), track_data.duration)
+                } else {
+                    let details = Self::transform_channel_details(
+                        track_id,
+                        clip.time,
+                        clip.sample_translation
+                            .map(|value| format!("Translation ({:.2}, {:.2})", value.x, value.y)),
+                    );
+                    let detail_count = details.len();
+                    (details, detail_count, None, clip.duration)
+                };
+                summaries.push(AnimationTrackSummary {
+                    id: track_id,
+                    label: format!("Translation ({})", clip.clip_key),
+                    kind: AnimationTrackKind::Translation,
+                    duration,
+                    key_count,
+                    interpolation,
+                    playhead: Some(clip.time),
+                    key_details,
+                });
             }
             if clip.has_rotation {
-                track_count += 1;
+                let track_id = AnimationTrackId::for_entity_slot(entity, *slot_index);
+                *slot_index += 1;
+                let (key_details, key_count, interpolation, duration) = if let Some(track_data) =
+                    clip_asset.and_then(|clip_asset| clip_asset.rotation.as_ref())
+                {
+                    let details = Self::scalar_track_details(track_id, track_data);
+                    (details, track_data.keyframes.len(), Some(track_data.interpolation), track_data.duration)
+                } else {
+                    let details = Self::transform_channel_details(
+                        track_id,
+                        clip.time,
+                        clip.sample_rotation.map(|value| format!("Rotation {:.2}", value)),
+                    );
+                    let detail_count = details.len();
+                    (details, detail_count, None, clip.duration)
+                };
+                summaries.push(AnimationTrackSummary {
+                    id: track_id,
+                    label: format!("Rotation ({})", clip.clip_key),
+                    kind: AnimationTrackKind::Rotation,
+                    duration,
+                    key_count,
+                    interpolation,
+                    playhead: Some(clip.time),
+                    key_details,
+                });
             }
             if clip.has_scale {
-                track_count += 1;
+                let track_id = AnimationTrackId::for_entity_slot(entity, *slot_index);
+                *slot_index += 1;
+                let (key_details, key_count, interpolation, duration) = if let Some(track_data) =
+                    clip_asset.and_then(|clip_asset| clip_asset.scale.as_ref())
+                {
+                    let details = Self::vec2_track_details(track_id, track_data);
+                    (details, track_data.keyframes.len(), Some(track_data.interpolation), track_data.duration)
+                } else {
+                    let details = Self::transform_channel_details(
+                        track_id,
+                        clip.time,
+                        clip.sample_scale.map(|value| format!("Scale ({:.2}, {:.2})", value.x, value.y)),
+                    );
+                    let detail_count = details.len();
+                    (details, detail_count, None, clip.duration)
+                };
+                summaries.push(AnimationTrackSummary {
+                    id: track_id,
+                    label: format!("Scale ({})", clip.clip_key),
+                    kind: AnimationTrackKind::Scale,
+                    duration,
+                    key_count,
+                    interpolation,
+                    playhead: Some(clip.time),
+                    key_details,
+                });
             }
             if clip.has_tint {
-                track_count += 1;
+                let track_id = AnimationTrackId::for_entity_slot(entity, *slot_index);
+                *slot_index += 1;
+                let (key_details, key_count, interpolation, duration) = if let Some(track_data) =
+                    clip_asset.and_then(|clip_asset| clip_asset.tint.as_ref())
+                {
+                    let details = Self::vec4_track_details(track_id, track_data);
+                    (details, track_data.keyframes.len(), Some(track_data.interpolation), track_data.duration)
+                } else {
+                    let details = Self::transform_channel_details(
+                        track_id,
+                        clip.time,
+                        clip.sample_tint.map(|value| {
+                            format!("Tint ({:.2}, {:.2}, {:.2}, {:.2})", value.x, value.y, value.z, value.w)
+                        }),
+                    );
+                    let detail_count = details.len();
+                    (details, detail_count, None, clip.duration)
+                };
+                summaries.push(AnimationTrackSummary {
+                    id: track_id,
+                    label: format!("Tint ({})", clip.clip_key),
+                    kind: AnimationTrackKind::Tint,
+                    duration,
+                    key_count,
+                    interpolation,
+                    playhead: Some(clip.time),
+                    key_details,
+                });
             }
-            summaries.push(AnimationTrackSummary {
-                label: format!("Transform Clip ({})", clip.clip_key),
-                key_count: track_count,
-                key_details: Self::transform_key_details(clip),
-            });
         }
-        summaries
     }
 
-    fn sprite_key_details(animation: &SpriteAnimationInfo) -> Vec<KeyframeDetail> {
-        (0..animation.frame_count)
-            .map(|index| KeyframeDetail {
+    fn sprite_key_details(
+        track_id: AnimationTrackId,
+        animation: &SpriteAnimationInfo,
+        timeline: Option<&SpriteTimeline>,
+    ) -> Vec<KeyframeDetail> {
+        if let Some(timeline) = timeline {
+            timeline
+                .frames
+                .iter()
+                .enumerate()
+                .map(|(index, frame)| {
+                    let time = timeline.frame_offsets.get(index).copied();
+                    let duration = timeline.durations.get(index).copied().unwrap_or(0.0);
+                    let mut preview = frame.name.as_ref().to_string();
+                    if duration > 0.0 {
+                        preview = format!("{preview} ({duration:.2}s)");
+                    }
+                    if !frame.events.is_empty() {
+                        let events: Vec<String> =
+                            frame.events.iter().map(|event| event.as_ref().to_string()).collect();
+                        preview = format!("{preview} [{}]", events.join(", "));
+                    }
+                    KeyframeDetail {
+                        id: KeyframeId::new(track_id, index),
+                        index,
+                        time,
+                        value_preview: Some(preview),
+                    }
+                })
+                .collect()
+        } else {
+            (0..animation.frame_count)
+                .map(|index| KeyframeDetail {
+                    id: KeyframeId::new(track_id, index),
+                    index,
+                    time: if index == animation.frame_index { Some(animation.frame_elapsed) } else { None },
+                    value_preview: animation.frame_region.clone(),
+                })
+                .collect()
+        }
+    }
+
+    fn vec2_track_details(track_id: AnimationTrackId, track: &ClipVec2Track) -> Vec<KeyframeDetail> {
+        track
+            .keyframes
+            .iter()
+            .enumerate()
+            .map(|(index, keyframe)| KeyframeDetail {
+                id: KeyframeId::new(track_id, index),
                 index,
-                time: if index == animation.frame_index { Some(animation.frame_elapsed) } else { None },
-                value_preview: animation.frame_region.clone(),
+                time: Some(keyframe.time),
+                value_preview: Some(format!("({:.2}, {:.2})", keyframe.value.x, keyframe.value.y)),
             })
             .collect()
     }
 
-    fn transform_key_details(clip: &TransformClipInfo) -> Vec<KeyframeDetail> {
-        let mut rows = Vec::new();
-        if clip.has_translation {
-            rows.push(KeyframeDetail {
-                index: rows.len(),
-                time: Some(clip.time),
-                value_preview: clip
-                    .sample_translation
-                    .map(|value| format!("Translation ({:.2}, {:.2})", value.x, value.y)),
-            });
-        }
-        if clip.has_rotation {
-            rows.push(KeyframeDetail {
-                index: rows.len(),
-                time: Some(clip.time),
-                value_preview: clip.sample_rotation.map(|value| format!("Rotation {:.2}", value)),
-            });
-        }
-        if clip.has_scale {
-            rows.push(KeyframeDetail {
-                index: rows.len(),
-                time: Some(clip.time),
-                value_preview: clip
-                    .sample_scale
-                    .map(|value| format!("Scale ({:.2}, {:.2})", value.x, value.y)),
-            });
-        }
-        if clip.has_tint {
-            rows.push(KeyframeDetail {
-                index: rows.len(),
-                time: Some(clip.time),
-                value_preview: clip.sample_tint.map(|value| {
-                    format!("Tint ({:.2}, {:.2}, {:.2}, {:.2})", value.x, value.y, value.z, value.w)
-                }),
-            });
-        }
-        rows
+    fn scalar_track_details(track_id: AnimationTrackId, track: &ClipScalarTrack) -> Vec<KeyframeDetail> {
+        track
+            .keyframes
+            .iter()
+            .enumerate()
+            .map(|(index, keyframe)| KeyframeDetail {
+                id: KeyframeId::new(track_id, index),
+                index,
+                time: Some(keyframe.time),
+                value_preview: Some(format!("{:.2}", keyframe.value)),
+            })
+            .collect()
+    }
+
+    fn vec4_track_details(track_id: AnimationTrackId, track: &ClipVec4Track) -> Vec<KeyframeDetail> {
+        track
+            .keyframes
+            .iter()
+            .enumerate()
+            .map(|(index, keyframe)| {
+                let value = keyframe.value;
+                KeyframeDetail {
+                    id: KeyframeId::new(track_id, index),
+                    index,
+                    time: Some(keyframe.time),
+                    value_preview: Some(format!(
+                        "({:.2}, {:.2}, {:.2}, {:.2})",
+                        value.x, value.y, value.z, value.w
+                    )),
+                }
+            })
+            .collect()
+    }
+
+    fn transform_channel_details(
+        track_id: AnimationTrackId,
+        time: f32,
+        value: Option<String>,
+    ) -> Vec<KeyframeDetail> {
+        value
+            .map(|preview| {
+                vec![KeyframeDetail {
+                    id: KeyframeId::new(track_id, 0),
+                    index: 0,
+                    time: Some(time),
+                    value_preview: Some(preview),
+                }]
+            })
+            .unwrap_or_else(Vec::new)
     }
 
     fn process_atlas_hot_reload_events(&mut self) {

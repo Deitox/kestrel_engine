@@ -79,6 +79,7 @@ This plan breaks Milestone 5 (“Tooling, Automation, and Analytics”) into con
 
 ### Read-only Panel Status
 - [x] Panel surfaces live track summaries (sprite timelines + transform clips).
+- [x] Timeline canvas renders each track with selectable keys + scrubber preview (no edits yet).
 - [ ] Expose per-key editing interactions.
 - [ ] Persist edits via watchers/validators.
 
