@@ -132,9 +132,11 @@ pub struct AnalyticsPlugin {
     plugin_asset_readbacks: VecDeque<PluginAssetReadbackEvent>,
     plugin_watchdog_events: VecDeque<PluginWatchdogEvent>,
     animation_validation_events: VecDeque<AnimationValidationEvent>,
+    animation_validation_snapshot: Option<Arc<[AnimationValidationEvent]>>,
     animation_budget_sample: Option<AnimationBudgetSample>,
     keyframe_editor_usage: KeyframeEditorUsageSnapshot,
     keyframe_editor_events: VecDeque<KeyframeEditorEvent>,
+    keyframe_events_snapshot: Option<Arc<[KeyframeEditorEvent]>>,
     #[cfg(feature = "alloc_profiler")]
     allocation_delta: Option<AllocationDelta>,
 }
@@ -161,9 +163,11 @@ impl AnalyticsPlugin {
             plugin_asset_readbacks: VecDeque::with_capacity(32),
             plugin_watchdog_events: VecDeque::with_capacity(32),
             animation_validation_events: VecDeque::with_capacity(SECURITY_EVENT_CAPACITY),
+            animation_validation_snapshot: None,
             animation_budget_sample: None,
             keyframe_editor_usage: KeyframeEditorUsageSnapshot::default(),
             keyframe_editor_events: VecDeque::with_capacity(KEYFRAME_EVENT_CAPACITY),
+            keyframe_events_snapshot: None,
             #[cfg(feature = "alloc_profiler")]
             allocation_delta: None,
         }
@@ -323,10 +327,17 @@ impl AnalyticsPlugin {
                 self.animation_validation_events.pop_back();
             }
         }
+        self.animation_validation_snapshot = None;
     }
 
-    pub fn animation_validation_events(&self) -> Vec<AnimationValidationEvent> {
-        self.animation_validation_events.iter().cloned().collect()
+    pub fn animation_validation_events_arc(&mut self) -> Arc<[AnimationValidationEvent]> {
+        if let Some(cache) = &self.animation_validation_snapshot {
+            return Arc::clone(cache);
+        }
+        let data = self.animation_validation_events.iter().cloned().collect::<Vec<_>>();
+        let arc = Arc::from(data.into_boxed_slice());
+        self.animation_validation_snapshot = Some(Arc::clone(&arc));
+        arc
     }
 
     pub fn record_animation_budget_sample(&mut self, sample: AnimationBudgetSample) {
@@ -343,14 +354,21 @@ impl AnalyticsPlugin {
         if self.keyframe_editor_events.len() > KEYFRAME_EVENT_CAPACITY {
             self.keyframe_editor_events.pop_back();
         }
+        self.keyframe_events_snapshot = None;
     }
 
     pub fn keyframe_editor_usage(&self) -> KeyframeEditorUsageSnapshot {
         self.keyframe_editor_usage
     }
 
-    pub fn keyframe_editor_events(&self) -> Vec<KeyframeEditorEvent> {
-        self.keyframe_editor_events.iter().cloned().collect()
+    pub fn keyframe_editor_events_arc(&mut self) -> Arc<[KeyframeEditorEvent]> {
+        if let Some(cache) = &self.keyframe_events_snapshot {
+            return Arc::clone(cache);
+        }
+        let data = self.keyframe_editor_events.iter().cloned().collect::<Vec<_>>();
+        let arc = Arc::from(data.into_boxed_slice());
+        self.keyframe_events_snapshot = Some(Arc::clone(&arc));
+        arc
     }
 }
 
@@ -448,7 +466,7 @@ mod tests {
             path: PathBuf::from("assets/animations/example.clip"),
             message: "Test warning".to_string(),
         }]);
-        let events = analytics.animation_validation_events();
+        let events = analytics.animation_validation_events_arc();
         assert_eq!(events.len(), 1);
         assert!(events[0].message.contains("Test warning"));
     }
@@ -470,7 +488,7 @@ mod tests {
         assert_eq!(usage.insert_count, 1);
         assert_eq!(usage.update_count, 1);
         assert_eq!(usage.update_time_edits, 1);
-        let events = analytics.keyframe_editor_events();
+        let events = analytics.keyframe_editor_events_arc();
         assert_eq!(events.len(), 3);
         assert!(matches!(events[0].kind, KeyframeEditorEventKind::UpdateKey { changed_time: true, .. }));
     }

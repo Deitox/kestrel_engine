@@ -554,6 +554,7 @@ pub struct App {
     scene_dependencies: Option<SceneDependencies>,
     scene_dependency_fingerprints: Option<SceneDependencyFingerprints>,
     scene_history: VecDeque<String>,
+    scene_history_snapshot: Option<Arc<[String]>>,
     inspector_status: Option<String>,
     debug_show_spatial_hash: bool,
     debug_show_colliders: bool,
@@ -562,6 +563,7 @@ pub struct App {
     script_repl_input: String,
     script_repl_history: VecDeque<String>,
     script_repl_history_index: Option<usize>,
+    script_repl_history_snapshot: Option<Arc<[String]>>,
     script_console: VecDeque<ScriptConsoleEntry>,
     script_console_snapshot: Option<Arc<[ScriptConsoleEntry]>>,
     last_reported_script_error: Option<String>,
@@ -592,9 +594,12 @@ pub struct App {
     config: AppConfig,
 
     scene_atlas_refs: HashSet<String>,
+    scene_atlas_snapshot: Option<Arc<[String]>>,
     persistent_atlases: HashSet<String>,
     scene_clip_refs: HashMap<String, usize>,
+    scene_clip_snapshot: Option<Arc<[String]>>,
     scene_mesh_refs: HashSet<String>,
+    scene_mesh_snapshot: Option<Arc<[String]>>,
     pub(crate) scene_material_refs: HashSet<String>,
 
     pub(crate) material_registry: MaterialRegistry,
@@ -609,7 +614,7 @@ pub struct App {
     telemetry_cache: TelemetryCache,
     frame_plot_points: Arc<[eplot::PlotPoint]>,
     frame_plot_revision: u64,
-    gpu_timings: Vec<GpuPassTiming>,
+    gpu_timings: Arc<[GpuPassTiming]>,
     gpu_timing_history: VecDeque<GpuTimingFrame>,
     gpu_timing_history_capacity: usize,
     gpu_frame_counter: u64,
@@ -2590,6 +2595,7 @@ impl App {
             scene_dependencies: None,
             scene_dependency_fingerprints: None,
             scene_history,
+            scene_history_snapshot: None,
             inspector_status: None,
             debug_show_spatial_hash: false,
             debug_show_colliders: false,
@@ -2598,6 +2604,7 @@ impl App {
             script_repl_input: String::new(),
             script_repl_history: VecDeque::new(),
             script_repl_history_index: None,
+            script_repl_history_snapshot: None,
             script_console: VecDeque::with_capacity(SCRIPT_CONSOLE_CAPACITY),
             script_console_snapshot: None,
             last_reported_script_error: None,
@@ -2620,9 +2627,12 @@ impl App {
             gizmo_mode: GizmoMode::default(),
             gizmo_interaction: None,
             scene_atlas_refs: HashSet::new(),
+            scene_atlas_snapshot: None,
             persistent_atlases: HashSet::new(),
             scene_clip_refs,
+            scene_clip_snapshot: None,
             scene_mesh_refs: HashSet::new(),
+            scene_mesh_snapshot: None,
             scene_material_refs,
             material_registry,
             mesh_registry,
@@ -2653,7 +2663,7 @@ impl App {
             telemetry_cache: TelemetryCache::default(),
             frame_plot_points: Arc::from(Vec::<eplot::PlotPoint>::new().into_boxed_slice()),
             frame_plot_revision: 0,
-            gpu_timings: Vec::new(),
+            gpu_timings: Arc::from(Vec::<GpuPassTiming>::new().into_boxed_slice()),
             gpu_timing_history: VecDeque::with_capacity(240),
             gpu_timing_history_capacity: 240,
             gpu_frame_counter: 0,
@@ -3141,6 +3151,7 @@ impl App {
         while self.scene_history.len() > 8 {
             self.scene_history.pop_back();
         }
+        self.scene_history_snapshot = None;
     }
 
     fn push_script_console(&mut self, kind: ScriptConsoleKind, text: impl Into<String>) {
@@ -3161,6 +3172,71 @@ impl App {
         arc
     }
 
+    fn script_repl_history_arc(&mut self) -> Arc<[String]> {
+        if let Some(cache) = &self.script_repl_history_snapshot {
+            return Arc::clone(cache);
+        }
+        let data = self.script_repl_history.iter().cloned().collect::<Vec<_>>();
+        let arc = Arc::from(data.into_boxed_slice());
+        self.script_repl_history_snapshot = Some(Arc::clone(&arc));
+        arc
+    }
+
+    fn scene_history_arc(&mut self) -> Arc<[String]> {
+        if let Some(cache) = &self.scene_history_snapshot {
+            return Arc::clone(cache);
+        }
+        let data = self.scene_history.iter().cloned().collect::<Vec<_>>();
+        let arc = Arc::from(data.into_boxed_slice());
+        self.scene_history_snapshot = Some(Arc::clone(&arc));
+        arc
+    }
+
+    fn scene_atlas_refs_arc(&mut self) -> Arc<[String]> {
+        if let Some(cache) = &self.scene_atlas_snapshot {
+            return Arc::clone(cache);
+        }
+        let mut data = self.scene_atlas_refs.iter().cloned().collect::<Vec<_>>();
+        data.sort();
+        let arc = Arc::from(data.into_boxed_slice());
+        self.scene_atlas_snapshot = Some(Arc::clone(&arc));
+        arc
+    }
+
+    fn scene_mesh_refs_arc(&mut self) -> Arc<[String]> {
+        if let Some(cache) = &self.scene_mesh_snapshot {
+            return Arc::clone(cache);
+        }
+        let mut data = self.scene_mesh_refs.iter().cloned().collect::<Vec<_>>();
+        data.sort();
+        let arc = Arc::from(data.into_boxed_slice());
+        self.scene_mesh_snapshot = Some(Arc::clone(&arc));
+        arc
+    }
+
+    fn scene_clip_refs_arc(&mut self) -> Arc<[String]> {
+        if let Some(cache) = &self.scene_clip_snapshot {
+            return Arc::clone(cache);
+        }
+        let mut data = self.scene_clip_refs.keys().cloned().collect::<Vec<_>>();
+        data.sort();
+        let arc = Arc::from(data.into_boxed_slice());
+        self.scene_clip_snapshot = Some(Arc::clone(&arc));
+        arc
+    }
+
+    #[cfg(feature = "alloc_profiler")]
+    fn log_allocation_delta(delta: alloc_profiler::AllocationDelta) {
+        if delta.allocated_bytes == 0 && delta.deallocated_bytes == 0 {
+            return;
+        }
+        let net = delta.net_bytes();
+        eprintln!(
+            "[alloc] frame delta: +{}B allocated, +{}B freed (net {:+} B)",
+            delta.allocated_bytes, delta.deallocated_bytes, net
+        );
+    }
+
     fn append_script_history(&mut self, command: &str) {
         if command.is_empty() {
             return;
@@ -3170,6 +3246,7 @@ impl App {
             self.script_repl_history.pop_front();
         }
         self.script_repl_history_index = None;
+        self.script_repl_history_snapshot = None;
     }
 
     fn execute_repl_command(&mut self, command: String) {
@@ -3439,6 +3516,7 @@ impl App {
                 }
             }
             self.scene_atlas_refs = next;
+            self.scene_atlas_snapshot = None;
         }
 
         if clip_dirty {
@@ -3500,6 +3578,7 @@ impl App {
                     .with_context(|| format!("Failed to retain mesh '{key}'"))?;
             }
             self.scene_mesh_refs = next_mesh;
+            self.scene_mesh_snapshot = None;
         }
 
         if material_dirty {
@@ -3694,6 +3773,7 @@ impl App {
             self.invalidate_atlas_view(&key);
         }
         self.scene_atlas_refs = self.persistent_atlases.clone();
+        self.scene_atlas_snapshot = None;
         let persistent_meshes: HashSet<String> = self
             .mesh_preview_plugin()
             .map(|plugin| plugin.persistent_meshes().iter().cloned().collect())
@@ -3704,6 +3784,7 @@ impl App {
             self.mesh_registry.release_mesh(key);
         }
         self.scene_mesh_refs = persistent_meshes.clone();
+        self.scene_mesh_snapshot = None;
 
         let persistent_materials: HashSet<String> = self
             .mesh_preview_plugin()
@@ -3728,6 +3809,7 @@ impl App {
             self.assets.release_clip(&key);
         }
         self.scene_clip_refs.clear();
+        self.scene_clip_snapshot = None;
     }
 
     fn viewport_physical_size(&self) -> PhysicalSize<u32> {
@@ -3996,6 +4078,7 @@ impl ApplicationHandler for App {
             #[cfg(feature = "alloc_profiler")]
             {
                 analytics.record_allocation_delta(alloc_delta);
+                Self::log_allocation_delta(alloc_delta);
             }
             analytics.record_plugin_capability_metrics(capability_metrics);
             if !capability_events.is_empty() {
@@ -4401,10 +4484,10 @@ impl ApplicationHandler for App {
                 (false, None, false, false, None)
             };
         let mesh_keys = self.telemetry_cache.mesh_keys(&self.mesh_registry);
-        let scene_history_list: Vec<String> = self.scene_history.iter().cloned().collect();
-        let atlas_snapshot: Vec<String> = self.scene_atlas_refs.iter().cloned().collect();
-        let mesh_snapshot: Vec<String> = self.scene_mesh_refs.iter().cloned().collect();
-        let clip_snapshot: Vec<String> = self.scene_clip_refs.keys().cloned().collect();
+        let scene_history_list = self.scene_history_arc();
+        let atlas_snapshot = self.scene_atlas_refs_arc();
+        let mesh_snapshot = self.scene_mesh_refs_arc();
+        let clip_snapshot = self.scene_clip_refs_arc();
         let environment_options = self.telemetry_cache.environment_options(&self.environment_registry);
         let active_environment = self.active_environment_key.clone();
         let collider_rects =
@@ -4540,7 +4623,7 @@ impl ApplicationHandler for App {
                 last_error: script_last_error,
                 repl_input: self.script_repl_input.clone(),
                 repl_history_index: self.script_repl_history_index,
-                repl_history: self.script_repl_history.iter().cloned().collect(),
+                repl_history: self.script_repl_history_arc(),
                 console_entries: self.script_console_entries(),
                 focus_repl: self.script_focus_repl,
             },
@@ -5067,7 +5150,8 @@ impl ApplicationHandler for App {
                 if let Some(analytics) = self.analytics_plugin_mut() {
                     analytics.record_gpu_timings(&timings);
                 }
-                self.gpu_timings = timings.clone();
+                let arc_timings = Arc::from(timings.clone().into_boxed_slice());
+                self.gpu_timings = Arc::clone(&arc_timings);
                 self.gpu_timing_history
                     .push_back(GpuTimingFrame { frame_index: self.gpu_frame_counter, timings });
                 while self.gpu_timing_history.len() > self.gpu_timing_history_capacity {
@@ -5082,7 +5166,8 @@ impl ApplicationHandler for App {
                 if let Some(analytics) = self.analytics_plugin_mut() {
                     analytics.record_gpu_timings(&timings);
                 }
-                self.gpu_timings = timings.clone();
+                let arc_timings = Arc::from(timings.clone().into_boxed_slice());
+                self.gpu_timings = Arc::clone(&arc_timings);
                 self.gpu_timing_history
                     .push_back(GpuTimingFrame { frame_index: self.gpu_frame_counter, timings });
                 while self.gpu_timing_history.len() > self.gpu_timing_history_capacity {

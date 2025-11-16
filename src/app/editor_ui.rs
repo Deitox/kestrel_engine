@@ -8,7 +8,7 @@ use crate::analytics::{
     AnimationBudgetSample, KeyframeEditorEvent, KeyframeEditorEventKind, KeyframeEditorTrackKind,
     KeyframeEditorUsageSnapshot,
 };
-use crate::animation_validation::AnimationValidationSeverity;
+use crate::animation_validation::{AnimationValidationEvent, AnimationValidationSeverity};
 use crate::audio::{AudioHealthSnapshot, AudioPlugin};
 use crate::camera3d::Camera3D;
 use crate::ecs::{
@@ -531,7 +531,7 @@ pub(super) struct ScriptDebuggerParams {
     pub last_error: Option<String>,
     pub repl_input: String,
     pub repl_history_index: Option<usize>,
-    pub repl_history: Vec<String>,
+    pub repl_history: Arc<[String]>,
     pub console_entries: Arc<[ScriptConsoleEntry]>,
     pub focus_repl: bool,
 }
@@ -610,10 +610,10 @@ pub(super) struct EditorUiParams {
     pub debug_show_colliders: bool,
     pub spatial_hash_rects: Vec<(Vec2, Vec2)>,
     pub collider_rects: Vec<(Vec2, Vec2)>,
-    pub scene_history_list: Vec<String>,
-    pub atlas_snapshot: Vec<String>,
-    pub mesh_snapshot: Vec<String>,
-    pub clip_snapshot: Vec<String>,
+    pub scene_history_list: Arc<[String]>,
+    pub atlas_snapshot: Arc<[String]>,
+    pub mesh_snapshot: Arc<[String]>,
+    pub clip_snapshot: Arc<[String]>,
     pub recent_events: Arc<[GameEvent]>,
     pub audio_triggers: Vec<String>,
     pub audio_enabled: bool,
@@ -850,18 +850,24 @@ impl App {
             self.analytics_plugin().map(|analytics| analytics.plugin_asset_readbacks()).unwrap_or_default();
         let plugin_watchdog_log =
             self.analytics_plugin().map(|analytics| analytics.plugin_watchdog_events()).unwrap_or_default();
-        let animation_validation_log = self
-            .analytics_plugin()
-            .map(|analytics| analytics.animation_validation_events())
-            .unwrap_or_default();
+        let animation_validation_log: Arc<[AnimationValidationEvent]> =
+            if let Some(analytics) = self.analytics_plugin_mut() {
+                analytics.animation_validation_events_arc()
+            } else {
+                Arc::from([])
+            };
         let animation_budget_sample =
             self.analytics_plugin().and_then(|analytics| analytics.animation_budget_sample());
         let light_cluster_metrics_overlay =
             self.analytics_plugin().and_then(|analytics| analytics.light_cluster_metrics());
         let keyframe_editor_usage =
             self.analytics_plugin().map(|analytics| analytics.keyframe_editor_usage());
-        let keyframe_event_log =
-            self.analytics_plugin().map(|analytics| analytics.keyframe_editor_events()).unwrap_or_default();
+        let keyframe_event_log: Arc<[KeyframeEditorEvent]> =
+            if let Some(analytics) = self.analytics_plugin_mut() {
+                analytics.keyframe_editor_events_arc()
+            } else {
+                Arc::from([])
+            };
 
         let mut keyframe_panel_toggle_event: Option<KeyframeEditorEventKind> = None;
         let mut editor_settings_dirty = false;
@@ -1162,7 +1168,7 @@ impl App {
                             keyframe_panel_toggle_event = Some(event);
                         }
                         if let Some(usage) = keyframe_editor_usage {
-                            render_keyframe_editor_usage(ui, usage, &keyframe_event_log);
+                            render_keyframe_editor_usage(ui, usage, keyframe_event_log.as_ref());
                         }
                         ui.separator();
                         egui::CollapsingHeader::new("Animation Time").default_open(false).show(ui, |ui| {
@@ -1806,7 +1812,7 @@ impl App {
                             if scene_history_list.is_empty() {
                                 menu.label("No saved paths yet");
                             } else {
-                                for entry in &scene_history_list {
+                                for entry in scene_history_list.iter() {
                                     if menu.button(entry).clicked() {
                                         self.ui_scene_path = entry.clone();
                                         menu.close();
@@ -1838,7 +1844,7 @@ impl App {
                                 atlas_snapshot.len(),
                                 self.persistent_atlases.len()
                             ));
-                            for atlas in &atlas_snapshot {
+                            for atlas in atlas_snapshot.iter() {
                                 let scope = if self.persistent_atlases.contains(atlas) {
                                     "persistent"
                                 } else {
@@ -1885,7 +1891,7 @@ impl App {
                                 mesh_snapshot.len(),
                                 persistent_meshes.len()
                             ));
-                            for mesh_key in &mesh_snapshot {
+                            for mesh_key in mesh_snapshot.iter() {
                                 let scope =
                                     if persistent_meshes.contains(mesh_key) { "persistent" } else { "scene" };
                                 let ref_count = self.mesh_registry.mesh_ref_count(mesh_key).unwrap_or(0);
@@ -1926,7 +1932,7 @@ impl App {
                         } else {
                             ui.separator();
                             ui.label(format!("Clips retained: {}", clip_snapshot.len()));
-                            for clip_key in &clip_snapshot {
+                            for clip_key in clip_snapshot.iter() {
                                 let loaded = self.assets.clip(clip_key).is_some();
                                 let color = if loaded {
                                     egui::Color32::LIGHT_GREEN
@@ -2655,8 +2661,9 @@ impl App {
                                 entry.1 += 1;
                             }
                         }
-                        if !self.gpu_timings.is_empty() {
-                            for timing in &self.gpu_timings {
+                        let latest_gpu_timings = self.gpu_timings.as_ref();
+                        if !latest_gpu_timings.is_empty() {
+                            for timing in latest_gpu_timings.iter() {
                                 let average = averages
                                     .get(&timing.label)
                                     .map(|(sum, count)| sum / (*count as f32))

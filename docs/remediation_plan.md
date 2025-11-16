@@ -11,22 +11,22 @@ This document tracks the staged remediation work. Each section calls out the goa
 **Tasks**
 - ✅ Replace the swap/restore pattern in `PluginRuntimeScope` with direct borrowing (manager now lives on `App`, so no guard is required).
 - ✅ Add regression coverage (`plugin_panic_does_not_disrupt_other_plugins`, `plugin_status_snapshot_updates_on_change`) proving panics are isolated and cached snapshots refresh correctly.
-- ⬜ Update `IsolatedPluginProxy` so plugin names/versions are stored as owned `Arc<str>`/`String` values instead of using `Box::leak`, ensuring reloads free memory.
-- ⬜ Surface watchdog/capability failures through the analytics plugin so the UI can highlight which plugin was disabled.
-- ⬜ Add an integration test that repeatedly loads/unloads a dummy isolated plugin to verify no leaks or dangling state remain.
+- ✅ Ensure isolated plugin metadata is owned (proxy already stores `String` names/versions; no more `Box::leak` usage).
+- ✅ Surface watchdog/capability failures through the analytics plugin so the UI can highlight which plugin was disabled.
+- ✅ Add an integration test that repeatedly loads/unloads a dummy isolated plugin to verify no leaks or dangling state remain (`isolated_plugin_reload_cycle_does_not_accumulate_state`).
 - ⬜ Run a manual soak test by triggering a deliberate plugin panic via the editor to confirm the offending plugin is disabled while the rest of the runtime stays responsive.
 
 ## 2. Frame-Time Allocation Budget (Weeks 2–4)
 
 **Goal:** Idle frames allocate essentially zero bytes so frame-time plots reflect actual work, even when analytics panels are open.
 
-**Status:** **In Progress** – Frame profiler samples, frame-time plots, plugin status data, prefab shelf entries, analytics recent events, and the script console now reuse cached `Arc` snapshots. GPU timing history and allocation instrumentation are still pending.
+**Status:** **In Progress** – Frame profiler samples, frame-time plots, plugin status data, prefab shelf entries, analytics recent events, scene dependency lists, GPU timings, and scripting tooling now reuse cached `Arc` snapshots, and per-frame allocation deltas are logged behind the `alloc_profiler` feature. Final step is validating the idle vs. panel-open measurements.
 
 **Tasks**
 - ✅ Rework `FrameProfiler`/analytics history so the editor consumes cached `Arc<[PlotPoint]>` data instead of cloning each frame.
-- ✅ Cache telemetry-heavy collections (plugin statuses/capabilities, prefab entries, script console, analytics recent events, frame plots).
-- ⬜ Apply the same snapshot approach to GPU timing history (`self.gpu_timings`) so egui reuses immutable data.
-- ⬜ Add lightweight allocation instrumentation (behind a dev feature) that logs per-frame allocation deltas to validate improvements.
+- ✅ Cache telemetry-heavy collections (plugin statuses/capabilities, prefab entries, script console, analytics recent events, frame plots, scene history, retained atlas/mesh/clip lists, GPU timings).
+- ✅ Apply the same snapshot approach to GPU timing history (`self.gpu_timings`) so egui reuses immutable data.
+- ✅ Add lightweight allocation instrumentation (behind the `alloc_profiler` feature) that logs per-frame allocation deltas to validate improvements.
 - ⬜ Compare `update_ms`, `ui_ms`, and allocation counters before/after to confirm idle-frame allocations stay flat even when toggling panels.
 
 ## 3. App Decomposition & Ownership Boundaries (Weeks 4–5+)
@@ -58,11 +58,10 @@ This document tracks the staged remediation work. Each section calls out the goa
 
 **Goal:** All UI panels render from stable snapshots so toggling them on/off no longer impacts performance.
 
-**Status:** **Partially Complete** – Plugin panels, prefab shelf, analytics recent events, frame plots, and the script console already consume cached `Arc` data. Remaining telemetry sources still need to adopt the same pattern and be validated through perf captures.
+**Status:** **Partially Complete** – Plugin panels, prefab shelf, analytics recent events, frame plots, script console, REPL history, scene history, and retained asset lists consume cached `Arc` data. Remaining telemetry sources still need to adopt the same pattern and be validated through perf captures.
 
 **Tasks**
-- ✅ Extend `TelemetryCache`/runtime data to emit shared snapshots for prefab entries, plugin statuses, frame plots, analytics recent events, and the script console.
-- ⬜ Apply the same snapshot approach to remaining telemetry (e.g., REPL history, asset/mesh dependency lists, animation telemetry tables).
+- ✅ Extend `TelemetryCache`/runtime data to emit shared snapshots for prefab entries, plugin statuses, frame plots, analytics recent events, scene history, scripting tooling, and animation telemetry tables.
 - ⬜ Measure editor responsiveness with all panels open to confirm allocation counters remain flat and frame-time variance stays low.
 
 ## Suggested Timeline Overview
