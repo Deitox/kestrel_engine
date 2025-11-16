@@ -33,6 +33,7 @@ const LIGHT_CLUSTER_Z_SLICES: u32 = 8;
 const LIGHT_CLUSTER_MAX_LIGHTS: usize = 256;
 const LIGHT_CLUSTER_MAX_LIGHTS_PER_CLUSTER: usize = 64;
 const LIGHT_CLUSTER_RECORD_STRIDE_WORDS: u32 = 2;
+const LIGHT_CLUSTER_CACHE_QUANTIZE: f32 = 1e-3;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -108,8 +109,8 @@ struct ClusterLightUniform {
 #[derive(Clone, Copy, Debug, Default)]
 struct LightClusterCache {
     viewport: PhysicalSize<u32>,
-    view_matrix: Mat4,
-    proj_matrix: Mat4,
+    view_key: [i32; 16],
+    proj_key: [i32; 16],
     lights_hash: u64,
     metrics: LightClusterMetrics,
     valid: bool,
@@ -119,8 +120,8 @@ impl LightClusterCache {
     fn matches(&self, viewport: PhysicalSize<u32>, view: Mat4, proj: Mat4, lights_hash: u64) -> bool {
         self.valid
             && self.viewport == viewport
-            && self.view_matrix == view
-            && self.proj_matrix == proj
+            && self.view_key == quantize_matrix(view)
+            && self.proj_key == quantize_matrix(proj)
             && self.lights_hash == lights_hash
     }
 
@@ -133,8 +134,8 @@ impl LightClusterCache {
         metrics: LightClusterMetrics,
     ) {
         self.viewport = viewport;
-        self.view_matrix = view;
-        self.proj_matrix = proj;
+        self.view_key = quantize_matrix(view);
+        self.proj_key = quantize_matrix(proj);
         self.lights_hash = lights_hash;
         self.metrics = metrics;
         self.valid = true;
@@ -143,6 +144,28 @@ impl LightClusterCache {
     fn invalidate(&mut self) {
         self.valid = false;
     }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct LightClusterSpan {
+    light_index: u32,
+    start_x: u32,
+    end_x: u32,
+    start_y: u32,
+    end_y: u32,
+    start_z: u32,
+    end_z: u32,
+}
+
+#[derive(Default)]
+struct LightClusterScratch {
+    spans: Vec<LightClusterSpan>,
+    cluster_counts: Vec<u16>,
+    cluster_write_offsets: Vec<u16>,
+    cluster_records: Vec<ClusterRecordGpu>,
+    cluster_indices: Vec<u32>,
+    cluster_data_words: Vec<u32>,
+    gpu_lights: Vec<PointLightGpu>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -499,19 +522,19 @@ struct LightClusterPass {
     cache: LightClusterCache,
 }
 
-struct LightClusterBuildData {
+struct LightClusterBuildData<'a> {
     uniform: ClusterLightUniform,
-    cluster_data_words: Vec<u32>,
+    cluster_data_words: &'a [u32],
     metrics: LightClusterMetrics,
 }
 
 impl LightClusterPass {
-    fn update_resources(
+    fn update_resources<'a>(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         layout: &Arc<wgpu::BindGroupLayout>,
-        data: &LightClusterBuildData,
+        data: &LightClusterBuildData<'a>,
     ) -> Result<()> {
         if self.uniform_buffer.is_none() {
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -540,7 +563,7 @@ impl LightClusterPass {
         queue.write_buffer(uniform_buffer, 0, bytemuck::bytes_of(&data.uniform));
 
         let storage_buffer = self.storage_buffer.as_ref().context("Light cluster storage missing")?;
-        queue.write_buffer(storage_buffer, 0, bytemuck::cast_slice(&data.cluster_data_words));
+        queue.write_buffer(storage_buffer, 0, bytemuck::cast_slice(data.cluster_data_words));
 
         if self.bind_group.is_none() {
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -562,13 +585,14 @@ impl LightClusterPass {
     }
 }
 
-fn build_light_cluster_data(
+fn build_light_cluster_data<'a>(
     lights: &[ScenePointLight],
     camera: &Camera3D,
     viewport: PhysicalSize<u32>,
     view: Mat4,
     proj: Mat4,
-) -> LightClusterBuildData {
+    scratch: &'a mut LightClusterScratch,
+) -> LightClusterBuildData<'a> {
     let width = viewport.width.max(1);
     let height = viewport.height.max(1);
     let grid_x = ((width + LIGHT_CLUSTER_TILE_SIZE - 1) / LIGHT_CLUSTER_TILE_SIZE).max(1);
@@ -603,19 +627,16 @@ fn build_light_cluster_data(
         lights: [PointLightGpu::default(); LIGHT_CLUSTER_MAX_LIGHTS],
     };
 
-    #[derive(Clone, Copy)]
-    struct LightClusterSpan {
-        light_index: u32,
-        start_x: u32,
-        end_x: u32,
-        start_y: u32,
-        end_y: u32,
-        start_z: u32,
-        end_z: u32,
-    }
+    scratch.spans.clear();
+    scratch.gpu_lights.clear();
+    scratch.cluster_counts.clear();
+    scratch.cluster_counts.resize(total_clusters as usize, 0);
+    scratch.cluster_write_offsets.clear();
+    scratch.cluster_write_offsets.resize(total_clusters as usize, 0);
+    scratch.cluster_records.clear();
+    scratch.cluster_indices.clear();
+    scratch.cluster_data_words.clear();
 
-    let mut spans: Vec<LightClusterSpan> = Vec::new();
-    let mut gpu_lights: Vec<PointLightGpu> = Vec::new();
     let mut overflow_clusters = 0u32;
 
     for light in lights.iter().take(LIGHT_CLUSTER_MAX_LIGHTS) {
@@ -671,20 +692,20 @@ fn build_light_cluster_data(
             continue;
         }
 
-        let light_index = gpu_lights.len() as u32;
+        let light_index = scratch.gpu_lights.len() as u32;
         let color = light.color;
-        gpu_lights.push(PointLightGpu {
+        scratch.gpu_lights.push(PointLightGpu {
             position_radius: [light.position.x, light.position.y, light.position.z, radius],
             color_intensity: [color.x, color.y, color.z, light.intensity.max(0.0)],
         });
 
-        spans.push(LightClusterSpan { light_index, start_x, end_x, start_y, end_y, start_z, end_z });
+        scratch.spans.push(LightClusterSpan { light_index, start_x, end_x, start_y, end_y, start_z, end_z });
     }
 
-    if spans.is_empty() {
+    if scratch.spans.is_empty() {
         let metrics = LightClusterMetrics {
             total_lights: lights.len() as u32,
-            visible_lights: gpu_lights.len() as u32,
+            visible_lights: scratch.gpu_lights.len() as u32,
             grid_dims: [grid_x, grid_y, grid_z],
             active_clusters: 0,
             total_clusters: total_clusters as u32,
@@ -695,21 +716,26 @@ fn build_light_cluster_data(
             tile_size_px: LIGHT_CLUSTER_TILE_SIZE,
         };
         uniform.config.stats = [
-            gpu_lights.len() as u32,
+            scratch.gpu_lights.len() as u32,
             LIGHT_CLUSTER_MAX_LIGHTS_PER_CLUSTER as u32,
             LIGHT_CLUSTER_TILE_SIZE,
             total_clusters as u32,
         ];
-        return LightClusterBuildData { uniform, cluster_data_words: Vec::new(), metrics };
+        uniform.config.data_meta = [0, LIGHT_CLUSTER_RECORD_STRIDE_WORDS, 0, 0];
+        for (idx, light) in scratch.gpu_lights.iter().enumerate() {
+            if idx < LIGHT_CLUSTER_MAX_LIGHTS {
+                uniform.lights[idx] = *light;
+            }
+        }
+        return LightClusterBuildData { uniform, cluster_data_words: &scratch.cluster_data_words, metrics };
     }
 
-    let mut cluster_counts = vec![0u16; total_clusters as usize];
-    for span in &spans {
+    for span in &scratch.spans {
         for z in span.start_z..=span.end_z {
             for y in span.start_y..=span.end_y {
                 for x in span.start_x..=span.end_x {
                     let idx = cluster_flat_index(x, y, z, grid_x, grid_y);
-                    let count = &mut cluster_counts[idx];
+                    let count = &mut scratch.cluster_counts[idx];
                     if (*count as usize) < LIGHT_CLUSTER_MAX_LIGHTS_PER_CLUSTER {
                         *count += 1;
                     } else {
@@ -720,35 +746,38 @@ fn build_light_cluster_data(
         }
     }
 
-    let mut clusters_gpu = Vec::with_capacity(cluster_counts.len());
+    scratch.cluster_records.clear();
+    scratch.cluster_records.reserve(scratch.cluster_counts.len());
     let mut indices_total = 0u32;
-    for &count in &cluster_counts {
+    for &count in &scratch.cluster_counts {
         let limited = count.min(LIGHT_CLUSTER_MAX_LIGHTS_PER_CLUSTER as u16) as u32;
-        clusters_gpu.push(ClusterRecordGpu { offset: indices_total, count: limited, ..Default::default() });
+        scratch.cluster_records.push(ClusterRecordGpu {
+            offset: indices_total,
+            count: limited,
+            ..Default::default()
+        });
         indices_total += limited;
     }
 
-    let mut indices_gpu = vec![0u32; indices_total as usize];
-    let mut write_offsets = vec![0u16; cluster_counts.len()];
-    for span in &spans {
+    scratch.cluster_indices.clear();
+    scratch.cluster_indices.resize(indices_total as usize, 0);
+    scratch.cluster_write_offsets.iter_mut().for_each(|v| *v = 0);
+    for span in &scratch.spans {
         for z in span.start_z..=span.end_z {
             for y in span.start_y..=span.end_y {
                 for x in span.start_x..=span.end_x {
                     let idx = cluster_flat_index(x, y, z, grid_x, grid_y);
-                    let max_count = cluster_counts[idx];
-                    if max_count == 0 {
+                    let record = &scratch.cluster_records[idx];
+                    if record.count == 0 {
                         continue;
                     }
-                    let write_count = &mut write_offsets[idx];
-                    if *write_count >= max_count {
+                    let write_count = &mut scratch.cluster_write_offsets[idx];
+                    if (*write_count as u32) >= record.count {
                         continue;
                     }
-                    let record = &clusters_gpu[idx];
                     let dst = record.offset + *write_count as u32;
-                    if (dst as usize) < indices_gpu.len() {
-                        indices_gpu[dst as usize] = span.light_index;
-                        *write_count += 1;
-                    }
+                    scratch.cluster_indices[dst as usize] = span.light_index;
+                    *write_count += 1;
                 }
             }
         }
@@ -757,7 +786,7 @@ fn build_light_cluster_data(
     let mut active_clusters = 0u32;
     let mut max_lights_per_cluster = 0u32;
     let mut light_assignments = 0u32;
-    for record in &clusters_gpu {
+    for record in &scratch.cluster_records {
         if record.count > 0 {
             active_clusters = active_clusters.saturating_add(1);
             max_lights_per_cluster = max_lights_per_cluster.max(record.count);
@@ -767,7 +796,7 @@ fn build_light_cluster_data(
 
     let metrics = LightClusterMetrics {
         total_lights: lights.len() as u32,
-        visible_lights: gpu_lights.len() as u32,
+        visible_lights: scratch.gpu_lights.len() as u32,
         grid_dims: [grid_x, grid_y, grid_z],
         active_clusters,
         total_clusters: total_clusters as u32,
@@ -783,42 +812,46 @@ fn build_light_cluster_data(
     };
 
     uniform.config.stats = [
-        gpu_lights.len() as u32,
+        scratch.gpu_lights.len() as u32,
         LIGHT_CLUSTER_MAX_LIGHTS_PER_CLUSTER as u32,
         LIGHT_CLUSTER_TILE_SIZE,
-        clusters_gpu.len() as u32,
+        scratch.cluster_records.len() as u32,
     ];
-    uniform.config.data_meta = [0, LIGHT_CLUSTER_RECORD_STRIDE_WORDS, 0, indices_gpu.len() as u32];
-    for (idx, light) in gpu_lights.iter().enumerate() {
+    uniform.config.data_meta = [
+        scratch.cluster_records.len() as u32,
+        LIGHT_CLUSTER_RECORD_STRIDE_WORDS,
+        0,
+        scratch.cluster_indices.len() as u32,
+    ];
+    for (idx, light) in scratch.gpu_lights.iter().enumerate() {
         if idx < LIGHT_CLUSTER_MAX_LIGHTS {
             uniform.lights[idx] = *light;
         }
     }
 
-    let mut cluster_data_words: Vec<u32> = Vec::with_capacity(
-        clusters_gpu.len() * LIGHT_CLUSTER_RECORD_STRIDE_WORDS as usize + (indices_gpu.len() + 1) / 2,
+    scratch.cluster_data_words.reserve(
+        scratch.cluster_records.len() * LIGHT_CLUSTER_RECORD_STRIDE_WORDS as usize
+            + (scratch.cluster_indices.len() + 1) / 2,
     );
-    for record in &clusters_gpu {
-        cluster_data_words.push(record.offset);
-        cluster_data_words.push(record.count);
+    for record in &scratch.cluster_records {
+        scratch.cluster_data_words.push(record.offset);
+        scratch.cluster_data_words.push(record.count);
     }
-    let indices_offset_words = cluster_data_words.len() as u32;
-    let mut packed_indices = Vec::with_capacity((indices_gpu.len() + 1) / 2);
-    let mut iter = indices_gpu.iter();
-    while let Some(&first) = iter.next() {
-        let second = iter.next().copied().unwrap_or(0);
-        let packed = ((second & 0xFFFF) << 16) | (first & 0xFFFF);
-        packed_indices.push(packed);
+    let indices_offset_words = scratch.cluster_data_words.len() as u32;
+    for chunk in scratch.cluster_indices.chunks(2) {
+        let first = chunk[0] & 0xFFFF;
+        let second = chunk.get(1).copied().unwrap_or(0) & 0xFFFF;
+        let packed = (second << 16) | first;
+        scratch.cluster_data_words.push(packed);
     }
-    cluster_data_words.extend(packed_indices.iter());
     uniform.config.data_meta = [
-        clusters_gpu.len() as u32,
+        scratch.cluster_records.len() as u32,
         LIGHT_CLUSTER_RECORD_STRIDE_WORDS,
         indices_offset_words,
-        indices_gpu.len() as u32,
+        scratch.cluster_indices.len() as u32,
     ];
 
-    LightClusterBuildData { uniform, cluster_data_words, metrics }
+    LightClusterBuildData { uniform, cluster_data_words: &scratch.cluster_data_words, metrics }
 }
 
 fn cluster_start_index(norm: f32, count: u32) -> u32 {
@@ -863,6 +896,15 @@ fn hash_point_lights(lights: &[ScenePointLight]) -> u64 {
     hash
 }
 
+fn quantize_matrix(mat: Mat4) -> [i32; 16] {
+    let mut key = [0i32; 16];
+    let cols = mat.to_cols_array();
+    for (dst, value) in key.iter_mut().zip(cols.iter()) {
+        *dst = (value / LIGHT_CLUSTER_CACHE_QUANTIZE).round() as i32;
+    }
+    key
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -873,11 +915,12 @@ mod tests {
         let viewport = PhysicalSize::new(640, 480);
         let view = camera.view_matrix();
         let proj = camera.projection_matrix(viewport.width as f32 / viewport.height as f32);
+        let mut scratch = LightClusterScratch::default();
         let lights = vec![
             ScenePointLight::new(Vec3::ZERO, Vec3::splat(1.0), 4.0, 1.0),
             ScenePointLight::new(Vec3::new(50.0, 0.0, 0.0), Vec3::splat(1.0), 2.0, 1.0),
         ];
-        let data = build_light_cluster_data(&lights, &camera, viewport, view, proj);
+        let data = build_light_cluster_data(&lights, &camera, viewport, view, proj, &mut scratch);
         assert_eq!(data.metrics.total_lights, 2);
         assert!(data.metrics.visible_lights >= 1);
         assert!(data.metrics.total_clusters > 0);
@@ -1029,6 +1072,7 @@ pub struct Renderer {
     mesh_pass: MeshPass,
     shadow_pass: ShadowPass,
     light_clusters: LightClusterPass,
+    light_cluster_scratch: LightClusterScratch,
     lighting: SceneLightingState,
     environment_state: Option<RendererEnvironmentState>,
 
@@ -1081,6 +1125,7 @@ impl Renderer {
             mesh_pass: MeshPass::default(),
             shadow_pass: ShadowPass::default(),
             light_clusters: LightClusterPass::default(),
+            light_cluster_scratch: LightClusterScratch::default(),
             lighting: SceneLightingState::default(),
             environment_state: None,
             sprite_bind_cache: HashMap::new(),
@@ -2135,9 +2180,16 @@ impl Renderer {
             self.light_clusters.metrics = self.light_clusters.cache.metrics;
             return Ok(());
         }
-        let build_data = build_light_cluster_data(&self.lighting.point_lights, camera, viewport, view, proj);
         let device = self.device()?.clone();
         let queue = self.queue()?.clone();
+        let build_data = build_light_cluster_data(
+            &self.lighting.point_lights,
+            camera,
+            viewport,
+            view,
+            proj,
+            &mut self.light_cluster_scratch,
+        );
         self.light_clusters.update_resources(&device, &queue, &layout, &build_data)?;
         self.light_clusters.cache.update(viewport, view, proj, light_hash, build_data.metrics);
         self.light_clusters.metrics = build_data.metrics;
