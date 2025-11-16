@@ -11,7 +11,7 @@ use kestrel_engine::material_registry::MaterialRegistry;
 use kestrel_engine::mesh_registry::MeshRegistry;
 use kestrel_engine::renderer::{MeshDraw, RenderViewport, Renderer, SpriteBatch};
 use kestrel_engine::scene::Scene;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -291,21 +291,26 @@ impl BaselineScene {
 
     fn build_sprite_batches(&mut self) -> Result<(Vec<InstanceData>, Vec<SpriteBatch>)> {
         let sprites = self.ecs.collect_sprite_instances(&mut self.assets)?;
-        let mut grouped: BTreeMap<String, Vec<InstanceData>> = BTreeMap::new();
+        let mut grouped: HashMap<Arc<str>, Vec<InstanceData>> = HashMap::new();
         for sprite in sprites {
-            grouped.entry(sprite.atlas).or_default().push(sprite.data);
+            let (atlas, data) = sprite.into_gpu();
+            grouped.entry(atlas).or_default().push(data);
         }
         let mut instances = Vec::new();
         let mut batches = Vec::new();
-        for (atlas, batch_instances) in grouped {
-            if batch_instances.is_empty() {
-                continue;
+        let mut atlas_keys: Vec<_> = grouped.keys().cloned().collect();
+        atlas_keys.sort_by(|a, b| a.as_ref().cmp(b.as_ref()));
+        for atlas in atlas_keys {
+            if let Some(batch_instances) = grouped.remove(&atlas) {
+                if batch_instances.is_empty() {
+                    continue;
+                }
+                let start = instances.len();
+                instances.extend(batch_instances);
+                let end = instances.len();
+                let view = self.atlas_view(atlas.as_ref())?;
+                batches.push(SpriteBatch { atlas, range: start as u32..end as u32, view });
             }
-            let start = instances.len();
-            instances.extend(batch_instances);
-            let end = instances.len();
-            let view = self.atlas_view(&atlas)?;
-            batches.push(SpriteBatch { atlas, range: start as u32..end as u32, view });
         }
         Ok((instances, batches))
     }

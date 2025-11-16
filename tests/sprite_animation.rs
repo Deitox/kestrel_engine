@@ -165,9 +165,9 @@ fn sprite_instances_use_local_transform_when_world_missing() {
 
     let instances = ecs.collect_sprite_instances(&assets).expect("collect sprites");
     assert_eq!(instances.len(), 1, "expected single sprite instance");
-    let model = instances[0].data.model;
-    assert!((model[3][0] - 3.0).abs() < 1e-6, "translation.x should populate last column");
-    assert!((model[3][1] - 4.0).abs() < 1e-6, "translation.y should populate last column");
+    let transform = &instances[0].transform;
+    assert!((transform.translation.x - 3.0).abs() < 1e-6, "translation.x should populate transform");
+    assert!((transform.translation.y - 4.0).abs() < 1e-6, "translation.y should populate transform");
 }
 
 #[test]

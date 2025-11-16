@@ -16,20 +16,26 @@ struct VIn {
   @location(1) uv: vec2<f32>,
 };
 struct IIn {
-  @location(2) m0: vec4<f32>,
-  @location(3) m1: vec4<f32>,
-  @location(4) m2: vec4<f32>,
-  @location(5) m3: vec4<f32>,
-  @location(6) uv_rect: vec4<f32>,
-  @location(7) tint: vec4<f32>,
+  @location(2) axis_x: vec4<f32>,
+  @location(3) axis_y: vec4<f32>,
+  @location(4) translation: vec4<f32>,
+  @location(5) uv_rect: vec4<f32>,
+  @location(6) tint: vec4<f32>,
 };
 @group(1) @binding(0) var t_atlas: texture_2d<f32>;
 @group(1) @binding(1) var s_linear: sampler;
 @vertex
 fn vs_main(v: VIn, i: IIn) -> VSOut {
-  let model = mat4x4<f32>(i.m0, i.m1, i.m2, i.m3);
+  let dx = v.pos.x;
+  let dy = v.pos.y;
+  let world = vec4<f32>(
+    i.translation.x + i.axis_x.x * dx + i.axis_y.x * dy,
+    i.translation.y + i.axis_x.y * dx + i.axis_y.y * dy,
+    i.translation.z + i.axis_x.z * dx + i.axis_y.z * dy,
+    1.0
+  );
   var out: VSOut;
-  out.pos = u_globals.proj * model * vec4<f32>(v.pos, 1.0);
+  out.pos = u_globals.proj * world;
   out.uv = vec2<f32>(mix(i.uv_rect.x, i.uv_rect.z, v.uv.x), mix(i.uv_rect.y, i.uv_rect.w, v.uv.y));
   out.color = i.tint;
   return out;

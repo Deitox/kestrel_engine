@@ -3184,15 +3184,56 @@ pub struct OrbitController {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct InstanceData {
-    pub model: [[f32; 4]; 4],
+    pub axis_x: [f32; 4],
+    pub axis_y: [f32; 4],
+    pub translation: [f32; 4],
     pub uv_rect: [f32; 4],
     pub tint: [f32; 4],
 }
 
 #[derive(Clone)]
 pub struct SpriteInstance {
-    pub atlas: String,
-    pub data: InstanceData,
+    pub atlas: Arc<str>,
+    pub transform: SpriteInstanceTransform,
+    pub uv_rect: [f32; 4],
+    pub tint: [f32; 4],
+    pub world_half_extent: Vec2,
+}
+
+impl SpriteInstance {
+    pub fn into_gpu(self) -> (Arc<str>, InstanceData) {
+        let data = InstanceData {
+            axis_x: self.transform.axis_x.extend(0.0).to_array(),
+            axis_y: self.transform.axis_y.extend(0.0).to_array(),
+            translation: self.transform.translation.extend(1.0).to_array(),
+            uv_rect: self.uv_rect,
+            tint: self.tint,
+        };
+        (self.atlas, data)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct SpriteInstanceTransform {
+    pub axis_x: Vec3,
+    pub axis_y: Vec3,
+    pub translation: Vec3,
+}
+
+impl SpriteInstanceTransform {
+    pub fn from_mat4(model: Mat4) -> Self {
+        Self {
+            axis_x: Vec3::new(model.x_axis.x, model.x_axis.y, model.x_axis.z),
+            axis_y: Vec3::new(model.y_axis.x, model.y_axis.y, model.y_axis.z),
+            translation: Vec3::new(model.w_axis.x, model.w_axis.y, model.w_axis.z),
+        }
+    }
+
+    pub fn half_extent_2d(&self) -> Vec2 {
+        let half_x = Vec2::new(self.axis_x.x, self.axis_x.y) * 0.5;
+        let half_y = Vec2::new(self.axis_y.x, self.axis_y.y) * 0.5;
+        Vec2::new(half_x.x.abs() + half_y.x.abs(), half_x.y.abs() + half_y.y.abs())
+    }
 }
 
 #[derive(Clone)]

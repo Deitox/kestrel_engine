@@ -4,9 +4,11 @@ use anyhow::anyhow;
 use anyhow::{bail, Context, Result};
 use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
+use std::hash::{Hash, Hasher};
 use uuid::Uuid;
 
 const BINARY_SCENE_MAGIC: [u8; 4] = *b"KSCN";
@@ -773,6 +775,29 @@ pub struct SceneDependencies {
     environments: Vec<EnvironmentDependencyRepr>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SceneDependencyFingerprints {
+    pub atlases: u64,
+    pub clips: u64,
+    pub skeletons: u64,
+    pub meshes: u64,
+    pub materials: u64,
+    pub environments: u64,
+}
+
+impl SceneDependencyFingerprints {
+    pub fn combined(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.atlases.hash(&mut hasher);
+        self.clips.hash(&mut hasher);
+        self.skeletons.hash(&mut hasher);
+        self.meshes.hash(&mut hasher);
+        self.materials.hash(&mut hasher);
+        self.environments.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
 impl SceneDependencies {
     pub fn from_entities<F, G>(
         entities: &[SceneEntity],
@@ -874,6 +899,65 @@ impl SceneDependencies {
 
     pub fn contains_atlas(&self, key: &str) -> bool {
         self.atlas_dependencies().any(|dep| dep.key() == key)
+    }
+
+    pub fn fingerprints(&self) -> SceneDependencyFingerprints {
+        fn hash_entries(
+            tag: &'static str,
+            mut entries: Vec<(String, Option<String>)>,
+        ) -> u64 {
+            entries.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+            let mut hasher = DefaultHasher::new();
+            for (key, path) in entries {
+                tag.hash(&mut hasher);
+                key.hash(&mut hasher);
+                path.hash(&mut hasher);
+            }
+            hasher.finish()
+        }
+
+        SceneDependencyFingerprints {
+            atlases: hash_entries(
+                "atlas",
+                self.atlas_dependencies()
+                    .map(|dep| (dep.key().to_string(), dep.path().map(|p| p.to_string())))
+                    .collect(),
+            ),
+            clips: hash_entries(
+                "clip",
+                self.clip_dependencies()
+                    .map(|dep| (dep.key().to_string(), dep.path().map(|p| p.to_string())))
+                    .collect(),
+            ),
+            skeletons: hash_entries(
+                "skeleton",
+                self.skeleton_dependencies()
+                    .map(|dep| (dep.key().to_string(), dep.path().map(|p| p.to_string())))
+                    .collect(),
+            ),
+            meshes: hash_entries(
+                "mesh",
+                self.mesh_dependencies()
+                    .map(|dep| (dep.key().to_string(), dep.path().map(|p| p.to_string())))
+                    .collect(),
+            ),
+            materials: hash_entries(
+                "material",
+                self.material_dependencies()
+                    .map(|dep| (dep.key().to_string(), dep.path().map(|p| p.to_string())))
+                    .collect(),
+            ),
+            environments: hash_entries(
+                "environment",
+                self.environment_dependencies()
+                    .map(|dep| (dep.key().to_string(), dep.path().map(|p| p.to_string())))
+                    .collect(),
+            ),
+        }
+    }
+
+    pub fn fingerprint(&self) -> u64 {
+        self.fingerprints().combined()
     }
 
     pub fn atlas_dependencies(&self) -> impl Iterator<Item = AtlasDependencyView<'_>> {

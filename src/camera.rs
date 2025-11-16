@@ -105,7 +105,7 @@ impl Camera2D {
         Some((min_screen, max_screen))
     }
 
-    fn half_extents(&self, size: PhysicalSize<u32>) -> Option<(f32, f32)> {
+    pub fn half_extents(&self, size: PhysicalSize<u32>) -> Option<(f32, f32)> {
         if size.width == 0 || size.height == 0 {
             return None;
         }

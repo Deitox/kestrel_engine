@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver};
 use std::time::Duration;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AnimationAssetKind {
     Clip,
     Graph,
@@ -16,11 +16,21 @@ pub enum AnimationAssetKind {
 }
 
 impl AnimationAssetKind {
+    pub const COUNT: usize = 3;
+
     pub fn label(self) -> &'static str {
         match self {
             AnimationAssetKind::Clip => "clip",
             AnimationAssetKind::Graph => "graph",
             AnimationAssetKind::Skeletal => "skeletal",
+        }
+    }
+
+    pub fn index(self) -> usize {
+        match self {
+            AnimationAssetKind::Clip => 0,
+            AnimationAssetKind::Graph => 1,
+            AnimationAssetKind::Skeletal => 2,
         }
     }
 }

@@ -3,11 +3,12 @@ use anyhow::{anyhow, Context, Result};
 use glam::{Vec2, Vec4};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 pub mod skeletal;
 
@@ -21,6 +22,9 @@ pub struct AssetManager {
     device: Option<wgpu::Device>,
     queue: Option<wgpu::Queue>,
     texture_cache: HashMap<PathBuf, (wgpu::TextureView, (u32, u32))>,
+    atlas_image_cache: HashMap<PathBuf, CachedAtlasImage>,
+    atlas_upload_scratch: Vec<u8>,
+    atlas_image_cache_order: VecDeque<PathBuf>,
     atlas_sources: HashMap<String, String>,
     atlas_refs: HashMap<String, usize>,
     clip_sources: HashMap<String, String>,
@@ -30,6 +34,13 @@ pub struct AssetManager {
     skeleton_refs: HashMap<String, usize>,
     skeletal_clip_sources: HashMap<String, String>,
     skeleton_clip_index: HashMap<String, Vec<String>>,
+}
+
+struct CachedAtlasImage {
+    modified: SystemTime,
+    width: u32,
+    height: u32,
+    pixels: Arc<[u8]>,
 }
 
 fn build_vec2_track(raw: ClipVec2TrackFile) -> Result<(ClipVec2Track, f32)> {
@@ -860,6 +871,9 @@ impl AssetManager {
             device: None,
             queue: None,
             texture_cache: HashMap::new(),
+            atlas_image_cache: HashMap::new(),
+            atlas_upload_scratch: Vec::new(),
+            atlas_image_cache_order: VecDeque::new(),
             atlas_sources: HashMap::new(),
             atlas_refs: HashMap::new(),
             clip_sources: HashMap::new(),
@@ -885,6 +899,8 @@ impl AssetManager {
             ..Default::default()
         }));
         self.texture_cache.clear();
+        self.atlas_image_cache.clear();
+        self.atlas_image_cache_order.clear();
     }
     pub fn default_sampler(&self) -> &wgpu::Sampler {
         self.sampler.as_ref().expect("sampler")
@@ -916,9 +932,13 @@ impl AssetManager {
 
     pub fn load_clip_from_bytes(&mut self, key: &str, json_path: &str, bytes: &[u8]) -> Result<()> {
         let clip = parse_animation_clip_bytes(bytes, key, json_path)?;
+        self.replace_clip(key, json_path, clip);
+        Ok(())
+    }
+
+    pub fn replace_clip(&mut self, key: &str, json_path: &str, clip: AnimationClip) {
         self.clips.insert(key.to_string(), clip);
         self.clip_sources.insert(key.to_string(), json_path.to_string());
-        Ok(())
     }
     pub fn retain_atlas(&mut self, key: &str, json_path: Option<&str>) -> Result<()> {
         if self.atlases.contains_key(key) {
@@ -1029,9 +1049,13 @@ impl AssetManager {
         bytes: &[u8],
     ) -> Result<()> {
         let graph = parse_animation_graph_bytes(bytes, key, json_path)?;
+        self.replace_animation_graph(key, json_path, graph);
+        Ok(())
+    }
+
+    pub fn replace_animation_graph(&mut self, key: &str, json_path: &str, graph: AnimationGraphAsset) {
         self.animation_graphs.insert(key.to_string(), graph);
         self.animation_graph_sources.insert(key.to_string(), json_path.to_string());
-        Ok(())
     }
 
     pub fn animation_graph(&self, key: &str) -> Option<&AnimationGraphAsset> {
@@ -1061,8 +1085,13 @@ impl AssetManager {
     }
 
     fn load_skeleton_internal(&mut self, key: &str, gltf_path: &str) -> Result<()> {
-        let skeletal::SkeletonImport { skeleton, clips } = skeletal::load_skeleton_from_gltf(gltf_path)?;
-        self.skeletons.insert(key.to_string(), Arc::new(skeleton));
+        let import = skeletal::load_skeleton_from_gltf(gltf_path)?;
+        self.apply_skeleton_import(key, gltf_path, import);
+        Ok(())
+    }
+
+    fn apply_skeleton_import(&mut self, key: &str, gltf_path: &str, import: skeletal::SkeletonImport) {
+        self.skeletons.insert(key.to_string(), Arc::new(import.skeleton));
         if let Some(existing) = self.skeleton_clip_index.remove(key) {
             for clip_key in existing {
                 self.skeletal_clips.remove(&clip_key);
@@ -1070,14 +1099,23 @@ impl AssetManager {
             }
         }
         let mut clip_keys: Vec<String> = Vec::new();
-        for clip in clips {
+        for clip in import.clips {
             let clip_key = format!("{key}::{}", clip.name.as_ref());
             self.skeletal_clip_sources.insert(clip_key.clone(), gltf_path.to_string());
             self.skeletal_clips.insert(clip_key.clone(), Arc::new(clip));
             clip_keys.push(clip_key);
         }
         self.skeleton_clip_index.insert(key.to_string(), clip_keys);
-        Ok(())
+    }
+
+    pub fn replace_skeleton_from_import(
+        &mut self,
+        key: &str,
+        gltf_path: &str,
+        import: skeletal::SkeletonImport,
+    ) {
+        self.apply_skeleton_import(key, gltf_path, import);
+        self.skeleton_sources.insert(key.to_string(), gltf_path.to_string());
     }
     pub fn load_skeleton(&mut self, key: &str, gltf_path: &str) -> Result<()> {
         self.load_skeleton_internal(key, gltf_path)
@@ -1166,6 +1204,7 @@ impl AssetManager {
                     self.atlas_refs.remove(key);
                     if let Some(atlas) = self.atlases.remove(key) {
                         self.texture_cache.remove(&atlas.image_path);
+                        self.remove_cached_atlas_image(&atlas.image_path);
                     }
                     self.atlas_sources.remove(key);
                 }
@@ -1188,12 +1227,30 @@ impl AssetManager {
                 return Ok(view.clone());
             }
         }
+        let (rgba, w, h) = self.cached_atlas_pixels(&image_path)?;
         let dev = self.device.as_ref().ok_or_else(|| anyhow!("GPU device not initialized"))?;
         let q = self.queue.as_ref().ok_or_else(|| anyhow!("GPU queue not initialized"))?;
-        let bytes = std::fs::read(&image_path)?;
-        let img = image::load_from_memory(&bytes)?.to_rgba8();
-        let (w, h) = img.dimensions();
-        let rgba = img.into_raw();
+        let rgba_slice = rgba.as_ref();
+        let row_stride = (4 * w) as usize;
+        let alignment = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
+        let (upload_slice, padded_stride) = if row_stride % alignment == 0 {
+            (rgba_slice, row_stride)
+        } else {
+            let padded_stride = ((row_stride + alignment - 1) / alignment) * alignment;
+            let required = padded_stride * h as usize;
+            if self.atlas_upload_scratch.len() < required {
+                self.atlas_upload_scratch.resize(required, 0);
+            }
+            for row in 0..h as usize {
+                let src_offset = row * row_stride;
+                let dst_offset = row * padded_stride;
+                self.atlas_upload_scratch[dst_offset..dst_offset + row_stride]
+                    .copy_from_slice(&rgba_slice[src_offset..src_offset + row_stride]);
+            }
+            (&self.atlas_upload_scratch[..required], padded_stride)
+        };
+        let bytes_per_row =
+            u32::try_from(padded_stride).map_err(|_| anyhow!("atlas '{}' too wide for GPU upload", key))?;
         let texture = dev.create_texture(&wgpu::TextureDescriptor {
             label: Some("Atlas Texture"),
             size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
@@ -1211,13 +1268,58 @@ impl AssetManager {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &rgba,
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(h) },
+            upload_slice,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: Some(h),
+            },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         self.texture_cache.insert(image_path, (view.clone(), (w, h)));
         Ok(view)
+    }
+
+    fn cached_atlas_pixels(&mut self, image_path: &Path) -> Result<(Arc<[u8]>, u32, u32)> {
+        let metadata = fs::metadata(image_path)?;
+        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        if let Some(entry) = self.atlas_image_cache.get(image_path) {
+            if entry.modified == modified {
+                let cached = (Arc::clone(&entry.pixels), entry.width, entry.height);
+                self.touch_cached_atlas_image(image_path);
+                return Ok(cached);
+            }
+        }
+        let bytes = std::fs::read(image_path)?;
+        let img = image::load_from_memory(&bytes)?.to_rgba8();
+        let (width, height) = img.dimensions();
+        let pixels: Arc<[u8]> = Arc::from(img.into_raw().into_boxed_slice());
+        self.atlas_image_cache.insert(
+            image_path.to_path_buf(),
+            CachedAtlasImage { modified, width, height, pixels: Arc::clone(&pixels) },
+        );
+        self.touch_cached_atlas_image(image_path);
+        Ok((pixels, width, height))
+    }
+
+    fn touch_cached_atlas_image(&mut self, path: &Path) {
+        if let Some(pos) = self.atlas_image_cache_order.iter().position(|p| p == path) {
+            self.atlas_image_cache_order.remove(pos);
+        }
+        self.atlas_image_cache_order.push_back(path.to_path_buf());
+        while self.atlas_image_cache_order.len() > ATLAS_IMAGE_CACHE_LIMIT {
+            if let Some(evicted) = self.atlas_image_cache_order.pop_front() {
+                self.atlas_image_cache.remove(&evicted);
+            }
+        }
+    }
+
+    fn remove_cached_atlas_image(&mut self, path: &Path) {
+        self.atlas_image_cache.remove(path);
+        if let Some(pos) = self.atlas_image_cache_order.iter().position(|p| p == path) {
+            self.atlas_image_cache_order.remove(pos);
+        }
     }
     pub fn atlas_region_uv(&self, atlas_key: &str, region: &str) -> Result<[f32; 4]> {
         let atlas = self.atlases.get(atlas_key).ok_or_else(|| anyhow!("atlas '{atlas_key}' not loaded"))?;
@@ -1352,3 +1454,4 @@ mod tests {
         assert_eq!(assets.graph_key_for_source_path(&canonical).as_deref(), Some("example"));
     }
 }
+const ATLAS_IMAGE_CACHE_LIMIT: usize = 16;

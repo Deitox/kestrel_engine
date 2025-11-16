@@ -9,7 +9,7 @@ use self::animation_keyframe_panel::{
     AnimationKeyframePanel, AnimationKeyframePanelState, AnimationPanelCommand, AnimationTrackBinding,
     AnimationTrackId, AnimationTrackKind, AnimationTrackSummary, KeyframeDetail, KeyframeId, KeyframeValue,
 };
-use self::animation_watch::{AnimationAssetChange, AnimationAssetKind, AnimationAssetWatcher};
+use self::animation_watch::{AnimationAssetKind, AnimationAssetWatcher};
 use self::atlas_watch::{normalize_path_for_watch, AtlasHotReload};
 use self::plugin_host::{BuiltinPluginFactory, PluginHost};
 use crate::analytics::{
@@ -18,9 +18,11 @@ use crate::analytics::{
 use crate::animation_validation::{
     AnimationValidationEvent, AnimationValidationSeverity, AnimationValidator,
 };
+use crate::assets::skeletal;
+use crate::assets::{parse_animation_clip_bytes, parse_animation_graph_bytes};
 use crate::assets::{
-    AnimationClip, AssetManager, ClipInterpolation, ClipKeyframe, ClipScalarTrack, ClipSegment,
-    ClipVec2Track, ClipVec4Track, SpriteTimeline, TextureAtlasDiagnostics,
+    AnimationClip, AnimationGraphAsset, AssetManager, ClipInterpolation, ClipKeyframe, ClipScalarTrack,
+    ClipSegment, ClipVec2Track, ClipVec4Track, SpriteTimeline, TextureAtlasDiagnostics,
 };
 use crate::audio::{AudioHealthSnapshot, AudioPlugin};
 use crate::camera::Camera2D;
@@ -46,9 +48,9 @@ use crate::renderer::{
     GpuPassTiming, MeshDraw, RenderViewport, Renderer, ScenePointLight, SpriteBatch, MAX_SHADOW_CASCADES,
 };
 use crate::scene::{
-    EnvironmentDependency, Scene, SceneCamera2D, SceneCameraBookmark, SceneDependencies, SceneEntityId,
-    SceneEnvironment, SceneLightingData, SceneMetadata, ScenePointLightData, SceneShadowData,
-    SceneViewportMode, Vec2Data,
+    EnvironmentDependency, Scene, SceneCamera2D, SceneCameraBookmark, SceneDependencies,
+    SceneDependencyFingerprints, SceneEntityId, SceneEnvironment, SceneLightingData, SceneMetadata,
+    ScenePointLightData, SceneShadowData, SceneViewportMode, Vec2Data,
 };
 use crate::scripts::{ScriptCommand, ScriptHandle, ScriptPlugin};
 use crate::time::Time;
@@ -57,9 +59,11 @@ use glam::{Mat4, Vec2, Vec3, Vec4};
 
 use anyhow::{anyhow, Context, Result};
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
+use std::mem;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Instant;
@@ -75,6 +79,8 @@ use egui_wgpu::{Renderer as EguiRenderer, RendererOptions, ScreenDescriptor};
 use egui_winit::State as EguiWinit;
 
 const CAMERA_BASE_HALF_HEIGHT: f32 = 1.2;
+const MAX_PENDING_ANIMATION_RELOADS_PER_KIND: usize = 32;
+const ANIMATION_RELOAD_WORKER_QUEUE_DEPTH: usize = 8;
 const PLUGIN_MANIFEST_PATH: &str = "config/plugins.json";
 const INPUT_CONFIG_PATH: &str = "config/input.json";
 const SCRIPT_CONSOLE_CAPACITY: usize = 200;
@@ -466,6 +472,7 @@ pub struct App {
     animation_group_scale_input: f32,
     camera_bookmark_input: String,
     scene_dependencies: Option<SceneDependencies>,
+    scene_dependency_fingerprints: Option<SceneDependencyFingerprints>,
     scene_history: VecDeque<String>,
     inspector_status: Option<String>,
     debug_show_spatial_hash: bool,
@@ -504,7 +511,7 @@ pub struct App {
 
     scene_atlas_refs: HashSet<String>,
     persistent_atlases: HashSet<String>,
-    scene_clip_refs: HashSet<String>,
+    scene_clip_refs: HashMap<String, usize>,
     scene_mesh_refs: HashSet<String>,
     pub(crate) scene_material_refs: HashSet<String>,
 
@@ -527,10 +534,19 @@ pub struct App {
     sprite_atlas_views: HashMap<String, Arc<wgpu::TextureView>>,
     atlas_hot_reload: Option<AtlasHotReload>,
     animation_asset_watcher: Option<AnimationAssetWatcher>,
+    animation_watch_roots_queue: Vec<(PathBuf, AnimationAssetKind)>,
+    animation_watch_roots_pending: HashSet<(PathBuf, AnimationAssetKind)>,
+    animation_watch_roots_registered: HashSet<(PathBuf, AnimationAssetKind)>,
+    animation_reload_pending: HashSet<(PathBuf, AnimationAssetKind)>,
+    animation_reload_queue: AnimationReloadQueue,
+    animation_reload_worker: Option<AnimationReloadWorker>,
     animation_validation_worker: Option<AnimationValidationWorker>,
     sprite_guardrail_mode: SpriteGuardrailMode,
     sprite_guardrail_max_pixels: f32,
     sprite_guardrail_status: Option<String>,
+    sprite_batch_map: HashMap<Arc<str>, Vec<InstanceData>>,
+    sprite_batch_pool: Vec<Vec<InstanceData>>,
+    sprite_batch_order: Vec<Arc<str>>,
 }
 
 impl App {
@@ -561,59 +577,69 @@ impl App {
 
     fn sync_animation_asset_watch_roots(&mut self) {
         let Some(watcher) = self.animation_asset_watcher.as_mut() else {
+            self.animation_watch_roots_queue.clear();
+            self.animation_watch_roots_pending.clear();
+            self.animation_watch_roots_registered.clear();
             return;
         };
-        for (_, source) in self.assets.clip_sources() {
-            let clip_path = PathBuf::from(&source);
-            let watch_target = if clip_path.is_dir() {
-                clip_path
-            } else if let Some(parent) = clip_path.parent() {
-                parent.to_path_buf()
-            } else {
-                clip_path
-            };
-            if !watch_target.exists() {
+        while let Some((path, kind)) = self.animation_watch_roots_queue.pop() {
+            let key = (path.clone(), kind);
+            self.animation_watch_roots_pending.remove(&key);
+            if !path.exists() {
                 continue;
             }
-            if let Err(err) = watcher.watch_root(&watch_target, AnimationAssetKind::Clip) {
-                eprintln!("[animation] failed to watch clip directory {}: {err:?}", watch_target.display());
+            match watcher.watch_root(&path, kind) {
+                Ok(()) => {
+                    self.animation_watch_roots_registered.insert(key);
+                }
+                Err(err) => {
+                    eprintln!(
+                        "[animation] failed to watch {} directory {}: {err:?}",
+                        kind.label(),
+                        path.display()
+                    );
+                }
             }
         }
-        let skeleton_sources = self.assets.skeleton_sources();
-        for (_, source) in skeleton_sources {
-            let skel_path = PathBuf::from(&source);
-            let watch_target = if skel_path.is_dir() {
-                skel_path
-            } else if let Some(parent) = skel_path.parent() {
-                parent.to_path_buf()
-            } else {
-                skel_path
-            };
-            if !watch_target.exists() {
-                continue;
-            }
-            if let Err(err) = watcher.watch_root(&watch_target, AnimationAssetKind::Skeletal) {
-                eprintln!(
-                    "[animation] failed to watch skeleton directory {}: {err:?}",
-                    watch_target.display()
-                );
-            }
+    }
+
+    fn seed_animation_watch_roots(&mut self) {
+        for (_, source) in self.assets.clip_sources() {
+            self.queue_animation_watch_root(Path::new(&source), AnimationAssetKind::Clip);
+        }
+        for (_, source) in self.assets.skeleton_sources() {
+            self.queue_animation_watch_root(Path::new(&source), AnimationAssetKind::Skeletal);
         }
         for (_, source) in self.assets.animation_graph_sources() {
-            let graph_path = PathBuf::from(&source);
-            let watch_target = if graph_path.is_dir() {
-                graph_path
-            } else if let Some(parent) = graph_path.parent() {
-                parent.to_path_buf()
-            } else {
-                graph_path
-            };
-            if !watch_target.exists() {
-                continue;
-            }
-            if let Err(err) = watcher.watch_root(&watch_target, AnimationAssetKind::Graph) {
-                eprintln!("[animation] failed to watch graph directory {}: {err:?}", watch_target.display());
-            }
+            self.queue_animation_watch_root(Path::new(&source), AnimationAssetKind::Graph);
+        }
+    }
+
+    fn queue_animation_watch_root(&mut self, path: &Path, kind: AnimationAssetKind) {
+        let Some(root) = Self::watch_root_for_source(path) else {
+            return;
+        };
+        if !root.exists() {
+            return;
+        }
+        let normalized = Self::normalize_validation_path(&root);
+        let key = (normalized, kind);
+        if self.animation_watch_roots_registered.contains(&key)
+            || self.animation_watch_roots_pending.contains(&key)
+        {
+            return;
+        }
+        self.animation_watch_roots_pending.insert(key.clone());
+        self.animation_watch_roots_queue.push(key);
+    }
+
+    fn watch_root_for_source(path: &Path) -> Option<PathBuf> {
+        if path.is_dir() {
+            Some(path.to_path_buf())
+        } else if let Some(parent) = path.parent() {
+            Some(parent.to_path_buf())
+        } else {
+            Some(path.to_path_buf())
         }
     }
 
@@ -652,6 +678,8 @@ impl App {
     }
 
     fn process_animation_asset_watchers(&mut self) {
+        self.dispatch_animation_reload_queue();
+        self.drain_animation_reload_results();
         self.drain_animation_validation_results();
         self.sync_animation_asset_watch_roots();
         let Some(watcher) = self.animation_asset_watcher.as_mut() else {
@@ -661,20 +689,189 @@ impl App {
         if changes.is_empty() {
             return;
         }
-        let mut dedup = HashMap::new();
+        let mut dedup: HashSet<(PathBuf, AnimationAssetKind)> = HashSet::new();
         for change in changes {
             let normalized = Self::normalize_validation_path(&change.path);
-            dedup.entry(normalized).or_insert(change);
-        }
-        for (_, change) in dedup {
-            if let Some(reload) = self.handle_animation_asset_change(&change) {
-                if self.consume_validation_suppression(&reload.path) {
-                    continue;
-                }
-                self.enqueue_animation_validation_job(reload);
+            if !dedup.insert((normalized.clone(), change.kind)) {
+                continue;
+            }
+            if let Some(mut request) = self.prepare_animation_reload_request(normalized, change.kind) {
+                request.skip_validation = self.consume_validation_suppression(&request.path);
+                self.enqueue_animation_reload(request);
             }
         }
+        self.dispatch_animation_reload_queue();
+        self.drain_animation_reload_results();
         self.drain_animation_validation_results();
+    }
+
+    fn prepare_animation_reload_request(
+        &self,
+        path: PathBuf,
+        kind: AnimationAssetKind,
+    ) -> Option<AnimationReloadRequest> {
+        let key = match kind {
+            AnimationAssetKind::Clip => self.assets.clip_key_for_source_path(&path)?,
+            AnimationAssetKind::Graph => {
+                self.assets.graph_key_for_source_path(&path).unwrap_or_else(|| default_graph_key(&path))
+            }
+            AnimationAssetKind::Skeletal => self.assets.skeleton_key_for_source_path(&path)?,
+        };
+        Some(AnimationReloadRequest { path, key, kind, skip_validation: false })
+    }
+
+    fn enqueue_animation_reload(&mut self, request: AnimationReloadRequest) {
+        let pending_key = (request.path.clone(), request.kind);
+        if !self.animation_reload_pending.insert(pending_key.clone()) {
+            return;
+        }
+        if let Some(evicted) = self.animation_reload_queue.enqueue(request) {
+            self.animation_reload_pending.remove(&(evicted.path.clone(), evicted.kind));
+            eprintln!(
+                "[animation] dropping stale reload for {} ({}) - superseded by newer events",
+                evicted.path.display(),
+                evicted.kind.label()
+            );
+        }
+        self.dispatch_animation_reload_queue();
+    }
+
+    fn dispatch_animation_reload_queue(&mut self) {
+        loop {
+            let Some(request) = self.animation_reload_queue.pop_next() else { break; };
+            match self.try_submit_animation_reload(request) {
+                Ok(()) => continue,
+                Err(request) => {
+                    if let Some(evicted) = self.animation_reload_queue.push_front(request) {
+                        self.animation_reload_pending.remove(&(evicted.path.clone(), evicted.kind));
+                        eprintln!(
+                            "[animation] dropping queued reload for {} ({}) - queue saturated",
+                            evicted.path.display(),
+                            evicted.kind.label()
+                        );
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    fn try_submit_animation_reload(
+        &mut self,
+        request: AnimationReloadRequest,
+    ) -> Result<(), AnimationReloadRequest> {
+        if let Some(worker) = self.animation_reload_worker.as_ref() {
+            match worker.submit(AnimationReloadJob { request }) {
+                Ok(()) => Ok(()),
+                Err(job) => Err(job.request),
+            }
+        } else {
+            let result = run_animation_reload_job(AnimationReloadJob { request });
+            self.apply_animation_reload_result(result);
+            Ok(())
+        }
+    }
+
+    fn drain_animation_reload_results(&mut self) {
+        if let Some(worker) = self.animation_reload_worker.as_ref() {
+            for result in worker.drain() {
+                self.apply_animation_reload_result(result);
+            }
+        }
+    }
+
+    fn apply_animation_reload_result(&mut self, result: AnimationReloadResult) {
+        self.animation_reload_pending.remove(&(result.request.path.clone(), result.request.kind));
+        match result.data {
+            Ok(AnimationReloadData::Clip { clip, bytes }) => {
+                let key = result.request.key.clone();
+                let path_string = result.request.path.to_string_lossy().to_string();
+                self.assets.replace_clip(&key, &path_string, clip);
+                self.queue_animation_watch_root(&result.request.path, AnimationAssetKind::Clip);
+                if let Some(updated) = self.assets.clip(&key) {
+                    let canonical = Arc::new(updated.clone());
+                    self.clip_edit_overrides.remove(&key);
+                    self.clip_dirty.remove(&key);
+                    self.apply_clip_override_to_instances(&key, Arc::clone(&canonical));
+                    self.animation_clip_status =
+                        Some(format!("Reloaded clip '{}' from {}", key, result.request.path.display()));
+                }
+                if !result.request.skip_validation {
+                    self.enqueue_animation_validation_job(AnimationAssetReload {
+                        path: result.request.path.clone(),
+                        kind: AnimationAssetKind::Clip,
+                        bytes: Some(bytes),
+                    });
+                }
+            }
+            Ok(AnimationReloadData::Graph { graph, bytes }) => {
+                let key = result.request.key.clone();
+                let path_string = result.request.path.to_string_lossy().to_string();
+                self.assets.replace_animation_graph(&key, &path_string, graph);
+                self.queue_animation_watch_root(&result.request.path, AnimationAssetKind::Graph);
+                self.animation_clip_status = Some(format!(
+                    "Reloaded animation graph '{}' from {}",
+                    key,
+                    result.request.path.display()
+                ));
+                if !result.request.skip_validation {
+                    self.enqueue_animation_validation_job(AnimationAssetReload {
+                        path: result.request.path.clone(),
+                        kind: AnimationAssetKind::Graph,
+                        bytes: Some(bytes),
+                    });
+                }
+            }
+            Ok(AnimationReloadData::Skeletal { import }) => {
+                let key = result.request.key.clone();
+                let path_string = result.request.path.to_string_lossy().to_string();
+                self.assets.replace_skeleton_from_import(&key, &path_string, import);
+                self.queue_animation_watch_root(&result.request.path, AnimationAssetKind::Skeletal);
+                let mut snapshots: Vec<SkeletonPlaybackSnapshot> = Vec::new();
+                {
+                    let mut query = self.ecs.world.query::<(Entity, &SkeletonInstance)>();
+                    for (entity, instance) in query.iter(&self.ecs.world) {
+                        if instance.skeleton_key.as_ref() == key.as_str() {
+                            snapshots.push(SkeletonPlaybackSnapshot {
+                                entity,
+                                clip_key: instance.active_clip_key.as_ref().map(|k| k.as_ref().to_string()),
+                                time: instance.time,
+                                playing: instance.playing,
+                                speed: instance.speed,
+                                group: instance.group.clone(),
+                            });
+                        }
+                    }
+                }
+                for snapshot in snapshots {
+                    self.ecs.set_skeleton(snapshot.entity, &self.assets, &key);
+                    if let Some(ref clip_key) = snapshot.clip_key {
+                        let _ = self.ecs.set_skeleton_clip(snapshot.entity, &self.assets, clip_key);
+                        let _ = self.ecs.set_skeleton_clip_time(snapshot.entity, snapshot.time);
+                        let _ = self.ecs.set_skeleton_clip_playing(snapshot.entity, snapshot.playing);
+                        let _ = self.ecs.set_skeleton_clip_speed(snapshot.entity, snapshot.speed);
+                        let _ = self.ecs.set_skeleton_clip_group(snapshot.entity, snapshot.group.as_deref());
+                    }
+                }
+                self.animation_clip_status =
+                    Some(format!("Reloaded skeleton '{}' from {}", key, result.request.path.display()));
+                if !result.request.skip_validation {
+                    self.enqueue_animation_validation_job(AnimationAssetReload {
+                        path: result.request.path.clone(),
+                        kind: AnimationAssetKind::Skeletal,
+                        bytes: None,
+                    });
+                }
+            }
+            Err(err) => {
+                eprintln!("[animation] reload failed for {}: {err:?}", result.request.path.display());
+                self.animation_clip_status = Some(format!(
+                    "Reload failed for {} from {}: {err}",
+                    result.request.key,
+                    result.request.path.display()
+                ));
+            }
+        }
     }
 
     fn enqueue_animation_validation_job(&mut self, reload: AnimationAssetReload) {
@@ -762,106 +959,6 @@ impl App {
 
     fn normalize_validation_path(path: &Path) -> PathBuf {
         fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-    }
-
-    fn handle_animation_asset_change(
-        &mut self,
-        change: &AnimationAssetChange,
-    ) -> Option<AnimationAssetReload> {
-        let path = change.path.clone();
-        match change.kind {
-            AnimationAssetKind::Clip => match self.reload_clip_from_disk(&path) {
-                Ok(bytes) => Some(AnimationAssetReload { path, kind: change.kind, bytes: Some(bytes) }),
-                Err(err) => {
-                    eprintln!("[animation] failed to reload clip for {}: {err:?}", change.path.display());
-                    self.animation_clip_status =
-                        Some(format!("Clip reload failed for {}: {err}", change.path.display()));
-                    None
-                }
-            },
-            AnimationAssetKind::Graph => match self.reload_graph_from_disk(&path) {
-                Ok(bytes) => Some(AnimationAssetReload { path, kind: change.kind, bytes: Some(bytes) }),
-                Err(err) => {
-                    eprintln!("[animation] failed to reload graph for {}: {err:?}", change.path.display());
-                    self.animation_clip_status =
-                        Some(format!("Graph reload failed for {}: {err}", change.path.display()));
-                    None
-                }
-            },
-            AnimationAssetKind::Skeletal => {
-                if let Err(err) = self.reload_skeleton_from_disk(&path) {
-                    eprintln!("[animation] failed to reload skeleton for {}: {err:?}", change.path.display());
-                    self.animation_clip_status =
-                        Some(format!("Skeleton reload failed for {}: {err}", change.path.display()));
-                    None
-                } else {
-                    Some(AnimationAssetReload { path, kind: change.kind, bytes: None })
-                }
-            }
-        }
-    }
-
-    fn reload_clip_from_disk(&mut self, path: &Path) -> Result<Vec<u8>> {
-        let Some(key) = self.assets.clip_key_for_source_path(path) else {
-            return Err(anyhow!("no loaded clip recorded for {}", path.display()));
-        };
-        let path_string = path.to_string_lossy().to_string();
-        let bytes = fs::read(path)?;
-        self.assets.load_clip_from_bytes(&key, &path_string, &bytes)?;
-        if let Some(updated) = self.assets.clip(&key) {
-            let canonical = Arc::new(updated.clone());
-            self.clip_edit_overrides.remove(&key);
-            self.clip_dirty.remove(&key);
-            self.apply_clip_override_to_instances(&key, Arc::clone(&canonical));
-            self.animation_clip_status = Some(format!("Reloaded clip '{}' from {}", key, path.display()));
-        }
-        Ok(bytes)
-    }
-
-    fn reload_skeleton_from_disk(&mut self, path: &Path) -> Result<()> {
-        let Some(key) = self.assets.skeleton_key_for_source_path(path) else {
-            return Err(anyhow!("no loaded skeleton recorded for {}", path.display()));
-        };
-        let path_string = path.to_string_lossy().to_string();
-        self.assets.load_skeleton(&key, &path_string)?;
-        let mut snapshots: Vec<SkeletonPlaybackSnapshot> = Vec::new();
-        {
-            let mut query = self.ecs.world.query::<(Entity, &SkeletonInstance)>();
-            for (entity, instance) in query.iter(&self.ecs.world) {
-                if instance.skeleton_key.as_ref() == key.as_str() {
-                    snapshots.push(SkeletonPlaybackSnapshot {
-                        entity,
-                        clip_key: instance.active_clip_key.as_ref().map(|k| k.as_ref().to_string()),
-                        time: instance.time,
-                        playing: instance.playing,
-                        speed: instance.speed,
-                        group: instance.group.clone(),
-                    });
-                }
-            }
-        }
-        for snapshot in snapshots {
-            self.ecs.set_skeleton(snapshot.entity, &self.assets, &key);
-            if let Some(ref clip_key) = snapshot.clip_key {
-                let _ = self.ecs.set_skeleton_clip(snapshot.entity, &self.assets, clip_key);
-                let _ = self.ecs.set_skeleton_clip_time(snapshot.entity, snapshot.time);
-                let _ = self.ecs.set_skeleton_clip_playing(snapshot.entity, snapshot.playing);
-                let _ = self.ecs.set_skeleton_clip_speed(snapshot.entity, snapshot.speed);
-                let _ = self.ecs.set_skeleton_clip_group(snapshot.entity, snapshot.group.as_deref());
-            }
-        }
-        self.animation_clip_status = Some(format!("Reloaded skeleton '{}' from {}", key, path.display()));
-        Ok(())
-    }
-
-    fn reload_graph_from_disk(&mut self, path: &Path) -> Result<Vec<u8>> {
-        let key = self.assets.graph_key_for_source_path(path).unwrap_or_else(|| default_graph_key(path));
-        let path_string = path.to_string_lossy().to_string();
-        let bytes = fs::read(path)?;
-        self.assets.load_animation_graph_from_bytes(&key, &path_string, &bytes)?;
-        self.animation_clip_status =
-            Some(format!("Reloaded animation graph '{}' from {}", key, path.display()));
-        Ok(bytes)
     }
 
     fn log_animation_validation_event(&mut self, event: AnimationValidationEvent) {
@@ -2265,7 +2362,7 @@ impl App {
         let mut material_registry = MaterialRegistry::new();
         let mut mesh_registry = MeshRegistry::new(&mut material_registry);
         let scene_material_refs = HashSet::new();
-        let scene_clip_refs = HashSet::new();
+        let scene_clip_refs = HashMap::new();
 
         // egui context and state
         let egui_ctx = EguiCtx::default();
@@ -2336,6 +2433,8 @@ impl App {
             }
         };
         let animation_asset_watcher = Self::init_animation_asset_watcher();
+        let animation_reload_worker = AnimationReloadWorker::new();
+        let animation_reload_queue = AnimationReloadQueue::new(MAX_PENDING_ANIMATION_RELOADS_PER_KIND);
         let animation_validation_worker = AnimationValidationWorker::new();
 
         let mut camera = Camera2D::new(CAMERA_BASE_HALF_HEIGHT);
@@ -2403,6 +2502,7 @@ impl App {
             animation_group_scale_input: 1.0,
             camera_bookmark_input: String::new(),
             scene_dependencies: None,
+            scene_dependency_fingerprints: None,
             scene_history,
             inspector_status: None,
             debug_show_spatial_hash: false,
@@ -2449,6 +2549,12 @@ impl App {
             sprite_atlas_views: HashMap::new(),
             atlas_hot_reload,
             animation_asset_watcher,
+            animation_watch_roots_queue: Vec::new(),
+            animation_watch_roots_pending: HashSet::new(),
+            animation_watch_roots_registered: HashSet::new(),
+            animation_reload_pending: HashSet::new(),
+            animation_reload_queue,
+            animation_reload_worker,
             animation_validation_worker,
             sprite_guardrail_mode: editor_cfg.sprite_guardrail_mode,
             sprite_guardrail_max_pixels: editor_cfg.sprite_guard_max_pixels,
@@ -2459,7 +2565,12 @@ impl App {
             gpu_timing_history_capacity: 240,
             gpu_frame_counter: 0,
             gpu_metrics_status: None,
+            sprite_batch_map: HashMap::new(),
+            sprite_batch_pool: Vec::new(),
+            sprite_batch_order: Vec::new(),
         };
+        app.seed_animation_watch_roots();
+        app.sync_animation_asset_watch_roots();
         app.apply_particle_caps();
         app.apply_editor_camera_settings();
         app.report_audio_startup_status();
@@ -2472,26 +2583,6 @@ impl App {
             return;
         }
         self.with_plugins(|plugins, ctx| plugins.handle_events(ctx, &events));
-    }
-
-    fn sprite_screen_extent(&self, instance: &InstanceData, viewport_size: PhysicalSize<u32>) -> Option<f32> {
-        if viewport_size.width == 0 || viewport_size.height == 0 {
-            return None;
-        }
-        let model = Mat4::from_cols_array_2d(&instance.model);
-        let quad = [Vec2::new(-0.5, -0.5), Vec2::new(0.5, -0.5), Vec2::new(0.5, 0.5), Vec2::new(-0.5, 0.5)];
-        let mut min_world = Vec2::splat(f32::INFINITY);
-        let mut max_world = Vec2::splat(f32::NEG_INFINITY);
-        for corner in &quad {
-            let world = model.transform_point3(Vec3::new(corner.x, corner.y, 0.0));
-            let point = Vec2::new(world.x, world.y);
-            min_world = min_world.min(point);
-            max_world = max_world.max(point);
-        }
-        let (min_screen, max_screen) =
-            self.camera.world_rect_to_screen_bounds(min_world, max_world, viewport_size)?;
-        let delta = (max_screen - min_screen).abs();
-        Some(delta.x.max(delta.y))
     }
 
     fn apply_sprite_guardrails(
@@ -2509,17 +2600,21 @@ impl App {
             return sprite_instances;
         }
 
+        let Some(guardrail_projection) = SpriteGuardrailProjection::new(&self.camera, viewport_size) else {
+            self.sprite_guardrail_status = None;
+            return sprite_instances;
+        };
+
         let threshold = self.sprite_guardrail_max_pixels.max(64.0);
         let mut filtered = Vec::with_capacity(sprite_instances.len());
         let mut largest_hit: f32 = 0.0;
         let mut culled = 0usize;
         for instance in sprite_instances {
             let mut oversized = false;
-            if let Some(extent) = self.sprite_screen_extent(&instance.data, viewport_size) {
-                if extent > threshold {
-                    oversized = true;
-                    largest_hit = largest_hit.max(extent);
-                }
+            let extent = guardrail_projection.extent(instance.world_half_extent);
+            if extent > threshold {
+                oversized = true;
+                largest_hit = largest_hit.max(extent);
             }
             if oversized && self.sprite_guardrail_mode == SpriteGuardrailMode::Strict {
                 culled += 1;
@@ -2567,6 +2662,20 @@ impl App {
         filtered
     }
 
+    fn take_sprite_batch_buffer(&mut self) -> Vec<InstanceData> {
+        self.sprite_batch_pool.pop().unwrap_or_else(Vec::new)
+    }
+
+    fn recycle_sprite_batch_buffers(&mut self) {
+        if self.sprite_batch_map.is_empty() && self.sprite_batch_order.is_empty() {
+            return;
+        }
+        for (_, mut instances) in self.sprite_batch_map.drain() {
+            instances.clear();
+            self.sprite_batch_pool.push(instances);
+        }
+        self.sprite_batch_order.clear();
+    }
     fn apply_editor_camera_settings(&mut self) {
         self.ui_camera_zoom_min = self.ui_camera_zoom_min.clamp(0.05, 20.0);
         self.ui_camera_zoom_max = self.ui_camera_zoom_max.max(self.ui_camera_zoom_min + 0.01).min(40.0);
@@ -3171,114 +3280,162 @@ impl App {
     }
 
     fn update_scene_dependencies(&mut self, deps: &SceneDependencies) -> Result<()> {
-        let previous = self.scene_atlas_refs.clone();
-        let mut next = self.persistent_atlases.clone();
-        for dep in deps.atlas_dependencies() {
-            let key = dep.key().to_string();
-            if !next.contains(&key) {
-                if !previous.contains(&key) {
-                    self.assets
-                        .retain_atlas(dep.key(), dep.path())
-                        .with_context(|| format!("Failed to retain atlas '{}'", dep.key()))?;
-                }
-                next.insert(key);
-            }
+        let fingerprint = deps.fingerprints();
+        if self.scene_dependency_fingerprints == Some(fingerprint) {
+            self.scene_dependencies = Some(deps.clone());
+            return Ok(());
         }
-        for key in previous {
-            if !next.contains(&key) && !self.persistent_atlases.contains(&key) {
-                self.assets.release_atlas(&key);
-                self.invalidate_atlas_view(&key);
-            }
-        }
-        self.scene_atlas_refs = next;
+        let atlas_dirty = self
+            .scene_dependency_fingerprints
+            .map_or(true, |fp| fp.atlases != fingerprint.atlases);
+        let clip_dirty = self
+            .scene_dependency_fingerprints
+            .map_or(true, |fp| fp.clips != fingerprint.clips);
+        let mesh_dirty = self
+            .scene_dependency_fingerprints
+            .map_or(true, |fp| fp.meshes != fingerprint.meshes);
+        let material_dirty = self
+            .scene_dependency_fingerprints
+            .map_or(true, |fp| fp.materials != fingerprint.materials);
+        let environment_dirty = self
+            .scene_dependency_fingerprints
+            .map_or(true, |fp| fp.environments != fingerprint.environments);
 
-        let previous_clips = self.scene_clip_refs.clone();
-        let mut next_clips = HashSet::new();
-        for dep in deps.clip_dependencies() {
-            let key = dep.key().to_string();
-            if next_clips.insert(key.clone()) {
-                if !previous_clips.contains(&key) {
-                    self.assets
-                        .retain_clip(dep.key(), dep.path())
-                        .with_context(|| format!("Failed to retain clip '{}'", dep.key()))?;
+        if atlas_dirty {
+            let previous = self.scene_atlas_refs.clone();
+            let mut next = self.persistent_atlases.clone();
+            for dep in deps.atlas_dependencies() {
+                let key = dep.key().to_string();
+                if !next.contains(&key) {
+                    if !previous.contains(&key) {
+                        self.assets
+                            .retain_atlas(dep.key(), dep.path())
+                            .with_context(|| format!("Failed to retain atlas '{}'", dep.key()))?;
+                    }
+                    next.insert(key);
                 }
             }
-        }
-        for key in previous_clips {
-            if !next_clips.contains(&key) {
-                self.assets.release_clip(&key);
+            for key in previous {
+                if !next.contains(&key) && !self.persistent_atlases.contains(&key) {
+                    self.assets.release_atlas(&key);
+                    self.invalidate_atlas_view(&key);
+                }
             }
+            self.scene_atlas_refs = next;
         }
-        self.scene_clip_refs = next_clips;
 
-        let previous_mesh = self.scene_mesh_refs.clone();
-        let mut next_mesh = HashSet::new();
-        let mut newly_required: Vec<String> = Vec::new();
-        for dep in deps.mesh_dependencies() {
-            let key = dep.key().to_string();
-            if next_mesh.insert(key.clone()) {
+        if clip_dirty {
+            let mut required_clips: HashMap<String, (usize, Option<PathBuf>)> = HashMap::new();
+            for dep in deps.clip_dependencies() {
+                let entry = required_clips
+                    .entry(dep.key().to_string())
+                    .or_insert((0, dep.path().map(PathBuf::from)));
+                entry.0 = entry.0.saturating_add(1);
+            }
+            let mut clip_watch_updates: Vec<PathBuf> = Vec::new();
+            for (key, (count, path)) in required_clips.iter() {
+                let entry = self.scene_clip_refs.entry(key.clone()).or_insert(0);
+                if *entry == 0 {
+                    self.assets
+                        .retain_clip(key, path.as_ref().and_then(|p| p.to_str()))
+                        .with_context(|| format!("Failed to retain clip '{key}'"))?;
+                    if let Some(path) = path {
+                        clip_watch_updates.push(path.clone());
+                    }
+                }
+                *entry = *count;
+            }
+            for path in clip_watch_updates {
+                self.queue_animation_watch_root(&path, AnimationAssetKind::Clip);
+            }
+            self.scene_clip_refs.retain(|key, _| {
+                if required_clips.contains_key(key) {
+                    true
+                } else {
+                    self.assets.release_clip(key);
+                    false
+                }
+            });
+        }
+
+        if mesh_dirty {
+            let previous_mesh = self.scene_mesh_refs.clone();
+            let mut next_mesh = HashSet::new();
+            let mut newly_required: Vec<String> = Vec::new();
+            for dep in deps.mesh_dependencies() {
+                let key = dep.key().to_string();
+                if next_mesh.insert(key.clone()) {
+                    self.mesh_registry
+                        .ensure_mesh(dep.key(), dep.path(), &mut self.material_registry)
+                        .with_context(|| format!("Failed to prepare mesh '{}'", dep.key()))?;
+                    if !previous_mesh.contains(&key) {
+                        newly_required.push(key);
+                    }
+                }
+            }
+            for key in previous_mesh {
+                if !next_mesh.contains(&key) {
+                    self.mesh_registry.release_mesh(&key);
+                }
+            }
+            for key in &newly_required {
                 self.mesh_registry
-                    .ensure_mesh(dep.key(), dep.path(), &mut self.material_registry)
-                    .with_context(|| format!("Failed to prepare mesh '{}'", dep.key()))?;
-                if !previous_mesh.contains(&key) {
-                    newly_required.push(key);
+                    .retain_mesh(key, None, &mut self.material_registry)
+                    .with_context(|| format!("Failed to retain mesh '{key}'"))?;
+            }
+            self.scene_mesh_refs = next_mesh;
+        }
+
+        if material_dirty {
+            let persistent_materials: HashSet<String> = self
+                .mesh_preview_plugin()
+                .map(|plugin| plugin.persistent_materials().iter().cloned().collect())
+                .unwrap_or_default();
+            let previous_materials = self.scene_material_refs.clone();
+            let mut next_materials = persistent_materials.clone();
+            for dep in deps.material_dependencies() {
+                let key = dep.key().to_string();
+                if next_materials.insert(key.clone()) {
+                    if !previous_materials.contains(&key) {
+                        self.material_registry
+                            .retain(&key)
+                            .with_context(|| format!("Failed to retain material '{key}'"))?;
+                    }
                 }
             }
-        }
-        for key in previous_mesh {
-            if !next_mesh.contains(&key) {
-                self.mesh_registry.release_mesh(&key);
-            }
-        }
-        for key in &newly_required {
-            self.mesh_registry
-                .retain_mesh(key, None, &mut self.material_registry)
-                .with_context(|| format!("Failed to retain mesh '{key}'"))?;
-        }
-        self.scene_mesh_refs = next_mesh;
-        let persistent_materials: HashSet<String> = self
-            .mesh_preview_plugin()
-            .map(|plugin| plugin.persistent_materials().iter().cloned().collect())
-            .unwrap_or_default();
-        let previous_materials = self.scene_material_refs.clone();
-        let mut next_materials = persistent_materials.clone();
-        for dep in deps.material_dependencies() {
-            let key = dep.key().to_string();
-            if next_materials.insert(key.clone()) {
-                if !previous_materials.contains(&key) {
-                    self.material_registry
-                        .retain(&key)
-                        .with_context(|| format!("Failed to retain material '{key}'"))?;
+            for key in previous_materials {
+                if !next_materials.contains(&key) && !persistent_materials.contains(&key) {
+                    self.material_registry.release(&key);
                 }
             }
+            self.scene_material_refs = next_materials;
         }
-        for key in previous_materials {
-            if !next_materials.contains(&key) && !persistent_materials.contains(&key) {
-                self.material_registry.release(&key);
-            }
-        }
-        self.scene_material_refs = next_materials;
-        let previous_environment = self.scene_environment_ref.clone();
-        let mut next_environment = None;
-        if let Some(dep) = deps.environment_dependency() {
-            let key = dep.key().to_string();
-            self.environment_registry
-                .retain(dep.key(), dep.path())
-                .with_context(|| format!("Failed to retain environment '{}'", dep.key()))?;
-            if self.renderer.device().is_ok() {
+
+        if environment_dirty {
+            let previous_environment = self.scene_environment_ref.clone();
+            let mut next_environment = None;
+            if let Some(dep) = deps.environment_dependency() {
+                let key = dep.key().to_string();
                 self.environment_registry
-                    .ensure_gpu(dep.key(), &mut self.renderer)
-                    .with_context(|| format!("Failed to prepare environment '{}'", dep.key()))?;
+                    .retain(dep.key(), dep.path())
+                    .with_context(|| format!("Failed to retain environment '{}'", dep.key()))?;
+                if self.renderer.device().is_ok() {
+                    self.environment_registry
+                        .ensure_gpu(dep.key(), &mut self.renderer)
+                        .with_context(|| format!("Failed to prepare environment '{}'", dep.key()))?;
+                }
+                next_environment = Some(key);
             }
-            next_environment = Some(key);
-        }
-        if let Some(prev) = previous_environment {
-            if Some(prev.clone()) != next_environment && !self.persistent_environments.contains(&prev) {
-                self.environment_registry.release(&prev);
+            if let Some(prev) = previous_environment {
+                if Some(prev.clone()) != next_environment && !self.persistent_environments.contains(&prev) {
+                    self.environment_registry.release(&prev);
+                }
             }
+            self.scene_environment_ref = next_environment;
         }
-        self.scene_environment_ref = next_environment;
+
         self.scene_dependencies = Some(deps.clone());
+        self.scene_dependency_fingerprints = Some(fingerprint);
         Ok(())
     }
 
@@ -3450,13 +3607,11 @@ impl App {
     }
 
     fn clear_scene_clips(&mut self) {
-        if self.scene_clip_refs.is_empty() {
-            return;
-        }
-        let clips: Vec<String> = self.scene_clip_refs.drain().collect();
+        let clips: Vec<String> = self.scene_clip_refs.keys().cloned().collect();
         for key in clips {
             self.assets.release_clip(&key);
         }
+        self.scene_clip_refs.clear();
     }
 
     fn viewport_physical_size(&self) -> PhysicalSize<u32> {
@@ -3866,36 +4021,57 @@ impl ApplicationHandler for App {
             }
         };
         let sprite_instances = self.apply_sprite_guardrails(sprite_instances, viewport_size);
-        let mut grouped_instances: BTreeMap<String, Vec<InstanceData>> = BTreeMap::new();
+        self.recycle_sprite_batch_buffers();
         for instance in sprite_instances {
-            grouped_instances.entry(instance.atlas).or_default().push(instance.data);
+            let (atlas_key, gpu_data) = instance.into_gpu();
+            if let Some(existing) = self.sprite_batch_map.get_mut(&atlas_key) {
+                existing.push(gpu_data);
+            } else {
+                let mut bucket = self.take_sprite_batch_buffer();
+                bucket.push(gpu_data);
+                self.sprite_batch_order.push(Arc::clone(&atlas_key));
+                self.sprite_batch_map.insert(atlas_key, bucket);
+            }
         }
         let mut instances: Vec<InstanceData> = Vec::new();
+        let total_instances: usize = self.sprite_batch_map.values().map(|bucket| bucket.len()).sum();
+        instances.reserve(total_instances);
         let mut sprite_batches: Vec<SpriteBatch> = Vec::new();
-        for (atlas, batch_instances) in grouped_instances {
+        let mut ordered_keys = mem::take(&mut self.sprite_batch_order);
+        for atlas in ordered_keys.drain(..) {
+            let mut batch_instances = match self.sprite_batch_map.remove(&atlas) {
+                Some(bucket) => bucket,
+                None => continue,
+            };
             if batch_instances.is_empty() {
+                self.sprite_batch_pool.push(batch_instances);
                 continue;
             }
             let start_len = instances.len();
-            instances.extend(batch_instances.into_iter());
+            instances.append(&mut batch_instances);
             if instances.len() > u32::MAX as usize {
                 eprintln!("Too many sprite instances to render ({}).", instances.len());
                 instances.truncate(start_len);
+                batch_instances.clear();
+                self.sprite_batch_pool.push(batch_instances);
                 break;
             }
             let start = start_len as u32;
             let end = instances.len() as u32;
-            match self.atlas_view(&atlas) {
+            match self.atlas_view(atlas.as_ref()) {
                 Ok(view) => {
-                    sprite_batches.push(SpriteBatch { atlas, range: start..end, view });
+                    sprite_batches.push(SpriteBatch { atlas: Arc::clone(&atlas), range: start..end, view });
                 }
                 Err(err) => {
-                    eprintln!("Atlas '{}' unavailable for rendering: {err:?}", atlas);
+                    eprintln!("Atlas '{}' unavailable for rendering: {err:?}", atlas.as_ref());
                     instances.truncate(start_len);
-                    self.invalidate_atlas_view(&atlas);
+                    self.invalidate_atlas_view(atlas.as_ref());
                 }
             }
+            batch_instances.clear();
+            self.sprite_batch_pool.push(batch_instances);
         }
+        self.sprite_batch_order = ordered_keys;
         let render_viewport = RenderViewport {
             origin: (self.viewport.origin.x, self.viewport.origin.y),
             size: (self.viewport.size.x, self.viewport.size.y),
@@ -4100,7 +4276,7 @@ impl ApplicationHandler for App {
         let scene_history_list: Vec<String> = self.scene_history.iter().cloned().collect();
         let atlas_snapshot: Vec<String> = self.scene_atlas_refs.iter().cloned().collect();
         let mesh_snapshot: Vec<String> = self.scene_mesh_refs.iter().cloned().collect();
-        let clip_snapshot: Vec<String> = self.scene_clip_refs.iter().cloned().collect();
+        let clip_snapshot: Vec<String> = self.scene_clip_refs.keys().cloned().collect();
         let environment_options: Vec<(String, String)> = self
             .environment_registry
             .keys()
@@ -4517,8 +4693,10 @@ impl ApplicationHandler for App {
         for (key, path) in actions.retain_clips {
             match self.assets.retain_clip(&key, path.as_deref()) {
                 Ok(()) => {
-                    self.scene_clip_refs.insert(key.clone());
                     self.ui_scene_status = Some(format!("Retained clip {}", key));
+                    if let Some(source) = path.as_deref() {
+                        self.queue_animation_watch_root(Path::new(source), AnimationAssetKind::Clip);
+                    }
                 }
                 Err(err) => {
                     self.ui_scene_status = Some(format!("Clip retain failed: {err}"));
@@ -4829,6 +5007,27 @@ impl ApplicationHandler for App {
     }
 }
 
+struct SpriteGuardrailProjection {
+    pixels_per_world: Vec2,
+}
+
+impl SpriteGuardrailProjection {
+    fn new(camera: &Camera2D, viewport_size: PhysicalSize<u32>) -> Option<Self> {
+        let (half_width, half_height) = camera.half_extents(viewport_size)?;
+        if half_width <= f32::EPSILON || half_height <= f32::EPSILON {
+            return None;
+        }
+        let pixels_per_world_x = viewport_size.width as f32 / (half_width * 2.0);
+        let pixels_per_world_y = viewport_size.height as f32 / (half_height * 2.0);
+        Some(Self { pixels_per_world: Vec2::new(pixels_per_world_x, pixels_per_world_y) })
+    }
+
+    fn extent(&self, half_extent: Vec2) -> f32 {
+        let size = half_extent * 2.0;
+        (size.x * self.pixels_per_world.x).max(size.y * self.pixels_per_world.y)
+    }
+}
+
 impl Drop for App {
     fn drop(&mut self) {
         self.with_plugins(|plugins, ctx| plugins.shutdown(ctx));
@@ -4997,6 +5196,67 @@ impl App {
     }
 }
 
+struct AnimationReloadRequest {
+    path: PathBuf,
+    key: String,
+    kind: AnimationAssetKind,
+    skip_validation: bool,
+}
+
+struct AnimationReloadJob {
+    request: AnimationReloadRequest,
+}
+
+struct AnimationReloadResult {
+    request: AnimationReloadRequest,
+    data: Result<AnimationReloadData>,
+}
+
+enum AnimationReloadData {
+    Clip { clip: AnimationClip, bytes: Vec<u8> },
+    Graph { graph: AnimationGraphAsset, bytes: Vec<u8> },
+    Skeletal { import: skeletal::SkeletonImport },
+}
+
+struct AnimationReloadQueue {
+    buckets: [VecDeque<AnimationReloadRequest>; AnimationAssetKind::COUNT],
+    next_bucket: usize,
+    max_len: usize,
+}
+
+impl AnimationReloadQueue {
+    fn new(max_len: usize) -> Self {
+        Self { buckets: [VecDeque::new(), VecDeque::new(), VecDeque::new()], next_bucket: 0, max_len }
+    }
+
+    fn enqueue(&mut self, request: AnimationReloadRequest) -> Option<AnimationReloadRequest> {
+        let idx = request.kind.index();
+        let bucket = &mut self.buckets[idx];
+        let dropped = if bucket.len() >= self.max_len { bucket.pop_front() } else { None };
+        bucket.push_back(request);
+        dropped
+    }
+
+    fn push_front(&mut self, request: AnimationReloadRequest) -> Option<AnimationReloadRequest> {
+        let idx = request.kind.index();
+        let bucket = &mut self.buckets[idx];
+        bucket.push_front(request);
+        if bucket.len() > self.max_len { bucket.pop_back() } else { None }
+    }
+
+    fn pop_next(&mut self) -> Option<AnimationReloadRequest> {
+        for _ in 0..self.buckets.len() {
+            let idx = self.next_bucket % self.buckets.len();
+            if let Some(request) = self.buckets[idx].pop_front() {
+                self.next_bucket = (idx + 1) % self.buckets.len();
+                return Some(request);
+            }
+            self.next_bucket = (idx + 1) % self.buckets.len();
+        }
+        None
+    }
+}
+
 struct AnimationAssetReload {
     path: PathBuf,
     kind: AnimationAssetKind,
@@ -5013,6 +5273,69 @@ struct AnimationValidationResult {
     path: PathBuf,
     kind: AnimationAssetKind,
     events: Vec<AnimationValidationEvent>,
+}
+
+struct AnimationReloadWorker {
+    senders: Vec<mpsc::SyncSender<AnimationReloadJob>>,
+    next_sender: AtomicUsize,
+    rx: mpsc::Receiver<AnimationReloadResult>,
+}
+
+impl AnimationReloadWorker {
+    fn new() -> Option<Self> {
+        let worker_count = thread::available_parallelism().map(|n| n.get().clamp(2, 4)).unwrap_or(2);
+        let (result_tx, result_rx) = mpsc::channel();
+        let mut senders = Vec::with_capacity(worker_count);
+        for index in 0..worker_count {
+            let (tx, rx) = mpsc::sync_channel(ANIMATION_RELOAD_WORKER_QUEUE_DEPTH);
+            let thread_result_tx = result_tx.clone();
+            let name = format!("animation-reload-{index}");
+            if thread::Builder::new()
+                .name(name)
+                .spawn(move || {
+                    while let Ok(job) = rx.recv() {
+                        let result = run_animation_reload_job(job);
+                        if thread_result_tx.send(result).is_err() {
+                            break;
+                        }
+                    }
+                })
+                .is_err()
+            {
+                eprintln!("[animation] failed to spawn reload worker thread");
+                return None;
+            }
+            senders.push(tx);
+        }
+        Some(Self { senders, next_sender: AtomicUsize::new(0), rx: result_rx })
+    }
+
+    fn submit(&self, job: AnimationReloadJob) -> Result<(), AnimationReloadJob> {
+        if self.senders.is_empty() {
+            return Err(job);
+        }
+        let len = self.senders.len();
+        let mut job = job;
+        let start = self.next_sender.fetch_add(1, AtomicOrdering::Relaxed) % len;
+        for offset in 0..len {
+            let idx = (start + offset) % len;
+            match self.senders[idx].try_send(job) {
+                Ok(()) => return Ok(()),
+                Err(mpsc::TrySendError::Full(returned)) | Err(mpsc::TrySendError::Disconnected(returned)) => {
+                    job = returned;
+                }
+            }
+        }
+        Err(job)
+    }
+
+    fn drain(&self) -> Vec<AnimationReloadResult> {
+        let mut results = Vec::new();
+        while let Ok(result) = self.rx.try_recv() {
+            results.push(result);
+        }
+        results
+    }
 }
 
 struct AnimationValidationWorker {
@@ -5074,4 +5397,37 @@ fn run_animation_validation_job(job: AnimationValidationJob) -> AnimationValidat
         AnimationAssetKind::Skeletal => AnimationValidator::validate_path(&path),
     };
     AnimationValidationResult { path, kind, events }
+}
+
+fn run_animation_reload_job(job: AnimationReloadJob) -> AnimationReloadResult {
+    let AnimationReloadJob { request } = job;
+    let data = match request.kind {
+        AnimationAssetKind::Clip => {
+            let bytes = match fs::read(&request.path) {
+                Ok(bytes) => bytes,
+                Err(err) => return AnimationReloadResult { request, data: Err(err.into()) },
+            };
+            let label = request.path.to_string_lossy().to_string();
+            match parse_animation_clip_bytes(&bytes, &request.key, &label) {
+                Ok(clip) => Ok(AnimationReloadData::Clip { clip, bytes }),
+                Err(err) => Err(err),
+            }
+        }
+        AnimationAssetKind::Graph => {
+            let bytes = match fs::read(&request.path) {
+                Ok(bytes) => bytes,
+                Err(err) => return AnimationReloadResult { request, data: Err(err.into()) },
+            };
+            let label = request.path.to_string_lossy().to_string();
+            match parse_animation_graph_bytes(&bytes, &request.key, &label) {
+                Ok(graph) => Ok(AnimationReloadData::Graph { graph, bytes }),
+                Err(err) => Err(err),
+            }
+        }
+        AnimationAssetKind::Skeletal => match skeletal::load_skeleton_from_gltf(&request.path) {
+            Ok(import) => Ok(AnimationReloadData::Skeletal { import }),
+            Err(err) => Err(err),
+        },
+    };
+    AnimationReloadResult { request, data }
 }

@@ -176,7 +176,7 @@ pub struct RenderViewport {
 
 #[derive(Clone, Debug)]
 pub struct SpriteBatch {
-    pub atlas: String,
+    pub atlas: Arc<str>,
     pub range: Range<u32>,
     pub view: Arc<wgpu::TextureView>,
 }
@@ -1493,11 +1493,6 @@ impl Renderer {
                                 shader_location: 6,
                                 format: wgpu::VertexFormat::Float32x4,
                                 offset: 64,
-                            },
-                            wgpu::VertexAttribute {
-                                shader_location: 7,
-                                format: wgpu::VertexFormat::Float32x4,
-                                offset: 80,
                             },
                         ],
                     },
@@ -3088,10 +3083,13 @@ impl Renderer {
 
         let mut sprite_bind_groups: Vec<(Range<u32>, Arc<wgpu::BindGroup>)> = Vec::new();
         for batch in sprite_batches {
-            match self.sprite_bind_group(&batch.atlas, &batch.view, sampler) {
+            match self.sprite_bind_group(batch.atlas.as_ref(), &batch.view, sampler) {
                 Ok(bind_group) => sprite_bind_groups.push((batch.range.clone(), bind_group)),
                 Err(err) => {
-                    eprintln!("Failed to prepare sprite bind group for atlas '{}': {err:?}", batch.atlas);
+                    eprintln!(
+                        "Failed to prepare sprite bind group for atlas '{}': {err:?}",
+                        batch.atlas.as_ref()
+                    );
                 }
             }
         }

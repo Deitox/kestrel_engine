@@ -1584,9 +1584,14 @@ impl EcsWorld {
                 Mat4::IDENTITY
             };
             let color = tint.map(|t| t.0.to_array()).unwrap_or([1.0, 1.0, 1.0, 1.0]);
+            let transform = SpriteInstanceTransform::from_mat4(model_mat);
+            let world_half_extent = transform.half_extent_2d();
             out.push(SpriteInstance {
-                atlas: atlas_key.to_string(),
-                data: InstanceData { model: model_mat.to_cols_array_2d(), uv_rect, tint: color },
+                atlas: atlas_key,
+                transform,
+                uv_rect,
+                tint: color,
+                world_half_extent,
             });
         }
         Ok(out)
@@ -2382,20 +2387,32 @@ impl EcsWorld {
         for entity_data in &scene.entities {
             let entity = self.spawn_scene_entity(entity_data, assets)?;
             entity_map.push(entity);
-            id_map.insert(entity_data.id.clone(), entity);
-        }
-        for (index, entity_data) in scene.entities.iter().enumerate() {
-            let child_entity = entity_map[index];
-            if let Some(parent_id) = entity_data.parent_id.as_ref() {
-                if let Some(&parent_entity) = id_map.get(parent_id) {
-                    self.attach_child_to_parent(child_entity, parent_entity);
-                    continue;
-                }
+            if id_map.insert(entity_data.id.clone(), entity).is_some() {
+                return Err(anyhow!("Scene contains duplicate entity id '{}'", entity_data.id.as_str()));
             }
-            if let Some(parent_index) = entity_data.parent {
-                let parent_entity = *entity_map
-                    .get(parent_index)
-                    .ok_or_else(|| anyhow!("Scene entity parent index {parent_index} out of bounds"))?;
+        }
+        let mut parent_entities: Vec<Option<Entity>> = Vec::with_capacity(scene.entities.len());
+        for entity_data in &scene.entities {
+            let parent = if let Some(parent_id) = entity_data.parent_id.as_ref() {
+                Some(
+                    *id_map
+                        .get(parent_id)
+                        .ok_or_else(|| anyhow!("Scene references missing parent '{}'", parent_id.as_str()))?,
+                )
+            } else if let Some(parent_index) = entity_data.parent {
+                Some(
+                    *entity_map
+                        .get(parent_index)
+                        .ok_or_else(|| anyhow!("Scene entity parent index {parent_index} out of bounds"))?,
+                )
+            } else {
+                None
+            };
+            parent_entities.push(parent);
+        }
+        for (index, parent) in parent_entities.into_iter().enumerate() {
+            if let Some(parent_entity) = parent {
+                let child_entity = entity_map[index];
                 self.attach_child_to_parent(child_entity, parent_entity);
             }
         }
