@@ -1,6 +1,7 @@
 mod animation_keyframe_panel;
 mod animation_watch;
 mod atlas_watch;
+mod editor_shell;
 mod editor_ui;
 mod gizmo_interaction;
 mod plugin_host;
@@ -13,6 +14,7 @@ use self::animation_keyframe_panel::{
 };
 use self::animation_watch::{AnimationAssetKind, AnimationAssetWatcher};
 use self::atlas_watch::{normalize_path_for_watch, AtlasHotReload};
+use self::editor_shell::EditorShell;
 use self::plugin_host::{BuiltinPluginFactory, PluginHost};
 use self::plugin_runtime::{PluginContextInputs, PluginRuntime};
 use self::runtime_loop::{RuntimeLoop, RuntimeTick};
@@ -77,7 +79,6 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 
 // egui
-use egui::Context as EguiCtx;
 use egui_plot as eplot;
 use egui_wgpu::{Renderer as EguiRenderer, RendererOptions, ScreenDescriptor};
 use egui_winit::State as EguiWinit;
@@ -512,10 +513,7 @@ pub struct App {
     should_close: bool,
 
     // egui
-    egui_ctx: EguiCtx,
-    egui_winit: Option<EguiWinit>,
-    egui_renderer: Option<EguiRenderer>,
-    egui_screen: Option<ScreenDescriptor>,
+    editor_shell: EditorShell,
 
     // UI State
     ui_spawn_per_press: i32,
@@ -2470,9 +2468,6 @@ impl App {
         let scene_material_refs = HashSet::new();
         let scene_clip_refs = HashMap::new();
 
-        // egui context and state
-        let egui_ctx = EguiCtx::default();
-        let egui_winit = None;
         let plugin_host = PluginHost::new(PLUGIN_MANIFEST_PATH);
         let plugin_manager = PluginManager::default();
         let mut plugin_runtime = PluginRuntime::new(plugin_host, plugin_manager);
@@ -2553,10 +2548,7 @@ impl App {
             active_environment_key: default_environment_key.clone(),
             environment_intensity,
             should_close: false,
-            egui_ctx,
-            egui_winit,
-            egui_renderer: None,
-            egui_screen: None,
+            editor_shell: EditorShell::new(),
             ui_spawn_per_press: 200,
             ui_auto_spawn_rate: 0.0,
             ui_cell_size: 0.25,
@@ -4007,17 +3999,17 @@ impl ApplicationHandler for App {
             return;
         }
 
-        if self.egui_winit.is_none() {
+        if self.editor_shell.egui_winit.is_none() {
             if let Some(window) = self.renderer.window() {
                 let state = EguiWinit::new(
-                    self.egui_ctx.clone(),
+                    self.editor_shell.egui_ctx.clone(),
                     egui::ViewportId::ROOT,
                     window,
                     Some(self.renderer.pixels_per_point()),
                     window.theme(),
                     None,
                 );
-                self.egui_winit = Some(state);
+                self.editor_shell.egui_winit = Some(state);
             }
         }
 
@@ -4030,9 +4022,9 @@ impl ApplicationHandler for App {
                 return;
             }
         };
-        self.egui_renderer = Some(egui_renderer);
+        self.editor_shell.egui_renderer = Some(egui_renderer);
         let size = self.renderer.size();
-        self.egui_screen = Some(ScreenDescriptor {
+        self.editor_shell.egui_screen = Some(ScreenDescriptor {
             size_in_pixels: [size.width, size.height],
             pixels_per_point: self.renderer.pixels_per_point() * self.ui_scale,
         });
@@ -4054,7 +4046,7 @@ impl ApplicationHandler for App {
         let mut consumed = false;
         let input_event = InputEvent::from_window_event(&event);
         let is_cursor_event = matches!(&input_event, InputEvent::CursorPos { .. });
-        if let (Some(window), Some(state)) = (self.renderer.window(), self.egui_winit.as_mut()) {
+        if let (Some(window), Some(state)) = (self.renderer.window(), self.editor_shell.egui_winit.as_mut()) {
             if id == window.id() {
                 let resp = state.on_window_event(window, &event);
                 if resp.consumed {
@@ -4074,7 +4066,7 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => self.should_close = true,
             WindowEvent::Resized(size) => {
                 self.renderer.resize(*size);
-                if let Some(sd) = &mut self.egui_screen {
+                if let Some(sd) = &mut self.editor_shell.egui_screen {
                     sd.size_in_pixels = [size.width, size.height];
                     sd.pixels_per_point = self.renderer.pixels_per_point() * self.ui_scale;
                 }
@@ -4481,7 +4473,7 @@ impl ApplicationHandler for App {
         if let Some(analytics) = self.analytics_plugin_mut() {
             analytics.record_light_cluster_metrics(light_cluster_snapshot);
         }
-        if self.egui_winit.is_none() {
+        if self.editor_shell.egui_winit.is_none() {
             frame.present();
             let frame_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
             self.frame_profiler.push(FrameTimingSample {
@@ -4498,12 +4490,12 @@ impl ApplicationHandler for App {
             let Some(window) = self.renderer.window() else {
                 return;
             };
-            self.egui_winit.as_mut().unwrap().take_egui_input(window)
+            self.editor_shell.egui_winit.as_mut().unwrap().take_egui_input(window)
         };
         let base_pixels_per_point = self.renderer.pixels_per_point();
-        self.egui_ctx.set_pixels_per_point(base_pixels_per_point * self.ui_scale);
-        let ui_pixels_per_point = self.egui_ctx.pixels_per_point();
-        if let Some(screen) = self.egui_screen.as_mut() {
+        self.editor_shell.egui_ctx.set_pixels_per_point(base_pixels_per_point * self.ui_scale);
+        let ui_pixels_per_point = self.editor_shell.egui_ctx.pixels_per_point();
+        if let Some(screen) = self.editor_shell.egui_screen.as_mut() {
             screen.pixels_per_point = ui_pixels_per_point;
         };
         let hist_points = self.frame_plot_points_arc();
@@ -4900,7 +4892,7 @@ impl ApplicationHandler for App {
 
         let egui::FullOutput { platform_output, textures_delta, shapes, .. } = full_output;
         if let Some(window) = self.renderer.window() {
-            self.egui_winit.as_mut().unwrap().handle_platform_output(window, platform_output);
+            self.editor_shell.egui_winit.as_mut().unwrap().handle_platform_output(window, platform_output);
         } else {
             return;
         }
@@ -5213,14 +5205,16 @@ impl ApplicationHandler for App {
         if actions.reload_plugins {
             self.reload_dynamic_plugins();
         }
-        if let (Some(ren), Some(screen)) = (self.egui_renderer.as_mut(), self.egui_screen.as_ref()) {
+        if let (Some(ren), Some(screen)) =
+            (self.editor_shell.egui_renderer.as_mut(), self.editor_shell.egui_screen.as_ref())
+        {
             if let (Ok(device), Ok(queue)) = (self.renderer.device(), self.renderer.queue()) {
                 for (id, delta) in &textures_delta.set {
                     ren.update_texture(device, queue, *id, delta);
                 }
             }
             let ui_render_start = Instant::now();
-            let meshes = self.egui_ctx.tessellate(shapes, screen.pixels_per_point);
+            let meshes = self.editor_shell.egui_ctx.tessellate(shapes, screen.pixels_per_point);
             if let Err(err) = self.renderer.render_egui(ren, &meshes, screen, frame) {
                 eprintln!("Egui render error: {err:?}");
             }

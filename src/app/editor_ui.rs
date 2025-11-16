@@ -900,8 +900,8 @@ impl App {
             animation_snapshot.group_scales.iter().map(|(name, value)| (name.clone(), *value)).collect();
         animation_group_entries.sort_by(|a, b| a.0.cmp(&b.0));
 
-        let mut ui_pixels_per_point = self.egui_ctx.pixels_per_point();
-        if let Some(screen) = self.egui_screen.as_mut() {
+        let mut ui_pixels_per_point = self.editor_shell.egui_ctx.pixels_per_point();
+        if let Some(screen) = self.editor_shell.egui_screen.as_mut() {
             screen.pixels_per_point = ui_pixels_per_point;
         }
 
@@ -967,8 +967,8 @@ impl App {
 
         let mut keyframe_panel_toggle_event: Option<KeyframeEditorEventKind> = None;
         let mut editor_settings_dirty = false;
-        let keyframe_panel_ctx = self.egui_ctx.clone();
-        let full_output = self.egui_ctx.run(raw_input, |ctx| {
+        let keyframe_panel_ctx = self.editor_shell.egui_ctx.clone();
+        let full_output = self.editor_shell.egui_ctx.run(raw_input, |ctx| {
             let left_panel =
                 egui::SidePanel::left("kestrel_left_panel").default_width(340.0).show(ctx, |ui| {
                     egui::CollapsingHeader::new("Stats").default_open(true).show(ui, |ui| {
@@ -1419,11 +1419,11 @@ impl App {
                     egui::CollapsingHeader::new("UI & Camera").default_open(false).show(ui, |ui| {
                         if ui.add(egui::Slider::new(&mut ui_scale, 0.5..=2.0).text("UI scale")).changed() {
                             ui_scale = ui_scale.clamp(0.5, 2.0);
-                            self.egui_ctx.set_pixels_per_point(base_pixels_per_point * ui_scale);
-                            if let Some(screen) = self.egui_screen.as_mut() {
-                                screen.pixels_per_point = self.egui_ctx.pixels_per_point();
+                            self.editor_shell.egui_ctx.set_pixels_per_point(base_pixels_per_point * ui_scale);
+                            if let Some(screen) = self.editor_shell.egui_screen.as_mut() {
+                                screen.pixels_per_point = self.editor_shell.egui_ctx.pixels_per_point();
                             }
-                            ui_pixels_per_point = self.egui_ctx.pixels_per_point();
+                            ui_pixels_per_point = self.editor_shell.egui_ctx.pixels_per_point();
                         }
                         let mut viewport_mode = self.viewport_camera_mode;
                         egui::ComboBox::from_id_salt("viewport_mode")
@@ -3075,10 +3075,10 @@ impl App {
                     viewport_size_vec2.y / ui_pixels_per_point,
                 ),
             );
-            if self.egui_ctx.input(|i| i.pointer.any_released()) {
-                if let Some(pointer_pos) = self.egui_ctx.pointer_interact_pos() {
+            if self.editor_shell.egui_ctx.input(|i| i.pointer.any_released()) {
+                if let Some(pointer_pos) = self.editor_shell.egui_ctx.pointer_interact_pos() {
                     if viewport_rect_points.contains(pointer_pos) {
-                        if let Some(payload) = DragAndDrop::take_payload::<PrefabSpawnPayload>(&self.egui_ctx)
+                        if let Some(payload) = DragAndDrop::take_payload::<PrefabSpawnPayload>(&self.editor_shell.egui_ctx)
                         {
                             let payload = (*payload).clone();
                             let drop_target = match self.viewport_camera_mode {
