@@ -93,7 +93,7 @@ impl AnimationValidator {
         }
     }
 
-    fn validate_clip_bytes(path: &Path, bytes: &[u8]) -> Vec<AnimationValidationEvent> {
+    pub fn validate_clip_bytes(path: &Path, bytes: &[u8]) -> Vec<AnimationValidationEvent> {
         let key_hint = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("animation_clip");
         let source_label = path.display().to_string();
         match parse_animation_clip_bytes(bytes, key_hint, &source_label) {
@@ -102,7 +102,7 @@ impl AnimationValidator {
         }
     }
 
-    fn validate_graph_bytes(path: &Path, bytes: &[u8]) -> Vec<AnimationValidationEvent> {
+    pub fn validate_graph_bytes(path: &Path, bytes: &[u8]) -> Vec<AnimationValidationEvent> {
         let key_hint = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("animation_graph");
         let source_label = path.display().to_string();
         match parse_animation_graph_bytes(bytes, key_hint, &source_label) {

@@ -2,6 +2,8 @@ use anyhow::{anyhow, Context, Result};
 use kestrel_engine::animation_validation::{
     AnimationValidationEvent, AnimationValidationSeverity, AnimationValidator,
 };
+use serde::Serialize;
+use serde_json::json;
 use std::collections::HashSet;
 use std::env;
 use std::fs;
@@ -22,7 +24,7 @@ fn main() {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize)]
 struct RunSummary {
     checked: usize,
     warnings: usize,
@@ -36,6 +38,7 @@ struct RunResult {
 
 struct CliOptions {
     fail_on_warn: bool,
+    report_stats: bool,
     show_help: bool,
     targets: Vec<String>,
 }
@@ -64,6 +67,9 @@ fn run() -> Result<RunResult> {
         }
         for event in events {
             report_event(&event);
+            if options.report_stats {
+                report_event_json(&event);
+            }
             match event.severity {
                 AnimationValidationSeverity::Warning => summary.warnings += 1,
                 AnimationValidationSeverity::Error => summary.errors += 1,
@@ -72,6 +78,9 @@ fn run() -> Result<RunResult> {
         }
     }
     println!("Checked {} assets ({} warnings, {} errors)", summary.checked, summary.warnings, summary.errors);
+    if options.report_stats {
+        report_summary_json(&summary);
+    }
     Ok(RunResult { summary, fail_on_warn: options.fail_on_warn })
 }
 
@@ -90,10 +99,12 @@ as errors (exit code 2).
 }
 
 fn parse_cli_args(args: &[String]) -> Result<CliOptions> {
-    let mut options = CliOptions { fail_on_warn: false, show_help: false, targets: Vec::new() };
+    let mut options =
+        CliOptions { fail_on_warn: false, report_stats: false, show_help: false, targets: Vec::new() };
     for arg in args {
         match arg.as_str() {
             "--fail-on-warn" => options.fail_on_warn = true,
+            "--report-stats" => options.report_stats = true,
             "--help" | "-h" => options.show_help = true,
             _ if arg.starts_with("--") => {
                 return Err(anyhow!("unknown flag '{arg}'"));
@@ -169,12 +180,40 @@ fn normalize_path(path: &Path) -> Result<PathBuf> {
 }
 
 fn report_event(event: &AnimationValidationEvent) {
-    let severity = match event.severity {
-        AnimationValidationSeverity::Info => "INFO",
-        AnimationValidationSeverity::Warning => "WARN",
-        AnimationValidationSeverity::Error => "ERROR",
-    };
+    let severity = severity_label(event.severity, true);
     println!("[{severity}] {} - {}", event.path.display(), event.message);
+}
+
+fn report_event_json(event: &AnimationValidationEvent) {
+    let severity = severity_label(event.severity, false);
+    let json_value = json!({
+        "severity": severity,
+        "path": event.path.display().to_string(),
+        "message": event.message,
+    });
+    println!("{json_value}");
+}
+
+fn report_summary_json(summary: &RunSummary) {
+    let json_value = json!({
+        "summary": {
+            "checked": summary.checked,
+            "warnings": summary.warnings,
+            "errors": summary.errors,
+        }
+    });
+    println!("{json_value}");
+}
+
+fn severity_label(severity: AnimationValidationSeverity, uppercase: bool) -> &'static str {
+    match (severity, uppercase) {
+        (AnimationValidationSeverity::Info, true) => "INFO",
+        (AnimationValidationSeverity::Warning, true) => "WARN",
+        (AnimationValidationSeverity::Error, true) => "ERROR",
+        (AnimationValidationSeverity::Info, false) => "info",
+        (AnimationValidationSeverity::Warning, false) => "warning",
+        (AnimationValidationSeverity::Error, false) => "error",
+    }
 }
 
 #[cfg(test)]
@@ -186,8 +225,18 @@ mod tests {
         let args = vec!["--fail-on-warn".to_string(), "foo".to_string()];
         let opts = parse_cli_args(&args).expect("parse args");
         assert!(opts.fail_on_warn);
+        assert!(!opts.report_stats);
         assert_eq!(opts.targets, vec!["foo".to_string()]);
         assert!(!opts.show_help);
+    }
+
+    #[test]
+    fn parse_args_handles_report_stats() {
+        let args = vec!["--report-stats".to_string(), "clip.clip".to_string()];
+        let opts = parse_cli_args(&args).expect("parse args");
+        assert!(opts.report_stats);
+        assert!(!opts.fail_on_warn);
+        assert_eq!(opts.targets, vec!["clip.clip".to_string()]);
     }
 
     #[test]

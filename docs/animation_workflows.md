@@ -7,7 +7,7 @@
 
 ## End-to-End Authoring Tutorial
 1. **Prep the workspace**
-   - From a clean checkout run `cargo fetch --locked` and `cargo check -p kestrel_editor -p animation_check` so the editor binary, CLIs, and watcher plumbing are ready before touching assets.
+   - From a clean checkout run `cargo fetch --locked` and `cargo check --bin kestrel_engine --bin animation_check` so the editor binary, CLIs, and watcher plumbing are ready before touching assets.
    - Skim `docs/animation_sample_content.md` for the entity/asset names referenced below; all steps point at those fixtures so CI can replay the workflow exactly.
 2. **Convert sprite source to an atlas**
    - Export the slime sheet from Aseprite using the prerequisites listed later in this file, then run `cargo run --bin aseprite_to_atlas -- fixtures/aseprite/slime_idle.json assets/images/slime_idle_atlas.json --atlas-key slime --events-file fixtures/aseprite/slime_idle_events.json`.
@@ -18,7 +18,7 @@
 4. **Load the showcase scene and bind content**
    - Launch the editor via `cargo run` and choose **File + Open Scene → assets/scenes/animation_showcase.json**.
    - Select `sprite_timeline_demo`, click **Load & Assign**, enter `slime` for the atlas key plus `assets/images/slime_idle_atlas.json` for the path, and pick the `idle` timeline. The inspector log prints `Sprite atlas set to slime`, and playback starts immediately.
-   - Toggle **Stats + Viewport Overlays** and confirm the Sprite Eval/Pack/Upload HUD rows reflect the new animator load.
+   - Toggle **Stats + Viewport Overlays** and confirm the Sprite Eval/Pack/Upload HUD rows reflect the new animator load. The same overlay now surfaces a **Lighting Budget** card whenever clustered point lights exceed the 256-light budget, so you can spot blown lighting caps while iterating on animation scenes without digging through logs.
 5. **Author the transform clip**
    - With `transform_clip_demo` selected, open the Keyframe Editor and tweak a translation key (or press **Insert Key at Scrub**). Saving updates `assets/animations/clips/slime_idle.json`, triggers the watcher, and reruns validators without duplicate reloads.
    - Run `cargo test animation_clip transform_clip` afterwards to lock in the edits against the golden interpolation suite.
@@ -44,7 +44,7 @@
     3. Pick a **Timeline** (`idle`, `attack`, or `hit`) to play the matching animation; the inspector scrubber and event preview controls work as usual.
     4. The inspector status line confirms the change (e.g., `Sprite atlas set to slime`). To revert, select `main` from the Atlas dropdown or load any other atlas JSON.
 - **Hot-reload verification:** place the generated JSON alongside project content, launch the editor, and modify the source file -- look for `Hot reloaded atlas '<key>'` in the console. Sprite timelines pin the active frame by name, scale the in-progress time to the new duration, and preserve play direction so authoring edits do not cause visible pops.
-- **Inspector controls:** The Sprite section exposes a scrub slider, `<`/`>` nudge buttons, per-frame duration and elapsed readouts, and an optional **Preview events** toggle that logs any events declared on the currently selected frame while scrubbing.
+- **Inspector controls:** The Sprite section exposes a scrub slider, `<`/`>` nudge buttons, per-frame duration and elapsed readouts, and an optional **Preview events** toggle that logs any events declared on the currently selected frame while scrubbing. When overlays are enabled, the viewport HUD also flags animation and lighting overruns in real time so tuning a timeline immediately reveals downstream perf/lighting pressure.
 - **Phase controls:** Configure per-entity `Start Offset`, toggle `Randomize Start` to deterministically de-sync large crowds, and assign an optional `Group` tag in the Entity Inspector; group tags feed the global `AnimationTime` resource for per-collection speed scaling.
 - **Troubleshooting:**
   - Duplicate frame names surface descriptive errors; rename frames in Aseprite or adjust export settings.
@@ -63,6 +63,7 @@
 
 ## Automation & Validation
 - **Watchers:** `assets/images/*.json` (atlases), `assets/animations/clips/**/*.json`, `assets/animations/graphs/**/*.json`, and `assets/animations/skeletal/**/*.json` are observed automatically inside the editor. Saving a file reloads the asset, reruns schema + semantic validators, and surfaces results both in the inspector banner and the Stats panel’s “Animation Validation Alerts”. Keep assets under `assets/animations/` so canonical paths are recorded; the inspector status line confirms each reload (e.g., `Reloaded clip 'slime_bob' from …`).
+- **Lighting warnings:** The same overlay toggle powers a **Lighting Budget** card that appears whenever the clustered-light culler has to drop point lights (more than 256 visible). Use it alongside the Stats panel’s “Light Culling” section when you’re animating scenes with particle-driven emissives or scripted light spawns so you notice budget pressure before QA does.
 - **State preservation:** Clip saves preserve scrub/play state. Skeletal GLTF reloads restore each entity’s active clip, time, playing flag, speed, and group tag so iteration never forces you to re-seed rigs manually.
 - **Graph workflow:** Animation graph JSON reimports immediately. Even before graph runtime features ship, this keeps authored graphs validated and ready for CLI/CI enforcement.
 - **CLI validation:** Use the same pipeline headlessly via `animation_check`:
@@ -179,7 +180,7 @@
 
 ## Troubleshooting & Scripting Best Practices
 - **Watcher reload gaps:** If an edit fails to appear in the editor, open `Scene > Atlas refs` (sprite timelines) or the clip dependency list to confirm the asset is retained. Watchers only fire for live references, so keep sample entities or bootstrap scripts retaining every atlas/clip/rig you plan to edit.
-- **CLI validation noise:** Run `cargo run --bin animation_check <paths> --fail-on-warn --report-stats` when triaging schema errors; the JSON snippets it prints identify the exact track, joint, or tag that failed validation. For migrations, prefer `cargo run --bin migrate_atlas -- <files> --check` locally and `--fix` when you need to rewrite legacy atlases.
+- **CLI validation noise:** Run `cargo run --bin animation_check <paths> --fail-on-warn --report-stats` when triaging schema errors; with `--report-stats` the CLI mirrors every validation event as JSON (plus a final summary object) so you can jump straight to the exact track, joint, or tag that failed validation. For migrations, prefer `cargo run --bin migrate_atlas -- <files> --check` locally and `--fix` when you need to rewrite legacy atlases.
 - **Keyframe/editor drift:** Errors like `Clip keyframe time cannot be negative` surface the offending key index. Use the Keyframe Editor scrubber to jump there, or patch the JSON manually and rerun `cargo test transform_clip` before relaunching the editor.
 - **Scripting hooks:** Retain assets during startup (`AssetManager::retain_clip/retain_skeleton`), drive playback through `AnimationCommands`, and group crowds with `AnimationTime::set_group_speed`. Mirroring the editor’s wiring guarantees watcher reloads hit every runtime path.
 - **Perf regressions:** The **Stats + Sprite Animation Perf** panel shows whether animators are in the fast loop or the event-heavy path. If numbers spike, rerun `python scripts/capture_sprite_perf.py --label repro --runs 3` and inspect the emitted anim_stats JSON to pinpoint the regressing system.
@@ -207,7 +208,7 @@
 
 ## Change Log
 - 2025-11-16: Added End-to-End Authoring Tutorial, Troubleshooting & Scripting Best Practices, and CI/perf capture guidance referencing the sample scenes.
-- 2025-11-15: Documented animation HUD budgets, watcher behavior, and the nimation_check CLI validation workflow.
+- 2025-11-15: Documented animation HUD budgets, watcher behavior, and the animation_check CLI validation workflow.
 - 2025-10-28: Added Aseprite importer workflow and CLI usage.
 - 2025-11-02: Documented animation phase controls and AnimationTime integration.
 - 2025-11-08: Added inspector playback controls, event preview details, and hot-reload continuity guarantees.

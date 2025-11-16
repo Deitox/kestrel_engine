@@ -60,7 +60,8 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
+use std::thread;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
@@ -526,6 +527,7 @@ pub struct App {
     sprite_atlas_views: HashMap<String, Arc<wgpu::TextureView>>,
     atlas_hot_reload: Option<AtlasHotReload>,
     animation_asset_watcher: Option<AnimationAssetWatcher>,
+    animation_validation_worker: Option<AnimationValidationWorker>,
     sprite_guardrail_mode: SpriteGuardrailMode,
     sprite_guardrail_max_pixels: f32,
     sprite_guardrail_status: Option<String>,
@@ -640,7 +642,17 @@ impl App {
         Some(watcher)
     }
 
+    fn drain_animation_validation_results(&mut self) {
+        let Some(worker) = self.animation_validation_worker.as_ref() else {
+            return;
+        };
+        for result in worker.drain() {
+            self.handle_validation_events(result.kind.label(), result.path.as_path(), result.events);
+        }
+    }
+
     fn process_animation_asset_watchers(&mut self) {
+        self.drain_animation_validation_results();
         self.sync_animation_asset_watch_roots();
         let Some(watcher) = self.animation_asset_watcher.as_mut() else {
             return;
@@ -649,17 +661,40 @@ impl App {
         if changes.is_empty() {
             return;
         }
+        let mut dedup = HashMap::new();
         for change in changes {
-            self.handle_animation_asset_change(&change);
-            if self.consume_validation_suppression(&change.path) {
-                continue;
-            }
-            self.run_animation_validators_for_path(&change.path, change.kind.label());
+            let normalized = Self::normalize_validation_path(&change.path);
+            dedup.entry(normalized).or_insert(change);
         }
+        for (_, change) in dedup {
+            if let Some(reload) = self.handle_animation_asset_change(&change) {
+                if self.consume_validation_suppression(&reload.path) {
+                    continue;
+                }
+                self.enqueue_animation_validation_job(reload);
+            }
+        }
+        self.drain_animation_validation_results();
     }
 
-    fn run_animation_validators_for_path(&mut self, path: &Path, context: &str) {
-        let events = AnimationValidator::validate_path(path);
+    fn enqueue_animation_validation_job(&mut self, reload: AnimationAssetReload) {
+        let mut job = AnimationValidationJob { path: reload.path, kind: reload.kind, bytes: reload.bytes };
+        if let Some(worker) = self.animation_validation_worker.as_ref() {
+            match worker.submit(job) {
+                Ok(()) => return,
+                Err(returned) => job = returned,
+            }
+        }
+        let result = run_animation_validation_job(job);
+        self.handle_validation_events(result.kind.label(), result.path.as_path(), result.events);
+    }
+
+    fn handle_validation_events(
+        &mut self,
+        context: &str,
+        path: &Path,
+        events: Vec<AnimationValidationEvent>,
+    ) {
         if events.is_empty() {
             eprintln!(
                 "[animation] detected change for {} ({context}) but no validations ran",
@@ -729,38 +764,50 @@ impl App {
         fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
     }
 
-    fn handle_animation_asset_change(&mut self, change: &AnimationAssetChange) {
+    fn handle_animation_asset_change(
+        &mut self,
+        change: &AnimationAssetChange,
+    ) -> Option<AnimationAssetReload> {
+        let path = change.path.clone();
         match change.kind {
-            AnimationAssetKind::Clip => {
-                if let Err(err) = self.reload_clip_from_disk(&change.path) {
+            AnimationAssetKind::Clip => match self.reload_clip_from_disk(&path) {
+                Ok(bytes) => Some(AnimationAssetReload { path, kind: change.kind, bytes: Some(bytes) }),
+                Err(err) => {
                     eprintln!("[animation] failed to reload clip for {}: {err:?}", change.path.display());
                     self.animation_clip_status =
                         Some(format!("Clip reload failed for {}: {err}", change.path.display()));
+                    None
                 }
-            }
-            AnimationAssetKind::Graph => {
-                if let Err(err) = self.reload_graph_from_disk(&change.path) {
+            },
+            AnimationAssetKind::Graph => match self.reload_graph_from_disk(&path) {
+                Ok(bytes) => Some(AnimationAssetReload { path, kind: change.kind, bytes: Some(bytes) }),
+                Err(err) => {
                     eprintln!("[animation] failed to reload graph for {}: {err:?}", change.path.display());
                     self.animation_clip_status =
                         Some(format!("Graph reload failed for {}: {err}", change.path.display()));
+                    None
                 }
-            }
+            },
             AnimationAssetKind::Skeletal => {
-                if let Err(err) = self.reload_skeleton_from_disk(&change.path) {
+                if let Err(err) = self.reload_skeleton_from_disk(&path) {
                     eprintln!("[animation] failed to reload skeleton for {}: {err:?}", change.path.display());
                     self.animation_clip_status =
                         Some(format!("Skeleton reload failed for {}: {err}", change.path.display()));
+                    None
+                } else {
+                    Some(AnimationAssetReload { path, kind: change.kind, bytes: None })
                 }
             }
         }
     }
 
-    fn reload_clip_from_disk(&mut self, path: &Path) -> Result<()> {
+    fn reload_clip_from_disk(&mut self, path: &Path) -> Result<Vec<u8>> {
         let Some(key) = self.assets.clip_key_for_source_path(path) else {
             return Err(anyhow!("no loaded clip recorded for {}", path.display()));
         };
         let path_string = path.to_string_lossy().to_string();
-        self.assets.load_clip(&key, &path_string)?;
+        let bytes = fs::read(path)?;
+        self.assets.load_clip_from_bytes(&key, &path_string, &bytes)?;
         if let Some(updated) = self.assets.clip(&key) {
             let canonical = Arc::new(updated.clone());
             self.clip_edit_overrides.remove(&key);
@@ -768,7 +815,7 @@ impl App {
             self.apply_clip_override_to_instances(&key, Arc::clone(&canonical));
             self.animation_clip_status = Some(format!("Reloaded clip '{}' from {}", key, path.display()));
         }
-        Ok(())
+        Ok(bytes)
     }
 
     fn reload_skeleton_from_disk(&mut self, path: &Path) -> Result<()> {
@@ -807,13 +854,14 @@ impl App {
         Ok(())
     }
 
-    fn reload_graph_from_disk(&mut self, path: &Path) -> Result<()> {
+    fn reload_graph_from_disk(&mut self, path: &Path) -> Result<Vec<u8>> {
         let key = self.assets.graph_key_for_source_path(path).unwrap_or_else(|| default_graph_key(path));
         let path_string = path.to_string_lossy().to_string();
-        self.assets.load_animation_graph(&key, &path_string)?;
+        let bytes = fs::read(path)?;
+        self.assets.load_animation_graph_from_bytes(&key, &path_string, &bytes)?;
         self.animation_clip_status =
             Some(format!("Reloaded animation graph '{}' from {}", key, path.display()));
-        Ok(())
+        Ok(bytes)
     }
 
     fn log_animation_validation_event(&mut self, event: AnimationValidationEvent) {
@@ -1462,7 +1510,9 @@ impl App {
         }
         self.clip_dirty.remove(clip_key);
         if let Some(path) = clip_source_path {
-            self.run_animation_validators_for_path(Path::new(&path), "clip edit");
+            let path_buf = PathBuf::from(&path);
+            let events = AnimationValidator::validate_path(path_buf.as_path());
+            self.handle_validation_events("clip edit", path_buf.as_path(), events);
         }
         self.animation_clip_status = Some(status_note);
     }
@@ -2286,6 +2336,7 @@ impl App {
             }
         };
         let animation_asset_watcher = Self::init_animation_asset_watcher();
+        let animation_validation_worker = AnimationValidationWorker::new();
 
         let mut camera = Camera2D::new(CAMERA_BASE_HALF_HEIGHT);
         camera.set_zoom_limits(editor_cfg.camera_zoom_min, editor_cfg.camera_zoom_max);
@@ -2398,6 +2449,7 @@ impl App {
             sprite_atlas_views: HashMap::new(),
             atlas_hot_reload,
             animation_asset_watcher,
+            animation_validation_worker,
             sprite_guardrail_mode: editor_cfg.sprite_guardrail_mode,
             sprite_guardrail_max_pixels: editor_cfg.sprite_guard_max_pixels,
             sprite_guardrail_status: None,
@@ -4943,4 +4995,83 @@ impl App {
             }
         }
     }
+}
+
+struct AnimationAssetReload {
+    path: PathBuf,
+    kind: AnimationAssetKind,
+    bytes: Option<Vec<u8>>,
+}
+
+struct AnimationValidationJob {
+    path: PathBuf,
+    kind: AnimationAssetKind,
+    bytes: Option<Vec<u8>>,
+}
+
+struct AnimationValidationResult {
+    path: PathBuf,
+    kind: AnimationAssetKind,
+    events: Vec<AnimationValidationEvent>,
+}
+
+struct AnimationValidationWorker {
+    tx: mpsc::Sender<AnimationValidationJob>,
+    rx: mpsc::Receiver<AnimationValidationResult>,
+}
+
+impl AnimationValidationWorker {
+    fn new() -> Option<Self> {
+        let (tx, rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let builder = thread::Builder::new().name("animation-validation".to_string());
+        match builder.spawn(move || {
+            while let Ok(job) = rx.recv() {
+                let result = run_animation_validation_job(job);
+                if result_tx.send(result).is_err() {
+                    break;
+                }
+            }
+        }) {
+            Ok(_) => Some(Self { tx, rx: result_rx }),
+            Err(err) => {
+                eprintln!("[animation] failed to spawn validation worker: {err:?}");
+                None
+            }
+        }
+    }
+
+    fn submit(&self, job: AnimationValidationJob) -> Result<(), AnimationValidationJob> {
+        self.tx.send(job).map_err(|err| err.0)
+    }
+
+    fn drain(&self) -> Vec<AnimationValidationResult> {
+        let mut results = Vec::new();
+        while let Ok(result) = self.rx.try_recv() {
+            results.push(result);
+        }
+        results
+    }
+}
+
+fn run_animation_validation_job(job: AnimationValidationJob) -> AnimationValidationResult {
+    let AnimationValidationJob { path, kind, bytes } = job;
+    let events = match kind {
+        AnimationAssetKind::Clip => {
+            if let Some(payload) = bytes.as_deref() {
+                AnimationValidator::validate_clip_bytes(&path, payload)
+            } else {
+                AnimationValidator::validate_path(&path)
+            }
+        }
+        AnimationAssetKind::Graph => {
+            if let Some(payload) = bytes.as_deref() {
+                AnimationValidator::validate_graph_bytes(&path, payload)
+            } else {
+                AnimationValidator::validate_path(&path)
+            }
+        }
+        AnimationAssetKind::Skeletal => AnimationValidator::validate_path(&path),
+    };
+    AnimationValidationResult { path, kind, events }
 }

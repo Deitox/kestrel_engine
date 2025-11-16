@@ -911,7 +911,11 @@ impl AssetManager {
 
     fn load_clip_internal(&mut self, key: &str, json_path: &str) -> Result<()> {
         let bytes = fs::read(json_path)?;
-        let clip = parse_animation_clip_bytes(&bytes, key, json_path)?;
+        self.load_clip_from_bytes(key, json_path, &bytes)
+    }
+
+    pub fn load_clip_from_bytes(&mut self, key: &str, json_path: &str, bytes: &[u8]) -> Result<()> {
+        let clip = parse_animation_clip_bytes(bytes, key, json_path)?;
         self.clips.insert(key.to_string(), clip);
         self.clip_sources.insert(key.to_string(), json_path.to_string());
         Ok(())
@@ -1015,7 +1019,16 @@ impl AssetManager {
 
     pub fn load_animation_graph(&mut self, key: &str, json_path: &str) -> Result<()> {
         let bytes = fs::read(json_path)?;
-        let graph = parse_animation_graph_bytes(&bytes, key, json_path)?;
+        self.load_animation_graph_from_bytes(key, json_path, &bytes)
+    }
+
+    pub fn load_animation_graph_from_bytes(
+        &mut self,
+        key: &str,
+        json_path: &str,
+        bytes: &[u8],
+    ) -> Result<()> {
+        let graph = parse_animation_graph_bytes(bytes, key, json_path)?;
         self.animation_graphs.insert(key.to_string(), graph);
         self.animation_graph_sources.insert(key.to_string(), json_path.to_string());
         Ok(())

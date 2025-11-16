@@ -14,13 +14,13 @@ Milestone 5 requires a deterministic scene that exercises the animation stack (s
 
 1. Launch the editor (`cargo run`) and choose **File → Open Scene… → `assets/scenes/animation_showcase.json`**.
 2. The dependencies section already retains the atlases/clips, so the animation panel lists both demo tracks immediately.
-3. Toggle the Animation HUD under **Stats → Viewport Overlays** to see the metrics update while editing.
+3. Toggle the Animation HUD under **Stats → Viewport Overlays** to see the metrics update while editing. When the scene pushes more than 256 point lights through the clustered-light system, the overlay adds a **Lighting Budget** card so you know exactly when lights are being culled.
 
 ### Suggested workflows
 
 - **Atlas / sprite timeline iteration:** Open `assets/images/slime_idle_atlas.json` in your editor, change a keyframe duration, and hit save. The watcher reloads the atlas, `animation_check` emits INFO lines in the console, and `sprite_timeline_demo` reflects the change live.
 - **Transform clip authoring:** Select `transform_clip_demo`, open the Keyframe Editor, and edit the translation/scale keys. Saving adds a new entry to `assets/animations/clips/slime_idle.json`, suppresses duplicate watcher events, reloads the clip, and re-runs validators so the inspector banner always shows the latest status.
-- **HUD / analytics validation:** With the scene loaded, hit play and observe the HUD entries for Sprite Eval/Pack/Upload plus Transform/Skeletal/Palette rows. These numbers now mirror the `animation_budget` section emitted in `target/animation_targets_report.json`.
+- **HUD / analytics validation:** With the scene loaded, hit play and observe the HUD entries for Sprite Eval/Pack/Upload plus Transform/Skeletal/Palette rows. These numbers now mirror the `animation_budget` section emitted in `target/animation_targets_report.json`, and the Lighting Budget card pops up if the scene exceeds the point-light cap so you can trim emitters or adjust scripts before baking captures.
 
 ### Deterministic capture
 
