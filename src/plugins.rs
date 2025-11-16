@@ -1461,6 +1461,14 @@ impl PluginManager {
         &self.statuses
     }
 
+    pub fn is_plugin_loaded(&self, name: &str) -> bool {
+        self.plugins.iter().any(|slot| slot.name == name)
+    }
+
+    pub fn unload_dynamic(&mut self, ctx: &mut PluginContext<'_>) {
+        self.unload_dynamic_plugins(ctx);
+    }
+
     pub fn clear_dynamic_statuses(&mut self) {
         self.statuses.retain(|status| !status.dynamic);
     }

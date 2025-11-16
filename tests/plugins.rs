@@ -849,6 +849,74 @@ fn isolated_plugin_telemetry_pipeline() {
 }
 
 #[test]
+fn isolated_plugin_reload_cycle_does_not_accumulate_state() {
+    let plugin_path = build_example_dynamic_plugin();
+    let manifest_dir = tempdir().expect("temp manifest dir");
+    let manifest_path = manifest_dir.path().join("plugins.json");
+    let manifest_json = json!({
+        "disable_builtins": [],
+        "plugins": [{
+            "name": "example_dynamic",
+            "path": plugin_path.to_string_lossy(),
+            "enabled": true,
+            "version": "0.1.0",
+            "requires_features": [],
+            "provides_features": [],
+            "capabilities": ["ecs","assets","events","time"],
+            "trust": "isolated"
+        }]
+    });
+    fs::write(&manifest_path, serde_json::to_string_pretty(&manifest_json).unwrap())
+        .expect("manifest written");
+    let manifest =
+        PluginManager::load_manifest(&manifest_path).expect("manifest read").expect("manifest present");
+
+    let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
+    let mut ecs = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    let mut input = Input::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+    let mut environment_registry = EnvironmentRegistry::new();
+    let time = Time::new();
+    let mut manager = PluginManager::default();
+    let mut ctx = PluginContext::new(
+        &mut renderer,
+        &mut ecs,
+        &mut assets,
+        &mut input,
+        &mut material_registry,
+        &mut mesh_registry,
+        &mut environment_registry,
+        &time,
+        push_event_bridge,
+        manager.feature_handle(),
+        None,
+        manager.capability_tracker_handle(),
+    );
+
+    for cycle in 0..3 {
+        let loaded = manager.load_dynamic_from_manifest(&manifest, &mut ctx).expect("manifest loads");
+        assert!(
+            loaded.iter().any(|name| name == "example_dynamic"),
+            "cycle {cycle} should load example_dynamic, loaded entries: {:?}, statuses: {:?}",
+            loaded,
+            manager.statuses()
+        );
+        assert!(
+            manager.is_plugin_loaded("example_dynamic"),
+            "cycle {cycle} should report example_dynamic as loaded (loaded entries: {:?})",
+            loaded
+        );
+        manager.unload_dynamic(&mut ctx);
+        assert!(
+            !manager.is_plugin_loaded("example_dynamic"),
+            "cycle {cycle} should unload example_dynamic cleanly"
+        );
+    }
+}
+
+#[test]
 fn plugin_panic_marks_failure() {
     let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
     let mut ecs = EcsWorld::new();
@@ -904,15 +972,12 @@ fn build_example_dynamic_plugin() -> PathBuf {
     let plugin_dir = project_root.join("plugins").join("example_dynamic");
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let artifact = plugin_dir.join("target").join("debug").join(library_file_name("example_dynamic"));
-    if !artifact.exists() {
-        let status = Command::new(&cargo)
-            .args(["build", "--offline"])
-            .current_dir(&plugin_dir)
-            .status()
-            .expect("cargo build example_dynamic");
-        assert!(status.success(), "building example_dynamic plugin failed");
-        assert!(artifact.exists(), "example_dynamic plugin artifact missing at {}", artifact.display());
-    }
+    let status = Command::new(&cargo)
+        .args(["build", "--offline"])
+        .current_dir(&plugin_dir)
+        .status()
+        .expect("cargo build example_dynamic");
+    assert!(status.success(), "building example_dynamic plugin failed");
     assert!(artifact.exists(), "example_dynamic plugin artifact missing at {}", artifact.display());
     artifact
 }
