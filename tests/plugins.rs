@@ -11,7 +11,7 @@ use kestrel_engine::mesh_registry::MeshRegistry;
 use kestrel_engine::plugin_rpc::RpcAssetReadbackPayload;
 use kestrel_engine::plugins::{
     apply_manifest_builtin_toggles, apply_manifest_dynamic_toggles, EnginePlugin, ManifestBuiltinToggle,
-    ManifestDynamicToggle, PluginCapability, PluginContext, PluginManager,
+    ManifestDynamicToggle, PluginCapability, PluginContext, PluginManager, PluginState,
 };
 use kestrel_engine::renderer::Renderer;
 use kestrel_engine::time::Time;
@@ -69,6 +69,30 @@ impl EnginePlugin for CountingPlugin {
     fn shutdown(&mut self, _ctx: &mut PluginContext<'_>) -> Result<()> {
         self.shutdown_calls += 1;
         Ok(())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+#[derive(Default)]
+struct PanickingPlugin {
+    update_calls: usize,
+}
+
+impl EnginePlugin for PanickingPlugin {
+    fn name(&self) -> &'static str {
+        "panicker"
+    }
+
+    fn update(&mut self, _ctx: &mut PluginContext<'_>, _dt: f32) -> Result<()> {
+        self.update_calls += 1;
+        panic!("intentional panicking plugin");
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -821,6 +845,57 @@ fn isolated_plugin_telemetry_pipeline() {
     let recent_readbacks = analytics.plugin_asset_readbacks();
     assert!(!recent_readbacks.is_empty(), "analytics stored recent asset readback events");
 
+    manager.shutdown(&mut ctx);
+}
+
+#[test]
+fn plugin_panic_marks_failure() {
+    let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
+    let mut ecs = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    let mut input = Input::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+    let mut environment_registry = EnvironmentRegistry::new();
+    let time = Time::new();
+    let mut manager = PluginManager::default();
+    let mut ctx = PluginContext::new(
+        &mut renderer,
+        &mut ecs,
+        &mut assets,
+        &mut input,
+        &mut material_registry,
+        &mut mesh_registry,
+        &mut environment_registry,
+        &time,
+        push_event_bridge,
+        manager.feature_handle(),
+        None,
+        manager.capability_tracker_handle(),
+    );
+
+    manager.register(Box::new(PanickingPlugin::default()), &mut ctx).expect("register plugin");
+    manager.update(&mut ctx, 0.016);
+    {
+        let plugin = manager.get::<PanickingPlugin>().expect("panicker present");
+        assert_eq!(plugin.update_calls, 1, "panicking plugin should run exactly once");
+    }
+    manager.update(&mut ctx, 0.02);
+    {
+        let plugin = manager.get::<PanickingPlugin>().expect("panicker present");
+        assert_eq!(plugin.update_calls, 1, "panicking plugin should not be scheduled after failure");
+    }
+    let status = manager
+        .statuses()
+        .iter()
+        .find(|status| status.name == "panicker")
+        .expect("status for panicker plugin");
+    match &status.state {
+        PluginState::Failed(reason) => {
+            assert!(reason.contains("panicked"), "failure state should mention panic cause: {reason}");
+        }
+        other => panic!("expected failed status, got {other:?}"),
+    }
     manager.shutdown(&mut ctx);
 }
 

@@ -26,6 +26,7 @@ use std::env;
 use std::fs;
 use std::io::{self, BufReader};
 use std::mem;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::ptr;
@@ -205,6 +206,16 @@ fn summarize_asset_payload(payload: &RpcAssetReadbackPayload) -> (String, String
         RpcAssetReadbackPayload::AtlasMeta { atlas_id } => ("atlas_meta".to_string(), atlas_id.clone()),
         RpcAssetReadbackPayload::AtlasBinary { atlas_id } => ("atlas_binary".to_string(), atlas_id.clone()),
         RpcAssetReadbackPayload::BlobRange { blob_id, .. } => ("blob_range".to_string(), blob_id.clone()),
+    }
+}
+
+fn describe_panic(payload: Box<dyn Any + Send>) -> String {
+    match payload.downcast::<String>() {
+        Ok(message) => *message,
+        Err(payload) => match payload.downcast::<&'static str>() {
+            Ok(message) => (*message).to_string(),
+            Err(payload) => format!("unknown panic (type_id {:?})", payload.type_id()),
+        },
     }
 }
 
@@ -745,9 +756,9 @@ impl std::fmt::Display for CapabilityError {
 impl std::error::Error for CapabilityError {}
 
 pub trait EnginePlugin: Any + 'static {
-    fn name(&self) -> &'static str;
+    fn name(&self) -> &str;
 
-    fn version(&self) -> &'static str {
+    fn version(&self) -> &str {
         "0.1.0"
     }
 
@@ -823,6 +834,7 @@ struct PluginSlot {
     capabilities: CapabilityFlags,
     capability_list: Vec<PluginCapability>,
     asset_filters: PluginAssetFilters,
+    failed_reason: Option<String>,
     _library: Option<Library>,
 }
 
@@ -1110,6 +1122,44 @@ impl PluginManager {
         self.pending_watchdog_events.push(event);
     }
 
+    fn mark_plugin_failed(&mut self, idx: usize, reason: String) {
+        if idx >= self.plugins.len() {
+            return;
+        }
+        if self.plugins[idx].failed_reason.is_some() {
+            return;
+        }
+        let plugin_name = self.plugins[idx].name.clone();
+        self.plugins[idx].failed_reason = Some(reason.clone());
+        self.update_status_state(&plugin_name, PluginState::Failed(reason.clone()));
+        self.log_watchdog_event(PluginWatchdogEvent {
+            plugin: plugin_name,
+            timestamp: SystemTime::now(),
+            elapsed_ms: 0.0,
+            reason,
+            last_request: "panic".to_string(),
+        });
+    }
+
+    fn update_status_state(&mut self, plugin_name: &str, state: PluginState) {
+        if let Some(status) = self.statuses.iter_mut().find(|status| status.name == plugin_name) {
+            status.state = state;
+            return;
+        }
+        if let Some(slot) = self.plugins.iter().find(|slot| slot.name == plugin_name) {
+            self.statuses.push(PluginStatus {
+                name: slot.name.clone(),
+                version: Some(slot.plugin.version().to_string()),
+                dynamic: slot.dynamic,
+                provides: slot.provides.clone(),
+                depends_on: slot.depends_on.clone(),
+                capabilities: slot.capability_list.clone(),
+                trust: slot.trust,
+                state,
+            });
+        }
+    }
+
     fn record_asset_readback_event(
         &mut self,
         plugin_name: &str,
@@ -1262,35 +1312,83 @@ impl PluginManager {
 
     pub fn update(&mut self, ctx: &mut PluginContext<'_>, dt: f32) {
         let mut watchdog_events = Vec::new();
-        for slot in &mut self.plugins {
-            ctx.set_active_plugin(&slot.name, slot.capabilities, slot.trust);
-            if let Err(err) = slot.plugin.update(ctx, dt) {
-                eprintln!("[plugin:{}] update failed: {err:?}", slot.name);
-                if let Some(event) = slot.isolated_proxy().and_then(|proxy| proxy.take_watchdog_event()) {
-                    watchdog_events.push(event);
+        let mut panicked = Vec::new();
+        for idx in 0..self.plugins.len() {
+            if self.plugins[idx].failed_reason.is_some() {
+                continue;
+            }
+            let plugin_name = self.plugins[idx].name.clone();
+            let capability_flags = self.plugins[idx].capabilities;
+            let trust = self.plugins[idx].trust;
+            ctx.set_active_plugin(&plugin_name, capability_flags, trust);
+            let result = {
+                let slot = &mut self.plugins[idx];
+                catch_unwind(AssertUnwindSafe(|| slot.plugin.update(ctx, dt)))
+            };
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    eprintln!("[plugin:{}] update failed: {err:?}", plugin_name);
+                    if let Some(event) =
+                        self.plugins[idx].isolated_proxy().and_then(|proxy| proxy.take_watchdog_event())
+                    {
+                        watchdog_events.push(event);
+                    }
+                }
+                Err(payload) => {
+                    let summary = format!("update panicked: {}", describe_panic(payload));
+                    eprintln!("[plugin:{}] {summary}", plugin_name);
+                    panicked.push((idx, summary));
                 }
             }
             ctx.clear_active_plugin();
         }
         for event in watchdog_events {
             self.log_watchdog_event(event);
+        }
+        for (idx, reason) in panicked {
+            self.mark_plugin_failed(idx, reason);
         }
     }
 
     pub fn fixed_update(&mut self, ctx: &mut PluginContext<'_>, dt: f32) {
         let mut watchdog_events = Vec::new();
-        for slot in &mut self.plugins {
-            ctx.set_active_plugin(&slot.name, slot.capabilities, slot.trust);
-            if let Err(err) = slot.plugin.fixed_update(ctx, dt) {
-                eprintln!("[plugin:{}] fixed_update failed: {err:?}", slot.name);
-                if let Some(event) = slot.isolated_proxy().and_then(|proxy| proxy.take_watchdog_event()) {
-                    watchdog_events.push(event);
+        let mut panicked = Vec::new();
+        for idx in 0..self.plugins.len() {
+            if self.plugins[idx].failed_reason.is_some() {
+                continue;
+            }
+            let plugin_name = self.plugins[idx].name.clone();
+            let capability_flags = self.plugins[idx].capabilities;
+            let trust = self.plugins[idx].trust;
+            ctx.set_active_plugin(&plugin_name, capability_flags, trust);
+            let result = {
+                let slot = &mut self.plugins[idx];
+                catch_unwind(AssertUnwindSafe(|| slot.plugin.fixed_update(ctx, dt)))
+            };
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    eprintln!("[plugin:{}] fixed_update failed: {err:?}", plugin_name);
+                    if let Some(event) =
+                        self.plugins[idx].isolated_proxy().and_then(|proxy| proxy.take_watchdog_event())
+                    {
+                        watchdog_events.push(event);
+                    }
+                }
+                Err(payload) => {
+                    let summary = format!("fixed_update panicked: {}", describe_panic(payload));
+                    eprintln!("[plugin:{}] {summary}", plugin_name);
+                    panicked.push((idx, summary));
                 }
             }
             ctx.clear_active_plugin();
         }
         for event in watchdog_events {
             self.log_watchdog_event(event);
+        }
+        for (idx, reason) in panicked {
+            self.mark_plugin_failed(idx, reason);
         }
     }
 
@@ -1299,12 +1397,33 @@ impl PluginManager {
             return;
         }
         let mut watchdog_events = Vec::new();
-        for slot in &mut self.plugins {
-            ctx.set_active_plugin(&slot.name, slot.capabilities, slot.trust);
-            if let Err(err) = slot.plugin.on_events(ctx, events) {
-                eprintln!("[plugin:{}] event hook failed: {err:?}", slot.name);
-                if let Some(event) = slot.isolated_proxy().and_then(|proxy| proxy.take_watchdog_event()) {
-                    watchdog_events.push(event);
+        let mut panicked = Vec::new();
+        for idx in 0..self.plugins.len() {
+            if self.plugins[idx].failed_reason.is_some() {
+                continue;
+            }
+            let plugin_name = self.plugins[idx].name.clone();
+            let capability_flags = self.plugins[idx].capabilities;
+            let trust = self.plugins[idx].trust;
+            ctx.set_active_plugin(&plugin_name, capability_flags, trust);
+            let result = {
+                let slot = &mut self.plugins[idx];
+                catch_unwind(AssertUnwindSafe(|| slot.plugin.on_events(ctx, events)))
+            };
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    eprintln!("[plugin:{}] event hook failed: {err:?}", plugin_name);
+                    if let Some(event) =
+                        self.plugins[idx].isolated_proxy().and_then(|proxy| proxy.take_watchdog_event())
+                    {
+                        watchdog_events.push(event);
+                    }
+                }
+                Err(payload) => {
+                    let summary = format!("event hook panicked: {}", describe_panic(payload));
+                    eprintln!("[plugin:{}] {summary}", plugin_name);
+                    panicked.push((idx, summary));
                 }
             }
             ctx.clear_active_plugin();
@@ -1312,10 +1431,16 @@ impl PluginManager {
         for event in watchdog_events {
             self.log_watchdog_event(event);
         }
+        for (idx, reason) in panicked {
+            self.mark_plugin_failed(idx, reason);
+        }
     }
 
     pub fn shutdown(&mut self, ctx: &mut PluginContext<'_>) {
         for slot in &mut self.plugins {
+            if slot.failed_reason.is_some() {
+                continue;
+            }
             ctx.set_active_plugin(&slot.name, slot.capabilities, slot.trust);
             if let Err(err) = slot.plugin.shutdown(ctx) {
                 eprintln!("[plugin:{}] shutdown failed: {err:?}", slot.name);
@@ -1435,6 +1560,7 @@ impl PluginManager {
             capabilities: capability_flags,
             capability_list: capabilities,
             asset_filters: PluginAssetFilters::default(),
+            failed_reason: None,
             _library: library,
         });
         Ok(())
@@ -1547,8 +1673,8 @@ impl PluginManager {
 }
 
 struct IsolatedPluginProxy {
-    name: &'static str,
-    version: &'static str,
+    name: String,
+    version: String,
     child: Child,
     stdin: Option<ChildStdin>,
     stdout: BufReader<ChildStdout>,
@@ -1601,9 +1727,7 @@ impl AssetReadbackBudget {
 
 impl IsolatedPluginProxy {
     fn new(entry: &PluginManifestEntry, plugin_path: PathBuf) -> Result<Self> {
-        let leaked_name: &'static str = Box::leak(entry.name.clone().into_boxed_str());
-        let version_static: &'static str =
-            Box::leak(entry.version.clone().unwrap_or_else(|| "0.1.0".to_string()).into_boxed_str());
+        let version = entry.version.clone().unwrap_or_else(|| "0.1.0".to_string());
         let host_path = Self::host_binary_path().context("resolve isolated host binary")?;
         let mut command = Command::new(host_path);
         command.arg("--plugin").arg(&plugin_path).arg("--name").arg(entry.name.as_str());
@@ -1625,8 +1749,8 @@ impl IsolatedPluginProxy {
         let stdin = child.stdin.take().ok_or_else(|| anyhow!("isolated host missing stdin"))?;
         let stdout = child.stdout.take().ok_or_else(|| anyhow!("isolated host missing stdout"))?;
         Ok(Self {
-            name: leaked_name,
-            version: version_static,
+            name: entry.name.clone(),
+            version,
             child,
             stdin: Some(stdin),
             stdout: BufReader::new(stdout),
@@ -1866,12 +1990,12 @@ impl IsolatedPluginProxy {
 }
 
 impl EnginePlugin for IsolatedPluginProxy {
-    fn name(&self) -> &'static str {
-        self.name
+    fn name(&self) -> &str {
+        &self.name
     }
 
-    fn version(&self) -> &'static str {
-        self.version
+    fn version(&self) -> &str {
+        &self.version
     }
 
     fn build(&mut self, ctx: &mut PluginContext<'_>) -> Result<()> {

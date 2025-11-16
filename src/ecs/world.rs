@@ -1586,13 +1586,7 @@ impl EcsWorld {
             let color = tint.map(|t| t.0.to_array()).unwrap_or([1.0, 1.0, 1.0, 1.0]);
             let transform = SpriteInstanceTransform::from_mat4(model_mat);
             let world_half_extent = transform.half_extent_2d();
-            out.push(SpriteInstance {
-                atlas: atlas_key,
-                transform,
-                uv_rect,
-                tint: color,
-                world_half_extent,
-            });
+            out.push(SpriteInstance { atlas: atlas_key, transform, uv_rect, tint: color, world_half_extent });
         }
         Ok(out)
     }

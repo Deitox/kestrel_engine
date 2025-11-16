@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
-use std::path::Path;
 use std::hash::{Hash, Hasher};
+use std::path::Path;
 use uuid::Uuid;
 
 const BINARY_SCENE_MAGIC: [u8; 4] = *b"KSCN";
@@ -902,10 +902,7 @@ impl SceneDependencies {
     }
 
     pub fn fingerprints(&self) -> SceneDependencyFingerprints {
-        fn hash_entries(
-            tag: &'static str,
-            mut entries: Vec<(String, Option<String>)>,
-        ) -> u64 {
+        fn hash_entries(tag: &'static str, mut entries: Vec<(String, Option<String>)>) -> u64 {
             entries.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
             let mut hasher = DefaultHasher::new();
             for (key, path) in entries {

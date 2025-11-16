@@ -63,6 +63,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::mem;
 use std::path::{Path, PathBuf};
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{mpsc, Arc};
 use std::thread;
@@ -738,7 +739,9 @@ impl App {
 
     fn dispatch_animation_reload_queue(&mut self) {
         loop {
-            let Some(request) = self.animation_reload_queue.pop_next() else { break; };
+            let Some(request) = self.animation_reload_queue.pop_next() else {
+                break;
+            };
             match self.try_submit_animation_reload(request) {
                 Ok(()) => continue,
                 Err(request) => {
@@ -2936,15 +2939,13 @@ impl App {
     where
         F: FnOnce(&mut PluginHost, &mut PluginManager, &mut PluginContext<'_>) -> R,
     {
-        let mut host = std::mem::replace(&mut self.plugin_host, PluginHost::placeholder());
-        let mut manager = host.take_manager();
-        let feature_handle = manager.feature_handle();
-        let capability_handle = manager.capability_tracker_handle();
+        let mut scope = PluginRuntimeScope::new(&mut self.plugin_host);
+        let feature_handle = scope.manager_mut().feature_handle();
+        let capability_handle = scope.manager_mut().capability_tracker_handle();
         let mut ctx = self.plugin_context(feature_handle, capability_handle);
-        let result = f(&mut host, &mut manager, &mut ctx);
+        let result = scope.with_runtime(|host, manager| f(host, manager, &mut ctx));
         drop(ctx);
-        host.restore_manager(manager);
-        self.plugin_host = host;
+        scope.finish();
         result
     }
 
@@ -3285,21 +3286,15 @@ impl App {
             self.scene_dependencies = Some(deps.clone());
             return Ok(());
         }
-        let atlas_dirty = self
-            .scene_dependency_fingerprints
-            .map_or(true, |fp| fp.atlases != fingerprint.atlases);
-        let clip_dirty = self
-            .scene_dependency_fingerprints
-            .map_or(true, |fp| fp.clips != fingerprint.clips);
-        let mesh_dirty = self
-            .scene_dependency_fingerprints
-            .map_or(true, |fp| fp.meshes != fingerprint.meshes);
-        let material_dirty = self
-            .scene_dependency_fingerprints
-            .map_or(true, |fp| fp.materials != fingerprint.materials);
-        let environment_dirty = self
-            .scene_dependency_fingerprints
-            .map_or(true, |fp| fp.environments != fingerprint.environments);
+        let atlas_dirty =
+            self.scene_dependency_fingerprints.map_or(true, |fp| fp.atlases != fingerprint.atlases);
+        let clip_dirty = self.scene_dependency_fingerprints.map_or(true, |fp| fp.clips != fingerprint.clips);
+        let mesh_dirty =
+            self.scene_dependency_fingerprints.map_or(true, |fp| fp.meshes != fingerprint.meshes);
+        let material_dirty =
+            self.scene_dependency_fingerprints.map_or(true, |fp| fp.materials != fingerprint.materials);
+        let environment_dirty =
+            self.scene_dependency_fingerprints.map_or(true, |fp| fp.environments != fingerprint.environments);
 
         if atlas_dirty {
             let previous = self.scene_atlas_refs.clone();
@@ -3327,9 +3322,8 @@ impl App {
         if clip_dirty {
             let mut required_clips: HashMap<String, (usize, Option<PathBuf>)> = HashMap::new();
             for dep in deps.clip_dependencies() {
-                let entry = required_clips
-                    .entry(dep.key().to_string())
-                    .or_insert((0, dep.path().map(PathBuf::from)));
+                let entry =
+                    required_clips.entry(dep.key().to_string()).or_insert((0, dep.path().map(PathBuf::from)));
                 entry.0 = entry.0.saturating_add(1);
             }
             let mut clip_watch_updates: Vec<PathBuf> = Vec::new();
@@ -5011,6 +5005,88 @@ struct SpriteGuardrailProjection {
     pixels_per_world: Vec2,
 }
 
+struct PluginRuntimeScope {
+    slot: NonNull<PluginHost>,
+    host: Option<PluginHost>,
+    manager: Option<PluginManager>,
+    restored: bool,
+}
+
+impl PluginRuntimeScope {
+    fn new(slot: &mut PluginHost) -> Self {
+        let mut host = std::mem::replace(slot, PluginHost::placeholder());
+        let manager = host.take_manager();
+        Self { slot: NonNull::from(slot), host: Some(host), manager: Some(manager), restored: false }
+    }
+
+    fn manager_mut(&mut self) -> &mut PluginManager {
+        self.manager.as_mut().expect("plugin manager present")
+    }
+
+    fn finish(&mut self) {
+        if self.restored {
+            return;
+        }
+        let mut host = self.host.take().expect("host moved once");
+        let manager = self.manager.take().expect("manager moved once");
+        host.restore_manager(manager);
+        // Safety: `slot` points to the `App::plugin_host` field which outlives the guard.
+        unsafe {
+            *self.slot.as_mut() = host;
+        }
+        self.restored = true;
+    }
+}
+
+struct PluginRuntimeBorrow {
+    scope: NonNull<PluginRuntimeScope>,
+    host: Option<PluginHost>,
+    manager: Option<PluginManager>,
+}
+
+impl PluginRuntimeBorrow {
+    fn new(scope: &mut PluginRuntimeScope) -> Self {
+        Self { scope: NonNull::from(&mut *scope), host: scope.host.take(), manager: scope.manager.take() }
+    }
+
+    fn parts(&mut self) -> (&mut PluginHost, &mut PluginManager) {
+        let host = self.host.as_mut().expect("host present");
+        let manager = self.manager.as_mut().expect("manager present");
+        (host, manager)
+    }
+}
+
+impl Drop for PluginRuntimeBorrow {
+    fn drop(&mut self) {
+        unsafe {
+            let scope = self.scope.as_mut();
+            if let Some(host) = self.host.take() {
+                scope.host = Some(host);
+            }
+            if let Some(manager) = self.manager.take() {
+                scope.manager = Some(manager);
+            }
+        }
+    }
+}
+
+impl PluginRuntimeScope {
+    fn with_runtime<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&mut PluginHost, &mut PluginManager) -> R,
+    {
+        let mut borrow = PluginRuntimeBorrow::new(self);
+        let (host, manager) = borrow.parts();
+        f(host, manager)
+    }
+}
+
+impl Drop for PluginRuntimeScope {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
 impl SpriteGuardrailProjection {
     fn new(camera: &Camera2D, viewport_size: PhysicalSize<u32>) -> Option<Self> {
         let (half_width, half_height) = camera.half_extents(viewport_size)?;
@@ -5241,7 +5317,11 @@ impl AnimationReloadQueue {
         let idx = request.kind.index();
         let bucket = &mut self.buckets[idx];
         bucket.push_front(request);
-        if bucket.len() > self.max_len { bucket.pop_back() } else { None }
+        if bucket.len() > self.max_len {
+            bucket.pop_back()
+        } else {
+            None
+        }
     }
 
     fn pop_next(&mut self) -> Option<AnimationReloadRequest> {
