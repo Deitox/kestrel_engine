@@ -12,11 +12,11 @@ use self::animation_keyframe_panel::{
 use self::animation_watch::{AnimationAssetKind, AnimationAssetWatcher};
 use self::atlas_watch::{normalize_path_for_watch, AtlasHotReload};
 use self::plugin_host::{BuiltinPluginFactory, PluginHost};
+#[cfg(feature = "alloc_profiler")]
+use crate::alloc_profiler;
 use crate::analytics::{
     AnalyticsPlugin, AnimationBudgetSample, KeyframeEditorEventKind, KeyframeEditorTrackKind,
 };
-#[cfg(feature = "alloc_profiler")]
-use crate::alloc_profiler;
 use crate::animation_validation::{
     AnimationValidationEvent, AnimationValidationSeverity, AnimationValidator,
 };
@@ -41,10 +41,7 @@ use crate::input::{Input, InputEvent};
 use crate::material_registry::{MaterialGpu, MaterialRegistry};
 use crate::mesh_preview::{MeshControlMode, MeshPreviewPlugin};
 use crate::mesh_registry::MeshRegistry;
-use crate::plugins::{
-    CapabilityTrackerHandle, FeatureRegistryHandle, ManifestBuiltinToggle, ManifestDynamicToggle,
-    PluginContext, PluginManager,
-};
+use crate::plugins::{ManifestBuiltinToggle, ManifestDynamicToggle, PluginContext, PluginManager};
 use crate::prefab::{PrefabFormat, PrefabLibrary, PrefabStatusKind, PrefabStatusMessage};
 use crate::renderer::{
     GpuPassTiming, MeshDraw, RenderViewport, Renderer, ScenePointLight, SpriteBatch, MAX_SHADOW_CASCADES,
@@ -65,7 +62,6 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::mem;
 use std::path::{Path, PathBuf};
-use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{mpsc, Arc};
 use std::thread;
@@ -367,11 +363,7 @@ struct FrameProfiler {
 
 impl FrameProfiler {
     fn new(capacity: usize) -> Self {
-        Self {
-            history: VecDeque::with_capacity(capacity),
-            capacity: capacity.max(1),
-            snapshot: None,
-        }
+        Self { history: VecDeque::with_capacity(capacity), capacity: capacity.max(1), snapshot: None }
     }
 
     fn push(&mut self, sample: FrameTimingSample) {
@@ -590,6 +582,7 @@ pub struct App {
 
     // Plugins
     plugin_host: PluginHost,
+    plugin_manager: PluginManager,
 
     // Camera / selection
     pub(crate) camera: Camera2D,
@@ -2468,6 +2461,7 @@ impl App {
         let egui_ctx = EguiCtx::default();
         let egui_winit = None;
         let mut plugin_host = PluginHost::new(PLUGIN_MANIFEST_PATH);
+        let mut plugin_manager = PluginManager::default();
         let script_path = PathBuf::from("assets/scripts/main.rhai");
         let mut builtin_plugins = Vec::new();
         builtin_plugins
@@ -2481,9 +2475,8 @@ impl App {
         }
         builtin_plugins.push(BuiltinPluginFactory::new("audio", || Box::new(AudioPlugin::new(16))));
         {
-            let mut manager = plugin_host.take_manager();
-            let handle = manager.feature_handle();
-            let capability_handle = manager.capability_tracker_handle();
+            let handle = plugin_manager.feature_handle();
+            let capability_handle = plugin_manager.capability_tracker_handle();
             let mut ctx = PluginContext::new(
                 &mut renderer,
                 &mut ecs,
@@ -2498,14 +2491,12 @@ impl App {
                 None,
                 capability_handle,
             );
-            plugin_host.register_builtins(&mut manager, &mut ctx, &builtin_plugins);
+            plugin_host.register_builtins(&mut plugin_manager, &mut ctx, &builtin_plugins);
             drop(ctx);
-            plugin_host.restore_manager(manager);
         }
         if !initial_events.is_empty() {
-            let mut manager = plugin_host.take_manager();
-            let handle = manager.feature_handle();
-            let capability_handle = manager.capability_tracker_handle();
+            let handle = plugin_manager.feature_handle();
+            let capability_handle = plugin_manager.capability_tracker_handle();
             let mut ctx = PluginContext::new(
                 &mut renderer,
                 &mut ecs,
@@ -2520,9 +2511,8 @@ impl App {
                 None,
                 capability_handle,
             );
-            manager.handle_events(&mut ctx, &initial_events);
+            plugin_manager.handle_events(&mut ctx, &initial_events);
             drop(ctx);
-            plugin_host.restore_manager(manager);
         }
 
         let atlas_hot_reload = match AtlasHotReload::new() {
@@ -2623,6 +2613,7 @@ impl App {
             pending_animation_validation_events: Vec::new(),
             suppressed_validation_paths: HashSet::new(),
             plugin_host,
+            plugin_manager,
             camera,
             viewport_camera_mode: ViewportCameraMode::default(),
             camera_bookmarks: Vec::new(),
@@ -3014,38 +3005,39 @@ impl App {
         }
     }
 
-    fn plugin_context(
-        &mut self,
-        feature_handle: FeatureRegistryHandle,
-        capability_handle: CapabilityTrackerHandle,
-    ) -> PluginContext<'_> {
-        PluginContext::new(
-            &mut self.renderer,
-            &mut self.ecs,
-            &mut self.assets,
-            &mut self.input,
-            &mut self.material_registry,
-            &mut self.mesh_registry,
-            &mut self.environment_registry,
-            &self.time,
-            Self::emit_event_for_plugin,
-            feature_handle,
-            self.selected_entity,
-            capability_handle,
-        )
-    }
-
     fn with_plugin_runtime<F, R>(&mut self, f: F) -> R
     where
         F: FnOnce(&mut PluginHost, &mut PluginManager, &mut PluginContext<'_>) -> R,
     {
-        let mut scope = PluginRuntimeScope::new(&mut self.plugin_host);
-        let feature_handle = scope.manager_mut().feature_handle();
-        let capability_handle = scope.manager_mut().capability_tracker_handle();
-        let mut ctx = self.plugin_context(feature_handle, capability_handle);
-        let result = scope.with_runtime(|host, manager| f(host, manager, &mut ctx));
+        let feature_handle = self.plugin_manager.feature_handle();
+        let capability_handle = self.plugin_manager.capability_tracker_handle();
+        let renderer = &mut self.renderer;
+        let ecs = &mut self.ecs;
+        let assets = &mut self.assets;
+        let input = &mut self.input;
+        let material_registry = &mut self.material_registry;
+        let mesh_registry = &mut self.mesh_registry;
+        let environment_registry = &mut self.environment_registry;
+        let time = &self.time;
+        let selected_entity = self.selected_entity;
+        let plugin_host = &mut self.plugin_host;
+        let plugin_manager = &mut self.plugin_manager;
+        let mut ctx = PluginContext::new(
+            renderer,
+            ecs,
+            assets,
+            input,
+            material_registry,
+            mesh_registry,
+            environment_registry,
+            time,
+            Self::emit_event_for_plugin,
+            feature_handle,
+            selected_entity,
+            capability_handle,
+        );
+        let result = f(plugin_host, plugin_manager, &mut ctx);
         drop(ctx);
-        scope.finish();
         result
     }
 
@@ -3061,31 +3053,31 @@ impl App {
     }
 
     fn audio_plugin(&self) -> Option<&AudioPlugin> {
-        self.plugin_host.get::<AudioPlugin>()
+        self.plugin_manager.get::<AudioPlugin>()
     }
 
     fn analytics_plugin(&self) -> Option<&AnalyticsPlugin> {
-        self.plugin_host.get::<AnalyticsPlugin>()
+        self.plugin_manager.get::<AnalyticsPlugin>()
     }
 
     fn analytics_plugin_mut(&mut self) -> Option<&mut AnalyticsPlugin> {
-        self.plugin_host.get_mut::<AnalyticsPlugin>()
+        self.plugin_manager.get_mut::<AnalyticsPlugin>()
     }
 
     fn mesh_preview_plugin(&self) -> Option<&MeshPreviewPlugin> {
-        self.plugin_host.get::<MeshPreviewPlugin>()
+        self.plugin_manager.get::<MeshPreviewPlugin>()
     }
 
     fn mesh_preview_plugin_mut(&mut self) -> Option<&mut MeshPreviewPlugin> {
-        self.plugin_host.get_mut::<MeshPreviewPlugin>()
+        self.plugin_manager.get_mut::<MeshPreviewPlugin>()
     }
 
     fn script_plugin(&self) -> Option<&ScriptPlugin> {
-        self.plugin_host.get::<ScriptPlugin>()
+        self.plugin_manager.get::<ScriptPlugin>()
     }
 
     fn script_plugin_mut(&mut self) -> Option<&mut ScriptPlugin> {
-        self.plugin_host.get_mut::<ScriptPlugin>()
+        self.plugin_manager.get_mut::<ScriptPlugin>()
     }
 
     fn set_mesh_status<S: Into<String>>(&mut self, message: S) {
@@ -3965,10 +3957,10 @@ impl ApplicationHandler for App {
         }
 
         self.with_plugins(|plugins, ctx| plugins.update(ctx, dt));
-        let capability_metrics = self.plugin_host.capability_metrics();
-        let capability_events = self.plugin_host.drain_capability_events();
-        let watchdog_alerts = self.plugin_host.drain_watchdog_events();
-        let asset_readback_alerts = self.plugin_host.drain_asset_readback_events();
+        let capability_metrics = self.plugin_manager.capability_metrics();
+        let capability_events = self.plugin_manager.drain_capability_events();
+        let watchdog_alerts = self.plugin_manager.drain_watchdog_events();
+        let asset_readback_alerts = self.plugin_manager.drain_asset_readback_events();
         let animation_validation_alerts = self.drain_animation_validation_events();
         if let Some(analytics) = self.analytics_plugin_mut() {
             #[cfg(feature = "alloc_profiler")]
@@ -4332,8 +4324,7 @@ impl ApplicationHandler for App {
             self.analytics_plugin().map(|plugin| plugin.frame_plot_points()).unwrap_or_else(Vec::new);
         let spatial_metrics = self.analytics_plugin().and_then(|plugin| plugin.spatial_metrics());
         #[cfg(feature = "alloc_profiler")]
-        let allocation_delta =
-            self.analytics_plugin().and_then(|plugin| plugin.allocation_delta());
+        let allocation_delta = self.analytics_plugin().and_then(|plugin| plugin.allocation_delta());
         let system_timings = self.ecs.system_timings();
         let sprite_eval_ms = system_timings
             .iter()
@@ -5092,88 +5083,6 @@ impl ApplicationHandler for App {
 
 struct SpriteGuardrailProjection {
     pixels_per_world: Vec2,
-}
-
-struct PluginRuntimeScope {
-    slot: NonNull<PluginHost>,
-    host: Option<PluginHost>,
-    manager: Option<PluginManager>,
-    restored: bool,
-}
-
-impl PluginRuntimeScope {
-    fn new(slot: &mut PluginHost) -> Self {
-        let mut host = std::mem::replace(slot, PluginHost::placeholder());
-        let manager = host.take_manager();
-        Self { slot: NonNull::from(slot), host: Some(host), manager: Some(manager), restored: false }
-    }
-
-    fn manager_mut(&mut self) -> &mut PluginManager {
-        self.manager.as_mut().expect("plugin manager present")
-    }
-
-    fn finish(&mut self) {
-        if self.restored {
-            return;
-        }
-        let mut host = self.host.take().expect("host moved once");
-        let manager = self.manager.take().expect("manager moved once");
-        host.restore_manager(manager);
-        // Safety: `slot` points to the `App::plugin_host` field which outlives the guard.
-        unsafe {
-            *self.slot.as_mut() = host;
-        }
-        self.restored = true;
-    }
-}
-
-struct PluginRuntimeBorrow {
-    scope: NonNull<PluginRuntimeScope>,
-    host: Option<PluginHost>,
-    manager: Option<PluginManager>,
-}
-
-impl PluginRuntimeBorrow {
-    fn new(scope: &mut PluginRuntimeScope) -> Self {
-        Self { scope: NonNull::from(&mut *scope), host: scope.host.take(), manager: scope.manager.take() }
-    }
-
-    fn parts(&mut self) -> (&mut PluginHost, &mut PluginManager) {
-        let host = self.host.as_mut().expect("host present");
-        let manager = self.manager.as_mut().expect("manager present");
-        (host, manager)
-    }
-}
-
-impl Drop for PluginRuntimeBorrow {
-    fn drop(&mut self) {
-        unsafe {
-            let scope = self.scope.as_mut();
-            if let Some(host) = self.host.take() {
-                scope.host = Some(host);
-            }
-            if let Some(manager) = self.manager.take() {
-                scope.manager = Some(manager);
-            }
-        }
-    }
-}
-
-impl PluginRuntimeScope {
-    fn with_runtime<F, R>(&mut self, f: F) -> R
-    where
-        F: FnOnce(&mut PluginHost, &mut PluginManager) -> R,
-    {
-        let mut borrow = PluginRuntimeBorrow::new(self);
-        let (host, manager) = borrow.parts();
-        f(host, manager)
-    }
-}
-
-impl Drop for PluginRuntimeScope {
-    fn drop(&mut self) {
-        self.finish();
-    }
 }
 
 impl SpriteGuardrailProjection {

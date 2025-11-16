@@ -1,3 +1,5 @@
+#[cfg(feature = "alloc_profiler")]
+use crate::alloc_profiler::AllocationDelta;
 use crate::animation_validation::AnimationValidationEvent;
 use crate::ecs::{ParticleBudgetMetrics, SpatialMetrics};
 use crate::events::GameEvent;
@@ -5,8 +7,6 @@ use crate::plugins::{
     CapabilityViolationLog, EnginePlugin, PluginAssetReadbackEvent, PluginCapabilityEvent, PluginContext,
     PluginWatchdogEvent,
 };
-#[cfg(feature = "alloc_profiler")]
-use crate::alloc_profiler::AllocationDelta;
 use crate::renderer::{GpuPassTiming, LightClusterMetrics};
 use anyhow::Result;
 use serde::Serialize;
@@ -228,7 +228,10 @@ impl AnalyticsPlugin {
         Some(GpuPassMetric { label, latest_ms, average_ms: avg, sample_count: samples.len() })
     }
 
-    pub fn record_plugin_capability_metrics(&mut self, metrics: Arc<HashMap<String, CapabilityViolationLog>>) {
+    pub fn record_plugin_capability_metrics(
+        &mut self,
+        metrics: Arc<HashMap<String, CapabilityViolationLog>>,
+    ) {
         self.plugin_capability_metrics = metrics;
     }
 

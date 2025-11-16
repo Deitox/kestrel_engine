@@ -23,8 +23,7 @@ struct MeshEntry {
 
 impl MeshRegistry {
     pub fn new(materials: &mut MaterialRegistry) -> Self {
-        let mut registry =
-            MeshRegistry { entries: HashMap::new(), default: String::new(), revision: 0 };
+        let mut registry = MeshRegistry { entries: HashMap::new(), default: String::new(), revision: 0 };
         registry.insert_entry("cube", Mesh::cube(1.0), None, true).expect("cube mesh should insert");
         match crate::mesh::Mesh::load_gltf_with_materials("assets/models/demo_triangle.gltf") {
             Ok(import) => {

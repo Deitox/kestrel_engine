@@ -1,14 +1,11 @@
 use crate::plugins::{
-    apply_manifest_builtin_toggles, apply_manifest_dynamic_toggles, AssetReadbackStats,
-    CapabilityViolationLog, EnginePlugin, ManifestBuiltinToggle, ManifestBuiltinToggleOutcome,
-    ManifestDynamicToggle, ManifestDynamicToggleOutcome, PluginAssetReadbackEvent, PluginCapabilityEvent,
-    PluginContext, PluginManager, PluginManifest, PluginStatus, PluginWatchdogEvent,
+    apply_manifest_builtin_toggles, apply_manifest_dynamic_toggles, EnginePlugin, ManifestBuiltinToggle,
+    ManifestBuiltinToggleOutcome, ManifestDynamicToggle, ManifestDynamicToggleOutcome, PluginContext,
+    PluginManager, PluginManifest,
 };
 use anyhow::{anyhow, Result};
-use std::collections::{HashMap, HashSet};
-use std::mem;
+use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 pub(crate) struct BuiltinPluginFactory {
     pub(crate) name: &'static str,
@@ -41,7 +38,6 @@ impl PluginToggleSummary {
 }
 
 pub(crate) struct PluginHost {
-    manager: PluginManager,
     manifest: Option<PluginManifest>,
     manifest_path: PathBuf,
     manifest_error: Option<String>,
@@ -58,7 +54,7 @@ impl PluginHost {
                 (None, Some(message))
             }
         };
-        Self { manager: PluginManager::default(), manifest, manifest_path, manifest_error }
+        Self { manifest, manifest_path, manifest_error }
     }
 
     pub(crate) fn manifest(&self) -> Option<&PluginManifest> {
@@ -67,61 +63,6 @@ impl PluginHost {
 
     pub(crate) fn manifest_error(&self) -> Option<&str> {
         self.manifest_error.as_deref()
-    }
-
-    pub(crate) fn statuses(&self) -> &[PluginStatus] {
-        self.manager.statuses()
-    }
-
-    pub(crate) fn capability_metrics(&self) -> Arc<HashMap<String, CapabilityViolationLog>> {
-        self.manager.capability_metrics()
-    }
-
-    pub(crate) fn asset_readback_metrics(&self) -> HashMap<String, AssetReadbackStats> {
-        self.manager.asset_readback_metrics()
-    }
-
-    pub(crate) fn ecs_query_history(&self) -> HashMap<String, Vec<u64>> {
-        self.manager.ecs_query_history()
-    }
-
-    pub(crate) fn watchdog_events(&self) -> HashMap<String, Vec<PluginWatchdogEvent>> {
-        self.manager.watchdog_events()
-    }
-
-    pub(crate) fn clear_watchdog_events(&mut self, plugin_name: &str) {
-        self.manager.clear_watchdog_events(plugin_name);
-    }
-
-    pub(crate) fn drain_watchdog_events(&mut self) -> Vec<PluginWatchdogEvent> {
-        self.manager.drain_watchdog_events()
-    }
-
-    pub(crate) fn drain_asset_readback_events(&mut self) -> Vec<PluginAssetReadbackEvent> {
-        self.manager.drain_asset_readback_events()
-    }
-
-    pub(crate) fn drain_capability_events(&mut self) -> Vec<PluginCapabilityEvent> {
-        self.manager.drain_capability_events()
-    }
-
-    pub(crate) fn has_asset_readback_request(&self, plugin_name: &str) -> bool {
-        self.manager.has_asset_readback_request(plugin_name)
-    }
-
-    pub(crate) fn retry_last_asset_readback(&mut self, plugin_name: &str) -> Result<Option<(u64, String)>> {
-        match self.manager.retry_last_asset_readback(plugin_name)? {
-            Some(response) => Ok(Some((response.byte_length, response.content_type))),
-            None => Ok(None),
-        }
-    }
-
-    pub(crate) fn get<T: EnginePlugin + 'static>(&self) -> Option<&T> {
-        self.manager.get::<T>()
-    }
-
-    pub(crate) fn get_mut<T: EnginePlugin + 'static>(&mut self) -> Option<&mut T> {
-        self.manager.get_mut::<T>()
     }
 
     pub(crate) fn register_builtins(
@@ -207,23 +148,6 @@ impl PluginHost {
             .as_ref()
             .map(|manifest| manifest.disabled_builtins().map(|name| name.to_string()).collect())
             .unwrap_or_default()
-    }
-
-    pub(crate) fn take_manager(&mut self) -> PluginManager {
-        mem::take(&mut self.manager)
-    }
-
-    pub(crate) fn restore_manager(&mut self, manager: PluginManager) {
-        self.manager = manager;
-    }
-
-    pub(crate) fn placeholder() -> Self {
-        Self {
-            manager: PluginManager::default(),
-            manifest: None,
-            manifest_path: PathBuf::new(),
-            manifest_error: None,
-        }
     }
 }
 

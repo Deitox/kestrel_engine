@@ -1,13 +1,13 @@
 use super::{
-    plugin_host::PluginHost, App, CameraBookmark, FrameTimingSample, MeshControlMode, ScriptConsoleEntry,
-    ScriptConsoleKind, ViewportCameraMode,
+    App, CameraBookmark, FrameTimingSample, MeshControlMode, ScriptConsoleEntry, ScriptConsoleKind,
+    ViewportCameraMode,
 };
+#[cfg(feature = "alloc_profiler")]
+use crate::alloc_profiler::AllocationDelta;
 use crate::analytics::{
     AnimationBudgetSample, KeyframeEditorEvent, KeyframeEditorEventKind, KeyframeEditorTrackKind,
     KeyframeEditorUsageSnapshot,
 };
-#[cfg(feature = "alloc_profiler")]
-use crate::alloc_profiler::AllocationDelta;
 use crate::animation_validation::AnimationValidationSeverity;
 use crate::audio::{AudioHealthSnapshot, AudioPlugin};
 use crate::camera3d::Camera3D;
@@ -23,8 +23,8 @@ use crate::gizmo::{
 };
 use crate::mesh_preview::{GIZMO_3D_AXIS_LENGTH_SCALE, GIZMO_3D_AXIS_MAX, GIZMO_3D_AXIS_MIN};
 use crate::plugins::{
-    AssetReadbackStats, CapabilityViolationLog, PluginCapability, PluginState, PluginStatus, PluginTrust,
-    PluginWatchdogEvent,
+    AssetReadbackStats, CapabilityViolationLog, PluginCapability, PluginManager, PluginState, PluginStatus,
+    PluginTrust, PluginWatchdogEvent,
 };
 use crate::prefab::{PrefabFormat, PrefabStatusKind, PrefabStatusMessage};
 use crate::renderer::{LightClusterMetrics, ScenePointLight, LIGHT_CLUSTER_MAX_LIGHTS, MAX_SHADOW_CASCADES};
@@ -327,7 +327,7 @@ fn plugin_debug_ui(
     asset_metrics: &HashMap<String, AssetReadbackStats>,
     ecs_history: &HashMap<String, Vec<u64>>,
     watchdog_events: &HashMap<String, Vec<PluginWatchdogEvent>>,
-    plugin_host: &mut PluginHost,
+    plugin_manager: &mut PluginManager,
     scene_status: &mut Option<String>,
 ) {
     if let Some(events) = watchdog_events.get(plugin_name).filter(|entries| !entries.is_empty()) {
@@ -337,7 +337,7 @@ fn plugin_debug_ui(
                 format!("Watchdog events: {}", events.len()),
             );
             if ui.button("Clear").clicked() {
-                plugin_host.clear_watchdog_events(plugin_name);
+                plugin_manager.clear_watchdog_events(plugin_name);
             }
         });
         egui::CollapsingHeader::new("Watchdog history").default_open(false).show(ui, |ui| {
@@ -374,11 +374,13 @@ fn plugin_debug_ui(
             format_data_size(stats.bytes),
         ));
     }
-    let retry_enabled = plugin_host.has_asset_readback_request(plugin_name);
+    let retry_enabled = plugin_manager.has_asset_readback_request(plugin_name);
     let retry_button = ui.add_enabled(retry_enabled, egui::Button::new("Retry asset readback"));
     if retry_button.clicked() {
-        match plugin_host.retry_last_asset_readback(plugin_name) {
-            Ok(Some((bytes, content_type))) => {
+        match plugin_manager.retry_last_asset_readback(plugin_name) {
+            Ok(Some(response)) => {
+                let bytes = response.byte_length;
+                let content_type = response.content_type.clone();
                 *scene_status = Some(format!(
                     "Retried asset readback for {plugin_name}: {} ({content_type})",
                     format_data_size(bytes)
@@ -2431,11 +2433,11 @@ impl App {
                     ui.small(
                         "Toggle entries below to update config/plugins.json without leaving the editor.",
                     );
-                    let status_snapshot = self.plugin_host.statuses().to_vec();
-                    let capability_metrics = self.plugin_host.capability_metrics();
-                    let asset_metrics = self.plugin_host.asset_readback_metrics();
-                    let ecs_history = self.plugin_host.ecs_query_history();
-                    let watchdog_events = self.plugin_host.watchdog_events();
+                    let status_snapshot = self.plugin_manager.statuses().to_vec();
+                    let capability_metrics = self.plugin_manager.capability_metrics();
+                    let asset_metrics = self.plugin_manager.asset_readback_metrics();
+                    let ecs_history = self.plugin_manager.ecs_query_history();
+                    let watchdog_events = self.plugin_manager.watchdog_events();
                     let mut dynamic_statuses: BTreeMap<String, PluginStatus> = BTreeMap::new();
                     let mut builtin_statuses = Vec::new();
                     for status in status_snapshot {
@@ -2521,10 +2523,10 @@ impl App {
                                     plugin_debug_ui(
                                         ui,
                                         &plugin_name,
-                                        &asset_metrics,
-                                        &ecs_history,
-                                        &watchdog_events,
-                                        &mut self.plugin_host,
+                                        asset_metrics.as_ref(),
+                                        ecs_history.as_ref(),
+                                        watchdog_events.as_ref(),
+                                        &mut self.plugin_manager,
                                         &mut self.ui_scene_status,
                                     );
                                 });
@@ -2562,10 +2564,10 @@ impl App {
                             plugin_debug_ui(
                                 ui,
                                 &status.name,
-                                &asset_metrics,
-                                &ecs_history,
-                                &watchdog_events,
-                                &mut self.plugin_host,
+                                asset_metrics.as_ref(),
+                                ecs_history.as_ref(),
+                                watchdog_events.as_ref(),
+                                &mut self.plugin_manager,
                                 &mut self.ui_scene_status,
                             );
                         }
@@ -2611,10 +2613,10 @@ impl App {
                                 plugin_debug_ui(
                                     ui,
                                     &status.name,
-                                    &asset_metrics,
-                                    &ecs_history,
-                                    &watchdog_events,
-                                    &mut self.plugin_host,
+                                    asset_metrics.as_ref(),
+                                    ecs_history.as_ref(),
+                                    watchdog_events.as_ref(),
+                                    &mut self.plugin_manager,
                                     &mut self.ui_scene_status,
                                 );
                             });
@@ -2789,7 +2791,7 @@ impl App {
                     });
 
                     ui.separator();
-                    let plugin_present = self.plugin_host.get::<AudioPlugin>().is_some();
+                    let plugin_present = self.plugin_manager.get::<AudioPlugin>().is_some();
                     let parsed_triggers: Vec<ParsedAudioTrigger> =
                         audio_triggers.iter().map(|label| parse_audio_trigger(label)).collect();
                     let mut trigger_counts: BTreeMap<AudioTriggerKind, usize> = BTreeMap::new();
@@ -2843,7 +2845,7 @@ impl App {
                             ui.small(format!("Sample rate: {rate} Hz"));
                         }
                         if ui.checkbox(&mut audio_enabled, "Enable audio triggers").changed() {
-                            if let Some(audio) = self.plugin_host.get_mut::<AudioPlugin>() {
+                            if let Some(audio) = self.plugin_manager.get_mut::<AudioPlugin>() {
                                 audio.set_enabled(audio_enabled);
                             }
                         }
@@ -2879,7 +2881,7 @@ impl App {
                             ui.small(force_text);
                         }
                         if ui.button("Clear audio log").clicked() {
-                            if let Some(audio) = self.plugin_host.get_mut::<AudioPlugin>() {
+                            if let Some(audio) = self.plugin_manager.get_mut::<AudioPlugin>() {
                                 audio.clear();
                             }
                         }

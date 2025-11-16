@@ -62,12 +62,7 @@ unsafe impl GlobalAlloc for TrackingAllocator {
         TOTAL_DEALLOCATED.fetch_add(layout.size() as u64, Ordering::Relaxed);
     }
 
-    unsafe fn realloc(
-        &self,
-        ptr: *mut u8,
-        layout: Layout,
-        new_size: usize,
-    ) -> *mut u8 {
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         let new_ptr = System.realloc(ptr, layout, new_size);
         if !new_ptr.is_null() {
             TOTAL_ALLOCATED.fetch_add(new_size as u64, Ordering::Relaxed);

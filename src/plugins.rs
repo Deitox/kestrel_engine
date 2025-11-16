@@ -826,11 +826,14 @@ pub struct PluginManager {
     loaded_names: HashSet<String>,
     asset_cache: IsolatedAssetCache,
     asset_metrics: HashMap<String, AssetReadbackStats>,
+    asset_metrics_snapshot: Option<Arc<HashMap<String, AssetReadbackStats>>>,
     asset_readback_events: Vec<PluginAssetReadbackEvent>,
     ecs_query_history: HashMap<String, VecDeque<u64>>,
+    ecs_history_snapshot: Option<Arc<HashMap<String, Vec<u64>>>>,
     last_asset_payload: HashMap<String, RpcAssetReadbackPayload>,
     watchdog_events: HashMap<String, VecDeque<PluginWatchdogEvent>>,
     pending_watchdog_events: Vec<PluginWatchdogEvent>,
+    watchdog_snapshot: Option<Arc<HashMap<String, Vec<PluginWatchdogEvent>>>>,
 }
 
 struct PluginSlot {
@@ -866,11 +869,14 @@ impl Default for PluginManager {
             loaded_names: HashSet::new(),
             asset_cache: IsolatedAssetCache::new(32 * 1024 * 1024),
             asset_metrics: HashMap::new(),
+            asset_metrics_snapshot: None,
             asset_readback_events: Vec::new(),
             ecs_query_history: HashMap::new(),
+            ecs_history_snapshot: None,
             last_asset_payload: HashMap::new(),
             watchdog_events: HashMap::new(),
             pending_watchdog_events: Vec::new(),
+            watchdog_snapshot: None,
         }
     }
 }
@@ -892,26 +898,46 @@ impl PluginManager {
         self.capability_tracker.drain_events()
     }
 
-    pub fn asset_readback_metrics(&self) -> HashMap<String, AssetReadbackStats> {
-        self.asset_metrics.clone()
+    pub fn asset_readback_metrics(&mut self) -> Arc<HashMap<String, AssetReadbackStats>> {
+        if let Some(snapshot) = &self.asset_metrics_snapshot {
+            return Arc::clone(snapshot);
+        }
+        let arc = Arc::new(self.asset_metrics.clone());
+        self.asset_metrics_snapshot = Some(Arc::clone(&arc));
+        arc
     }
 
-    pub fn ecs_query_history(&self) -> HashMap<String, Vec<u64>> {
-        self.ecs_query_history
+    pub fn ecs_query_history(&mut self) -> Arc<HashMap<String, Vec<u64>>> {
+        if let Some(snapshot) = &self.ecs_history_snapshot {
+            return Arc::clone(snapshot);
+        }
+        let map = self
+            .ecs_query_history
             .iter()
             .map(|(plugin, log)| (plugin.clone(), log.iter().copied().collect()))
-            .collect()
+            .collect();
+        let arc = Arc::new(map);
+        self.ecs_history_snapshot = Some(Arc::clone(&arc));
+        arc
     }
 
-    pub fn watchdog_events(&self) -> HashMap<String, Vec<PluginWatchdogEvent>> {
-        self.watchdog_events
+    pub fn watchdog_events(&mut self) -> Arc<HashMap<String, Vec<PluginWatchdogEvent>>> {
+        if let Some(snapshot) = &self.watchdog_snapshot {
+            return Arc::clone(snapshot);
+        }
+        let map = self
+            .watchdog_events
             .iter()
             .map(|(plugin, log)| (plugin.clone(), log.iter().cloned().collect()))
-            .collect()
+            .collect();
+        let arc = Arc::new(map);
+        self.watchdog_snapshot = Some(Arc::clone(&arc));
+        arc
     }
 
     pub fn clear_watchdog_events(&mut self, plugin_name: &str) {
         self.watchdog_events.remove(plugin_name);
+        self.watchdog_snapshot = None;
     }
 
     pub fn drain_watchdog_events(&mut self) -> Vec<PluginWatchdogEvent> {
@@ -1052,6 +1078,7 @@ impl PluginManager {
         if let Some(hit) = self.asset_cache.get(&key) {
             let stats = self.asset_metrics.entry(plugin_name.to_string()).or_default();
             stats.cache_hits += 1;
+            self.asset_metrics_snapshot = None;
             self.record_asset_readback_event(
                 plugin_name,
                 &payload,
@@ -1085,6 +1112,7 @@ impl PluginManager {
                     let stats = self.asset_metrics.entry(plugin_name.to_string()).or_default();
                     stats.requests += 1;
                     stats.bytes += response.byte_length;
+                    self.asset_metrics_snapshot = None;
                     self.asset_cache.insert(key, response.clone());
                     self.record_asset_readback_event(
                         plugin_name,
@@ -1099,6 +1127,7 @@ impl PluginManager {
                     if err.to_string().contains("asset readback budget exceeded") {
                         let stats = self.asset_metrics.entry(plugin_name.to_string()).or_default();
                         stats.throttled += 1;
+                        self.asset_metrics_snapshot = None;
                     }
                     (Err(err), proxy.take_watchdog_event())
                 }
@@ -1119,6 +1148,7 @@ impl PluginManager {
         while log.len() > MAX_ENTRIES {
             log.pop_back();
         }
+        self.ecs_history_snapshot = None;
     }
 
     fn log_watchdog_event(&mut self, event: PluginWatchdogEvent) {
@@ -1129,6 +1159,7 @@ impl PluginManager {
             log.pop_back();
         }
         self.pending_watchdog_events.push(event);
+        self.watchdog_snapshot = None;
     }
 
     fn mark_plugin_failed(&mut self, idx: usize, reason: String) {
