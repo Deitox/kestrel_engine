@@ -6,6 +6,8 @@ use crate::analytics::{
     AnimationBudgetSample, KeyframeEditorEvent, KeyframeEditorEventKind, KeyframeEditorTrackKind,
     KeyframeEditorUsageSnapshot,
 };
+#[cfg(feature = "alloc_profiler")]
+use crate::alloc_profiler::AllocationDelta;
 use crate::animation_validation::AnimationValidationSeverity;
 use crate::audio::{AudioHealthSnapshot, AudioPlugin};
 use crate::camera3d::Camera3D;
@@ -549,6 +551,8 @@ pub(super) struct EditorUiParams {
     pub raw_input: egui::RawInput,
     pub base_pixels_per_point: f32,
     pub hist_points: Vec<[f64; 2]>,
+    #[cfg(feature = "alloc_profiler")]
+    pub allocation_delta: Option<AllocationDelta>,
     pub frame_timings: Arc<[FrameTimingSample]>,
     pub system_timings: Vec<SystemTimingSummary>,
     pub entity_count: usize,
@@ -678,6 +682,8 @@ impl App {
             raw_input,
             base_pixels_per_point,
             hist_points,
+            #[cfg(feature = "alloc_profiler")]
+            allocation_delta,
             frame_timings,
             system_timings,
             entity_count,
@@ -879,6 +885,16 @@ impl App {
                             ));
                         });
                         ui.label("Target: 16.7ms for 60 FPS");
+                        #[cfg(feature = "alloc_profiler")]
+                        if let Some(delta) = allocation_delta {
+                            let allocated_kb = delta.allocated_bytes as f64 / 1024.0;
+                            let deallocated_kb = delta.deallocated_bytes as f64 / 1024.0;
+                            let net_kb = delta.net_bytes() as f64 / 1024.0;
+                            ui.label(format!(
+                                "Alloc Δ: +{:.2} KB / -{:.2} KB (net {:+.2} KB)",
+                                allocated_kb, deallocated_kb, net_kb
+                            ));
+                        }
                         ui.separator();
                         if shadow_pass_metric.is_some() || mesh_pass_metric.is_some() {
                             egui::CollapsingHeader::new("GPU Pass Baselines").default_open(false).show(

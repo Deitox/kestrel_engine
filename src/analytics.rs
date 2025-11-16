@@ -5,6 +5,8 @@ use crate::plugins::{
     CapabilityViolationLog, EnginePlugin, PluginAssetReadbackEvent, PluginCapabilityEvent, PluginContext,
     PluginWatchdogEvent,
 };
+#[cfg(feature = "alloc_profiler")]
+use crate::alloc_profiler::AllocationDelta;
 use crate::renderer::{GpuPassTiming, LightClusterMetrics};
 use anyhow::Result;
 use serde::Serialize;
@@ -131,6 +133,8 @@ pub struct AnalyticsPlugin {
     animation_budget_sample: Option<AnimationBudgetSample>,
     keyframe_editor_usage: KeyframeEditorUsageSnapshot,
     keyframe_editor_events: VecDeque<KeyframeEditorEvent>,
+    #[cfg(feature = "alloc_profiler")]
+    allocation_delta: Option<AllocationDelta>,
 }
 
 const SECURITY_EVENT_CAPACITY: usize = 64;
@@ -156,6 +160,8 @@ impl AnalyticsPlugin {
             animation_budget_sample: None,
             keyframe_editor_usage: KeyframeEditorUsageSnapshot::default(),
             keyframe_editor_events: VecDeque::with_capacity(KEYFRAME_EVENT_CAPACITY),
+            #[cfg(feature = "alloc_profiler")]
+            allocation_delta: None,
         }
     }
 
@@ -228,6 +234,16 @@ impl AnalyticsPlugin {
 
     pub fn plugin_capability_metrics(&self) -> Arc<HashMap<String, CapabilityViolationLog>> {
         Arc::clone(&self.plugin_capability_metrics)
+    }
+
+    #[cfg(feature = "alloc_profiler")]
+    pub fn record_allocation_delta(&mut self, delta: AllocationDelta) {
+        self.allocation_delta = Some(delta);
+    }
+
+    #[cfg(feature = "alloc_profiler")]
+    pub fn allocation_delta(&self) -> Option<AllocationDelta> {
+        self.allocation_delta
     }
 
     pub fn record_plugin_capability_events(
@@ -366,6 +382,10 @@ impl EnginePlugin for AnalyticsPlugin {
         self.animation_validation_events.clear();
         self.animation_budget_sample = None;
         self.plugin_capability_metrics = Arc::new(HashMap::new());
+        #[cfg(feature = "alloc_profiler")]
+        {
+            self.allocation_delta = None;
+        }
         self.keyframe_editor_events.clear();
         self.keyframe_editor_usage = KeyframeEditorUsageSnapshot::default();
         Ok(())

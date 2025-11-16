@@ -15,6 +15,8 @@ use self::plugin_host::{BuiltinPluginFactory, PluginHost};
 use crate::analytics::{
     AnalyticsPlugin, AnimationBudgetSample, KeyframeEditorEventKind, KeyframeEditorTrackKind,
 };
+#[cfg(feature = "alloc_profiler")]
+use crate::alloc_profiler;
 use crate::animation_validation::{
     AnimationValidationEvent, AnimationValidationSeverity, AnimationValidator,
 };
@@ -615,6 +617,8 @@ pub struct App {
     id_lookup_input: String,
     id_lookup_active: bool,
     frame_profiler: FrameProfiler,
+    #[cfg(feature = "alloc_profiler")]
+    last_alloc_snapshot: alloc_profiler::AllocationSnapshot,
     telemetry_cache: TelemetryCache,
     gpu_timings: Vec<GpuPassTiming>,
     gpu_timing_history: VecDeque<GpuTimingFrame>,
@@ -2656,6 +2660,8 @@ impl App {
             sprite_guardrail_max_pixels: editor_cfg.sprite_guard_max_pixels,
             sprite_guardrail_status: None,
             frame_profiler: FrameProfiler::new(240),
+            #[cfg(feature = "alloc_profiler")]
+            last_alloc_snapshot: alloc_profiler::allocation_snapshot(),
             telemetry_cache: TelemetryCache::default(),
             gpu_timings: Vec::new(),
             gpu_timing_history: VecDeque::with_capacity(240),
@@ -3929,6 +3935,14 @@ impl ApplicationHandler for App {
         #[allow(unused_assignments)]
         let mut render_time_ms = 0.0;
         let mut ui_time_ms = 0.0;
+        #[cfg(feature = "alloc_profiler")]
+        let alloc_snapshot = alloc_profiler::allocation_snapshot();
+        #[cfg(feature = "alloc_profiler")]
+        let alloc_delta = alloc_snapshot.delta_since(self.last_alloc_snapshot);
+        #[cfg(feature = "alloc_profiler")]
+        {
+            self.last_alloc_snapshot = alloc_snapshot;
+        }
 
         if let Some(entity) = self.selected_entity {
             if !self.ecs.entity_exists(entity) {
@@ -3957,6 +3971,10 @@ impl ApplicationHandler for App {
         let asset_readback_alerts = self.plugin_host.drain_asset_readback_events();
         let animation_validation_alerts = self.drain_animation_validation_events();
         if let Some(analytics) = self.analytics_plugin_mut() {
+            #[cfg(feature = "alloc_profiler")]
+            {
+                analytics.record_allocation_delta(alloc_delta);
+            }
             analytics.record_plugin_capability_metrics(capability_metrics);
             if !capability_events.is_empty() {
                 analytics.record_plugin_capability_events(capability_events);
@@ -4313,6 +4331,9 @@ impl ApplicationHandler for App {
         let hist_points =
             self.analytics_plugin().map(|plugin| plugin.frame_plot_points()).unwrap_or_else(Vec::new);
         let spatial_metrics = self.analytics_plugin().and_then(|plugin| plugin.spatial_metrics());
+        #[cfg(feature = "alloc_profiler")]
+        let allocation_delta =
+            self.analytics_plugin().and_then(|plugin| plugin.allocation_delta());
         let system_timings = self.ecs.system_timings();
         let sprite_eval_ms = system_timings
             .iter()
@@ -4418,6 +4439,8 @@ impl ApplicationHandler for App {
             raw_input,
             base_pixels_per_point,
             hist_points,
+            #[cfg(feature = "alloc_profiler")]
+            allocation_delta,
             frame_timings,
             system_timings,
             entity_count,

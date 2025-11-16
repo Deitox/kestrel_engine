@@ -1,3 +1,5 @@
+#[cfg(feature = "alloc_profiler")]
+pub mod alloc_profiler;
 pub mod analytics;
 pub mod animation_validation;
 pub mod app;
@@ -25,6 +27,10 @@ pub mod scene;
 pub mod scene_capture;
 pub mod scripts;
 pub mod time;
+
+#[cfg(feature = "alloc_profiler")]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: alloc_profiler::TrackingAllocator = alloc_profiler::TrackingAllocator;
 
 pub use app::{run, run_with_overrides, App};
 
