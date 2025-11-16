@@ -28,6 +28,11 @@ const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const MAX_SKIN_JOINTS: usize = 256;
 const SKINNING_CACHE_HEADROOM: usize = 4;
 pub const MAX_SHADOW_CASCADES: usize = 4;
+const LIGHT_CLUSTER_TILE_SIZE: u32 = 192;
+const LIGHT_CLUSTER_Z_SLICES: u32 = 8;
+const LIGHT_CLUSTER_MAX_LIGHTS: usize = 256;
+const LIGHT_CLUSTER_MAX_LIGHTS_PER_CLUSTER: usize = 64;
+const LIGHT_CLUSTER_RECORD_STRIDE_WORDS: u32 = 2;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -65,6 +70,79 @@ struct ShadowDrawUniform {
     model: [[f32; 4]; 4],
     joint_count: u32,
     _padding: [u32; 3],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable, Default)]
+struct PointLightGpu {
+    position_radius: [f32; 4],
+    color_intensity: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable, Default)]
+struct ClusterRecordGpu {
+    offset: u32,
+    count: u32,
+    _pad0: u32,
+    _pad1: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable, Default)]
+struct ClusterConfigUniform {
+    viewport: [f32; 4],
+    depth_params: [f32; 4],
+    grid_dims: [u32; 4],
+    stats: [u32; 4],
+    data_meta: [u32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct ClusterLightUniform {
+    config: ClusterConfigUniform,
+    lights: [PointLightGpu; LIGHT_CLUSTER_MAX_LIGHTS],
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct LightClusterCache {
+    viewport: PhysicalSize<u32>,
+    view_matrix: Mat4,
+    proj_matrix: Mat4,
+    lights_hash: u64,
+    metrics: LightClusterMetrics,
+    valid: bool,
+}
+
+impl LightClusterCache {
+    fn matches(&self, viewport: PhysicalSize<u32>, view: Mat4, proj: Mat4, lights_hash: u64) -> bool {
+        self.valid
+            && self.viewport == viewport
+            && self.view_matrix == view
+            && self.proj_matrix == proj
+            && self.lights_hash == lights_hash
+    }
+
+    fn update(
+        &mut self,
+        viewport: PhysicalSize<u32>,
+        view: Mat4,
+        proj: Mat4,
+        lights_hash: u64,
+        metrics: LightClusterMetrics,
+    ) {
+        self.viewport = viewport;
+        self.view_matrix = view;
+        self.proj_matrix = proj;
+        self.lights_hash = lights_hash;
+        self.metrics = metrics;
+        self.valid = true;
+    }
+
+    fn invalidate(&mut self) {
+        self.valid = false;
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -349,11 +427,11 @@ struct HeadlessTarget {
 
 struct MeshPipelineResources {
     pipeline: wgpu::RenderPipeline,
-    frame_bgl: Arc<wgpu::BindGroupLayout>,
-    draw_bgl: Arc<wgpu::BindGroupLayout>,
+    frame_draw_bgl: Arc<wgpu::BindGroupLayout>,
     skinning_bgl: Arc<wgpu::BindGroupLayout>,
     material_bgl: Arc<wgpu::BindGroupLayout>,
     environment_bgl: Arc<wgpu::BindGroupLayout>,
+    light_cluster_bgl: Arc<wgpu::BindGroupLayout>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -374,19 +452,436 @@ impl PaletteUploadStats {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LightClusterMetrics {
+    pub total_lights: u32,
+    pub visible_lights: u32,
+    pub grid_dims: [u32; 3],
+    pub active_clusters: u32,
+    pub total_clusters: u32,
+    pub average_lights_per_cluster: f32,
+    pub max_lights_per_cluster: u32,
+    pub overflow_clusters: u32,
+    pub light_assignments: u32,
+    pub tile_size_px: u32,
+}
+
+impl LightClusterMetrics {
+    pub fn culled_lights(&self) -> u32 {
+        self.total_lights.saturating_sub(self.visible_lights)
+    }
+}
+
 #[derive(Default)]
 struct MeshPass {
     resources: Option<MeshPipelineResources>,
     frame_buffer: Option<wgpu::Buffer>,
     draw_buffer: Option<wgpu::Buffer>,
-    frame_bind_group: Option<wgpu::BindGroup>,
-    draw_bind_group: Option<wgpu::BindGroup>,
+    frame_draw_bind_group: Option<wgpu::BindGroup>,
     skinning_identity_buffer: Option<wgpu::Buffer>,
     skinning_identity_bind_group: Option<wgpu::BindGroup>,
     skinning_palette_buffers: Vec<wgpu::Buffer>,
     skinning_palette_bind_groups: Vec<wgpu::BindGroup>,
     palette_staging: Vec<[f32; 16]>,
     skinning_cursor: usize,
+}
+
+#[derive(Default)]
+struct LightClusterPass {
+    layout: Option<Arc<wgpu::BindGroupLayout>>,
+    uniform_buffer: Option<wgpu::Buffer>,
+    storage_buffer: Option<wgpu::Buffer>,
+    bind_group: Option<wgpu::BindGroup>,
+    storage_capacity_words: usize,
+    metrics: LightClusterMetrics,
+    grid_dims: [u32; 3],
+    tile_size_px: u32,
+    cache: LightClusterCache,
+}
+
+struct LightClusterBuildData {
+    uniform: ClusterLightUniform,
+    cluster_data_words: Vec<u32>,
+    metrics: LightClusterMetrics,
+}
+
+impl LightClusterPass {
+    fn update_resources(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layout: &Arc<wgpu::BindGroupLayout>,
+        data: &LightClusterBuildData,
+    ) -> Result<()> {
+        if self.uniform_buffer.is_none() {
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Light Cluster Uniform"),
+                size: std::mem::size_of::<ClusterLightUniform>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.uniform_buffer = Some(buffer);
+            self.bind_group = None;
+        }
+        if self.storage_buffer.is_none() || self.storage_capacity_words < data.cluster_data_words.len() {
+            let capacity = data.cluster_data_words.len().max(1);
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Light Cluster Storage"),
+                size: (capacity * std::mem::size_of::<u32>()) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.storage_buffer = Some(buffer);
+            self.storage_capacity_words = capacity;
+            self.bind_group = None;
+        }
+
+        let uniform_buffer = self.uniform_buffer.as_ref().context("Light cluster uniform missing")?;
+        queue.write_buffer(uniform_buffer, 0, bytemuck::bytes_of(&data.uniform));
+
+        let storage_buffer = self.storage_buffer.as_ref().context("Light cluster storage missing")?;
+        queue.write_buffer(storage_buffer, 0, bytemuck::cast_slice(&data.cluster_data_words));
+
+        if self.bind_group.is_none() {
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Light Cluster Bind Group"),
+                layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: storage_buffer.as_entire_binding() },
+                ],
+            });
+            self.bind_group = Some(bind_group);
+        }
+
+        self.metrics = data.metrics;
+        self.grid_dims = data.metrics.grid_dims;
+        self.tile_size_px = data.metrics.tile_size_px;
+        self.layout = Some(layout.clone());
+        Ok(())
+    }
+}
+
+fn build_light_cluster_data(
+    lights: &[ScenePointLight],
+    camera: &Camera3D,
+    viewport: PhysicalSize<u32>,
+    view: Mat4,
+    proj: Mat4,
+) -> LightClusterBuildData {
+    let width = viewport.width.max(1);
+    let height = viewport.height.max(1);
+    let grid_x = ((width + LIGHT_CLUSTER_TILE_SIZE - 1) / LIGHT_CLUSTER_TILE_SIZE).max(1);
+    let grid_y = ((height + LIGHT_CLUSTER_TILE_SIZE - 1) / LIGHT_CLUSTER_TILE_SIZE).max(1);
+    let grid_z = LIGHT_CLUSTER_Z_SLICES.max(1);
+    let total_clusters = grid_x.saturating_mul(grid_y).saturating_mul(grid_z).max(1);
+    let aspect = if height > 0 { width as f32 / height as f32 } else { 1.0 };
+    let near = camera.near;
+    let far = camera.far.max(near + 0.0001);
+    let depth_range = (far - near).max(0.0001);
+    let inv_depth_range = 1.0 / depth_range;
+    let view_proj = proj * view;
+    let frustum_planes = Renderer::extract_frustum_planes(view_proj);
+    let width_f = width as f32;
+    let height_f = height as f32;
+    let viewport_inv_width = if width == 0 { 0.0 } else { 1.0 / width as f32 };
+    let viewport_inv_height = if height == 0 { 0.0 } else { 1.0 / height as f32 };
+    let half_width = width_f * 0.5;
+    let half_height = height_f * 0.5;
+    let half_fov = (camera.fov_y_radians * 0.5).max(0.001);
+    let focal_y = 1.0 / half_fov.tan();
+    let focal_x = focal_y / aspect.max(0.001);
+
+    let mut uniform = ClusterLightUniform {
+        config: ClusterConfigUniform {
+            viewport: [width as f32, height as f32, viewport_inv_width, viewport_inv_height],
+            depth_params: [near, far, inv_depth_range, 0.0],
+            grid_dims: [grid_x, grid_y, grid_z, total_clusters as u32],
+            stats: [0, LIGHT_CLUSTER_MAX_LIGHTS_PER_CLUSTER as u32, LIGHT_CLUSTER_TILE_SIZE, 0],
+            data_meta: [0, LIGHT_CLUSTER_RECORD_STRIDE_WORDS, 0, 0],
+        },
+        lights: [PointLightGpu::default(); LIGHT_CLUSTER_MAX_LIGHTS],
+    };
+
+    #[derive(Clone, Copy)]
+    struct LightClusterSpan {
+        light_index: u32,
+        start_x: u32,
+        end_x: u32,
+        start_y: u32,
+        end_y: u32,
+        start_z: u32,
+        end_z: u32,
+    }
+
+    let mut spans: Vec<LightClusterSpan> = Vec::new();
+    let mut gpu_lights: Vec<PointLightGpu> = Vec::new();
+    let mut overflow_clusters = 0u32;
+
+    for light in lights.iter().take(LIGHT_CLUSTER_MAX_LIGHTS) {
+        let radius = light.radius.max(0.01);
+        if !Renderer::sphere_in_frustum(light.position, radius, &frustum_planes) {
+            continue;
+        }
+        let world_pos = light.position.extend(1.0);
+        let view_pos = view * world_pos;
+        let view_vec = view_pos.truncate();
+        let depth = -view_vec.z;
+        if depth <= 0.0 || depth + radius <= near || depth - radius >= far {
+            continue;
+        }
+        let clip_pos = proj * Vec4::new(view_vec.x, view_vec.y, view_vec.z, 1.0);
+        if clip_pos.w.abs() < 1e-5 {
+            continue;
+        }
+        let ndc = clip_pos.truncate() / clip_pos.w;
+        let screen_x = (ndc.x * 0.5 + 0.5) * width_f;
+        let screen_y = (1.0 - (ndc.y * 0.5 + 0.5)) * height_f;
+        let screen_radius_x = ((radius / depth) * focal_x * half_width).abs().max(1.0);
+        let screen_radius_y = ((radius / depth) * focal_y * half_height).abs().max(1.0);
+
+        let min_screen_x = screen_x - screen_radius_x;
+        let max_screen_x = screen_x + screen_radius_x;
+        let min_screen_y = screen_y - screen_radius_y;
+        let max_screen_y = screen_y + screen_radius_y;
+
+        if max_screen_x < 0.0 || min_screen_x > width_f || max_screen_y < 0.0 || min_screen_y > height_f {
+            continue;
+        }
+
+        let min_norm_x = (min_screen_x / width_f).clamp(0.0, 1.0);
+        let max_norm_x = (max_screen_x / width_f).clamp(0.0, 1.0);
+        let min_norm_y = (min_screen_y / height_f).clamp(0.0, 1.0);
+        let max_norm_y = (max_screen_y / height_f).clamp(0.0, 1.0);
+        let depth_min = (depth - radius).max(near);
+        let depth_max = (depth + radius).min(far);
+        if depth_max <= near {
+            continue;
+        }
+        let min_norm_z = ((depth_min - near) * inv_depth_range).clamp(0.0, 1.0);
+        let max_norm_z = ((depth_max - near) * inv_depth_range).clamp(0.0, 1.0);
+
+        let start_x = cluster_start_index(min_norm_x, grid_x);
+        let end_x = cluster_end_index(max_norm_x, grid_x);
+        let start_y = cluster_start_index(min_norm_y, grid_y);
+        let end_y = cluster_end_index(max_norm_y, grid_y);
+        let start_z = cluster_start_index(min_norm_z, grid_z);
+        let end_z = cluster_end_index(max_norm_z, grid_z);
+        if start_x > end_x || start_y > end_y || start_z > end_z {
+            continue;
+        }
+
+        let light_index = gpu_lights.len() as u32;
+        let color = light.color;
+        gpu_lights.push(PointLightGpu {
+            position_radius: [light.position.x, light.position.y, light.position.z, radius],
+            color_intensity: [color.x, color.y, color.z, light.intensity.max(0.0)],
+        });
+
+        spans.push(LightClusterSpan { light_index, start_x, end_x, start_y, end_y, start_z, end_z });
+    }
+
+    if spans.is_empty() {
+        let metrics = LightClusterMetrics {
+            total_lights: lights.len() as u32,
+            visible_lights: gpu_lights.len() as u32,
+            grid_dims: [grid_x, grid_y, grid_z],
+            active_clusters: 0,
+            total_clusters: total_clusters as u32,
+            average_lights_per_cluster: 0.0,
+            max_lights_per_cluster: 0,
+            overflow_clusters: 0,
+            light_assignments: 0,
+            tile_size_px: LIGHT_CLUSTER_TILE_SIZE,
+        };
+        uniform.config.stats = [
+            gpu_lights.len() as u32,
+            LIGHT_CLUSTER_MAX_LIGHTS_PER_CLUSTER as u32,
+            LIGHT_CLUSTER_TILE_SIZE,
+            total_clusters as u32,
+        ];
+        return LightClusterBuildData { uniform, cluster_data_words: Vec::new(), metrics };
+    }
+
+    let mut cluster_counts = vec![0u16; total_clusters as usize];
+    for span in &spans {
+        for z in span.start_z..=span.end_z {
+            for y in span.start_y..=span.end_y {
+                for x in span.start_x..=span.end_x {
+                    let idx = cluster_flat_index(x, y, z, grid_x, grid_y);
+                    let count = &mut cluster_counts[idx];
+                    if (*count as usize) < LIGHT_CLUSTER_MAX_LIGHTS_PER_CLUSTER {
+                        *count += 1;
+                    } else {
+                        overflow_clusters = overflow_clusters.saturating_add(1);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut clusters_gpu = Vec::with_capacity(cluster_counts.len());
+    let mut indices_total = 0u32;
+    for &count in &cluster_counts {
+        let limited = count.min(LIGHT_CLUSTER_MAX_LIGHTS_PER_CLUSTER as u16) as u32;
+        clusters_gpu.push(ClusterRecordGpu { offset: indices_total, count: limited, ..Default::default() });
+        indices_total += limited;
+    }
+
+    let mut indices_gpu = vec![0u32; indices_total as usize];
+    let mut write_offsets = vec![0u16; cluster_counts.len()];
+    for span in &spans {
+        for z in span.start_z..=span.end_z {
+            for y in span.start_y..=span.end_y {
+                for x in span.start_x..=span.end_x {
+                    let idx = cluster_flat_index(x, y, z, grid_x, grid_y);
+                    let max_count = cluster_counts[idx];
+                    if max_count == 0 {
+                        continue;
+                    }
+                    let write_count = &mut write_offsets[idx];
+                    if *write_count >= max_count {
+                        continue;
+                    }
+                    let record = &clusters_gpu[idx];
+                    let dst = record.offset + *write_count as u32;
+                    if (dst as usize) < indices_gpu.len() {
+                        indices_gpu[dst as usize] = span.light_index;
+                        *write_count += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    let mut active_clusters = 0u32;
+    let mut max_lights_per_cluster = 0u32;
+    let mut light_assignments = 0u32;
+    for record in &clusters_gpu {
+        if record.count > 0 {
+            active_clusters = active_clusters.saturating_add(1);
+            max_lights_per_cluster = max_lights_per_cluster.max(record.count);
+        }
+        light_assignments = light_assignments.saturating_add(record.count);
+    }
+
+    let metrics = LightClusterMetrics {
+        total_lights: lights.len() as u32,
+        visible_lights: gpu_lights.len() as u32,
+        grid_dims: [grid_x, grid_y, grid_z],
+        active_clusters,
+        total_clusters: total_clusters as u32,
+        average_lights_per_cluster: if active_clusters > 0 {
+            light_assignments as f32 / active_clusters as f32
+        } else {
+            0.0
+        },
+        max_lights_per_cluster,
+        overflow_clusters,
+        light_assignments,
+        tile_size_px: LIGHT_CLUSTER_TILE_SIZE,
+    };
+
+    uniform.config.stats = [
+        gpu_lights.len() as u32,
+        LIGHT_CLUSTER_MAX_LIGHTS_PER_CLUSTER as u32,
+        LIGHT_CLUSTER_TILE_SIZE,
+        clusters_gpu.len() as u32,
+    ];
+    uniform.config.data_meta = [0, LIGHT_CLUSTER_RECORD_STRIDE_WORDS, 0, indices_gpu.len() as u32];
+    for (idx, light) in gpu_lights.iter().enumerate() {
+        if idx < LIGHT_CLUSTER_MAX_LIGHTS {
+            uniform.lights[idx] = *light;
+        }
+    }
+
+    let mut cluster_data_words: Vec<u32> = Vec::with_capacity(
+        clusters_gpu.len() * LIGHT_CLUSTER_RECORD_STRIDE_WORDS as usize + (indices_gpu.len() + 1) / 2,
+    );
+    for record in &clusters_gpu {
+        cluster_data_words.push(record.offset);
+        cluster_data_words.push(record.count);
+    }
+    let indices_offset_words = cluster_data_words.len() as u32;
+    let mut packed_indices = Vec::with_capacity((indices_gpu.len() + 1) / 2);
+    let mut iter = indices_gpu.iter();
+    while let Some(&first) = iter.next() {
+        let second = iter.next().copied().unwrap_or(0);
+        let packed = ((second & 0xFFFF) << 16) | (first & 0xFFFF);
+        packed_indices.push(packed);
+    }
+    cluster_data_words.extend(packed_indices.iter());
+    uniform.config.data_meta = [
+        clusters_gpu.len() as u32,
+        LIGHT_CLUSTER_RECORD_STRIDE_WORDS,
+        indices_offset_words,
+        indices_gpu.len() as u32,
+    ];
+
+    LightClusterBuildData { uniform, cluster_data_words, metrics }
+}
+
+fn cluster_start_index(norm: f32, count: u32) -> u32 {
+    if count <= 1 {
+        return 0;
+    }
+    let value = (norm * count as f32).floor();
+    value.clamp(0.0, (count - 1) as f32) as u32
+}
+
+fn cluster_end_index(norm: f32, count: u32) -> u32 {
+    if count <= 1 {
+        return 0;
+    }
+    let value = (norm * count as f32).ceil() as i32 - 1;
+    value.clamp(0, count as i32 - 1) as u32
+}
+
+fn cluster_flat_index(x: u32, y: u32, z: u32, grid_x: u32, grid_y: u32) -> usize {
+    (z as usize * grid_x as usize * grid_y as usize) + (y as usize * grid_x as usize) + x as usize
+}
+
+fn hash_point_lights(lights: &[ScenePointLight]) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut hash = FNV_OFFSET ^ (lights.len() as u64);
+    for light in lights {
+        for value in [
+            light.position.x.to_bits(),
+            light.position.y.to_bits(),
+            light.position.z.to_bits(),
+            light.color.x.to_bits(),
+            light.color.y.to_bits(),
+            light.color.z.to_bits(),
+            light.radius.to_bits(),
+            light.intensity.to_bits(),
+        ] {
+            hash ^= value as u64;
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+    }
+    hash
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_light_cluster_data_counts_visible_lights() {
+        let camera = Camera3D::new(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, 60.0_f32.to_radians(), 0.1, 100.0);
+        let viewport = PhysicalSize::new(640, 480);
+        let view = camera.view_matrix();
+        let proj = camera.projection_matrix(viewport.width as f32 / viewport.height as f32);
+        let lights = vec![
+            ScenePointLight::new(Vec3::ZERO, Vec3::splat(1.0), 4.0, 1.0),
+            ScenePointLight::new(Vec3::new(50.0, 0.0, 0.0), Vec3::splat(1.0), 2.0, 1.0),
+        ];
+        let data = build_light_cluster_data(&lights, &camera, viewport, view, proj);
+        assert_eq!(data.metrics.total_lights, 2);
+        assert!(data.metrics.visible_lights >= 1);
+        assert!(data.metrics.total_clusters > 0);
+    }
 }
 
 struct RendererEnvironmentState {
@@ -468,6 +963,7 @@ pub struct SceneLightingState {
     pub shadow_resolution: u32,
     pub shadow_split_lambda: f32,
     pub shadow_pcf_radius: f32,
+    pub point_lights: Vec<ScenePointLight>,
 }
 
 impl Default for SceneLightingState {
@@ -485,7 +981,22 @@ impl Default for SceneLightingState {
             shadow_resolution: 2048,
             shadow_split_lambda: 0.6,
             shadow_pcf_radius: 1.25,
+            point_lights: Vec::new(),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ScenePointLight {
+    pub position: Vec3,
+    pub color: Vec3,
+    pub radius: f32,
+    pub intensity: f32,
+}
+
+impl ScenePointLight {
+    pub fn new(position: Vec3, color: Vec3, radius: f32, intensity: f32) -> Self {
+        Self { position, color, radius: radius.max(0.0), intensity: intensity.max(0.0) }
     }
 }
 
@@ -517,6 +1028,7 @@ pub struct Renderer {
     depth_view: Option<wgpu::TextureView>,
     mesh_pass: MeshPass,
     shadow_pass: ShadowPass,
+    light_clusters: LightClusterPass,
     lighting: SceneLightingState,
     environment_state: Option<RendererEnvironmentState>,
 
@@ -568,6 +1080,7 @@ impl Renderer {
             depth_view: None,
             mesh_pass: MeshPass::default(),
             shadow_pass: ShadowPass::default(),
+            light_clusters: LightClusterPass::default(),
             lighting: SceneLightingState::default(),
             environment_state: None,
             sprite_bind_cache: HashMap::new(),
@@ -735,8 +1248,7 @@ impl Renderer {
         if supports_encoder_queries {
             required_features |= wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
         }
-        let mut required_limits =
-            wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits());
+        let mut required_limits = adapter.limits();
         required_limits.max_bind_groups = required_limits.max_bind_groups.max(6);
         required_limits.max_storage_buffers_per_shader_stage =
             required_limits.max_storage_buffers_per_shader_stage.max(1);
@@ -981,31 +1493,30 @@ impl Renderer {
             source: wgpu::ShaderSource::Wgsl(include_str!("../assets/shaders/mesh_basic.wgsl").into()),
         });
 
-        let frame_bgl = Arc::new(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Mesh Frame BGL"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+        let frame_draw_bgl = Arc::new(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Mesh Frame+Draw BGL"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
-        }));
-        let draw_bgl = Arc::new(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Mesh Draw BGL"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+            ],
         }));
         let skinning_bgl = Arc::new(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Mesh Skinning BGL"),
@@ -1137,6 +1648,32 @@ impl Renderer {
             ],
         }));
 
+        let light_cluster_bgl = Arc::new(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Light Cluster BGL"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        }));
+
         let shadow_bgl = Arc::new(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Shadow Sample BGL"),
             entries: &[
@@ -1172,12 +1709,12 @@ impl Renderer {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Mesh Pipeline Layout"),
             bind_group_layouts: &[
-                frame_bgl.as_ref(),
-                draw_bgl.as_ref(),
+                frame_draw_bgl.as_ref(),
                 skinning_bgl.as_ref(),
                 material_bgl.as_ref(),
                 shadow_bgl.as_ref(),
                 environment_bgl.as_ref(),
+                light_cluster_bgl.as_ref(),
             ],
             push_constant_ranges: &[],
         });
@@ -1224,20 +1761,22 @@ impl Renderer {
 
         self.mesh_pass.resources = Some(MeshPipelineResources {
             pipeline,
-            frame_bgl: frame_bgl.clone(),
-            draw_bgl: draw_bgl.clone(),
+            frame_draw_bgl: frame_draw_bgl.clone(),
             skinning_bgl: skinning_bgl.clone(),
             material_bgl: material_bgl.clone(),
             environment_bgl: environment_bgl.clone(),
+            light_cluster_bgl: light_cluster_bgl.clone(),
         });
         self.mesh_pass.frame_buffer = Some(frame_buf);
         self.mesh_pass.draw_buffer = Some(draw_buf);
-        self.mesh_pass.frame_bind_group = None;
-        self.mesh_pass.draw_bind_group = None;
+        self.mesh_pass.frame_draw_bind_group = None;
         self.mesh_pass.skinning_identity_buffer = None;
         self.mesh_pass.skinning_identity_bind_group = None;
         self.shadow_pass.sample_layout = Some(shadow_bgl);
         self.shadow_pass.sample_bind_group = None;
+        self.light_clusters.layout = Some(light_cluster_bgl);
+        self.light_clusters.bind_group = None;
+        self.light_clusters.cache.invalidate();
         Ok(())
     }
 
@@ -1279,10 +1818,10 @@ impl Renderer {
         if self.depth_texture.is_none() {
             self.recreate_depth_texture()?;
         }
-        let environment_state =
-            self.environment_state.as_ref().context("Environment state not configured")?;
-        let mesh_resources = self.mesh_pass.resources.as_ref().context("Mesh pipeline not initialized")?;
-        let depth_view = self.depth_view.as_ref().context("Depth texture missing")?;
+        let (environment_mip_count, environment_intensity) = {
+            let env = self.environment_state.as_ref().context("Environment state not configured")?;
+            (env.mip_count, env.intensity)
+        };
         let device = self.device()?.clone();
         let vp_size = PhysicalSize::new(
             viewport.size.0.max(1.0).round() as u32,
@@ -1291,6 +1830,14 @@ impl Renderer {
         let view_proj = camera.view_projection(vp_size);
         let view_matrix = camera.view_matrix();
         let lighting_dir = self.lighting.direction.normalize_or_zero();
+        let cluster_layout = {
+            let mesh_resources =
+                self.mesh_pass.resources.as_ref().context("Mesh pipeline not initialized")?;
+            mesh_resources.light_cluster_bgl.clone()
+        };
+        self.prepare_light_clusters(camera, vp_size, cluster_layout)?;
+        let mesh_resources = self.mesh_pass.resources.as_ref().context("Mesh pipeline not initialized")?;
+        let depth_view = self.depth_view.as_ref().context("Depth texture missing")?;
         let frame_data = MeshFrameData {
             view_proj: view_proj.to_cols_array_2d(),
             view: view_matrix.to_cols_array_2d(),
@@ -1300,8 +1847,8 @@ impl Renderer {
             ambient_color: [self.lighting.ambient.x, self.lighting.ambient.y, self.lighting.ambient.z, 1.0],
             exposure_params: [
                 self.lighting.exposure,
-                environment_state.mip_count.max(1) as f32,
-                environment_state.intensity,
+                environment_mip_count.max(1) as f32,
+                environment_intensity,
                 0.0,
             ],
             cascade_splits: self.shadow_pass.cascade_splits,
@@ -1315,7 +1862,7 @@ impl Renderer {
                 mapped_at_creation: false,
             });
             self.mesh_pass.frame_buffer = Some(buffer);
-            self.mesh_pass.frame_bind_group = None;
+            self.mesh_pass.frame_draw_bind_group = None;
         }
         let frame_buffer = self.mesh_pass.frame_buffer.as_ref().context("Mesh frame buffer missing")?.clone();
 
@@ -1328,37 +1875,33 @@ impl Renderer {
                 mapped_at_creation: false,
             });
             self.mesh_pass.draw_buffer = Some(draw_buf);
-            self.mesh_pass.draw_bind_group = None;
+            self.mesh_pass.frame_draw_bind_group = None;
         }
         let draw_buffer = self.mesh_pass.draw_buffer.as_ref().context("Mesh draw buffer missing")?.clone();
 
-        if self.mesh_pass.frame_bind_group.is_none() {
+        if self.mesh_pass.frame_draw_bind_group.is_none() {
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Mesh Frame BG"),
-                layout: mesh_resources.frame_bgl.as_ref(),
-                entries: &[wgpu::BindGroupEntry { binding: 0, resource: frame_buffer.as_entire_binding() }],
+                label: Some("Mesh Frame+Draw BG"),
+                layout: mesh_resources.frame_draw_bgl.as_ref(),
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: frame_buffer.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: draw_buffer.as_entire_binding() },
+                ],
             });
-            self.mesh_pass.frame_bind_group = Some(bind_group);
-        }
-        if self.mesh_pass.draw_bind_group.is_none() {
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Mesh Draw BG"),
-                layout: mesh_resources.draw_bgl.as_ref(),
-                entries: &[wgpu::BindGroupEntry { binding: 0, resource: draw_buffer.as_entire_binding() }],
-            });
-            self.mesh_pass.draw_bind_group = Some(bind_group);
+            self.mesh_pass.frame_draw_bind_group = Some(bind_group);
         }
 
         let queue = self.queue()?.clone();
         queue.write_buffer(&frame_buffer, 0, bytemuck::bytes_of(&frame_data));
 
-        let frame_bind_group =
-            self.mesh_pass.frame_bind_group.as_ref().context("Mesh frame bind group missing")?;
-        let draw_bind_group =
-            self.mesh_pass.draw_bind_group.as_ref().context("Mesh draw bind group missing")?;
+        let frame_draw_bind_group =
+            self.mesh_pass.frame_draw_bind_group.as_ref().context("Mesh frame/draw bind group missing")?;
         let shadow_bind_group =
             self.shadow_pass.sample_bind_group.as_ref().context("Shadow sample bind group missing")?;
-        let environment_bind_group = environment_state.bind_group.as_ref();
+        let environment_bind_group =
+            self.environment_state.as_ref().context("Environment state not configured")?.bind_group.as_ref();
+        let light_cluster_bind_group =
+            self.light_clusters.bind_group.as_ref().context("Light cluster bind group missing")?;
 
         if self.mesh_pass.skinning_identity_buffer.is_none() {
             let identity = Mat4::IDENTITY.to_cols_array();
@@ -1437,9 +1980,10 @@ impl Renderer {
         );
         pass.set_scissor_rect(sc_x, sc_y, sc_w, sc_h);
 
-        pass.set_bind_group(0, frame_bind_group, &[]);
-        pass.set_bind_group(4, shadow_bind_group, &[]);
-        pass.set_bind_group(5, environment_bind_group, &[]);
+        pass.set_bind_group(0, frame_draw_bind_group, &[]);
+        pass.set_bind_group(3, shadow_bind_group, &[]);
+        pass.set_bind_group(4, environment_bind_group, &[]);
+        pass.set_bind_group(5, light_cluster_bind_group, &[]);
 
         self.mesh_pass.skinning_cursor = 0;
         let identity_cols = Mat4::IDENTITY.to_cols_array();
@@ -1472,7 +2016,6 @@ impl Renderer {
                 ],
             };
             queue.write_buffer(&draw_buffer, 0, bytemuck::bytes_of(&draw_data));
-            pass.set_bind_group(1, draw_bind_group, &[]);
             if joint_count > 0 {
                 {
                     let staging = &mut self.mesh_pass.palette_staging;
@@ -1508,11 +2051,11 @@ impl Renderer {
                 let elapsed_ms = upload_start.elapsed().as_secs_f32() * 1000.0;
                 self.palette_stats_frame.record(joint_count, elapsed_ms);
                 let bind_group = &self.mesh_pass.skinning_palette_bind_groups[slot];
-                pass.set_bind_group(2, bind_group, &[]);
+                pass.set_bind_group(1, bind_group, &[]);
             } else {
-                pass.set_bind_group(2, skinning_identity_bind_group, &[]);
+                pass.set_bind_group(1, skinning_identity_bind_group, &[]);
             }
-            pass.set_bind_group(3, draw.material.bind_group(), &[]);
+            pass.set_bind_group(2, draw.material.bind_group(), &[]);
             pass.set_vertex_buffer(0, draw.mesh.vertex_buffer.slice(..));
             pass.set_index_buffer(draw.mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..draw.mesh.index_count, 0, 0..1);
@@ -1570,6 +2113,34 @@ impl Renderer {
         let (depth_texture, depth_view) = depth_sources;
         self.depth_texture = Some(depth_texture);
         self.depth_view = Some(depth_view);
+        Ok(())
+    }
+
+    fn prepare_light_clusters(
+        &mut self,
+        camera: &Camera3D,
+        viewport: PhysicalSize<u32>,
+        layout: Arc<wgpu::BindGroupLayout>,
+    ) -> Result<()> {
+        if self.mesh_pass.resources.is_none() {
+            self.init_mesh_pipeline()?;
+        }
+        let view = camera.view_matrix();
+        let aspect = if viewport.height > 0 { viewport.width as f32 / viewport.height as f32 } else { 1.0 };
+        let proj = camera.projection_matrix(aspect);
+        let light_hash = hash_point_lights(&self.lighting.point_lights);
+        if self.light_clusters.cache.matches(viewport, view, proj, light_hash)
+            && self.light_clusters.bind_group.is_some()
+        {
+            self.light_clusters.metrics = self.light_clusters.cache.metrics;
+            return Ok(());
+        }
+        let build_data = build_light_cluster_data(&self.lighting.point_lights, camera, viewport, view, proj);
+        let device = self.device()?.clone();
+        let queue = self.queue()?.clone();
+        self.light_clusters.update_resources(&device, &queue, &layout, &build_data)?;
+        self.light_clusters.cache.update(viewport, view, proj, light_hash, build_data.metrics);
+        self.light_clusters.metrics = build_data.metrics;
         Ok(())
     }
 
@@ -2061,6 +2632,10 @@ impl Renderer {
         stats
     }
 
+    pub fn light_cluster_metrics(&self) -> &LightClusterMetrics {
+        &self.light_clusters.metrics
+    }
+
     pub fn window(&self) -> Option<&Window> {
         self.window.as_deref()
     }
@@ -2414,6 +2989,7 @@ impl Renderer {
         mesh_camera: Option<&Camera3D>,
     ) -> Result<SurfaceFrame> {
         self.palette_stats_frame = PaletteUploadStats::default();
+        self.light_clusters.metrics = LightClusterMetrics::default();
         {
             let queue = self.queue.as_ref().context("GPU queue not initialized")?;
             let globals = self.globals_buf.as_ref().context("Globals buffer missing")?;
@@ -2783,8 +3359,7 @@ impl Renderer {
         if supports_encoder_queries {
             required_features |= wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
         }
-        let mut required_limits =
-            wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits());
+        let mut required_limits = adapter.limits();
         required_limits.max_bind_groups = required_limits.max_bind_groups.max(6);
         required_limits.max_storage_buffers_per_shader_stage =
             required_limits.max_storage_buffers_per_shader_stage.max(1);
@@ -2843,7 +3418,7 @@ mod depth_texture_tests {
             let device_desc = wgpu::DeviceDescriptor {
                 label: Some("depth-test-device"),
                 required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::downlevel_defaults(),
+                required_limits: adapter.limits(),
                 experimental_features: wgpu::ExperimentalFeatures::default(),
                 memory_hints: wgpu::MemoryHints::default(),
                 trace: wgpu::Trace::default(),

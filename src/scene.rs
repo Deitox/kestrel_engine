@@ -135,6 +135,8 @@ pub struct SceneLightingData {
     pub exposure: f32,
     #[serde(default)]
     pub shadow: SceneShadowData,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub point_lights: Vec<ScenePointLightData>,
 }
 
 impl Default for SceneLightingData {
@@ -145,19 +147,54 @@ impl Default for SceneLightingData {
             ambient: default_light_ambient(),
             exposure: default_light_exposure(),
             shadow: SceneShadowData::default(),
+            point_lights: Vec::new(),
         }
     }
 }
 
 impl SceneLightingData {
-    pub fn components(&self) -> (glam::Vec3, glam::Vec3, glam::Vec3, f32, SceneShadowData) {
+    pub fn components(
+        &self,
+    ) -> (glam::Vec3, glam::Vec3, glam::Vec3, f32, SceneShadowData, Vec<ScenePointLightData>) {
         (
             self.direction.clone().into(),
             self.color.clone().into(),
             self.ambient.clone().into(),
             self.exposure,
             self.shadow.clone(),
+            self.point_lights.clone(),
         )
+    }
+}
+
+const fn default_light_radius() -> f32 {
+    5.0
+}
+
+const fn default_light_intensity() -> f32 {
+    1.0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScenePointLightData {
+    #[serde(default)]
+    pub position: Vec3Data,
+    #[serde(default = "default_light_color")]
+    pub color: Vec3Data,
+    #[serde(default = "default_light_radius")]
+    pub radius: f32,
+    #[serde(default = "default_light_intensity")]
+    pub intensity: f32,
+}
+
+impl Default for ScenePointLightData {
+    fn default() -> Self {
+        Self {
+            position: Vec3Data::default(),
+            color: default_light_color(),
+            radius: default_light_radius(),
+            intensity: default_light_intensity(),
+        }
     }
 }
 

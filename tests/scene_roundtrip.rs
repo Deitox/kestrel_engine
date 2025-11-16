@@ -449,6 +449,7 @@ fn lighting_shadow_settings_roundtrip() {
             split_lambda: 0.75,
             pcf_radius: 1.6,
         },
+        point_lights: Vec::new(),
     };
     let serialized = serde_json::to_string(&lighting).expect("serialize lighting");
     let roundtrip: SceneLightingData = serde_json::from_str(&serialized).expect("deserialize lighting");

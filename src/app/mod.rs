@@ -42,10 +42,13 @@ use crate::plugins::{
     PluginContext, PluginManager,
 };
 use crate::prefab::{PrefabFormat, PrefabLibrary, PrefabStatusKind, PrefabStatusMessage};
-use crate::renderer::{GpuPassTiming, MeshDraw, RenderViewport, Renderer, SpriteBatch, MAX_SHADOW_CASCADES};
+use crate::renderer::{
+    GpuPassTiming, MeshDraw, RenderViewport, Renderer, ScenePointLight, SpriteBatch, MAX_SHADOW_CASCADES,
+};
 use crate::scene::{
     EnvironmentDependency, Scene, SceneCamera2D, SceneCameraBookmark, SceneDependencies, SceneEntityId,
-    SceneEnvironment, SceneLightingData, SceneMetadata, SceneShadowData, SceneViewportMode, Vec2Data,
+    SceneEnvironment, SceneLightingData, SceneMetadata, ScenePointLightData, SceneShadowData,
+    SceneViewportMode, Vec2Data,
 };
 use crate::scripts::{ScriptCommand, ScriptHandle, ScriptPlugin};
 use crate::time::Time;
@@ -3212,6 +3215,16 @@ impl App {
                 split_lambda: lighting.shadow_split_lambda,
                 pcf_radius: lighting.shadow_pcf_radius,
             },
+            point_lights: lighting
+                .point_lights
+                .iter()
+                .map(|light| ScenePointLightData {
+                    position: light.position.into(),
+                    color: light.color.into(),
+                    radius: light.radius,
+                    intensity: light.intensity,
+                })
+                .collect(),
         });
         metadata.environment =
             Some(SceneEnvironment::new(self.active_environment_key.clone(), self.environment_intensity));
@@ -3247,7 +3260,7 @@ impl App {
             }
         }
         if let Some(lighting) = metadata.lighting.as_ref() {
-            let (mut direction, color, ambient, exposure, shadow) = lighting.components();
+            let (mut direction, color, ambient, exposure, shadow, point_lights) = lighting.components();
             if !direction.is_finite() || direction.length_squared() < 1e-4 {
                 direction = glam::Vec3::new(0.4, 0.8, 0.35).normalize();
             }
@@ -3265,6 +3278,15 @@ impl App {
                 lighting_mut.shadow_resolution = shadow.resolution.clamp(256, 8192);
                 lighting_mut.shadow_split_lambda = shadow.split_lambda.clamp(0.0, 1.0);
                 lighting_mut.shadow_pcf_radius = shadow.pcf_radius.clamp(0.0, 10.0);
+                lighting_mut.point_lights = point_lights
+                    .into_iter()
+                    .map(|data| ScenePointLight {
+                        position: Vec3::from(data.position),
+                        color: Vec3::from(data.color),
+                        radius: data.radius.max(0.0),
+                        intensity: data.intensity.max(0.0),
+                    })
+                    .collect();
             }
             let renderer_lighting = self.renderer.lighting();
             self.ui_light_direction = renderer_lighting.direction;
@@ -3901,7 +3923,6 @@ impl ApplicationHandler for App {
         render_time_ms = render_start.elapsed().as_secs_f32() * 1000.0;
 
         let palette_upload_stats = self.renderer.take_palette_upload_metrics();
-
         if self.egui_winit.is_none() {
             frame.present();
             let frame_ms = frame_start.elapsed().as_secs_f32() * 1000.0;

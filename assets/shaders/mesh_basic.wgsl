@@ -11,6 +11,8 @@ struct FrameUniform {
 
 const MAX_SKIN_JOINTS : u32 = 256u;
 const MAX_SHADOW_CASCADES : u32 = 4u;
+const MAX_CLUSTER_LIGHTS : u32 = 256u;
+const CLUSTER_RECORD_STRIDE_WORDS : u32 = 2u;
 
 struct DrawUniform {
     model : mat4x4<f32>,
@@ -36,53 +38,84 @@ struct ShadowUniform {
     cascade_params : array<vec4<f32>, MAX_SHADOW_CASCADES>,
 }
 
+struct PointLight {
+    position_radius : vec4<f32>,
+    color_intensity : vec4<f32>,
+}
+
+struct ClusterRecord {
+    offset : u32,
+    count : u32,
+    _pad0 : u32,
+    _pad1 : u32,
+}
+
+struct ClusterConfig {
+    viewport : vec4<f32>,
+    depth_params : vec4<f32>,
+    grid_dims : vec4<u32>,
+    stats : vec4<u32>,
+    data_meta : vec4<u32>,
+}
+
+struct ClusterLightUniform {
+    config : ClusterConfig,
+    lights : array<PointLight, MAX_CLUSTER_LIGHTS>,
+}
+
 @group(0) @binding(0)
 var<uniform> frame : FrameUniform;
 
-@group(1) @binding(0)
+@group(0) @binding(1)
 var<uniform> draw : DrawUniform;
 
-@group(2) @binding(0)
+@group(1) @binding(0)
 var<uniform> skinning : SkinPalette;
 
-@group(3) @binding(0)
+@group(2) @binding(0)
 var<uniform> material : MaterialUniform;
 
-@group(3) @binding(1)
+@group(2) @binding(1)
 var base_color_tex : texture_2d<f32>;
 
-@group(3) @binding(2)
+@group(2) @binding(2)
 var metallic_roughness_tex : texture_2d<f32>;
 
-@group(3) @binding(3)
+@group(2) @binding(3)
 var normal_tex : texture_2d<f32>;
 
-@group(3) @binding(4)
+@group(2) @binding(4)
 var emissive_tex : texture_2d<f32>;
 
-@group(3) @binding(5)
+@group(2) @binding(5)
 var material_sampler : sampler;
 
-@group(4) @binding(0)
+@group(3) @binding(0)
 var<uniform> shadow : ShadowUniform;
 
-@group(4) @binding(1)
+@group(3) @binding(1)
 var shadow_map : texture_depth_2d_array;
 
-@group(4) @binding(2)
+@group(3) @binding(2)
 var shadow_sampler : sampler_comparison;
 
-@group(5) @binding(0)
+@group(4) @binding(0)
 var diffuse_env : texture_cube<f32>;
 
-@group(5) @binding(1)
+@group(4) @binding(1)
 var specular_env : texture_cube<f32>;
 
-@group(5) @binding(2)
+@group(4) @binding(2)
 var brdf_lut : texture_2d<f32>;
 
-@group(5) @binding(3)
+@group(4) @binding(3)
 var env_sampler : sampler;
+
+@group(5) @binding(0)
+var<uniform> cluster_uniform : ClusterLightUniform;
+
+@group(5) @binding(1)
+var<storage, read> cluster_data_words : array<u32>;
 
 struct VertexIn {
     @location(0) position : vec3<f32>,
@@ -96,9 +129,11 @@ struct VertexIn {
 struct VertexOut {
     @builtin(position) position : vec4<f32>,
     @location(0) normal : vec3<f32>,
-   @location(1) world_pos : vec3<f32>,
+    @location(1) world_pos : vec3<f32>,
     @location(2) tangent : vec4<f32>,
     @location(3) uv : vec2<f32>,
+    @location(4) clip_pos : vec4<f32>,
+    @location(5) view_pos : vec3<f32>,
 }
 
 fn identity_matrix() -> mat4x4<f32> {
@@ -153,13 +188,16 @@ fn vs_main(input : VertexIn) -> VertexOut {
     let skinned_normal = (skin_matrix * vec4<f32>(input.normal, 0.0)).xyz;
     let skinned_tangent = (skin_matrix * vec4<f32>(input.tangent.xyz, 0.0)).xyz;
     let world_pos = draw.model * skinned_position;
-    out.position = frame.view_proj * world_pos;
+    let clip_position = frame.view_proj * world_pos;
+    out.position = clip_position;
     let world_normal = (draw.model * vec4<f32>(skinned_normal, 0.0)).xyz;
     out.normal = normalize(world_normal);
     out.world_pos = world_pos.xyz;
     let world_tangent = (draw.model * vec4<f32>(skinned_tangent, 0.0)).xyz;
     out.tangent = vec4<f32>(normalize(world_tangent), input.tangent.w);
     out.uv = input.uv;
+    out.clip_pos = clip_position;
+    out.view_pos = (frame.view * world_pos).xyz;
     return out;
 }
 
@@ -353,7 +391,153 @@ fn fs_main(input : VertexOut) -> @location(0) vec4<f32> {
         color = color + (diffuse_ibl + specular_ibl) * env_intensity;
     }
 
+    color = color
+        + shade_clustered_point_lights(
+            input.world_pos,
+            N,
+            V,
+            base_color,
+            metallic,
+            roughness,
+            f0,
+            input.view_pos,
+            input.clip_pos,
+        );
+
     return vec4<f32>(color, base_alpha);
+}
+
+fn clamp_int(value : i32, min_value : i32, max_value : i32) -> i32 {
+    return max(min_value, min(value, max_value));
+}
+
+fn cluster_index_for_fragment(frag_uv : vec2<f32>, view_pos : vec3<f32>) -> i32 {
+    let config = cluster_uniform.config;
+    if config.stats.x == 0u || config.grid_dims.w == 0u {
+        return -1;
+    }
+    let grid_x = max(config.grid_dims.x, 1u);
+    let grid_y = max(config.grid_dims.y, 1u);
+    let grid_z = max(config.grid_dims.z, 1u);
+    var cluster_x = i32(frag_uv.x * f32(grid_x));
+    cluster_x = clamp_int(cluster_x, 0, i32(grid_x) - 1);
+    var cluster_y = i32(frag_uv.y * f32(grid_y));
+    cluster_y = clamp_int(cluster_y, 0, i32(grid_y) - 1);
+    let depth = (-view_pos.z - config.depth_params.x) * config.depth_params.z;
+    let depth_clamped = clamp(depth, 0.0, 0.999);
+    var cluster_z = i32(depth_clamped * f32(grid_z));
+    cluster_z = clamp_int(cluster_z, 0, i32(grid_z) - 1);
+    let xy = i32(grid_x) * i32(grid_y);
+    return cluster_x + cluster_y * i32(grid_x) + cluster_z * xy;
+}
+
+fn load_cluster_record(index : u32) -> ClusterRecord {
+    let base = index * CLUSTER_RECORD_STRIDE_WORDS;
+    return ClusterRecord(cluster_data_words[base + 0u], cluster_data_words[base + 1u], 0u, 0u);
+}
+
+fn load_cluster_light_index(index : u32) -> u32 {
+    let indices_offset = cluster_uniform.config.data_meta.z;
+    let word_index = index / 2u;
+    let packed = cluster_data_words[indices_offset + word_index];
+    if (index & 1u) == 0u {
+        return packed & 0xFFFFu;
+    }
+    return (packed >> 16u) & 0xFFFFu;
+}
+
+fn shade_point_light(
+    world_pos : vec3<f32>,
+    normal : vec3<f32>,
+    view_dir : vec3<f32>,
+    base_color : vec3<f32>,
+    metallic : f32,
+    roughness : f32,
+    f0 : vec3<f32>,
+    light : PointLight,
+) -> vec3<f32> {
+    let radius = max(light.position_radius.w, 0.001);
+    let to_light = light.position_radius.xyz - world_pos;
+    let dist = length(to_light);
+    if dist <= 0.001 || dist > radius {
+        return vec3<f32>(0.0);
+    }
+    let attenuation = pow(max(1.0 - dist / radius, 0.0), 2.0);
+    if attenuation <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let L = to_light / dist;
+    let n_dot_l = max(dot(normal, L), 0.0);
+    if n_dot_l <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let H = normalize(view_dir + L);
+    let n_dot_v = max(dot(normal, view_dir), 0.0);
+    let F = fresnel_schlick(max(dot(H, view_dir), 0.0), f0);
+    let D = distribution_ggx(normal, H, roughness);
+    let G = geometry_smith(normal, view_dir, L, roughness);
+    let spec = (D * G) * F / max(4.0 * n_dot_v * n_dot_l, 0.001);
+    let kd = (vec3<f32>(1.0) - F) * (1.0 - metallic);
+    let diffuse = kd * base_color / 3.14159265;
+    let radiance = light.color_intensity.xyz * light.color_intensity.w * attenuation * n_dot_l;
+    return (diffuse + spec) * radiance;
+}
+
+fn shade_clustered_point_lights(
+    world_pos : vec3<f32>,
+    normal : vec3<f32>,
+    view_dir : vec3<f32>,
+    base_color : vec3<f32>,
+    metallic : f32,
+    roughness : f32,
+    f0 : vec3<f32>,
+    view_pos : vec3<f32>,
+    clip_pos : vec4<f32>,
+) -> vec3<f32> {
+    let config = cluster_uniform.config;
+    if config.stats.x == 0u || config.grid_dims.w == 0u {
+        return vec3<f32>(0.0);
+    }
+    if abs(clip_pos.w) <= 1e-5 {
+        return vec3<f32>(0.0);
+    }
+    let ndc = clip_pos.xy / clip_pos.w;
+    let frag_uv = vec2<f32>(ndc.x * 0.5 + 0.5, 1.0 - (ndc.y * 0.5 + 0.5));
+    let cluster_index = cluster_index_for_fragment(frag_uv, view_pos);
+    if cluster_index < 0 {
+        return vec3<f32>(0.0);
+    }
+    let record = load_cluster_record(u32(cluster_index));
+    if record.count == 0u {
+        return vec3<f32>(0.0);
+    }
+    var lighting = vec3<f32>(0.0);
+    var i : u32 = 0u;
+    loop {
+        if i >= record.count {
+            break;
+        }
+        let list_index = record.offset + i;
+        if list_index >= cluster_uniform.config.data_meta.w {
+            break;
+        }
+        let light_index = load_cluster_light_index(list_index);
+        if light_index < config.stats.x {
+            lighting = lighting
+                + shade_point_light(
+                    world_pos,
+                    normal,
+                    view_dir,
+                    base_color,
+                    metallic,
+                    roughness,
+                    f0,
+                    cluster_uniform.lights[light_index],
+                );
+        }
+        i = i + 1u;
+    }
+    return lighting;
 }
 
 

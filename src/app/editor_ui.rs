@@ -25,7 +25,7 @@ use crate::plugins::{
     PluginWatchdogEvent,
 };
 use crate::prefab::{PrefabFormat, PrefabStatusKind, PrefabStatusMessage};
-use crate::renderer::MAX_SHADOW_CASCADES;
+use crate::renderer::{ScenePointLight, MAX_SHADOW_CASCADES};
 use crate::scene::SceneShadowData;
 
 use crate::config::SpriteGuardrailMode;
@@ -897,6 +897,36 @@ impl App {
                             );
                             ui.separator();
                         }
+                        let metrics = self.renderer.light_cluster_metrics();
+                        egui::CollapsingHeader::new("Light Culling").default_open(false).show(ui, |ui| {
+                            ui.label(format!(
+                                "Lights: {} visible / {} total (culled {})",
+                                metrics.visible_lights,
+                                metrics.total_lights,
+                                metrics.culled_lights()
+                            ));
+                            ui.label(format!(
+                                "Grid: {}x{}x{} (active {} / {})",
+                                metrics.grid_dims[0],
+                                metrics.grid_dims[1],
+                                metrics.grid_dims[2],
+                                metrics.active_clusters,
+                                metrics.total_clusters
+                            ));
+                            ui.label(format!(
+                                "Avg lights/cluster: {:.2} (max {})",
+                                metrics.average_lights_per_cluster, metrics.max_lights_per_cluster
+                            ));
+                            if metrics.overflow_clusters > 0 {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(255, 140, 0),
+                                    format!("Cluster overflow events: {}", metrics.overflow_clusters),
+                                );
+                            } else {
+                                ui.label("Cluster overflow events: 0");
+                            }
+                        });
+                        ui.separator();
                         if let Some(metrics) = particle_budget {
                             egui::CollapsingHeader::new("Particle Budget").default_open(false).show(
                                 ui,
@@ -1090,11 +1120,8 @@ impl App {
                         }
                         ui.separator();
                         let panel_open = self.animation_keyframe_panel.is_open();
-                        let button_label = if panel_open {
-                            "Hide Keyframe Editor"
-                        } else {
-                            "Open Keyframe Editor"
-                        };
+                        let button_label =
+                            if panel_open { "Hide Keyframe Editor" } else { "Open Keyframe Editor" };
                         if ui.button(button_label).clicked() {
                             self.animation_keyframe_panel.toggle();
                             let event = if panel_open {
@@ -2086,6 +2113,110 @@ impl App {
                                 self.ui_shadow_pcf_radius = self.ui_shadow_pcf_radius.clamp(0.0, 10.0);
                                 lighting_dirty = true;
                             }
+                            ui.separator();
+                            let cluster_metrics = self.renderer.light_cluster_metrics();
+                            ui.label("Clustered light culling");
+                            ui.label(format!(
+                                "Runtime lights: {} visible / {} total (culled {})",
+                                cluster_metrics.visible_lights,
+                                cluster_metrics.total_lights,
+                                cluster_metrics.culled_lights()
+                            ));
+                            ui.label(format!(
+                                "Grid: {}×{}×{} (active {} / {})",
+                                cluster_metrics.grid_dims[0],
+                                cluster_metrics.grid_dims[1],
+                                cluster_metrics.grid_dims[2],
+                                cluster_metrics.active_clusters,
+                                cluster_metrics.total_clusters
+                            ));
+                            ui.label(format!(
+                                "Avg lights/cluster: {:.2} (max {})",
+                                cluster_metrics.average_lights_per_cluster,
+                                cluster_metrics.max_lights_per_cluster
+                            ));
+                            if cluster_metrics.overflow_clusters > 0 {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(255, 140, 0),
+                                    format!(
+                                        "Cluster overflow events this frame: {}",
+                                        cluster_metrics.overflow_clusters
+                                    ),
+                                );
+                            } else {
+                                ui.label("Cluster overflow events this frame: 0");
+                            }
+
+                            ui.separator();
+                            let point_light_count = self.renderer.lighting().point_lights.len();
+                            let point_lights_header = format!("Point lights ({point_light_count})");
+                            egui::CollapsingHeader::new(point_lights_header)
+                                .default_open(point_light_count > 0 && point_light_count <= 2)
+                                .show(ui, |ui| {
+                                    let point_lights = &mut self.renderer.lighting_mut().point_lights;
+                                    if point_lights.is_empty() {
+                                        ui.label("No point lights configured.");
+                                    }
+                                    let mut removal: Option<usize> = None;
+                                    for (index, light) in point_lights.iter_mut().enumerate() {
+                                        let header = format!("Light {}", index + 1);
+                                        egui::CollapsingHeader::new(header).default_open(index == 0).show(
+                                            ui,
+                                            |ui| {
+                                                ui.horizontal(|ui| {
+                                                    ui.label("Position");
+                                                    ui.add(
+                                                        egui::DragValue::new(&mut light.position.x)
+                                                            .speed(0.1),
+                                                    );
+                                                    ui.add(
+                                                        egui::DragValue::new(&mut light.position.y)
+                                                            .speed(0.1),
+                                                    );
+                                                    ui.add(
+                                                        egui::DragValue::new(&mut light.position.z)
+                                                            .speed(0.1),
+                                                    );
+                                                });
+                                                ui.horizontal(|ui| {
+                                                    ui.label("Color");
+                                                    let mut color_arr = light.color.to_array();
+                                                    if ui.color_edit_button_rgb(&mut color_arr).changed() {
+                                                        light.color = Vec3::from_array(color_arr);
+                                                    }
+                                                });
+                                                ui.add(
+                                                    egui::Slider::new(&mut light.radius, 0.1..=100.0)
+                                                        .text("Radius")
+                                                        .logarithmic(true),
+                                                );
+                                                ui.add(
+                                                    egui::Slider::new(&mut light.intensity, 0.0..=20.0)
+                                                        .text("Intensity"),
+                                                );
+                                                if ui.button("Remove light").clicked() {
+                                                    removal = Some(index);
+                                                }
+                                            },
+                                        );
+                                        if removal.is_some() {
+                                            break;
+                                        }
+                                    }
+                                    if let Some(idx) = removal {
+                                        point_lights.remove(idx);
+                                    }
+                                    if ui.button("Add point light").clicked() {
+                                        let default_position = Vec3::new(0.0, 2.0, 0.0);
+                                        let default_color = Vec3::splat(1.0);
+                                        point_lights.push(ScenePointLight::new(
+                                            default_position,
+                                            default_color,
+                                            5.0,
+                                            1.0,
+                                        ));
+                                    }
+                                });
 
                             ui.separator();
                             ui.label("Environment");
@@ -2139,7 +2270,7 @@ impl App {
                                 self.ui_shadow_pcf_radius = default_shadow.pcf_radius;
                                 self.ui_environment_intensity = 1.0;
                                 ui_environment_intensity = 1.0;
-
+                                self.renderer.lighting_mut().point_lights.clear();
                                 lighting_dirty = true;
                             }
                             if lighting_dirty {

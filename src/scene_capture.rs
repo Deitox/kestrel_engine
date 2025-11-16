@@ -1,6 +1,7 @@
 use crate::scene::{
     ColorData, Scene, SceneCamera2D, SceneDependencies, SceneEntity, SceneEnvironment, SceneLightingData,
-    SceneViewportMode, SpriteAnimationData, SpriteData, TransformClipData, Vec2Data, Vec3Data,
+    ScenePointLightData, SceneViewportMode, SpriteAnimationData, SpriteData, TransformClipData, Vec2Data,
+    Vec3Data,
 };
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -74,6 +75,8 @@ pub struct SceneCaptureLighting {
     pub color: [f32; 3],
     pub ambient: [f32; 3],
     pub exposure: f32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub point_lights: Vec<SceneCapturePointLight>,
 }
 
 impl From<&SceneLightingData> for SceneCaptureLighting {
@@ -83,6 +86,26 @@ impl From<&SceneLightingData> for SceneCaptureLighting {
             color: vec3_to_array(&light.color),
             ambient: vec3_to_array(&light.ambient),
             exposure: light.exposure,
+            point_lights: light.point_lights.iter().map(SceneCapturePointLight::from).collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SceneCapturePointLight {
+    pub position: [f32; 3],
+    pub color: [f32; 3],
+    pub radius: f32,
+    pub intensity: f32,
+}
+
+impl From<&ScenePointLightData> for SceneCapturePointLight {
+    fn from(light: &ScenePointLightData) -> Self {
+        Self {
+            position: vec3_to_array(&light.position),
+            color: vec3_to_array(&light.color),
+            radius: light.radius,
+            intensity: light.intensity,
         }
     }
 }
