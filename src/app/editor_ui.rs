@@ -84,6 +84,20 @@ pub(super) struct PrefabInstantiateRequest {
     pub drop_target: Option<PrefabDropTarget>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(super) enum FrameBudgetAction {
+    CaptureIdle,
+    CapturePanel,
+    Clear,
+}
+
+#[derive(Clone, Copy, Default)]
+pub(super) struct FrameBudgetSnapshotView {
+    pub timing: Option<FrameTimingSample>,
+    #[cfg(feature = "alloc_profiler")]
+    pub alloc_delta: Option<AllocationDelta>,
+}
+
 #[derive(Debug, Clone)]
 pub(super) enum PluginToggleKind {
     Dynamic { new_enabled: bool },
@@ -160,6 +174,69 @@ fn format_capability_list(list: &[PluginCapability]) -> String {
         "none".to_string()
     } else {
         list.iter().map(|cap| cap.label()).collect::<Vec<_>>().join(", ")
+    }
+}
+
+fn frame_budget_snapshot_row(ui: &mut egui::Ui, label: &str, snapshot: &FrameBudgetSnapshotView) {
+    if let Some(timing) = snapshot.timing {
+        let mut text = format!(
+            "{label}: frame {frame:>5.2} ms | update {update:>5.2} ms | ui {ui:>5.2} ms",
+            label = label,
+            frame = timing.frame_ms,
+            update = timing.update_ms,
+            ui = timing.ui_ms,
+        );
+        #[cfg(feature = "alloc_profiler")]
+        {
+            if let Some(delta) = snapshot.alloc_delta {
+                text.push_str(&format!(
+                    " | alloc +{} B / -{} B (net {:+} B)",
+                    delta.allocated_bytes,
+                    delta.deallocated_bytes,
+                    delta.net_bytes()
+                ));
+            } else {
+                text.push_str(" | alloc n/a");
+            }
+        }
+        #[cfg(not(feature = "alloc_profiler"))]
+        {
+            text.push_str(" | alloc tracking disabled (enable alloc_profiler)");
+        }
+        ui.label(text);
+    } else {
+        ui.label(format!("{label}: awaiting timing sample"));
+    }
+}
+
+fn frame_budget_delta_row(
+    ui: &mut egui::Ui,
+    idle: &FrameBudgetSnapshotView,
+    panel: &FrameBudgetSnapshotView,
+) {
+    if let (Some(idle_timing), Some(panel_timing)) = (idle.timing, panel.timing) {
+        let mut text = format!(
+            "Δ frame {frame:>+5.2} ms | Δ update {update:>+5.2} ms | Δ ui {ui:>+5.2} ms",
+            frame = panel_timing.frame_ms - idle_timing.frame_ms,
+            update = panel_timing.update_ms - idle_timing.update_ms,
+            ui = panel_timing.ui_ms - idle_timing.ui_ms,
+        );
+        #[cfg(feature = "alloc_profiler")]
+        {
+            if let (Some(idle_alloc), Some(panel_alloc)) = (idle.alloc_delta, panel.alloc_delta) {
+                let diff = panel_alloc.net_bytes() - idle_alloc.net_bytes();
+                text.push_str(&format!(" | Δalloc {:+} B", diff));
+            } else {
+                text.push_str(" | Δalloc n/a");
+            }
+        }
+        #[cfg(not(feature = "alloc_profiler"))]
+        {
+            text.push_str(" | Δalloc tracking disabled");
+        }
+        ui.label(text);
+    } else {
+        ui.label("Δ frame budget: awaiting timing samples.");
     }
 }
 
@@ -507,6 +584,7 @@ pub(super) struct UiActions {
     pub sprite_atlas_requests: Vec<SpriteAtlasRequest>,
     pub plugin_toggles: Vec<PluginToggleRequest>,
     pub reload_plugins: bool,
+    pub frame_budget_action: Option<FrameBudgetAction>,
     pub save_prefab: Option<PrefabSaveRequest>,
     pub instantiate_prefab: Option<PrefabInstantiateRequest>,
 }
@@ -556,6 +634,9 @@ pub(super) struct EditorUiParams {
     #[cfg(feature = "alloc_profiler")]
     pub allocation_delta: Option<AllocationDelta>,
     pub frame_timing_sample: Option<FrameTimingSample>,
+    pub frame_budget_idle: Option<FrameBudgetSnapshotView>,
+    pub frame_budget_panel: Option<FrameBudgetSnapshotView>,
+    pub frame_budget_status: Option<String>,
     pub system_timings: Vec<SystemTimingSummary>,
     pub entity_count: usize,
     pub instances_drawn: usize,
@@ -687,6 +768,9 @@ impl App {
             #[cfg(feature = "alloc_profiler")]
             allocation_delta,
             frame_timing_sample,
+            frame_budget_idle,
+            frame_budget_panel,
+            frame_budget_status,
             system_timings,
             entity_count,
             instances_drawn,
@@ -915,6 +999,34 @@ impl App {
                                 allocated_kb, deallocated_kb, net_kb
                             ));
                         }
+                        egui::CollapsingHeader::new("Frame Budget Capture").default_open(false).show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                if ui.button("Capture Idle Baseline").clicked() {
+                                    actions.frame_budget_action = Some(FrameBudgetAction::CaptureIdle);
+                                }
+                                if ui.button("Capture Panel Snapshot").clicked() {
+                                    actions.frame_budget_action = Some(FrameBudgetAction::CapturePanel);
+                                }
+                                if ui.button("Clear").clicked() {
+                                    actions.frame_budget_action = Some(FrameBudgetAction::Clear);
+                                }
+                            });
+                            if let Some(status) = frame_budget_status.as_deref() {
+                                ui.small(status);
+                            } else {
+                                ui.small("Capture an idle baseline with panels hidden, then capture a panel snapshot after opening UI panels.");
+                            }
+                            if let Some(snapshot) = frame_budget_idle.as_ref() {
+                                frame_budget_snapshot_row(ui, "Idle", snapshot);
+                            }
+                            if let Some(snapshot) = frame_budget_panel.as_ref() {
+                                frame_budget_snapshot_row(ui, "Panel", snapshot);
+                            }
+                            if let (Some(idle), Some(panel)) = (frame_budget_idle.as_ref(), frame_budget_panel.as_ref())
+                            {
+                                frame_budget_delta_row(ui, idle, panel);
+                            }
+                        });
                         ui.separator();
                         if shadow_pass_metric.is_some() || mesh_pass_metric.is_some() {
                             egui::CollapsingHeader::new("GPU Pass Baselines").default_open(false).show(

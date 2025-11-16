@@ -5,6 +5,7 @@ mod editor_ui;
 mod gizmo_interaction;
 mod plugin_host;
 mod plugin_runtime;
+mod runtime_loop;
 
 use self::animation_keyframe_panel::{
     AnimationKeyframePanel, AnimationKeyframePanelState, AnimationPanelCommand, AnimationTrackBinding,
@@ -14,6 +15,7 @@ use self::animation_watch::{AnimationAssetKind, AnimationAssetWatcher};
 use self::atlas_watch::{normalize_path_for_watch, AtlasHotReload};
 use self::plugin_host::{BuiltinPluginFactory, PluginHost};
 use self::plugin_runtime::{PluginContextInputs, PluginRuntime};
+use self::runtime_loop::{RuntimeLoop, RuntimeTick};
 #[cfg(feature = "alloc_profiler")]
 use crate::alloc_profiler;
 use crate::analytics::{
@@ -460,6 +462,13 @@ impl<T> VersionedTelemetry<T> {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+struct FrameBudgetSnapshot {
+    timing: Option<FrameTimingSample>,
+    #[cfg(feature = "alloc_profiler")]
+    alloc_delta: Option<alloc_profiler::AllocationDelta>,
+}
+
 #[derive(Clone)]
 struct GpuTimingFrame {
     frame_index: u64,
@@ -491,7 +500,7 @@ pub async fn run_with_overrides(overrides: AppConfigOverrides) -> Result<()> {
 pub struct App {
     pub(crate) renderer: Renderer,
     pub(crate) ecs: EcsWorld,
-    time: Time,
+    runtime_loop: RuntimeLoop,
     pub(crate) input: Input,
     assets: AssetManager,
     prefab_library: PrefabLibrary,
@@ -501,8 +510,6 @@ pub struct App {
     active_environment_key: String,
     environment_intensity: f32,
     should_close: bool,
-    accumulator: f32,
-    fixed_dt: f32,
 
     // egui
     egui_ctx: EguiCtx,
@@ -620,6 +627,9 @@ pub struct App {
     gpu_timing_history_capacity: usize,
     gpu_frame_counter: u64,
     gpu_metrics_status: Option<String>,
+    frame_budget_idle_snapshot: Option<FrameBudgetSnapshot>,
+    frame_budget_panel_snapshot: Option<FrameBudgetSnapshot>,
+    frame_budget_status: Option<String>,
 
     // Particles
     emitter_entity: Option<Entity>,
@@ -2434,7 +2444,7 @@ impl App {
         let scene_path = String::from("assets/scenes/quick_save.json");
         let mut scene_history = VecDeque::with_capacity(8);
         scene_history.push_back(scene_path.clone());
-        let time = Time::new();
+        let runtime_loop = RuntimeLoop::new(Time::new(), 1.0 / 60.0);
         let mut input = Input::from_config(INPUT_CONFIG_PATH);
         let mut assets = AssetManager::new();
         let mut prefab_library = PrefabLibrary::new("assets/prefabs");
@@ -2487,7 +2497,7 @@ impl App {
                 material_registry: &mut material_registry,
                 mesh_registry: &mut mesh_registry,
                 environment_registry: &mut environment_registry,
-                time: &time,
+                time: runtime_loop.time(),
                 event_emitter: Self::emit_event_for_plugin,
                 selected_entity: None,
             },
@@ -2505,7 +2515,7 @@ impl App {
                     material_registry: &mut material_registry,
                     mesh_registry: &mut mesh_registry,
                     environment_registry: &mut environment_registry,
-                    time: &time,
+                    time: runtime_loop.time(),
                     event_emitter: Self::emit_event_for_plugin,
                     selected_entity: None,
                 },
@@ -2533,7 +2543,7 @@ impl App {
         let mut app = Self {
             renderer,
             ecs,
-            time,
+            runtime_loop,
             input,
             assets,
             prefab_library,
@@ -2543,8 +2553,6 @@ impl App {
             active_environment_key: default_environment_key.clone(),
             environment_intensity,
             should_close: false,
-            accumulator: 0.0,
-            fixed_dt: 1.0 / 60.0,
             egui_ctx,
             egui_winit,
             egui_renderer: None,
@@ -2666,6 +2674,9 @@ impl App {
             gpu_timing_history_capacity: 240,
             gpu_frame_counter: 0,
             gpu_metrics_status: None,
+            frame_budget_idle_snapshot: None,
+            frame_budget_panel_snapshot: None,
+            frame_budget_status: None,
             sprite_batch_map: HashMap::new(),
             sprite_batch_pool: Vec::new(),
             sprite_batch_order: Vec::new(),
@@ -3032,6 +3043,74 @@ impl App {
         Arc::clone(&self.frame_plot_points)
     }
 
+    fn capture_frame_budget_snapshot(&self) -> FrameBudgetSnapshot {
+        FrameBudgetSnapshot {
+            timing: self.frame_profiler.latest(),
+            #[cfg(feature = "alloc_profiler")]
+            alloc_delta: self.analytics_plugin().and_then(|plugin| plugin.allocation_delta()),
+        }
+    }
+
+    fn frame_budget_snapshot_view(snapshot: &FrameBudgetSnapshot) -> editor_ui::FrameBudgetSnapshotView {
+        editor_ui::FrameBudgetSnapshotView {
+            timing: snapshot.timing,
+            #[cfg(feature = "alloc_profiler")]
+            alloc_delta: snapshot.alloc_delta,
+        }
+    }
+
+    fn frame_budget_delta_message(&self) -> Option<String> {
+        let baseline = self.frame_budget_idle_snapshot?;
+        let comparison = self.frame_budget_panel_snapshot?;
+        let idle = baseline.timing?;
+        let panel = comparison.timing?;
+        let update_delta = panel.update_ms - idle.update_ms;
+        let ui_delta = panel.ui_ms - idle.ui_ms;
+        #[cfg(feature = "alloc_profiler")]
+        let alloc_note =
+            if let (Some(idle_alloc), Some(panel_alloc)) = (baseline.alloc_delta, comparison.alloc_delta) {
+                let diff = panel_alloc.net_bytes() - idle_alloc.net_bytes();
+                format!(", Δalloc={:+} B", diff)
+            } else {
+                String::new()
+            };
+        #[cfg(not(feature = "alloc_profiler"))]
+        let alloc_note = String::new();
+        Some(format!(
+            "Frame budget delta: Δupdate={:+.2} ms, Δui={:+.2} ms{alloc_note}",
+            update_delta, ui_delta
+        ))
+    }
+
+    fn handle_frame_budget_action(&mut self, action: Option<editor_ui::FrameBudgetAction>) {
+        use editor_ui::FrameBudgetAction;
+        let Some(action) = action else {
+            return;
+        };
+        match action {
+            FrameBudgetAction::CaptureIdle => {
+                self.frame_budget_idle_snapshot = Some(self.capture_frame_budget_snapshot());
+                self.frame_budget_status = Some(
+                    "Idle baseline captured. Toggle panels, then capture the panel snapshot.".to_string(),
+                );
+            }
+            FrameBudgetAction::CapturePanel => {
+                self.frame_budget_panel_snapshot = Some(self.capture_frame_budget_snapshot());
+                self.frame_budget_status = self.frame_budget_delta_message().or_else(|| {
+                    Some(
+                        "Panel snapshot captured. Capture an idle baseline first for delta comparisons."
+                            .to_string(),
+                    )
+                });
+            }
+            FrameBudgetAction::Clear => {
+                self.frame_budget_idle_snapshot = None;
+                self.frame_budget_panel_snapshot = None;
+                self.frame_budget_status = Some("Cleared frame budget snapshots.".to_string());
+            }
+        }
+    }
+
     fn with_plugin_runtime<F, R>(&mut self, f: F) -> R
     where
         F: FnOnce(&mut PluginHost, &mut PluginManager, &mut PluginContext<'_>) -> R,
@@ -3046,7 +3125,7 @@ impl App {
                 material_registry: &mut self.material_registry,
                 mesh_registry: &mut self.mesh_registry,
                 environment_registry: &mut self.environment_registry,
-                time: &self.time,
+                time: self.runtime_loop.time(),
                 event_emitter: Self::emit_event_for_plugin,
                 selected_entity,
             },
@@ -4020,17 +4099,13 @@ impl ApplicationHandler for App {
             event_loop.exit();
             return;
         }
-        self.time.tick();
+        let RuntimeTick { dt, dropped_backlog } = self.runtime_loop.tick(MAX_FIXED_TIMESTEP_BACKLOG);
+        if let Some(dropped) = dropped_backlog {
+            eprintln!("[time] Dropping {:.3}s of fixed-step backlog to maintain responsiveness", dropped);
+        }
         self.sync_atlas_hot_reload();
         self.process_atlas_hot_reload_events();
         self.process_animation_asset_watchers();
-        let dt = self.time.delta_seconds();
-        self.accumulator += dt;
-        if self.accumulator > MAX_FIXED_TIMESTEP_BACKLOG {
-            let dropped = self.accumulator - MAX_FIXED_TIMESTEP_BACKLOG;
-            eprintln!("[time] Dropping {:.3}s of fixed-step backlog to maintain responsiveness", dropped);
-            self.accumulator = MAX_FIXED_TIMESTEP_BACKLOG;
-        }
         self.ecs.profiler_begin_frame();
         let frame_start = Instant::now();
         let mut fixed_time_ms = 0.0;
@@ -4198,15 +4273,13 @@ impl ApplicationHandler for App {
             self.ecs.push_event(GameEvent::ScriptMessage { message });
         }
 
-        while self.accumulator >= self.fixed_dt {
-            let fixed_dt = self.fixed_dt;
+        while let Some(fixed_dt) = self.runtime_loop.pop_fixed_step() {
             let fixed_start = Instant::now();
             self.ecs.fixed_step(fixed_dt);
             fixed_time_ms += fixed_start.elapsed().as_secs_f32() * 1000.0;
             let plugin_fixed_start = Instant::now();
             self.with_plugins(|plugins, ctx| plugins.fixed_update(ctx, fixed_dt));
             fixed_time_ms += plugin_fixed_start.elapsed().as_secs_f32() * 1000.0;
-            self.accumulator -= fixed_dt;
         }
         let update_start = Instant::now();
         self.ecs.update(dt);
@@ -4538,6 +4611,11 @@ impl ApplicationHandler for App {
         }
         let prefab_entries = self.telemetry_cache.prefab_entries(&self.prefab_library);
         let latest_frame_timing = self.frame_profiler.latest();
+        let frame_budget_idle =
+            self.frame_budget_idle_snapshot.as_ref().map(Self::frame_budget_snapshot_view);
+        let frame_budget_panel =
+            self.frame_budget_panel_snapshot.as_ref().map(Self::frame_budget_snapshot_view);
+        let frame_budget_status = self.frame_budget_status.clone();
 
         let editor_params = editor_ui::EditorUiParams {
             raw_input,
@@ -4546,6 +4624,9 @@ impl ApplicationHandler for App {
             #[cfg(feature = "alloc_profiler")]
             allocation_delta,
             frame_timing_sample: latest_frame_timing,
+            frame_budget_idle,
+            frame_budget_panel,
+            frame_budget_status,
             system_timings,
             entity_count,
             instances_drawn,
@@ -4683,6 +4764,9 @@ impl ApplicationHandler for App {
             prefab_format,
             prefab_status,
         } = editor_output;
+
+        let frame_budget_action = actions.frame_budget_action;
+        self.handle_frame_budget_action(frame_budget_action);
 
         self.ui_scale = ui_scale;
         self.ui_cell_size = ui_cell_size;
