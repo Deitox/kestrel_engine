@@ -74,6 +74,7 @@ use winit::keyboard::{Key, NamedKey};
 
 // egui
 use egui::Context as EguiCtx;
+use egui_plot as eplot;
 use egui_wgpu::{Renderer as EguiRenderer, RendererOptions, ScreenDescriptor};
 use egui_winit::State as EguiWinit;
 
@@ -606,6 +607,8 @@ pub struct App {
     #[cfg(feature = "alloc_profiler")]
     last_alloc_snapshot: alloc_profiler::AllocationSnapshot,
     telemetry_cache: TelemetryCache,
+    frame_plot_points: Arc<[eplot::PlotPoint]>,
+    frame_plot_revision: u64,
     gpu_timings: Vec<GpuPassTiming>,
     gpu_timing_history: VecDeque<GpuTimingFrame>,
     gpu_timing_history_capacity: usize,
@@ -2648,6 +2651,8 @@ impl App {
             #[cfg(feature = "alloc_profiler")]
             last_alloc_snapshot: alloc_profiler::allocation_snapshot(),
             telemetry_cache: TelemetryCache::default(),
+            frame_plot_points: Arc::from(Vec::<eplot::PlotPoint>::new().into_boxed_slice()),
+            frame_plot_revision: 0,
             gpu_timings: Vec::new(),
             gpu_timing_history: VecDeque::with_capacity(240),
             gpu_timing_history_capacity: 240,
@@ -2997,6 +3002,26 @@ impl App {
             self.sprite_atlas_views.clear();
             self.renderer.clear_sprite_bind_cache();
         }
+    }
+
+    fn frame_plot_points_arc(&mut self) -> Arc<[eplot::PlotPoint]> {
+        let revision = self.analytics_plugin().map(|plugin| plugin.frame_history_revision()).unwrap_or(0);
+        if self.frame_plot_revision != revision {
+            let new_arc = if let Some(plugin) = self.analytics_plugin() {
+                let history = plugin.frame_history();
+                let mut data = Vec::with_capacity(history.len());
+                for (idx, value) in history.iter().enumerate() {
+                    data.push(eplot::PlotPoint::new(idx as f64, *value as f64));
+                }
+                Arc::from(data.into_boxed_slice())
+            } else {
+                Arc::from(Vec::<eplot::PlotPoint>::new().into_boxed_slice())
+            };
+            self.frame_plot_revision = revision;
+            self.frame_plot_points = Arc::clone(&new_arc);
+            return new_arc;
+        }
+        Arc::clone(&self.frame_plot_points)
     }
 
     fn with_plugin_runtime<F, R>(&mut self, f: F) -> R
@@ -4325,8 +4350,7 @@ impl ApplicationHandler for App {
         if let Some(screen) = self.egui_screen.as_mut() {
             screen.pixels_per_point = ui_pixels_per_point;
         };
-        let hist_points =
-            self.analytics_plugin().map(|plugin| plugin.frame_plot_points()).unwrap_or_else(Vec::new);
+        let hist_points = self.frame_plot_points_arc();
         let spatial_metrics = self.analytics_plugin().and_then(|plugin| plugin.spatial_metrics());
         #[cfg(feature = "alloc_profiler")]
         let allocation_delta = self.analytics_plugin().and_then(|plugin| plugin.allocation_delta());

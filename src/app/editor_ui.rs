@@ -552,7 +552,7 @@ pub(super) struct ScriptDebuggerOutput {
 pub(super) struct EditorUiParams {
     pub raw_input: egui::RawInput,
     pub base_pixels_per_point: f32,
-    pub hist_points: Vec<[f64; 2]>,
+    pub hist_points: Arc<[eplot::PlotPoint]>,
     #[cfg(feature = "alloc_profiler")]
     pub allocation_delta: Option<AllocationDelta>,
     pub frame_timing_sample: Option<FrameTimingSample>,
@@ -883,7 +883,7 @@ impl App {
                         hist.show(ui, |plot_ui| {
                             plot_ui.line(eplot::Line::new(
                                 "ms/frame",
-                                eplot::PlotPoints::from(hist_points.clone()),
+                                eplot::PlotPoints::from(hist_points.as_ref()),
                             ));
                         });
                         ui.label("Target: 16.7ms for 60 FPS");

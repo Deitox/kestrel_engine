@@ -118,6 +118,7 @@ pub struct KeyframeEditorEvent {
 pub struct AnalyticsPlugin {
     frame_hist: Vec<f32>,
     frame_capacity: usize,
+    frame_hist_revision: u64,
     events: VecDeque<GameEvent>,
     event_capacity: usize,
     events_snapshot: Option<Arc<[GameEvent]>>,
@@ -146,6 +147,7 @@ impl AnalyticsPlugin {
         Self {
             frame_hist: Vec::with_capacity(frame_capacity.min(1_024)),
             frame_capacity: frame_capacity.max(1),
+            frame_hist_revision: 0,
             events: VecDeque::with_capacity(event_capacity.min(1_024)),
             event_capacity: event_capacity.max(1),
             events_snapshot: None,
@@ -167,8 +169,12 @@ impl AnalyticsPlugin {
         }
     }
 
-    pub fn frame_plot_points(&self) -> Vec<[f64; 2]> {
-        self.frame_hist.iter().enumerate().map(|(i, v)| [i as f64, *v as f64]).collect()
+    pub fn frame_history(&self) -> &[f32] {
+        &self.frame_hist
+    }
+
+    pub fn frame_history_revision(&self) -> u64 {
+        self.frame_hist_revision
     }
 
     pub fn recent_events(&self) -> impl Iterator<Item = &GameEvent> {
@@ -187,6 +193,7 @@ impl AnalyticsPlugin {
 
     pub fn clear_frame_history(&mut self) {
         self.frame_hist.clear();
+        self.frame_hist_revision = self.frame_hist_revision.wrapping_add(1);
     }
 
     pub fn record_particle_budget(&mut self, metrics: ParticleBudgetMetrics) {
@@ -368,6 +375,7 @@ impl EnginePlugin for AnalyticsPlugin {
             self.frame_hist.remove(0);
         }
         self.frame_hist.push(dt_ms);
+        self.frame_hist_revision = self.frame_hist_revision.wrapping_add(1);
         Ok(())
     }
 
@@ -388,6 +396,7 @@ impl EnginePlugin for AnalyticsPlugin {
     fn shutdown(&mut self, _ctx: &mut PluginContext<'_>) -> Result<()> {
         self.events.clear();
         self.events_snapshot = None;
+        self.frame_hist_revision = self.frame_hist_revision.wrapping_add(1);
         self.frame_hist.clear();
         self.particle_budget = None;
         self.spatial_metrics = None;
