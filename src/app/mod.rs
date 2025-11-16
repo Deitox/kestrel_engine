@@ -14,7 +14,7 @@ use self::animation_keyframe_panel::{
 };
 use self::animation_watch::{AnimationAssetKind, AnimationAssetWatcher};
 use self::atlas_watch::{normalize_path_for_watch, AtlasHotReload};
-use self::editor_shell::EditorShell;
+use self::editor_shell::{EditorShell, EditorUiState, EditorUiStateParams, EmitterUiDefaults};
 use self::plugin_host::{BuiltinPluginFactory, PluginHost};
 use self::plugin_runtime::{PluginContextInputs, PluginRuntime};
 use self::runtime_loop::{RuntimeLoop, RuntimeTick};
@@ -565,15 +565,6 @@ pub struct App {
     inspector_status: Option<String>,
     debug_show_spatial_hash: bool,
     debug_show_colliders: bool,
-    script_debugger_open: bool,
-    script_focus_repl: bool,
-    script_repl_input: String,
-    script_repl_history: VecDeque<String>,
-    script_repl_history_index: Option<usize>,
-    script_repl_history_snapshot: Option<Arc<[String]>>,
-    script_console: VecDeque<ScriptConsoleEntry>,
-    script_console_snapshot: Option<Arc<[ScriptConsoleEntry]>>,
-    last_reported_script_error: Option<String>,
     animation_keyframe_panel: AnimationKeyframePanel,
     clip_dirty: HashSet<String>,
     clip_edit_history: Vec<ClipEditRecord>,
@@ -651,6 +642,14 @@ pub struct App {
 }
 
 impl App {
+    fn editor_ui_state(&self) -> &EditorUiState {
+        self.editor_shell.ui_state.as_ref().expect("editor UI state not initialized")
+    }
+
+    fn editor_ui_state_mut(&mut self) -> &mut EditorUiState {
+        self.editor_shell.ui_state.as_mut().expect("editor UI state not initialized")
+    }
+
     pub fn hot_reload_atlas(&mut self, key: &str) -> Result<(usize, TextureAtlasDiagnostics)> {
         let diagnostics = self.assets.reload_atlas(key)?;
         self.invalidate_atlas_view(key);
@@ -2396,6 +2395,7 @@ impl App {
         }
         renderer.mark_shadow_settings_dirty();
         let lighting_state = renderer.lighting().clone();
+        let editor_lighting_state = lighting_state.clone();
         let particle_config = config.particles.clone();
         let editor_cfg = config.editor.clone();
         let mut ecs = EcsWorld::new();
@@ -2439,9 +2439,21 @@ impl App {
                 [1.0, 0.2, 0.2, 0.0],
             )
         };
+        let emitter_defaults = EmitterUiDefaults {
+            rate: ui_emitter_rate,
+            spread: ui_emitter_spread,
+            speed: ui_emitter_speed,
+            lifetime: ui_emitter_lifetime,
+            start_size: ui_emitter_start_size,
+            end_size: ui_emitter_end_size,
+            start_color: ui_emitter_start_color,
+            end_color: ui_emitter_end_color,
+        };
         let scene_path = String::from("assets/scenes/quick_save.json");
         let mut scene_history = VecDeque::with_capacity(8);
         scene_history.push_back(scene_path.clone());
+        let scene_path_for_ui = scene_path.clone();
+        let scene_history_for_ui = scene_history.clone();
         let runtime_loop = RuntimeLoop::new(Time::new(), 1.0 / 60.0);
         let mut input = Input::from_config(INPUT_CONFIG_PATH);
         let mut assets = AssetManager::new();
@@ -2598,15 +2610,6 @@ impl App {
             inspector_status: None,
             debug_show_spatial_hash: false,
             debug_show_colliders: false,
-            script_debugger_open: false,
-            script_focus_repl: false,
-            script_repl_input: String::new(),
-            script_repl_history: VecDeque::new(),
-            script_repl_history_index: None,
-            script_repl_history_snapshot: None,
-            script_console: VecDeque::with_capacity(SCRIPT_CONSOLE_CAPACITY),
-            script_console_snapshot: None,
-            last_reported_script_error: None,
             animation_keyframe_panel: AnimationKeyframePanel::default(),
             clip_dirty: HashSet::new(),
             clip_edit_history: Vec::new(),
@@ -2673,6 +2676,16 @@ impl App {
             sprite_batch_pool: Vec::new(),
             sprite_batch_order: Vec::new(),
         };
+        let ui_state = EditorUiState::new(EditorUiStateParams {
+            scene_path: scene_path_for_ui,
+            scene_history: scene_history_for_ui,
+            emitter_defaults,
+            particle_config: particle_config.clone(),
+            lighting_state: editor_lighting_state,
+            environment_intensity,
+            editor_config: editor_cfg.clone(),
+        });
+        app.editor_shell.install_ui_state(ui_state);
         app.seed_animation_watch_roots();
         app.sync_animation_asset_watch_roots();
         app.apply_particle_caps();
@@ -3226,30 +3239,33 @@ impl App {
     }
 
     fn push_script_console(&mut self, kind: ScriptConsoleKind, text: impl Into<String>) {
-        self.script_console.push_back(ScriptConsoleEntry { kind, text: text.into() });
-        while self.script_console.len() > SCRIPT_CONSOLE_CAPACITY {
-            self.script_console.pop_front();
+        let state = self.editor_ui_state_mut();
+        state.script_console.push_back(ScriptConsoleEntry { kind, text: text.into() });
+        while state.script_console.len() > SCRIPT_CONSOLE_CAPACITY {
+            state.script_console.pop_front();
         }
-        self.script_console_snapshot = None;
+        state.script_console_snapshot = None;
     }
 
     fn script_console_entries(&mut self) -> Arc<[ScriptConsoleEntry]> {
-        if let Some(cache) = &self.script_console_snapshot {
+        let state = self.editor_ui_state_mut();
+        if let Some(cache) = &state.script_console_snapshot {
             return Arc::clone(cache);
         }
-        let data = self.script_console.iter().cloned().collect::<Vec<_>>();
+        let data = state.script_console.iter().cloned().collect::<Vec<_>>();
         let arc = Arc::from(data.into_boxed_slice());
-        self.script_console_snapshot = Some(Arc::clone(&arc));
+        state.script_console_snapshot = Some(Arc::clone(&arc));
         arc
     }
 
     fn script_repl_history_arc(&mut self) -> Arc<[String]> {
-        if let Some(cache) = &self.script_repl_history_snapshot {
+        let state = self.editor_ui_state_mut();
+        if let Some(cache) = &state.script_repl_history_snapshot {
             return Arc::clone(cache);
         }
-        let data = self.script_repl_history.iter().cloned().collect::<Vec<_>>();
+        let data = state.script_repl_history.iter().cloned().collect::<Vec<_>>();
         let arc = Arc::from(data.into_boxed_slice());
-        self.script_repl_history_snapshot = Some(Arc::clone(&arc));
+        state.script_repl_history_snapshot = Some(Arc::clone(&arc));
         arc
     }
 
@@ -3312,12 +3328,13 @@ impl App {
         if command.is_empty() {
             return;
         }
-        self.script_repl_history.push_back(command.to_string());
-        while self.script_repl_history.len() > SCRIPT_HISTORY_CAPACITY {
-            self.script_repl_history.pop_front();
+        let state = self.editor_ui_state_mut();
+        state.script_repl_history.push_back(command.to_string());
+        while state.script_repl_history.len() > SCRIPT_HISTORY_CAPACITY {
+            state.script_repl_history.pop_front();
         }
-        self.script_repl_history_index = None;
-        self.script_repl_history_snapshot = None;
+        state.script_repl_history_index = None;
+        state.script_repl_history_snapshot = None;
     }
 
     fn execute_repl_command(&mut self, command: String) {
@@ -3327,8 +3344,11 @@ impl App {
         }
         self.append_script_history(trimmed);
         self.push_script_console(ScriptConsoleKind::Input, format!("> {trimmed}"));
-        self.script_repl_input.clear();
-        self.script_focus_repl = true;
+        {
+            let state = self.editor_ui_state_mut();
+            state.script_repl_input.clear();
+            state.script_focus_repl = true;
+        }
         let result: Result<Option<String>, String> = if let Some(plugin) = self.script_plugin_mut() {
             match plugin.eval_repl(trimmed) {
                 Ok(value) => Ok(value),
@@ -3346,7 +3366,9 @@ impl App {
             Ok(None) => {}
             Err(message) => {
                 self.push_script_console(ScriptConsoleKind::Error, message);
-                self.script_debugger_open = true;
+                let state = self.editor_ui_state_mut();
+                state.script_debugger_open = true;
+                state.script_focus_repl = true;
             }
         }
     }
@@ -3354,14 +3376,18 @@ impl App {
     fn sync_script_error_state(&mut self) {
         let current_error =
             self.script_plugin().and_then(|plugin| plugin.last_error().map(|err| err.to_string()));
-        if current_error == self.last_reported_script_error {
-            return;
+        {
+            let state = self.editor_ui_state_mut();
+            if current_error == state.last_reported_script_error {
+                return;
+            }
+            state.last_reported_script_error = current_error.clone();
         }
-        self.last_reported_script_error = current_error.clone();
         if let Some(err) = current_error {
             self.push_script_console(ScriptConsoleKind::Error, format!("Runtime error: {err}"));
-            self.script_debugger_open = true;
-            self.script_focus_repl = true;
+            let state = self.editor_ui_state_mut();
+            state.script_debugger_open = true;
+            state.script_focus_repl = true;
         }
     }
 
@@ -4609,6 +4635,18 @@ impl ApplicationHandler for App {
             self.frame_budget_panel_snapshot.as_ref().map(Self::frame_budget_snapshot_view);
         let frame_budget_status = self.frame_budget_status.clone();
 
+        let (script_debugger_open, script_repl_input, script_repl_history_index, script_focus_repl) = {
+            let state = self.editor_ui_state();
+            (
+                state.script_debugger_open,
+                state.script_repl_input.clone(),
+                state.script_repl_history_index,
+                state.script_focus_repl,
+            )
+        };
+        let script_repl_history = self.script_repl_history_arc();
+        let script_console_entries = self.script_console_entries();
+
         let editor_params = editor_ui::EditorUiParams {
             raw_input,
             base_pixels_per_point,
@@ -4688,17 +4726,17 @@ impl ApplicationHandler for App {
             prefab_format: self.prefab_format,
             prefab_status: self.prefab_status.clone(),
             script_debugger: editor_ui::ScriptDebuggerParams {
-                open: self.script_debugger_open,
+                open: script_debugger_open,
                 available: script_plugin_available,
                 script_path,
                 enabled: scripts_enabled,
                 paused: scripts_paused,
                 last_error: script_last_error,
-                repl_input: self.script_repl_input.clone(),
-                repl_history_index: self.script_repl_history_index,
-                repl_history: self.script_repl_history_arc(),
-                console_entries: self.script_console_entries(),
-                focus_repl: self.script_focus_repl,
+                repl_input: script_repl_input,
+                repl_history_index: script_repl_history_index,
+                repl_history: script_repl_history,
+                console_entries: script_console_entries,
+                focus_repl: script_focus_repl,
             },
             id_lookup_input: self.id_lookup_input.clone(),
             id_lookup_active: self.id_lookup_active,
@@ -4897,13 +4935,16 @@ impl ApplicationHandler for App {
             return;
         }
 
-        self.script_debugger_open = script_debugger.open;
-        self.script_repl_input = script_debugger.repl_input;
-        self.script_repl_history_index = script_debugger.repl_history_index;
-        self.script_focus_repl = script_debugger.focus_repl;
-        if script_debugger.clear_console {
-            self.script_console.clear();
-            self.script_console_snapshot = None;
+        {
+            let state = self.editor_ui_state_mut();
+            state.script_debugger_open = script_debugger.open;
+            state.script_repl_input = script_debugger.repl_input;
+            state.script_repl_history_index = script_debugger.repl_history_index;
+            state.script_focus_repl = script_debugger.focus_repl;
+            if script_debugger.clear_console {
+                state.script_console.clear();
+                state.script_console_snapshot = None;
+            }
         }
         if let Some(enabled) = script_debugger.set_enabled {
             if let Some(plugin) = self.script_plugin_mut() {
