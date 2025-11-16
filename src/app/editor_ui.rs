@@ -868,6 +868,18 @@ impl App {
             } else {
                 Arc::from([])
             };
+        let plugin_manifest_error = self.plugin_host().manifest_error().map(|err| err.to_string());
+        let (plugin_manifest_entries, plugin_manifest_disabled_builtins, plugin_manifest_path) =
+            if let Some(manifest) = self.plugin_host().manifest() {
+                (
+                    Some(manifest.entries().to_vec()),
+                    Some(manifest.disabled_builtins().map(|entry| entry.to_string()).collect::<HashSet<_>>()),
+                    manifest.path().map(|path| path.display().to_string()),
+                )
+            } else {
+                (None, None, None)
+            };
+        let plugin_manifest_loaded = plugin_manifest_entries.is_some();
 
         let mut keyframe_panel_toggle_event: Option<KeyframeEditorEventKind> = None;
         let mut editor_settings_dirty = false;
@@ -2426,7 +2438,7 @@ impl App {
 
                     ui.separator();
                     ui.heading("Plugins");
-                    if let Some(error) = self.plugin_host.manifest_error() {
+                    if let Some(error) = plugin_manifest_error.as_deref() {
                         ui.colored_label(
                             egui::Color32::from_rgb(230, 120, 120),
                             format!("Manifest error: {error}"),
@@ -2439,12 +2451,24 @@ impl App {
                     ui.small(
                         "Toggle entries below to update config/plugins.json without leaving the editor.",
                     );
-                    let status_snapshot = self.plugin_manager.status_snapshot();
+                    let status_snapshot = {
+                        let manager = self.plugin_runtime.manager_mut();
+                        manager.status_snapshot()
+                    };
                     let status_slice: &[PluginStatus] = status_snapshot.as_ref();
-                    let capability_metrics = self.plugin_manager.capability_metrics();
-                    let asset_metrics = self.plugin_manager.asset_readback_metrics();
-                    let ecs_history = self.plugin_manager.ecs_query_history();
-                    let watchdog_events = self.plugin_manager.watchdog_events();
+                    let capability_metrics = self.plugin_runtime.manager().capability_metrics();
+                    let asset_metrics = {
+                        let manager = self.plugin_runtime.manager_mut();
+                        manager.asset_readback_metrics()
+                    };
+                    let ecs_history = {
+                        let manager = self.plugin_runtime.manager_mut();
+                        manager.ecs_query_history()
+                    };
+                    let watchdog_events = {
+                        let manager = self.plugin_runtime.manager_mut();
+                        manager.watchdog_events()
+                    };
                     let mut dynamic_statuses: BTreeMap<String, &PluginStatus> = BTreeMap::new();
                     let mut builtin_statuses: Vec<&PluginStatus> = Vec::new();
                     for status in status_slice {
@@ -2455,14 +2479,10 @@ impl App {
                         }
                     }
                     builtin_statuses.sort_by(|a, b| a.name.cmp(&b.name));
-                    if let Some(manifest) = self.plugin_host.manifest() {
-                        if let Some(path) = manifest.path() {
-                            ui.small(format!("Manifest: {}", path.display()));
-                        }
+                    if let Some(path) = plugin_manifest_path.as_deref() {
+                        ui.small(format!("Manifest: {path}"));
                     }
-                    let manifest_entries =
-                        self.plugin_host.manifest().map(|manifest| manifest.entries().to_vec());
-                    if let Some(entries) = manifest_entries {
+                    if let Some(entries) = plugin_manifest_entries.as_ref() {
                         if entries.is_empty() {
                             ui.label("No dynamic plugins listed in manifest.");
                         } else {
@@ -2529,15 +2549,18 @@ impl App {
                                             capability_metrics.get(&plugin_name),
                                         );
                                     }
-                                    plugin_debug_ui(
-                                        ui,
-                                        &plugin_name,
-                                        asset_metrics.as_ref(),
-                                        ecs_history.as_ref(),
-                                        watchdog_events.as_ref(),
-                                        &mut self.plugin_manager,
-                                        &mut self.ui_scene_status,
-                                    );
+                                    {
+                                        let plugin_manager = self.plugin_runtime.manager_mut();
+                                        plugin_debug_ui(
+                                            ui,
+                                            &plugin_name,
+                                            asset_metrics.as_ref(),
+                                            ecs_history.as_ref(),
+                                            watchdog_events.as_ref(),
+                                            plugin_manager,
+                                            &mut self.ui_scene_status,
+                                        );
+                                    }
                                 });
                                 if toggled {
                                     actions.plugin_toggles.push(PluginToggleRequest {
@@ -2571,28 +2594,32 @@ impl App {
                                 status.trust,
                                 capability_metrics.get(&status.name),
                             );
-                            plugin_debug_ui(
-                                ui,
-                                &status.name,
-                                asset_metrics.as_ref(),
-                                ecs_history.as_ref(),
-                                watchdog_events.as_ref(),
-                                &mut self.plugin_manager,
-                                &mut self.ui_scene_status,
-                            );
+                            {
+                                let plugin_manager = self.plugin_runtime.manager_mut();
+                                plugin_debug_ui(
+                                    ui,
+                                    &status.name,
+                                    asset_metrics.as_ref(),
+                                    ecs_history.as_ref(),
+                                    watchdog_events.as_ref(),
+                                    plugin_manager,
+                                    &mut self.ui_scene_status,
+                                );
+                            }
                         }
                     }
                     if !builtin_statuses.is_empty() {
                         if !dynamic_statuses.is_empty() {
                             ui.separator();
                         }
-                        let manifest_loaded = self.plugin_host.manifest().is_some();
+                        let manifest_loaded = plugin_manifest_loaded;
                         for status in builtin_statuses {
-                            let mut enabled_flag = self
-                                .plugin_host
-                                .manifest()
-                                .map(|manifest| !manifest.is_builtin_disabled(&status.name))
-                                .unwrap_or(!matches!(status.state, PluginState::Disabled(_)));
+                            let mut enabled_flag =
+                                if let Some(disabled) = plugin_manifest_disabled_builtins.as_ref() {
+                                    !disabled.contains(&status.name)
+                                } else {
+                                    !matches!(status.state, PluginState::Disabled(_))
+                                };
                             let mut toggled = false;
                             ui.group(|ui| {
                                 ui.horizontal(|ui| {
@@ -2620,15 +2647,18 @@ impl App {
                                     status.trust,
                                     capability_metrics.get(&status.name),
                                 );
-                                plugin_debug_ui(
-                                    ui,
-                                    &status.name,
-                                    asset_metrics.as_ref(),
-                                    ecs_history.as_ref(),
-                                    watchdog_events.as_ref(),
-                                    &mut self.plugin_manager,
-                                    &mut self.ui_scene_status,
-                                );
+                                {
+                                    let plugin_manager = self.plugin_runtime.manager_mut();
+                                    plugin_debug_ui(
+                                        ui,
+                                        &status.name,
+                                        asset_metrics.as_ref(),
+                                        ecs_history.as_ref(),
+                                        watchdog_events.as_ref(),
+                                        plugin_manager,
+                                        &mut self.ui_scene_status,
+                                    );
+                                }
                             });
                             if toggled {
                                 actions.plugin_toggles.push(PluginToggleRequest {
@@ -2642,7 +2672,7 @@ impl App {
                         } else {
                             ui.small("Load config/plugins.json to edit built-in toggles.");
                         }
-                    } else if self.plugin_host.manifest().is_none() && dynamic_statuses.is_empty() {
+                    } else if !plugin_manifest_loaded && dynamic_statuses.is_empty() {
                         ui.label("No plugins reported");
                     }
 
@@ -2802,7 +2832,7 @@ impl App {
                     });
 
                     ui.separator();
-                    let plugin_present = self.plugin_manager.get::<AudioPlugin>().is_some();
+                    let plugin_present = self.plugin_runtime.manager().get::<AudioPlugin>().is_some();
                     let parsed_triggers: Vec<ParsedAudioTrigger> =
                         audio_triggers.iter().map(|label| parse_audio_trigger(label)).collect();
                     let mut trigger_counts: BTreeMap<AudioTriggerKind, usize> = BTreeMap::new();
@@ -2856,7 +2886,7 @@ impl App {
                             ui.small(format!("Sample rate: {rate} Hz"));
                         }
                         if ui.checkbox(&mut audio_enabled, "Enable audio triggers").changed() {
-                            if let Some(audio) = self.plugin_manager.get_mut::<AudioPlugin>() {
+                            if let Some(audio) = self.plugin_runtime.manager_mut().get_mut::<AudioPlugin>() {
                                 audio.set_enabled(audio_enabled);
                             }
                         }
@@ -2892,7 +2922,7 @@ impl App {
                             ui.small(force_text);
                         }
                         if ui.button("Clear audio log").clicked() {
-                            if let Some(audio) = self.plugin_manager.get_mut::<AudioPlugin>() {
+                            if let Some(audio) = self.plugin_runtime.manager_mut().get_mut::<AudioPlugin>() {
                                 audio.clear();
                             }
                         }

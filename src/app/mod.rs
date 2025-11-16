@@ -4,6 +4,7 @@ mod atlas_watch;
 mod editor_ui;
 mod gizmo_interaction;
 mod plugin_host;
+mod plugin_runtime;
 
 use self::animation_keyframe_panel::{
     AnimationKeyframePanel, AnimationKeyframePanelState, AnimationPanelCommand, AnimationTrackBinding,
@@ -12,6 +13,7 @@ use self::animation_keyframe_panel::{
 use self::animation_watch::{AnimationAssetKind, AnimationAssetWatcher};
 use self::atlas_watch::{normalize_path_for_watch, AtlasHotReload};
 use self::plugin_host::{BuiltinPluginFactory, PluginHost};
+use self::plugin_runtime::{PluginContextInputs, PluginRuntime};
 #[cfg(feature = "alloc_profiler")]
 use crate::alloc_profiler;
 use crate::analytics::{
@@ -577,8 +579,7 @@ pub struct App {
     suppressed_validation_paths: HashSet<PathBuf>,
 
     // Plugins
-    plugin_host: PluginHost,
-    plugin_manager: PluginManager,
+    plugin_runtime: PluginRuntime,
 
     // Camera / selection
     pub(crate) camera: Camera2D,
@@ -2319,16 +2320,17 @@ impl App {
                     .push(ManifestBuiltinToggle { name: toggle.name.clone(), disable: *disable }),
             }
         }
-        let summary = match self.plugin_host.apply_manifest_toggles(&dynamic_requests, &builtin_requests) {
-            Ok(summary) => summary,
-            Err(err) => {
-                self.ui_scene_status = Some(format!("Plugin manifest update failed: {err}"));
-                if let Err(load_err) = self.plugin_host.reload_manifest_from_disk() {
-                    eprintln!("[plugin] failed to reload manifest after error: {load_err:?}");
+        let summary =
+            match self.plugin_host_mut().apply_manifest_toggles(&dynamic_requests, &builtin_requests) {
+                Ok(summary) => summary,
+                Err(err) => {
+                    self.ui_scene_status = Some(format!("Plugin manifest update failed: {err}"));
+                    if let Err(load_err) = self.plugin_host_mut().reload_manifest_from_disk() {
+                        eprintln!("[plugin] failed to reload manifest after error: {load_err:?}");
+                    }
+                    return;
                 }
-                return;
-            }
-        };
+            };
         if !summary.changed() {
             if !summary.dynamic.missing.is_empty() {
                 self.ui_scene_status = Some(format!(
@@ -2336,7 +2338,7 @@ impl App {
                     if summary.dynamic.missing.len() == 1 { "y:" } else { "ies:" },
                     summary.dynamic.missing.join(", ")
                 ));
-                if let Err(err) = self.plugin_host.reload_manifest_from_disk() {
+                if let Err(err) = self.plugin_host_mut().reload_manifest_from_disk() {
                     eprintln!("[plugin] failed to reload manifest after missing entries: {err:?}");
                 }
             } else {
@@ -2461,8 +2463,9 @@ impl App {
         // egui context and state
         let egui_ctx = EguiCtx::default();
         let egui_winit = None;
-        let mut plugin_host = PluginHost::new(PLUGIN_MANIFEST_PATH);
-        let mut plugin_manager = PluginManager::default();
+        let plugin_host = PluginHost::new(PLUGIN_MANIFEST_PATH);
+        let plugin_manager = PluginManager::default();
+        let mut plugin_runtime = PluginRuntime::new(plugin_host, plugin_manager);
         let script_path = PathBuf::from("assets/scripts/main.rhai");
         let mut builtin_plugins = Vec::new();
         builtin_plugins
@@ -2475,45 +2478,41 @@ impl App {
             }));
         }
         builtin_plugins.push(BuiltinPluginFactory::new("audio", || Box::new(AudioPlugin::new(16))));
-        {
-            let handle = plugin_manager.feature_handle();
-            let capability_handle = plugin_manager.capability_tracker_handle();
-            let mut ctx = PluginContext::new(
-                &mut renderer,
-                &mut ecs,
-                &mut assets,
-                &mut input,
-                &mut material_registry,
-                &mut mesh_registry,
-                &mut environment_registry,
-                &time,
-                Self::emit_event_for_plugin,
-                handle,
-                None,
-                capability_handle,
-            );
-            plugin_host.register_builtins(&mut plugin_manager, &mut ctx, &builtin_plugins);
-            drop(ctx);
-        }
+        plugin_runtime.with_context(
+            PluginContextInputs {
+                renderer: &mut renderer,
+                ecs: &mut ecs,
+                assets: &mut assets,
+                input: &mut input,
+                material_registry: &mut material_registry,
+                mesh_registry: &mut mesh_registry,
+                environment_registry: &mut environment_registry,
+                time: &time,
+                event_emitter: Self::emit_event_for_plugin,
+                selected_entity: None,
+            },
+            |host, manager, ctx| {
+                host.register_builtins(manager, ctx, &builtin_plugins);
+            },
+        );
         if !initial_events.is_empty() {
-            let handle = plugin_manager.feature_handle();
-            let capability_handle = plugin_manager.capability_tracker_handle();
-            let mut ctx = PluginContext::new(
-                &mut renderer,
-                &mut ecs,
-                &mut assets,
-                &mut input,
-                &mut material_registry,
-                &mut mesh_registry,
-                &mut environment_registry,
-                &time,
-                Self::emit_event_for_plugin,
-                handle,
-                None,
-                capability_handle,
+            plugin_runtime.with_context(
+                PluginContextInputs {
+                    renderer: &mut renderer,
+                    ecs: &mut ecs,
+                    assets: &mut assets,
+                    input: &mut input,
+                    material_registry: &mut material_registry,
+                    mesh_registry: &mut mesh_registry,
+                    environment_registry: &mut environment_registry,
+                    time: &time,
+                    event_emitter: Self::emit_event_for_plugin,
+                    selected_entity: None,
+                },
+                |_, manager, ctx| {
+                    manager.handle_events(ctx, &initial_events);
+                },
             );
-            plugin_manager.handle_events(&mut ctx, &initial_events);
-            drop(ctx);
         }
 
         let atlas_hot_reload = match AtlasHotReload::new() {
@@ -2616,8 +2615,7 @@ impl App {
             clip_edit_overrides: HashMap::new(),
             pending_animation_validation_events: Vec::new(),
             suppressed_validation_paths: HashSet::new(),
-            plugin_host,
-            plugin_manager,
+            plugin_runtime,
             camera,
             viewport_camera_mode: ViewportCameraMode::default(),
             camera_bookmarks: Vec::new(),
@@ -3038,36 +3036,22 @@ impl App {
     where
         F: FnOnce(&mut PluginHost, &mut PluginManager, &mut PluginContext<'_>) -> R,
     {
-        let feature_handle = self.plugin_manager.feature_handle();
-        let capability_handle = self.plugin_manager.capability_tracker_handle();
-        let renderer = &mut self.renderer;
-        let ecs = &mut self.ecs;
-        let assets = &mut self.assets;
-        let input = &mut self.input;
-        let material_registry = &mut self.material_registry;
-        let mesh_registry = &mut self.mesh_registry;
-        let environment_registry = &mut self.environment_registry;
-        let time = &self.time;
         let selected_entity = self.selected_entity;
-        let plugin_host = &mut self.plugin_host;
-        let plugin_manager = &mut self.plugin_manager;
-        let mut ctx = PluginContext::new(
-            renderer,
-            ecs,
-            assets,
-            input,
-            material_registry,
-            mesh_registry,
-            environment_registry,
-            time,
-            Self::emit_event_for_plugin,
-            feature_handle,
-            selected_entity,
-            capability_handle,
-        );
-        let result = f(plugin_host, plugin_manager, &mut ctx);
-        drop(ctx);
-        result
+        self.plugin_runtime.with_context(
+            PluginContextInputs {
+                renderer: &mut self.renderer,
+                ecs: &mut self.ecs,
+                assets: &mut self.assets,
+                input: &mut self.input,
+                material_registry: &mut self.material_registry,
+                mesh_registry: &mut self.mesh_registry,
+                environment_registry: &mut self.environment_registry,
+                time: &self.time,
+                event_emitter: Self::emit_event_for_plugin,
+                selected_entity,
+            },
+            f,
+        )
     }
 
     fn with_plugins<F, R>(&mut self, f: F) -> R
@@ -3077,36 +3061,52 @@ impl App {
         self.with_plugin_runtime(|_, manager, ctx| f(manager, ctx))
     }
 
+    fn plugin_host(&self) -> &PluginHost {
+        self.plugin_runtime.host()
+    }
+
+    fn plugin_host_mut(&mut self) -> &mut PluginHost {
+        self.plugin_runtime.host_mut()
+    }
+
+    fn plugin_manager(&self) -> &PluginManager {
+        self.plugin_runtime.manager()
+    }
+
+    fn plugin_manager_mut(&mut self) -> &mut PluginManager {
+        self.plugin_runtime.manager_mut()
+    }
+
     fn emit_event_for_plugin(ecs: &mut EcsWorld, event: GameEvent) {
         ecs.push_event(event);
     }
 
     fn audio_plugin(&self) -> Option<&AudioPlugin> {
-        self.plugin_manager.get::<AudioPlugin>()
+        self.plugin_manager().get::<AudioPlugin>()
     }
 
     fn analytics_plugin(&self) -> Option<&AnalyticsPlugin> {
-        self.plugin_manager.get::<AnalyticsPlugin>()
+        self.plugin_manager().get::<AnalyticsPlugin>()
     }
 
     fn analytics_plugin_mut(&mut self) -> Option<&mut AnalyticsPlugin> {
-        self.plugin_manager.get_mut::<AnalyticsPlugin>()
+        self.plugin_manager_mut().get_mut::<AnalyticsPlugin>()
     }
 
     fn mesh_preview_plugin(&self) -> Option<&MeshPreviewPlugin> {
-        self.plugin_manager.get::<MeshPreviewPlugin>()
+        self.plugin_manager().get::<MeshPreviewPlugin>()
     }
 
     fn mesh_preview_plugin_mut(&mut self) -> Option<&mut MeshPreviewPlugin> {
-        self.plugin_manager.get_mut::<MeshPreviewPlugin>()
+        self.plugin_manager_mut().get_mut::<MeshPreviewPlugin>()
     }
 
     fn script_plugin(&self) -> Option<&ScriptPlugin> {
-        self.plugin_manager.get::<ScriptPlugin>()
+        self.plugin_manager().get::<ScriptPlugin>()
     }
 
     fn script_plugin_mut(&mut self) -> Option<&mut ScriptPlugin> {
-        self.plugin_manager.get_mut::<ScriptPlugin>()
+        self.plugin_manager_mut().get_mut::<ScriptPlugin>()
     }
 
     fn set_mesh_status<S: Into<String>>(&mut self, message: S) {
@@ -4069,10 +4069,10 @@ impl ApplicationHandler for App {
         }
 
         self.with_plugins(|plugins, ctx| plugins.update(ctx, dt));
-        let capability_metrics = self.plugin_manager.capability_metrics();
-        let capability_events = self.plugin_manager.drain_capability_events();
-        let watchdog_alerts = self.plugin_manager.drain_watchdog_events();
-        let asset_readback_alerts = self.plugin_manager.drain_asset_readback_events();
+        let capability_metrics = self.plugin_manager().capability_metrics();
+        let capability_events = self.plugin_manager_mut().drain_capability_events();
+        let watchdog_alerts = self.plugin_manager_mut().drain_watchdog_events();
+        let asset_readback_alerts = self.plugin_manager_mut().drain_asset_readback_events();
         let animation_validation_alerts = self.drain_animation_validation_events();
         if let Some(analytics) = self.analytics_plugin_mut() {
             #[cfg(feature = "alloc_profiler")]

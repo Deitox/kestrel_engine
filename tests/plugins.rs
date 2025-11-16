@@ -1066,6 +1066,63 @@ fn plugin_status_snapshot_updates_on_change() {
     );
 }
 
+#[test]
+fn plugin_panic_emits_watchdog_event() {
+    let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
+    let mut ecs = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    let mut input = Input::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+    let mut environment_registry = EnvironmentRegistry::new();
+    let time = Time::new();
+    let mut manager = PluginManager::default();
+    let feature_handle = manager.feature_handle();
+    let capability_handle = manager.capability_tracker_handle();
+    let mut ctx = PluginContext::new(
+        &mut renderer,
+        &mut ecs,
+        &mut assets,
+        &mut input,
+        &mut material_registry,
+        &mut mesh_registry,
+        &mut environment_registry,
+        &time,
+        push_event_bridge,
+        feature_handle,
+        None,
+        capability_handle,
+    );
+
+    manager.register(Box::new(PanickingPlugin::default()), &mut ctx).expect("register panicker");
+    manager.register(Box::new(CountingPlugin::default()), &mut ctx).expect("register counter");
+
+    manager.update(&mut ctx, 0.01);
+    manager.update(&mut ctx, 0.02);
+
+    let counter = manager.get::<CountingPlugin>().expect("healthy plugin present");
+    assert_eq!(counter.update_calls, 2, "healthy plugin should keep running");
+
+    let events = manager.drain_watchdog_events();
+    assert!(!events.is_empty(), "manager should emit watchdog events after a panic");
+    let panic_event = events.iter().find(|event| event.plugin == "panicker").expect("panic event captured");
+    assert!(panic_event.reason.contains("panic"), "panic reason propagated to watchdog event");
+    assert_eq!(panic_event.last_request, "panic", "panic request tagged");
+
+    let log = manager.watchdog_events();
+    let panic_log = log.get("panicker").expect("history includes panicker");
+    assert!(!panic_log.is_empty(), "watchdog history should retain panic entry");
+
+    let mut analytics = AnalyticsPlugin::default();
+    analytics.record_plugin_watchdog_events(events.clone());
+    assert!(
+        analytics.plugin_watchdog_events().iter().any(|event| event.plugin == "panicker"),
+        "analytics should surface panic watchdog events"
+    );
+
+    manager.shutdown(&mut ctx);
+}
+
 fn build_example_dynamic_plugin() -> PathBuf {
     let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let plugin_dir = project_root.join("plugins").join("example_dynamic");
