@@ -823,6 +823,7 @@ pub struct PluginManager {
     features: Rc<RefCell<FeatureRegistry>>,
     capability_tracker: CapabilityTracker,
     statuses: Vec<PluginStatus>,
+    status_snapshot: Option<Arc<[PluginStatus]>>,
     loaded_names: HashSet<String>,
     asset_cache: IsolatedAssetCache,
     asset_metrics: HashMap<String, AssetReadbackStats>,
@@ -866,6 +867,7 @@ impl Default for PluginManager {
             features: Rc::new(RefCell::new(FeatureRegistry::with_engine_defaults())),
             capability_tracker: CapabilityTracker::new(),
             statuses: Vec::new(),
+            status_snapshot: None,
             loaded_names: HashSet::new(),
             asset_cache: IsolatedAssetCache::new(32 * 1024 * 1024),
             asset_metrics: HashMap::new(),
@@ -1184,10 +1186,11 @@ impl PluginManager {
     fn update_status_state(&mut self, plugin_name: &str, state: PluginState) {
         if let Some(status) = self.statuses.iter_mut().find(|status| status.name == plugin_name) {
             status.state = state;
+            self.invalidate_status_cache();
             return;
         }
         if let Some(slot) = self.plugins.iter().find(|slot| slot.name == plugin_name) {
-            self.statuses.push(PluginStatus {
+            self.push_status(PluginStatus {
                 name: slot.name.clone(),
                 version: Some(slot.plugin.version().to_string()),
                 dynamic: slot.dynamic,
@@ -1257,7 +1260,7 @@ impl PluginManager {
         for entry in manifest.entries() {
             if self.loaded_names.contains(&entry.name) {
                 if let Some(slot) = self.plugins.iter().find(|slot| slot.name == entry.name) {
-                    self.statuses.push(PluginStatus {
+                    self.push_status(PluginStatus {
                         name: slot.name.clone(),
                         version: Some(slot.plugin.version().to_string()),
                         dynamic: true,
@@ -1273,7 +1276,7 @@ impl PluginManager {
             let entry_caps = entry.capabilities.clone();
             let entry_trust = entry.trust;
             if !entry.enabled {
-                self.statuses.push(PluginStatus {
+                self.push_status(PluginStatus {
                     name: entry.name.clone(),
                     version: entry.version.clone(),
                     dynamic: true,
@@ -1286,7 +1289,7 @@ impl PluginManager {
                 continue;
             }
             if entry.path.trim().is_empty() {
-                self.statuses.push(PluginStatus {
+                self.push_status(PluginStatus {
                     name: entry.name.clone(),
                     version: entry.version.clone(),
                     dynamic: true,
@@ -1305,7 +1308,7 @@ impl PluginManager {
             };
             if !plugin_path.exists() {
                 let msg = format!("artifact missing: {}", plugin_path.display());
-                self.statuses.push(PluginStatus {
+                self.push_status(PluginStatus {
                     name: entry.name.clone(),
                     version: entry.version.clone(),
                     dynamic: true,
@@ -1321,7 +1324,7 @@ impl PluginManager {
             match self.load_entry(entry, plugin_path, ctx) {
                 Ok(name) => loaded.push(name),
                 Err(err) => {
-                    self.statuses.push(PluginStatus {
+                    self.push_status(PluginStatus {
                         name: entry.name.clone(),
                         version: entry.version.clone(),
                         dynamic: true,
@@ -1338,7 +1341,7 @@ impl PluginManager {
     }
 
     pub fn record_builtin_disabled(&mut self, name: &str, reason: &str) {
-        self.statuses.push(PluginStatus {
+        self.push_status(PluginStatus {
             name: name.to_string(),
             version: None,
             dynamic: false,
@@ -1497,8 +1500,26 @@ impl PluginManager {
         self.plugins.iter_mut().find_map(|slot| slot.plugin.as_any_mut().downcast_mut::<T>())
     }
 
+    fn invalidate_status_cache(&mut self) {
+        self.status_snapshot = None;
+    }
+
+    fn push_status(&mut self, status: PluginStatus) {
+        self.statuses.push(status);
+        self.invalidate_status_cache();
+    }
+
     pub fn statuses(&self) -> &[PluginStatus] {
         &self.statuses
+    }
+
+    pub fn status_snapshot(&mut self) -> Arc<[PluginStatus]> {
+        if let Some(cache) = &self.status_snapshot {
+            return Arc::clone(cache);
+        }
+        let arc = Arc::from(self.statuses.clone().into_boxed_slice());
+        self.status_snapshot = Some(Arc::clone(&arc));
+        arc
     }
 
     pub fn is_plugin_loaded(&self, name: &str) -> bool {
@@ -1511,6 +1532,7 @@ impl PluginManager {
 
     pub fn clear_dynamic_statuses(&mut self) {
         self.statuses.retain(|status| !status.dynamic);
+        self.invalidate_status_cache();
     }
 
     pub(crate) fn unload_dynamic_plugins(&mut self, ctx: &mut PluginContext<'_>) {
@@ -1588,7 +1610,7 @@ impl PluginManager {
             registry.register_all(&provides);
         }
         self.loaded_names.insert(name.clone());
-        self.statuses.push(PluginStatus {
+        self.push_status(PluginStatus {
             name: name.clone(),
             version: Some(version.clone()),
             dynamic: is_dynamic,

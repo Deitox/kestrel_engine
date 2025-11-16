@@ -532,7 +532,7 @@ pub(super) struct ScriptDebuggerParams {
     pub repl_input: String,
     pub repl_history_index: Option<usize>,
     pub repl_history: Vec<String>,
-    pub console_entries: Vec<ScriptConsoleEntry>,
+    pub console_entries: Arc<[ScriptConsoleEntry]>,
     pub focus_repl: bool,
 }
 
@@ -555,7 +555,7 @@ pub(super) struct EditorUiParams {
     pub hist_points: Vec<[f64; 2]>,
     #[cfg(feature = "alloc_profiler")]
     pub allocation_delta: Option<AllocationDelta>,
-    pub frame_timings: Arc<[FrameTimingSample]>,
+    pub frame_timing_sample: Option<FrameTimingSample>,
     pub system_timings: Vec<SystemTimingSummary>,
     pub entity_count: usize,
     pub instances_drawn: usize,
@@ -614,7 +614,7 @@ pub(super) struct EditorUiParams {
     pub atlas_snapshot: Vec<String>,
     pub mesh_snapshot: Vec<String>,
     pub clip_snapshot: Vec<String>,
-    pub recent_events: Vec<GameEvent>,
+    pub recent_events: Arc<[GameEvent]>,
     pub audio_triggers: Vec<String>,
     pub audio_enabled: bool,
     pub audio_health: AudioHealthSnapshot,
@@ -686,7 +686,7 @@ impl App {
             hist_points,
             #[cfg(feature = "alloc_profiler")]
             allocation_delta,
-            frame_timings,
+            frame_timing_sample,
             system_timings,
             entity_count,
             instances_drawn,
@@ -1253,7 +1253,7 @@ impl App {
                             ui.small("Group overrides drive per-tag multipliers for sprite animations.");
                         });
                         egui::CollapsingHeader::new("Profiler").default_open(false).show(ui, |ui| {
-                            ui.monospace(frame_summary_text(frame_timings.last()));
+                            ui.monospace(frame_summary_text(frame_timing_sample.as_ref()));
                             if system_timings.is_empty() {
                                 ui.label("System timings unavailable");
                             } else {
@@ -1609,7 +1609,6 @@ impl App {
                             }
                             if ui.button("Clear Console").clicked() {
                                 script_debugger_output.clear_console = true;
-                                script_debugger.console_entries.clear();
                             }
                         });
                         if let Some(err) = script_debugger.last_error.as_ref() {
@@ -1618,10 +1617,11 @@ impl App {
                         ui.separator();
                         ui.label("Console");
                         egui::ScrollArea::vertical().stick_to_bottom(true).max_height(220.0).show(ui, |ui| {
-                            if script_debugger.console_entries.is_empty() {
+                            let entries = script_debugger.console_entries.as_ref();
+                            if entries.is_empty() {
                                 ui.small("No console output yet.");
                             } else {
-                                for entry in &script_debugger.console_entries {
+                                for entry in entries {
                                     let color = match entry.kind {
                                         ScriptConsoleKind::Input => egui::Color32::from_rgb(130, 200, 255),
                                         ScriptConsoleKind::Output => egui::Color32::LIGHT_GREEN,
@@ -2433,14 +2433,15 @@ impl App {
                     ui.small(
                         "Toggle entries below to update config/plugins.json without leaving the editor.",
                     );
-                    let status_snapshot = self.plugin_manager.statuses().to_vec();
+                    let status_snapshot = self.plugin_manager.status_snapshot();
+                    let status_slice: &[PluginStatus] = status_snapshot.as_ref();
                     let capability_metrics = self.plugin_manager.capability_metrics();
                     let asset_metrics = self.plugin_manager.asset_readback_metrics();
                     let ecs_history = self.plugin_manager.ecs_query_history();
                     let watchdog_events = self.plugin_manager.watchdog_events();
-                    let mut dynamic_statuses: BTreeMap<String, PluginStatus> = BTreeMap::new();
-                    let mut builtin_statuses = Vec::new();
-                    for status in status_snapshot {
+                    let mut dynamic_statuses: BTreeMap<String, &PluginStatus> = BTreeMap::new();
+                    let mut builtin_statuses: Vec<&PluginStatus> = Vec::new();
+                    for status in status_slice {
                         if status.dynamic {
                             dynamic_statuses.insert(status.name.clone(), status);
                         } else {
@@ -2470,6 +2471,7 @@ impl App {
                                             toggled = true;
                                         }
                                         if let Some(status) = status.as_ref() {
+                                            let status = *status;
                                             let (color, summary) = plugin_status_summary(status);
                                             ui.colored_label(color, summary);
                                             if let Some(version) =
@@ -2493,6 +2495,7 @@ impl App {
                                         ui.small(format!("Path: {}", entry.path));
                                     }
                                     if let Some(status) = status.as_ref() {
+                                        let status = *status;
                                         if !status.depends_on.is_empty() {
                                             ui.small(format!("Depends on: {}", status.depends_on.join(", ")));
                                         }
@@ -2545,6 +2548,7 @@ impl App {
                         ui.separator();
                         ui.small("Dynamic plugins without manifest entries:");
                         for status in dynamic_statuses.values() {
+                            let status = *status;
                             let (color, summary) = plugin_status_summary(status);
                             let label =
                                 format!("{} v{}", status.name, status.version.as_deref().unwrap_or("n/a"));

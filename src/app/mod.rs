@@ -358,12 +358,11 @@ pub struct FrameTimingSample {
 struct FrameProfiler {
     history: VecDeque<FrameTimingSample>,
     capacity: usize,
-    snapshot: Option<Arc<[FrameTimingSample]>>,
 }
 
 impl FrameProfiler {
     fn new(capacity: usize) -> Self {
-        Self { history: VecDeque::with_capacity(capacity), capacity: capacity.max(1), snapshot: None }
+        Self { history: VecDeque::with_capacity(capacity), capacity: capacity.max(1) }
     }
 
     fn push(&mut self, sample: FrameTimingSample) {
@@ -371,17 +370,10 @@ impl FrameProfiler {
             self.history.pop_front();
         }
         self.history.push_back(sample);
-        self.snapshot = None;
     }
 
-    fn snapshot(&mut self) -> Arc<[FrameTimingSample]> {
-        if let Some(cache) = &self.snapshot {
-            return Arc::clone(cache);
-        }
-        let data = self.history.iter().copied().collect::<Vec<_>>();
-        let arc = Arc::from(data.into_boxed_slice());
-        self.snapshot = Some(Arc::clone(&arc));
-        arc
+    fn latest(&self) -> Option<FrameTimingSample> {
+        self.history.back().copied()
     }
 }
 
@@ -570,6 +562,7 @@ pub struct App {
     script_repl_history: VecDeque<String>,
     script_repl_history_index: Option<usize>,
     script_console: VecDeque<ScriptConsoleEntry>,
+    script_console_snapshot: Option<Arc<[ScriptConsoleEntry]>>,
     last_reported_script_error: Option<String>,
     animation_keyframe_panel: AnimationKeyframePanel,
     clip_dirty: HashSet<String>,
@@ -2603,6 +2596,7 @@ impl App {
             script_repl_history: VecDeque::new(),
             script_repl_history_index: None,
             script_console: VecDeque::with_capacity(SCRIPT_CONSOLE_CAPACITY),
+            script_console_snapshot: None,
             last_reported_script_error: None,
             animation_keyframe_panel: AnimationKeyframePanel::default(),
             clip_dirty: HashSet::new(),
@@ -3129,6 +3123,17 @@ impl App {
         while self.script_console.len() > SCRIPT_CONSOLE_CAPACITY {
             self.script_console.pop_front();
         }
+        self.script_console_snapshot = None;
+    }
+
+    fn script_console_entries(&mut self) -> Arc<[ScriptConsoleEntry]> {
+        if let Some(cache) = &self.script_console_snapshot {
+            return Arc::clone(cache);
+        }
+        let data = self.script_console.iter().cloned().collect::<Vec<_>>();
+        let arc = Arc::from(data.into_boxed_slice());
+        self.script_console_snapshot = Some(Arc::clone(&arc));
+        arc
     }
 
     fn append_script_history(&mut self, command: &str) {
@@ -4349,10 +4354,11 @@ impl ApplicationHandler for App {
         let camera_position = self.camera.position;
         let camera_zoom = self.camera.zoom;
         self.sync_script_error_state();
-        let recent_events: Vec<GameEvent> = self
-            .analytics_plugin()
-            .map(|plugin| plugin.recent_events().cloned().collect())
-            .unwrap_or_default();
+        let recent_events: Arc<[GameEvent]> = if let Some(plugin) = self.analytics_plugin_mut() {
+            plugin.recent_events_snapshot()
+        } else {
+            Arc::<[GameEvent]>::from([])
+        };
         let (audio_triggers, audio_enabled, audio_health) = if let Some(audio) = self.audio_plugin() {
             (audio.recent_triggers().cloned().collect(), audio.enabled(), audio.health_snapshot())
         } else {
@@ -4424,7 +4430,7 @@ impl ApplicationHandler for App {
             });
         }
         let prefab_entries = self.telemetry_cache.prefab_entries(&self.prefab_library);
-        let frame_timings = self.frame_profiler.snapshot();
+        let latest_frame_timing = self.frame_profiler.latest();
 
         let editor_params = editor_ui::EditorUiParams {
             raw_input,
@@ -4432,7 +4438,7 @@ impl ApplicationHandler for App {
             hist_points,
             #[cfg(feature = "alloc_profiler")]
             allocation_delta,
-            frame_timings,
+            frame_timing_sample: latest_frame_timing,
             system_timings,
             entity_count,
             instances_drawn,
@@ -4511,7 +4517,7 @@ impl ApplicationHandler for App {
                 repl_input: self.script_repl_input.clone(),
                 repl_history_index: self.script_repl_history_index,
                 repl_history: self.script_repl_history.iter().cloned().collect(),
-                console_entries: self.script_console.iter().cloned().collect(),
+                console_entries: self.script_console_entries(),
                 focus_repl: self.script_focus_repl,
             },
             id_lookup_input: self.id_lookup_input.clone(),
@@ -4714,6 +4720,7 @@ impl ApplicationHandler for App {
         self.script_focus_repl = script_debugger.focus_repl;
         if script_debugger.clear_console {
             self.script_console.clear();
+            self.script_console_snapshot = None;
         }
         if let Some(enabled) = script_debugger.set_enabled {
             if let Some(plugin) = self.script_plugin_mut() {

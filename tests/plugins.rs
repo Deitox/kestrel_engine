@@ -22,6 +22,7 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Arc;
 use tempfile::tempdir;
 
 fn push_event_bridge(ecs: &mut EcsWorld, event: GameEvent) {
@@ -965,6 +966,104 @@ fn plugin_panic_marks_failure() {
         other => panic!("expected failed status, got {other:?}"),
     }
     manager.shutdown(&mut ctx);
+}
+
+#[test]
+fn plugin_panic_does_not_disrupt_other_plugins() {
+    let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
+    let mut ecs = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    let mut input = Input::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+    let mut environment_registry = EnvironmentRegistry::new();
+    let time = Time::new();
+    let mut manager = PluginManager::default();
+    let mut ctx = PluginContext::new(
+        &mut renderer,
+        &mut ecs,
+        &mut assets,
+        &mut input,
+        &mut material_registry,
+        &mut mesh_registry,
+        &mut environment_registry,
+        &time,
+        push_event_bridge,
+        manager.feature_handle(),
+        None,
+        manager.capability_tracker_handle(),
+    );
+
+    manager.register(Box::new(PanickingPlugin::default()), &mut ctx).expect("register panicker");
+    manager.register(Box::new(CountingPlugin::default()), &mut ctx).expect("register counter");
+
+    manager.update(&mut ctx, 0.01);
+    manager.update(&mut ctx, 0.02);
+
+    let counter = manager.get::<CountingPlugin>().expect("counting plugin present");
+    assert_eq!(counter.update_calls, 2, "healthy plugins should continue to run after a panic");
+
+    let panicker_status = manager
+        .statuses()
+        .iter()
+        .find(|status| status.name == "panicker")
+        .expect("status for panicker plugin");
+    assert!(
+        matches!(panicker_status.state, PluginState::Failed(_)),
+        "panicking plugin should be marked failed"
+    );
+
+    manager.shutdown(&mut ctx);
+}
+
+#[test]
+fn plugin_status_snapshot_updates_on_change() {
+    let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
+    let mut ecs = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    let mut input = Input::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+    let mut environment_registry = EnvironmentRegistry::new();
+    let time = Time::new();
+    let mut manager = PluginManager::default();
+    let feature_handle = manager.feature_handle();
+    let capability_handle = manager.capability_tracker_handle();
+    let mut ctx = PluginContext::new(
+        &mut renderer,
+        &mut ecs,
+        &mut assets,
+        &mut input,
+        &mut material_registry,
+        &mut mesh_registry,
+        &mut environment_registry,
+        &time,
+        push_event_bridge,
+        feature_handle,
+        None,
+        capability_handle,
+    );
+
+    let empty_snapshot = manager.status_snapshot();
+    assert!(empty_snapshot.is_empty(), "no plugin statuses expected initially");
+
+    manager.register(Box::new(CountingPlugin::default()), &mut ctx).expect("register plugin");
+    let snapshot_after_first = manager.status_snapshot();
+    assert_eq!(snapshot_after_first.len(), 1, "first status snapshot should include one plugin");
+
+    let snapshot_cached = manager.status_snapshot();
+    assert!(
+        Arc::ptr_eq(&snapshot_after_first, &snapshot_cached),
+        "snapshot should reuse cached Arc when no state changes"
+    );
+
+    manager.register(Box::new(FeaturePublishingPlugin::default()), &mut ctx).expect("register second plugin");
+    let snapshot_after_second = manager.status_snapshot();
+    assert_eq!(snapshot_after_second.len(), 2, "two plugins should be reported after second registration");
+    assert!(
+        !Arc::ptr_eq(&snapshot_after_first, &snapshot_after_second),
+        "snapshot should refresh when plugin state changes"
+    );
 }
 
 fn build_example_dynamic_plugin() -> PathBuf {

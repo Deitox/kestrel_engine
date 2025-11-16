@@ -120,6 +120,7 @@ pub struct AnalyticsPlugin {
     frame_capacity: usize,
     events: VecDeque<GameEvent>,
     event_capacity: usize,
+    events_snapshot: Option<Arc<[GameEvent]>>,
     particle_budget: Option<ParticleBudgetMetrics>,
     spatial_metrics: Option<SpatialMetrics>,
     light_cluster_metrics: Option<LightClusterMetrics>,
@@ -147,6 +148,7 @@ impl AnalyticsPlugin {
             frame_capacity: frame_capacity.max(1),
             events: VecDeque::with_capacity(event_capacity.min(1_024)),
             event_capacity: event_capacity.max(1),
+            events_snapshot: None,
             particle_budget: None,
             spatial_metrics: None,
             light_cluster_metrics: None,
@@ -171,6 +173,16 @@ impl AnalyticsPlugin {
 
     pub fn recent_events(&self) -> impl Iterator<Item = &GameEvent> {
         self.events.iter()
+    }
+
+    pub fn recent_events_snapshot(&mut self) -> Arc<[GameEvent]> {
+        if let Some(cache) = &self.events_snapshot {
+            return Arc::clone(cache);
+        }
+        let data = self.events.iter().cloned().collect::<Vec<_>>();
+        let arc = Arc::from(data.into_boxed_slice());
+        self.events_snapshot = Some(Arc::clone(&arc));
+        arc
     }
 
     pub fn clear_frame_history(&mut self) {
@@ -369,11 +381,13 @@ impl EnginePlugin for AnalyticsPlugin {
             }
             self.events.push_back(event.clone());
         }
+        self.events_snapshot = None;
         Ok(())
     }
 
     fn shutdown(&mut self, _ctx: &mut PluginContext<'_>) -> Result<()> {
         self.events.clear();
+        self.events_snapshot = None;
         self.frame_hist.clear();
         self.particle_budget = None;
         self.spatial_metrics = None;
