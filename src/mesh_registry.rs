@@ -7,10 +7,10 @@ use crate::material_registry::MaterialRegistry;
 use crate::mesh::{Mesh, MeshBounds, MeshSubset};
 use crate::renderer::{GpuMesh, Renderer};
 
-#[derive(Default)]
 pub struct MeshRegistry {
     entries: HashMap<String, MeshEntry>,
     default: String,
+    revision: u64,
 }
 
 struct MeshEntry {
@@ -23,7 +23,8 @@ struct MeshEntry {
 
 impl MeshRegistry {
     pub fn new(materials: &mut MaterialRegistry) -> Self {
-        let mut registry = MeshRegistry { entries: HashMap::new(), default: String::new() };
+        let mut registry =
+            MeshRegistry { entries: HashMap::new(), default: String::new(), revision: 0 };
         registry.insert_entry("cube", Mesh::cube(1.0), None, true).expect("cube mesh should insert");
         match crate::mesh::Mesh::load_gltf_with_materials("assets/models/demo_triangle.gltf") {
             Ok(import) => {
@@ -57,6 +58,7 @@ impl MeshRegistry {
     ) -> Result<()> {
         let key_str = key.into();
         self.entries.insert(key_str, MeshEntry { mesh, gpu: None, source, ref_count: 0, permanent });
+        self.bump_revision();
         Ok(())
     }
 
@@ -129,6 +131,7 @@ impl MeshRegistry {
         }
         if remove {
             self.entries.remove(key);
+            self.bump_revision();
         }
     }
 
@@ -164,6 +167,14 @@ impl MeshRegistry {
 
     pub fn mesh_bounds(&self, key: &str) -> Option<&MeshBounds> {
         self.entries.get(key).map(|entry| &entry.mesh.bounds)
+    }
+
+    pub fn version(&self) -> u64 {
+        self.revision
+    }
+
+    fn bump_revision(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
     }
 }
 

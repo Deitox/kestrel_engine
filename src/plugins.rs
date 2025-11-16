@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::ptr;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 const ISOLATED_RPC_TIMEOUT: Duration = Duration::from_secs(10);
@@ -329,11 +330,13 @@ impl From<RpcSpriteInfo> for RemoteSpriteInfo {
 struct CapabilityTrackerInner {
     metrics: HashMap<String, CapabilityViolationLog>,
     events: VecDeque<PluginCapabilityEvent>,
+    snapshot: Option<Arc<HashMap<String, CapabilityViolationLog>>>,
 }
 
 impl CapabilityTrackerInner {
     fn register(&mut self, name: &str) {
         self.metrics.entry(name.to_string()).or_default();
+        self.snapshot = None;
     }
 
     fn log_violation(&mut self, name: &str, capability: PluginCapability) {
@@ -347,10 +350,16 @@ impl CapabilityTrackerInner {
         while self.events.len() > CAPABILITY_EVENT_CAPACITY {
             self.events.pop_back();
         }
+        self.snapshot = None;
     }
 
-    fn snapshot(&self) -> HashMap<String, CapabilityViolationLog> {
-        self.metrics.clone()
+    fn snapshot(&mut self) -> Arc<HashMap<String, CapabilityViolationLog>> {
+        if let Some(cache) = &self.snapshot {
+            return Arc::clone(cache);
+        }
+        let arc = Arc::new(self.metrics.clone());
+        self.snapshot = Some(Arc::clone(&arc));
+        arc
     }
 
     fn drain_events(&mut self) -> Vec<PluginCapabilityEvent> {
@@ -374,8 +383,8 @@ impl CapabilityTracker {
         self.0.borrow_mut().log_violation(name, capability);
     }
 
-    fn snapshot(&self) -> HashMap<String, CapabilityViolationLog> {
-        self.0.borrow().snapshot()
+    fn snapshot(&self) -> Arc<HashMap<String, CapabilityViolationLog>> {
+        self.0.borrow_mut().snapshot()
     }
 
     fn drain_events(&self) -> Vec<PluginCapabilityEvent> {
@@ -875,7 +884,7 @@ impl PluginManager {
         CapabilityTrackerHandle::new(self.capability_tracker.clone())
     }
 
-    pub fn capability_metrics(&self) -> HashMap<String, CapabilityViolationLog> {
+    pub fn capability_metrics(&self) -> Arc<HashMap<String, CapabilityViolationLog>> {
         self.capability_tracker.snapshot()
     }
 

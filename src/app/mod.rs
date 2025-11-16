@@ -360,11 +360,16 @@ pub struct FrameTimingSample {
 struct FrameProfiler {
     history: VecDeque<FrameTimingSample>,
     capacity: usize,
+    snapshot: Option<Arc<[FrameTimingSample]>>,
 }
 
 impl FrameProfiler {
     fn new(capacity: usize) -> Self {
-        Self { history: VecDeque::with_capacity(capacity), capacity: capacity.max(1) }
+        Self {
+            history: VecDeque::with_capacity(capacity),
+            capacity: capacity.max(1),
+            snapshot: None,
+        }
     }
 
     fn push(&mut self, sample: FrameTimingSample) {
@@ -372,10 +377,97 @@ impl FrameProfiler {
             self.history.pop_front();
         }
         self.history.push_back(sample);
+        self.snapshot = None;
     }
 
-    fn samples(&self) -> Vec<FrameTimingSample> {
-        self.history.iter().copied().collect()
+    fn snapshot(&mut self) -> Arc<[FrameTimingSample]> {
+        if let Some(cache) = &self.snapshot {
+            return Arc::clone(cache);
+        }
+        let data = self.history.iter().copied().collect::<Vec<_>>();
+        let arc = Arc::from(data.into_boxed_slice());
+        self.snapshot = Some(Arc::clone(&arc));
+        arc
+    }
+}
+
+#[derive(Default)]
+struct TelemetryCache {
+    mesh_keys: VersionedTelemetry<String>,
+    environment_options: VersionedTelemetry<(String, String)>,
+    prefab_entries: VersionedTelemetry<editor_ui::PrefabShelfEntry>,
+}
+
+impl TelemetryCache {
+    fn mesh_keys(&mut self, registry: &MeshRegistry) -> Arc<[String]> {
+        self.mesh_keys.get_or_update(registry.version(), || {
+            let mut keys = registry.keys().map(|k| k.to_string()).collect::<Vec<_>>();
+            keys.sort();
+            keys
+        })
+    }
+
+    fn environment_options(&mut self, registry: &EnvironmentRegistry) -> Arc<[(String, String)]> {
+        self.environment_options.get_or_update(registry.version(), || {
+            let mut options = registry
+                .keys()
+                .filter_map(|key| {
+                    registry.definition(key).map(|definition| (key.clone(), definition.label().to_string()))
+                })
+                .collect::<Vec<_>>();
+            options.sort_by(|a, b| a.1.cmp(&b.1));
+            options
+        })
+    }
+
+    fn prefab_entries(&mut self, library: &PrefabLibrary) -> Arc<[editor_ui::PrefabShelfEntry]> {
+        self.prefab_entries.get_or_update(library.version(), || {
+            library
+                .entries()
+                .iter()
+                .map(|entry| {
+                    let relative = entry
+                        .path
+                        .strip_prefix(library.root())
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|_| entry.path.display().to_string());
+                    editor_ui::PrefabShelfEntry {
+                        name: entry.name.clone(),
+                        format: entry.format,
+                        path_display: relative,
+                    }
+                })
+                .collect()
+        })
+    }
+}
+
+struct VersionedTelemetry<T> {
+    version: Option<u64>,
+    data: Option<Arc<[T]>>,
+}
+
+impl<T> Default for VersionedTelemetry<T> {
+    fn default() -> Self {
+        Self { version: None, data: None }
+    }
+}
+
+impl<T> VersionedTelemetry<T> {
+    fn get_or_update<F>(&mut self, version: u64, rebuild: F) -> Arc<[T]>
+    where
+        F: FnOnce() -> Vec<T>,
+    {
+        if let (Some(current_version), Some(data)) = (&self.version, &self.data) {
+            if *current_version == version {
+                return Arc::clone(data);
+            }
+        }
+        let values = rebuild();
+        let arc: Arc<[T]> = Arc::from(values.into_boxed_slice());
+        self.version = Some(version);
+        self.data = Some(Arc::clone(&arc));
+        arc
     }
 }
 
@@ -523,6 +615,7 @@ pub struct App {
     id_lookup_input: String,
     id_lookup_active: bool,
     frame_profiler: FrameProfiler,
+    telemetry_cache: TelemetryCache,
     gpu_timings: Vec<GpuPassTiming>,
     gpu_timing_history: VecDeque<GpuTimingFrame>,
     gpu_timing_history_capacity: usize,
@@ -2563,6 +2656,7 @@ impl App {
             sprite_guardrail_max_pixels: editor_cfg.sprite_guard_max_pixels,
             sprite_guardrail_status: None,
             frame_profiler: FrameProfiler::new(240),
+            telemetry_cache: TelemetryCache::default(),
             gpu_timings: Vec::new(),
             gpu_timing_history: VecDeque::with_capacity(240),
             gpu_timing_history_capacity: 240,
@@ -4219,7 +4313,6 @@ impl ApplicationHandler for App {
         let hist_points =
             self.analytics_plugin().map(|plugin| plugin.frame_plot_points()).unwrap_or_else(Vec::new);
         let spatial_metrics = self.analytics_plugin().and_then(|plugin| plugin.spatial_metrics());
-        let frame_timings = self.frame_profiler.samples();
         let system_timings = self.ecs.system_timings();
         let sprite_eval_ms = system_timings
             .iter()
@@ -4265,24 +4358,12 @@ impl ApplicationHandler for App {
             } else {
                 (false, None, false, false, None)
             };
-        let mut mesh_keys: Vec<String> = self.mesh_registry.keys().map(|k| k.to_string()).collect();
-        mesh_keys.sort();
+        let mesh_keys = self.telemetry_cache.mesh_keys(&self.mesh_registry);
         let scene_history_list: Vec<String> = self.scene_history.iter().cloned().collect();
         let atlas_snapshot: Vec<String> = self.scene_atlas_refs.iter().cloned().collect();
         let mesh_snapshot: Vec<String> = self.scene_mesh_refs.iter().cloned().collect();
         let clip_snapshot: Vec<String> = self.scene_clip_refs.keys().cloned().collect();
-        let environment_options: Vec<(String, String)> = self
-            .environment_registry
-            .keys()
-            .map(|key| {
-                let label = self
-                    .environment_registry
-                    .definition(key)
-                    .map(|def| def.label().to_string())
-                    .unwrap_or_else(|| key.clone());
-                (key.clone(), label)
-            })
-            .collect();
+        let environment_options = self.telemetry_cache.environment_options(&self.environment_registry);
         let active_environment = self.active_environment_key.clone();
         let collider_rects =
             if self.debug_show_colliders && self.viewport_camera_mode == ViewportCameraMode::Ortho2D {
@@ -4330,23 +4411,8 @@ impl ApplicationHandler for App {
                 palette_uploaded_joints: palette_upload_stats.joints_uploaded,
             });
         }
-        let prefab_entries: Vec<editor_ui::PrefabShelfEntry> = self
-            .prefab_library
-            .entries()
-            .iter()
-            .map(|entry| {
-                let relative = entry
-                    .path
-                    .strip_prefix(self.prefab_library.root())
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|_| entry.path.display().to_string());
-                editor_ui::PrefabShelfEntry {
-                    name: entry.name.clone(),
-                    format: entry.format,
-                    path_display: relative,
-                }
-            })
-            .collect();
+        let prefab_entries = self.telemetry_cache.prefab_entries(&self.prefab_library);
+        let frame_timings = self.frame_profiler.snapshot();
 
         let editor_params = editor_ui::EditorUiParams {
             raw_input,

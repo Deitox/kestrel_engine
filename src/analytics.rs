@@ -10,6 +10,7 @@ use anyhow::Result;
 use serde::Serialize;
 use std::any::Any;
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::Arc;
 use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, Default, Serialize)]
@@ -122,7 +123,7 @@ pub struct AnalyticsPlugin {
     light_cluster_metrics: Option<LightClusterMetrics>,
     gpu_capacity: usize,
     gpu_timings: BTreeMap<&'static str, VecDeque<f32>>,
-    plugin_capability_metrics: HashMap<String, CapabilityViolationLog>,
+    plugin_capability_metrics: Arc<HashMap<String, CapabilityViolationLog>>,
     plugin_capability_events: VecDeque<PluginCapabilityEvent>,
     plugin_asset_readbacks: VecDeque<PluginAssetReadbackEvent>,
     plugin_watchdog_events: VecDeque<PluginWatchdogEvent>,
@@ -147,7 +148,7 @@ impl AnalyticsPlugin {
             light_cluster_metrics: None,
             gpu_capacity: 120,
             gpu_timings: BTreeMap::new(),
-            plugin_capability_metrics: HashMap::new(),
+            plugin_capability_metrics: Arc::new(HashMap::new()),
             plugin_capability_events: VecDeque::with_capacity(SECURITY_EVENT_CAPACITY),
             plugin_asset_readbacks: VecDeque::with_capacity(32),
             plugin_watchdog_events: VecDeque::with_capacity(32),
@@ -221,12 +222,12 @@ impl AnalyticsPlugin {
         Some(GpuPassMetric { label, latest_ms, average_ms: avg, sample_count: samples.len() })
     }
 
-    pub fn record_plugin_capability_metrics(&mut self, metrics: HashMap<String, CapabilityViolationLog>) {
+    pub fn record_plugin_capability_metrics(&mut self, metrics: Arc<HashMap<String, CapabilityViolationLog>>) {
         self.plugin_capability_metrics = metrics;
     }
 
-    pub fn plugin_capability_metrics(&self) -> &HashMap<String, CapabilityViolationLog> {
-        &self.plugin_capability_metrics
+    pub fn plugin_capability_metrics(&self) -> Arc<HashMap<String, CapabilityViolationLog>> {
+        Arc::clone(&self.plugin_capability_metrics)
     }
 
     pub fn record_plugin_capability_events(
@@ -364,6 +365,7 @@ impl EnginePlugin for AnalyticsPlugin {
         self.plugin_watchdog_events.clear();
         self.animation_validation_events.clear();
         self.animation_budget_sample = None;
+        self.plugin_capability_metrics = Arc::new(HashMap::new());
         self.keyframe_editor_events.clear();
         self.keyframe_editor_usage = KeyframeEditorUsageSnapshot::default();
         Ok(())

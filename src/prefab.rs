@@ -70,11 +70,12 @@ pub struct PrefabStatusMessage {
 pub struct PrefabLibrary {
     root: PathBuf,
     entries: Vec<PrefabDescriptor>,
+    revision: u64,
 }
 
 impl PrefabLibrary {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into(), entries: Vec::new() }
+        Self { root: root.into(), entries: Vec::new(), revision: 0 }
     }
 
     pub fn root(&self) -> &Path {
@@ -121,6 +122,7 @@ impl PrefabLibrary {
         self.entries.sort_by(|a, b| {
             a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| a.format.cmp(&b.format))
         });
+        self.revision = self.revision.wrapping_add(1);
         Ok(())
     }
 
@@ -134,5 +136,9 @@ impl PrefabLibrary {
             .map(|ch| if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' { ch } else { '_' })
             .collect::<String>();
         self.root.join(format!("{sanitized}.{}", format.extension()))
+    }
+
+    pub fn version(&self) -> u64 {
+        self.revision
     }
 }

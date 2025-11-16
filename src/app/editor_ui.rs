@@ -34,6 +34,7 @@ use egui::{Checkbox, DragAndDrop, Key, SliderClamping};
 use egui_plot as eplot;
 use glam::{Vec2, Vec3};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 use winit::dpi::PhysicalSize;
 
 mod entity_inspector;
@@ -548,7 +549,7 @@ pub(super) struct EditorUiParams {
     pub raw_input: egui::RawInput,
     pub base_pixels_per_point: f32,
     pub hist_points: Vec<[f64; 2]>,
-    pub frame_timings: Vec<FrameTimingSample>,
+    pub frame_timings: Arc<[FrameTimingSample]>,
     pub system_timings: Vec<SystemTimingSummary>,
     pub entity_count: usize,
     pub instances_drawn: usize,
@@ -596,8 +597,8 @@ pub(super) struct EditorUiParams {
     pub active_camera_bookmark: Option<String>,
     pub camera_follow_target: Option<String>,
     pub camera_bookmark_input: String,
-    pub mesh_keys: Vec<String>,
-    pub environment_options: Vec<(String, String)>,
+    pub mesh_keys: Arc<[String]>,
+    pub environment_options: Arc<[(String, String)]>,
     pub active_environment: String,
     pub debug_show_spatial_hash: bool,
     pub debug_show_colliders: bool,
@@ -612,7 +613,7 @@ pub(super) struct EditorUiParams {
     pub audio_enabled: bool,
     pub audio_health: AudioHealthSnapshot,
     pub binary_prefabs_enabled: bool,
-    pub prefab_entries: Vec<PrefabShelfEntry>,
+    pub prefab_entries: Arc<[PrefabShelfEntry]>,
     pub prefab_name_input: String,
     pub prefab_format: PrefabFormat,
     pub prefab_status: Option<PrefabStatusMessage>,
@@ -719,8 +720,8 @@ impl App {
             active_camera_bookmark,
             camera_follow_target,
             mut camera_bookmark_input,
-            mut mesh_keys,
-            mut environment_options,
+            mesh_keys,
+            environment_options,
             active_environment,
             mut debug_show_spatial_hash,
             mut debug_show_colliders,
@@ -750,8 +751,6 @@ impl App {
             mut script_debugger,
         } = params;
 
-        mesh_keys.sort();
-        environment_options.sort_by(|a, b| a.1.cmp(&b.1));
         let mut camera_bookmark_select: Option<Option<String>> = None;
         let mut camera_bookmark_save: Option<String> = None;
         let mut camera_bookmark_delete: Option<String> = None;
@@ -835,8 +834,8 @@ impl App {
             self.analytics_plugin().and_then(|analytics| analytics.gpu_pass_metric("Mesh pass"));
         let plugin_capability_metrics_snapshot = self
             .analytics_plugin()
-            .map(|analytics| analytics.plugin_capability_metrics().clone())
-            .unwrap_or_default();
+            .map(|analytics| analytics.plugin_capability_metrics())
+            .unwrap_or_else(|| Arc::new(HashMap::new()));
         let plugin_capability_events_snapshot =
             self.analytics_plugin().map(|analytics| analytics.plugin_capability_events()).unwrap_or_default();
         let plugin_asset_readback_log =
@@ -1717,7 +1716,7 @@ impl App {
                     egui::ComboBox::from_label("Mesh asset").selected_text(&preview_mesh_key).show_ui(
                         ui,
                         |ui| {
-                            for key in &mesh_keys {
+                            for key in mesh_keys.iter() {
                                 let selected = preview_mesh_key == *key;
                                 if ui.selectable_label(selected, key).clicked() && !selected {
                                     mesh_selection_request = Some(key.clone());
@@ -2245,7 +2244,7 @@ impl App {
                                 egui::ComboBox::from_id_salt("environment_select")
                                     .selected_text(current_label)
                                     .show_ui(ui, |ui| {
-                                        for (key, label) in &environment_options {
+                                        for (key, label) in environment_options.iter() {
                                             ui.selectable_value(
                                                 &mut selected_environment,
                                                 key.clone(),
@@ -2756,7 +2755,7 @@ impl App {
                         if prefab_entries.is_empty() {
                             ui.small("No prefabs saved yet.");
                         } else {
-                            for entry in &prefab_entries {
+                            for entry in prefab_entries.iter() {
                                 let entry_label = format!("{} ({})", entry.name, entry.format.short_label());
                                 let payload =
                                     PrefabSpawnPayload { name: entry.name.clone(), format: entry.format };

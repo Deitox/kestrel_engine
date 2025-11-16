@@ -21,6 +21,7 @@ pub struct EnvironmentRegistry {
     environments: HashMap<String, EnvironmentEntry>,
     default_key: String,
     sampler: Option<Arc<wgpu::Sampler>>,
+    revision: u64,
 }
 
 struct EnvironmentEntry {
@@ -92,8 +93,12 @@ impl EnvironmentRegistry {
     pub fn new() -> Self {
         let (default_definition, default_maps) = EnvironmentDefinition::generated_default();
         let default_key = default_definition.key().to_string();
-        let mut registry =
-            Self { environments: HashMap::new(), default_key: default_key.clone(), sampler: None };
+        let mut registry = Self {
+            environments: HashMap::new(),
+            default_key: default_key.clone(),
+            sampler: None,
+            revision: 0,
+        };
         registry.environments.insert(
             default_key,
             EnvironmentEntry {
@@ -104,6 +109,7 @@ impl EnvironmentRegistry {
                 permanent: true,
             },
         );
+        registry.bump_revision();
         registry
     }
 
@@ -137,6 +143,7 @@ impl EnvironmentRegistry {
                 key.clone(),
                 EnvironmentEntry { definition, maps: Some(maps), gpu: None, ref_count: 0, permanent: false },
             );
+            self.bump_revision();
             loaded.push(key);
         }
         Ok(loaded)
@@ -176,6 +183,7 @@ impl EnvironmentRegistry {
             key.to_string(),
             EnvironmentEntry { definition, maps: Some(maps), gpu: None, ref_count: 1, permanent: false },
         );
+        self.bump_revision();
         Ok(())
     }
 
@@ -198,6 +206,14 @@ impl EnvironmentRegistry {
 
     pub fn ref_count(&self, key: &str) -> Option<usize> {
         self.environments.get(key).map(|entry| entry.ref_count)
+    }
+
+    pub fn version(&self) -> u64 {
+        self.revision
+    }
+
+    fn bump_revision(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
     }
 
     pub fn ensure_gpu(&mut self, key: &str, renderer: &mut Renderer) -> Result<Arc<EnvironmentGpu>> {

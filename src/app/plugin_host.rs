@@ -8,6 +8,7 @@ use anyhow::{anyhow, Result};
 use std::collections::{HashMap, HashSet};
 use std::mem;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 pub(crate) struct BuiltinPluginFactory {
     pub(crate) name: &'static str,
@@ -72,7 +73,7 @@ impl PluginHost {
         self.manager.statuses()
     }
 
-    pub(crate) fn capability_metrics(&self) -> HashMap<String, CapabilityViolationLog> {
+    pub(crate) fn capability_metrics(&self) -> Arc<HashMap<String, CapabilityViolationLog>> {
         self.manager.capability_metrics()
     }
 
