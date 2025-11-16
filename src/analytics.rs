@@ -5,7 +5,7 @@ use crate::plugins::{
     CapabilityViolationLog, EnginePlugin, PluginAssetReadbackEvent, PluginCapabilityEvent, PluginContext,
     PluginWatchdogEvent,
 };
-use crate::renderer::GpuPassTiming;
+use crate::renderer::{GpuPassTiming, LightClusterMetrics};
 use anyhow::Result;
 use serde::Serialize;
 use std::any::Any;
@@ -119,6 +119,7 @@ pub struct AnalyticsPlugin {
     event_capacity: usize,
     particle_budget: Option<ParticleBudgetMetrics>,
     spatial_metrics: Option<SpatialMetrics>,
+    light_cluster_metrics: Option<LightClusterMetrics>,
     gpu_capacity: usize,
     gpu_timings: BTreeMap<&'static str, VecDeque<f32>>,
     plugin_capability_metrics: HashMap<String, CapabilityViolationLog>,
@@ -143,6 +144,7 @@ impl AnalyticsPlugin {
             event_capacity: event_capacity.max(1),
             particle_budget: None,
             spatial_metrics: None,
+            light_cluster_metrics: None,
             gpu_capacity: 120,
             gpu_timings: BTreeMap::new(),
             plugin_capability_metrics: HashMap::new(),
@@ -182,6 +184,14 @@ impl AnalyticsPlugin {
 
     pub fn spatial_metrics(&self) -> Option<SpatialMetrics> {
         self.spatial_metrics
+    }
+
+    pub fn record_light_cluster_metrics(&mut self, metrics: LightClusterMetrics) {
+        self.light_cluster_metrics = Some(metrics);
+    }
+
+    pub fn light_cluster_metrics(&self) -> Option<LightClusterMetrics> {
+        self.light_cluster_metrics
     }
 
     pub fn record_gpu_timings(&mut self, timings: &[GpuPassTiming]) {
@@ -347,6 +357,7 @@ impl EnginePlugin for AnalyticsPlugin {
         self.frame_hist.clear();
         self.particle_budget = None;
         self.spatial_metrics = None;
+        self.light_cluster_metrics = None;
         self.gpu_timings.clear();
         self.plugin_capability_events.clear();
         self.plugin_asset_readbacks.clear();

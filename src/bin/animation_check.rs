@@ -10,8 +10,8 @@ use std::process;
 
 fn main() {
     match run() {
-        Ok(summary) => {
-            if summary.errors > 0 {
+        Ok(result) => {
+            if result.summary.errors > 0 || (result.fail_on_warn && result.summary.warnings > 0) {
                 process::exit(2);
             }
         }
@@ -29,13 +29,28 @@ struct RunSummary {
     errors: usize,
 }
 
-fn run() -> Result<RunSummary> {
+struct RunResult {
+    summary: RunSummary,
+    fail_on_warn: bool,
+}
+
+struct CliOptions {
+    fail_on_warn: bool,
+    show_help: bool,
+    targets: Vec<String>,
+}
+
+fn run() -> Result<RunResult> {
     let args: Vec<String> = env::args().skip(1).collect();
-    if args.is_empty() || args.iter().any(|arg| arg == "--help" || arg == "-h") {
+    let options = parse_cli_args(&args)?;
+    if options.show_help {
         print_usage();
-        return Ok(RunSummary::default());
+        return Ok(RunResult { summary: RunSummary::default(), fail_on_warn: options.fail_on_warn });
     }
-    let targets = collect_targets(&args)?;
+    if options.targets.is_empty() {
+        return Err(anyhow!("no animation assets found in provided paths"));
+    }
+    let targets = collect_targets(&options.targets)?;
     if targets.is_empty() {
         return Err(anyhow!("no animation assets found in provided paths"));
     }
@@ -57,7 +72,7 @@ fn run() -> Result<RunSummary> {
         }
     }
     println!("Checked {} assets ({} warnings, {} errors)", summary.checked, summary.warnings, summary.errors);
-    Ok(summary)
+    Ok(RunResult { summary, fail_on_warn: options.fail_on_warn })
 }
 
 fn print_usage() {
@@ -65,12 +80,28 @@ fn print_usage() {
         "Animation Check
 
 Usage:
-  animation_check <path> [<path>...]
+  animation_check [--fail-on-warn] <path> [<path>...]
 
 Each <path> may be a file or directory. Directories are walked recursively
-and JSON/GLTF files are validated.
+and JSON/GLTF files are validated. Use --fail-on-warn to treat warnings
+as errors (exit code 2).
 "
     );
+}
+
+fn parse_cli_args(args: &[String]) -> Result<CliOptions> {
+    let mut options = CliOptions { fail_on_warn: false, show_help: false, targets: Vec::new() };
+    for arg in args {
+        match arg.as_str() {
+            "--fail-on-warn" => options.fail_on_warn = true,
+            "--help" | "-h" => options.show_help = true,
+            _ if arg.starts_with("--") => {
+                return Err(anyhow!("unknown flag '{arg}'"));
+            }
+            _ => options.targets.push(arg.clone()),
+        }
+    }
+    Ok(options)
 }
 
 fn collect_targets(inputs: &[String]) -> Result<Vec<PathBuf>> {
@@ -144,4 +175,24 @@ fn report_event(event: &AnimationValidationEvent) {
         AnimationValidationSeverity::Error => "ERROR",
     };
     println!("[{severity}] {} - {}", event.path.display(), event.message);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_args_handles_fail_on_warn() {
+        let args = vec!["--fail-on-warn".to_string(), "foo".to_string()];
+        let opts = parse_cli_args(&args).expect("parse args");
+        assert!(opts.fail_on_warn);
+        assert_eq!(opts.targets, vec!["foo".to_string()]);
+        assert!(!opts.show_help);
+    }
+
+    #[test]
+    fn parse_args_errors_on_unknown_flag() {
+        let args = vec!["--unknown".to_string()];
+        assert!(parse_cli_args(&args).is_err());
+    }
 }

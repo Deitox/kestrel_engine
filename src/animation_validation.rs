@@ -1,6 +1,7 @@
 use crate::assets::skeletal;
 use crate::assets::{
-    parse_animation_clip_bytes, parse_animation_graph_bytes, AnimationClip, AnimationGraphAsset,
+    parse_animation_clip_bytes, parse_animation_graph_bytes, parse_texture_atlas_bytes, AnimationClip,
+    AnimationGraphAsset, TextureAtlasParseResult,
 };
 use serde_json::Value;
 use std::collections::HashSet;
@@ -62,6 +63,7 @@ impl AnimationValidator {
                 }
             };
             return match Self::classify_json_asset(path, &bytes) {
+                JsonAssetKind::Atlas => Self::validate_atlas_bytes(path, &bytes),
                 JsonAssetKind::Clip => Self::validate_clip_bytes(path, &bytes),
                 JsonAssetKind::Graph => Self::validate_graph_bytes(path, &bytes),
                 JsonAssetKind::Unknown => {
@@ -109,6 +111,37 @@ impl AnimationValidator {
                 path,
                 AnimationValidationSeverity::Error,
                 format!("Failed to parse animation graph: {err}"),
+            )],
+        }
+    }
+
+    fn validate_atlas_bytes(path: &Path, bytes: &[u8]) -> Vec<AnimationValidationEvent> {
+        let key_hint = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("texture_atlas");
+        let source_label = path.display().to_string();
+        match parse_texture_atlas_bytes(bytes, key_hint, &source_label) {
+            Ok(TextureAtlasParseResult { atlas, diagnostics }) => {
+                let mut events = Vec::new();
+                let region_count = atlas.regions.len();
+                let timeline_count = atlas.animations.len();
+                let image_label = atlas.image_path.display().to_string();
+                events.push(Self::event(
+                    path,
+                    AnimationValidationSeverity::Info,
+                    format!(
+                        "Parsed atlas '{key_hint}' with {region_count} region{} and {timeline_count} timeline{} (image: {image_label}).",
+                        if region_count == 1 { "" } else { "s" },
+                        if timeline_count == 1 { "" } else { "s" }
+                    ),
+                ));
+                for warning in diagnostics.warnings {
+                    events.push(Self::event(path, AnimationValidationSeverity::Warning, warning));
+                }
+                events
+            }
+            Err(err) => vec![Self::event(
+                path,
+                AnimationValidationSeverity::Error,
+                format!("Failed to parse texture atlas: {err}"),
             )],
         }
     }
@@ -325,11 +358,19 @@ impl AnimationValidator {
     }
 
     fn classify_json_asset(path: &Path, bytes: &[u8]) -> JsonAssetKind {
+        if path_contains_segment(path, "images") || path_contains_segment(path, "atlases") {
+            if looks_like_atlas_json(bytes) {
+                return JsonAssetKind::Atlas;
+            }
+        }
         if path_contains_segment(path, "graphs") {
             return JsonAssetKind::Graph;
         }
         if path_contains_segment(path, "clips") {
             return JsonAssetKind::Clip;
+        }
+        if looks_like_atlas_json(bytes) {
+            return JsonAssetKind::Atlas;
         }
         if looks_like_clip_json(bytes) {
             return JsonAssetKind::Clip;
@@ -355,6 +396,7 @@ fn has_error(events: &[AnimationValidationEvent]) -> bool {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum JsonAssetKind {
+    Atlas,
     Clip,
     Graph,
     Unknown,
@@ -378,6 +420,17 @@ fn looks_like_graph_json(bytes: &[u8]) -> bool {
         let transitions_ok =
             map.get("transitions").map(|transitions| transitions.is_array()).unwrap_or(false);
         return states_ok && transitions_ok;
+    }
+    false
+}
+
+fn looks_like_atlas_json(bytes: &[u8]) -> bool {
+    if let Ok(Value::Object(map)) = serde_json::from_slice::<Value>(bytes) {
+        let image_ok = map.get("image").map(|value| value.is_string()).unwrap_or(false);
+        let regions_ok = map.get("regions").map(|regions| regions.is_object()).unwrap_or(false);
+        let width_ok = map.get("width").map(|value| value.is_number()).unwrap_or(false);
+        let height_ok = map.get("height").map(|value| value.is_number()).unwrap_or(false);
+        return image_ok && regions_ok && width_ok && height_ok;
     }
     false
 }
@@ -457,5 +510,20 @@ mod tests {
         assert!(path.exists(), "Missing skeletal fixture at {}", path.display());
         let events = AnimationValidator::validate_path(path);
         assert!(events.iter().any(|event| event.severity == AnimationValidationSeverity::Info));
+    }
+
+    #[test]
+    fn validator_accepts_atlas_asset() {
+        let path = Path::new("assets/images/atlas.json");
+        assert!(path.exists(), "Missing atlas fixture at {}", path.display());
+        let events = AnimationValidator::validate_path(path);
+        assert!(
+            events.iter().any(|event| event.severity == AnimationValidationSeverity::Info),
+            "expected info event for atlas"
+        );
+        assert!(
+            !events.iter().any(|event| event.severity == AnimationValidationSeverity::Error),
+            "atlas validation should not emit errors"
+        );
     }
 }

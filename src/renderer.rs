@@ -30,7 +30,7 @@ const SKINNING_CACHE_HEADROOM: usize = 4;
 pub const MAX_SHADOW_CASCADES: usize = 4;
 const LIGHT_CLUSTER_TILE_SIZE: u32 = 192;
 const LIGHT_CLUSTER_Z_SLICES: u32 = 8;
-const LIGHT_CLUSTER_MAX_LIGHTS: usize = 256;
+pub const LIGHT_CLUSTER_MAX_LIGHTS: usize = 256;
 const LIGHT_CLUSTER_MAX_LIGHTS_PER_CLUSTER: usize = 64;
 const LIGHT_CLUSTER_RECORD_STRIDE_WORDS: u32 = 2;
 const LIGHT_CLUSTER_CACHE_QUANTIZE: f32 = 1e-3;
@@ -487,6 +487,7 @@ pub struct LightClusterMetrics {
     pub overflow_clusters: u32,
     pub light_assignments: u32,
     pub tile_size_px: u32,
+    pub truncated_lights: u32,
 }
 
 impl LightClusterMetrics {
@@ -638,8 +639,13 @@ fn build_light_cluster_data<'a>(
     scratch.cluster_data_words.clear();
 
     let mut overflow_clusters = 0u32;
+    let mut truncated_lights = 0u32;
 
-    for light in lights.iter().take(LIGHT_CLUSTER_MAX_LIGHTS) {
+    for light in lights {
+        if scratch.gpu_lights.len() >= LIGHT_CLUSTER_MAX_LIGHTS {
+            truncated_lights = truncated_lights.saturating_add(1);
+            continue;
+        }
         let radius = light.radius.max(0.01);
         if !Renderer::sphere_in_frustum(light.position, radius, &frustum_planes) {
             continue;
@@ -714,6 +720,7 @@ fn build_light_cluster_data<'a>(
             overflow_clusters: 0,
             light_assignments: 0,
             tile_size_px: LIGHT_CLUSTER_TILE_SIZE,
+            truncated_lights,
         };
         uniform.config.stats = [
             scratch.gpu_lights.len() as u32,
@@ -809,6 +816,7 @@ fn build_light_cluster_data<'a>(
         overflow_clusters,
         light_assignments,
         tile_size_px: LIGHT_CLUSTER_TILE_SIZE,
+        truncated_lights,
     };
 
     uniform.config.stats = [
@@ -2190,6 +2198,13 @@ impl Renderer {
             proj,
             &mut self.light_cluster_scratch,
         );
+        if build_data.metrics.truncated_lights > 0 && self.light_clusters.metrics.truncated_lights == 0 {
+            eprintln!(
+                "[renderer] {} point light(s) exceeded the clustered lighting budget (max {}). Extra lights will be ignored.",
+                build_data.metrics.truncated_lights,
+                LIGHT_CLUSTER_MAX_LIGHTS
+            );
+        }
         self.light_clusters.update_resources(&device, &queue, &layout, &build_data)?;
         self.light_clusters.cache.update(viewport, view, proj, light_hash, build_data.metrics);
         self.light_clusters.metrics = build_data.metrics;

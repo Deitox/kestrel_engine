@@ -25,7 +25,7 @@ use crate::plugins::{
     PluginWatchdogEvent,
 };
 use crate::prefab::{PrefabFormat, PrefabStatusKind, PrefabStatusMessage};
-use crate::renderer::{ScenePointLight, MAX_SHADOW_CASCADES};
+use crate::renderer::{LightClusterMetrics, ScenePointLight, LIGHT_CLUSTER_MAX_LIGHTS, MAX_SHADOW_CASCADES};
 use crate::scene::SceneShadowData;
 
 use crate::config::SpriteGuardrailMode;
@@ -849,6 +849,8 @@ impl App {
             .unwrap_or_default();
         let animation_budget_sample =
             self.analytics_plugin().and_then(|analytics| analytics.animation_budget_sample());
+        let light_cluster_metrics_overlay =
+            self.analytics_plugin().and_then(|analytics| analytics.light_cluster_metrics());
         let keyframe_editor_usage =
             self.analytics_plugin().map(|analytics| analytics.keyframe_editor_usage());
         let keyframe_event_log =
@@ -924,6 +926,17 @@ impl App {
                                 );
                             } else {
                                 ui.label("Cluster overflow events: 0");
+                            }
+                            if metrics.truncated_lights > 0 {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(255, 90, 90),
+                                    format!(
+                                        "Lights over budget: {} (max {})",
+                                        metrics.truncated_lights, LIGHT_CLUSTER_MAX_LIGHTS
+                                    ),
+                                );
+                            } else {
+                                ui.label("Lights over budget: 0");
                             }
                         });
                         ui.separator();
@@ -3061,6 +3074,9 @@ impl App {
                 if let Some(sample) = animation_budget_sample {
                     draw_animation_budget_overlay(ctx, viewport_outline, sample);
                 }
+                if let Some(metrics) = light_cluster_metrics_overlay {
+                    draw_light_cluster_overlay(ctx, viewport_outline, metrics);
+                }
             }
             let active_scale_handle_kind =
                 self.gizmo_interaction.as_ref().and_then(|interaction| match interaction {
@@ -3461,6 +3477,48 @@ fn draw_animation_budget_overlay(
                 } else {
                     ui.small("Palette Upload: no skinning this frame");
                 }
+            });
+        });
+}
+
+fn draw_light_cluster_overlay(ctx: &egui::Context, viewport_rect: egui::Rect, metrics: LightClusterMetrics) {
+    if metrics.truncated_lights == 0 {
+        return;
+    }
+    let pos = egui::pos2(viewport_rect.left() + 10.0, viewport_rect.top() + 170.0);
+    egui::Area::new(egui::Id::new("light_cluster_overlay"))
+        .order(egui::Order::Foreground)
+        .interactable(false)
+        .movable(false)
+        .fixed_pos(pos)
+        .show(ctx, |ui| {
+            let frame = egui::Frame::new()
+                .fill(ui.visuals().extreme_bg_color.gamma_multiply(0.9))
+                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 90, 90)))
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::symmetric(10, 6));
+            frame.show(ui, |ui| {
+                ui.set_width(260.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new("Lighting Budget")
+                            .strong()
+                            .color(egui::Color32::from_rgb(255, 120, 120)),
+                    );
+                });
+                ui.add_space(4.0);
+                ui.label(format!(
+                    "Point lights over budget: {} / {}",
+                    metrics.truncated_lights, LIGHT_CLUSTER_MAX_LIGHTS
+                ));
+                ui.label(format!(
+                    "Visible lights this frame: {} ({} total)",
+                    metrics.visible_lights, metrics.total_lights
+                ));
+                if metrics.overflow_clusters > 0 {
+                    ui.small(format!("Clusters saturated: {}", metrics.overflow_clusters));
+                }
+                ui.small("Reduce point lights or adjust clustered-light settings to restore coverage.");
             });
         });
 }

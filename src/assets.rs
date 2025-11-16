@@ -253,6 +253,22 @@ pub struct TextureAtlas {
     pub animations: HashMap<String, SpriteTimeline>,
 }
 
+#[derive(Clone, Default)]
+pub struct TextureAtlasDiagnostics {
+    pub warnings: Vec<String>,
+}
+
+impl TextureAtlasDiagnostics {
+    pub fn warn(&mut self, message: impl Into<String>) {
+        self.warnings.push(message.into());
+    }
+}
+
+pub struct TextureAtlasParseResult {
+    pub atlas: TextureAtlas,
+    pub diagnostics: TextureAtlasDiagnostics,
+}
+
 pub struct AtlasSnapshot<'a> {
     pub width: u32,
     pub height: u32,
@@ -712,6 +728,126 @@ pub fn parse_animation_graph_bytes(
     })
 }
 
+pub fn parse_texture_atlas_bytes(
+    bytes: &[u8],
+    key_hint: &str,
+    source_path: &str,
+) -> Result<TextureAtlasParseResult> {
+    let af: AtlasFile =
+        serde_json::from_slice(bytes).with_context(|| format!("parse texture atlas JSON ({source_path})"))?;
+    if af.width == 0 || af.height == 0 {
+        return Err(anyhow!("Atlas '{}' has zero width or height in {source_path}", key_hint));
+    }
+    if af.regions.is_empty() {
+        return Err(anyhow!("Atlas '{}' does not define any regions in {source_path}", key_hint));
+    }
+    let mut diagnostics = TextureAtlasDiagnostics::default();
+    let mut regions = HashMap::new();
+    let image_path = resolve_atlas_image_path(source_path, &af.image);
+    for (index, (name, rect)) in af.regions.into_iter().enumerate() {
+        let id =
+            u16::try_from(index).map_err(|_| anyhow!("Atlas '{key_hint}' has more than 65535 regions"))?;
+        let name_arc: Arc<str> = Arc::from(name);
+        let uv = [
+            rect.x as f32 / af.width as f32,
+            rect.y as f32 / af.height as f32,
+            (rect.x + rect.w) as f32 / af.width as f32,
+            (rect.y + rect.h) as f32 / af.height as f32,
+        ];
+        regions.insert(Arc::clone(&name_arc), AtlasRegion { id, rect, uv });
+    }
+    let animations = parse_timelines(key_hint, &regions, af.animations, &mut diagnostics);
+    let atlas = TextureAtlas {
+        image_key: af.image.clone(),
+        image_path: image_path.clone(),
+        width: af.width,
+        height: af.height,
+        regions,
+        animations,
+    };
+    Ok(TextureAtlasParseResult { atlas, diagnostics })
+}
+
+fn parse_timelines(
+    atlas_key: &str,
+    regions: &HashMap<Arc<str>, AtlasRegion>,
+    raw: HashMap<String, AtlasTimelineFile>,
+    diagnostics: &mut TextureAtlasDiagnostics,
+) -> HashMap<String, SpriteTimeline> {
+    let mut animations = HashMap::new();
+    for (timeline_key, mut data) in raw {
+        let mut frames = Vec::new();
+        let mut hot_frames = Vec::new();
+        let mut durations = Vec::new();
+        let mut offsets = Vec::new();
+        let mut event_map: HashMap<usize, Vec<String>> = HashMap::new();
+        for event in data.events.drain(..) {
+            event_map.entry(event.frame).or_default().push(event.name);
+        }
+        let mut accumulated = 0.0_f32;
+        for (frame_index, frame) in data.frames.into_iter().enumerate() {
+            let Some((region_key, region_info)) = regions.get_key_value(frame.region.as_str()) else {
+                diagnostics.warn(format!(
+                    "atlas '{atlas_key}': timeline '{timeline_key}' references unknown region '{}', skipping frame.",
+                    frame.region
+                ));
+                continue;
+            };
+            let frame_name_arc = frame.name.map(Arc::<str>::from).unwrap_or_else(|| Arc::clone(region_key));
+            let duration = (frame.duration_ms.max(1) as f32) / 1000.0;
+            let event_names = event_map.remove(&frame_index).unwrap_or_default();
+            let events: Vec<Arc<str>> = event_names.into_iter().map(|name| Arc::<str>::from(name)).collect();
+            offsets.push(accumulated);
+            frames.push(SpriteAnimationFrame {
+                name: frame_name_arc,
+                region: Arc::clone(region_key),
+                region_id: region_info.id,
+                duration,
+                uv: region_info.uv,
+                events: Arc::from(events),
+            });
+            hot_frames.push(SpriteFrameHotData { region_id: region_info.id, uv: region_info.uv });
+            durations.push(duration);
+            accumulated += duration;
+        }
+        if frames.is_empty() {
+            diagnostics.warn(format!("atlas '{atlas_key}': timeline '{timeline_key}' has no valid frames."));
+            continue;
+        }
+        let mode_str = data.loop_mode.clone().unwrap_or_else(|| {
+            if data.looped {
+                "loop".to_string()
+            } else {
+                "once_stop".to_string()
+            }
+        });
+        let mode_enum = SpriteAnimationLoopMode::from_str(&mode_str);
+        let looped = mode_enum.looped();
+        for (frame, names) in event_map {
+            diagnostics.warn(format!(
+                "atlas '{atlas_key}': timeline '{timeline_key}' has events {:?} referencing missing frame index {}.",
+                names, frame
+            ));
+        }
+        let timeline_arc = Arc::<str>::from(timeline_key.clone());
+        animations.insert(
+            timeline_key.clone(),
+            SpriteTimeline {
+                name: timeline_arc,
+                looped,
+                loop_mode: mode_enum,
+                frames: Arc::from(frames),
+                hot_frames: Arc::from(hot_frames),
+                durations: Arc::from(durations),
+                frame_offsets: Arc::from(offsets.into_boxed_slice()),
+                total_duration: accumulated,
+                total_duration_inv: if accumulated > 0.0 { 1.0 / accumulated } else { 0.0 },
+            },
+        );
+    }
+    animations
+}
+
 impl AssetManager {
     pub fn new() -> Self {
         Self {
@@ -754,122 +890,21 @@ impl AssetManager {
         self.sampler.as_ref().expect("sampler")
     }
     pub fn load_atlas(&mut self, key: &str, json_path: &str) -> Result<()> {
-        self.load_atlas_internal(key, json_path)?;
+        let _ = self.load_atlas_internal(key, json_path)?;
         Ok(())
     }
-    fn load_atlas_internal(&mut self, key: &str, json_path: &str) -> Result<()> {
+    fn load_atlas_internal(&mut self, key: &str, json_path: &str) -> Result<TextureAtlasDiagnostics> {
         let bytes = fs::read(json_path)?;
-        let af: AtlasFile = serde_json::from_slice(&bytes)?;
-        let mut regions = HashMap::new();
-        let image_path = resolve_atlas_image_path(json_path, &af.image);
-        for (index, (name, rect)) in af.regions.into_iter().enumerate() {
-            let id =
-                u16::try_from(index).map_err(|_| anyhow!("Atlas '{key}' has more than 65535 regions"))?;
-            let name_arc: Arc<str> = Arc::from(name);
-            let uv = [
-                rect.x as f32 / af.width as f32,
-                rect.y as f32 / af.height as f32,
-                (rect.x + rect.w) as f32 / af.width as f32,
-                (rect.y + rect.h) as f32 / af.height as f32,
-            ];
-            regions.insert(Arc::clone(&name_arc), AtlasRegion { id, rect, uv });
+        let TextureAtlasParseResult { atlas, diagnostics } =
+            parse_texture_atlas_bytes(&bytes, key, json_path)?;
+        for warning in &diagnostics.warnings {
+            eprintln!("[assets] {warning}");
         }
-        let animations = Self::parse_timelines(key, &regions, af.animations);
-        let atlas = TextureAtlas {
-            image_key: af.image.clone(),
-            image_path: image_path.clone(),
-            width: af.width,
-            height: af.height,
-            regions,
-            animations,
-        };
         self.atlases.insert(key.to_string(), atlas);
         self.atlas_sources.insert(key.to_string(), json_path.to_string());
-        Ok(())
+        Ok(diagnostics)
     }
 
-    fn parse_timelines(
-        atlas_key: &str,
-        regions: &HashMap<Arc<str>, AtlasRegion>,
-        raw: HashMap<String, AtlasTimelineFile>,
-    ) -> HashMap<String, SpriteTimeline> {
-        let mut animations = HashMap::new();
-        for (timeline_key, mut data) in raw {
-            let mut frames = Vec::new();
-            let mut hot_frames = Vec::new();
-            let mut durations = Vec::new();
-            let mut offsets = Vec::new();
-            let mut event_map: HashMap<usize, Vec<String>> = HashMap::new();
-            for event in data.events.drain(..) {
-                event_map.entry(event.frame).or_default().push(event.name);
-            }
-            let mut accumulated = 0.0_f32;
-            for (frame_index, frame) in data.frames.into_iter().enumerate() {
-                let Some((region_key, region_info)) = regions.get_key_value(frame.region.as_str()) else {
-                    eprintln!(
-                        "[assets] atlas '{atlas_key}': timeline '{timeline_key}' references unknown region '{}', skipping frame.",
-                        frame.region
-                    );
-                    continue;
-                };
-                let frame_name_arc =
-                    frame.name.map(Arc::<str>::from).unwrap_or_else(|| Arc::clone(region_key));
-                let duration = (frame.duration_ms.max(1) as f32) / 1000.0;
-                let event_names = event_map.remove(&frame_index).unwrap_or_default();
-                let events: Vec<Arc<str>> =
-                    event_names.into_iter().map(|name| Arc::<str>::from(name)).collect();
-                offsets.push(accumulated);
-                frames.push(SpriteAnimationFrame {
-                    name: frame_name_arc,
-                    region: Arc::clone(region_key),
-                    region_id: region_info.id,
-                    duration,
-                    uv: region_info.uv,
-                    events: Arc::from(events),
-                });
-                hot_frames.push(SpriteFrameHotData { region_id: region_info.id, uv: region_info.uv });
-                durations.push(duration);
-                accumulated += duration;
-            }
-            if frames.is_empty() {
-                eprintln!(
-                    "[assets] atlas '{atlas_key}': timeline '{timeline_key}' has no valid frames, ignoring."
-                );
-                continue;
-            }
-            let mode_str = data.loop_mode.clone().unwrap_or_else(|| {
-                if data.looped {
-                    "loop".to_string()
-                } else {
-                    "once_stop".to_string()
-                }
-            });
-            let mode_enum = SpriteAnimationLoopMode::from_str(&mode_str);
-            let looped = mode_enum.looped();
-            for (frame, names) in event_map {
-                eprintln!(
-                    "[assets] atlas '{atlas_key}': timeline '{timeline_key}' has events {:?} referencing missing frame index {}.",
-                    names, frame
-                );
-            }
-            let timeline_arc = Arc::<str>::from(timeline_key.clone());
-            animations.insert(
-                timeline_key.clone(),
-                SpriteTimeline {
-                    name: timeline_arc,
-                    looped,
-                    loop_mode: mode_enum,
-                    frames: Arc::from(frames),
-                    hot_frames: Arc::from(hot_frames),
-                    durations: Arc::from(durations),
-                    frame_offsets: Arc::from(offsets.into_boxed_slice()),
-                    total_duration: accumulated,
-                    total_duration_inv: if accumulated > 0.0 { 1.0 / accumulated } else { 0.0 },
-                },
-            );
-        }
-        animations
-    }
     pub fn load_clip(&mut self, key: &str, json_path: &str) -> Result<()> {
         self.load_clip_internal(key, json_path)
     }
@@ -1226,7 +1261,7 @@ impl AssetManager {
         self.atlas_sources.iter().map(|(key, path)| (key.clone(), path.clone())).collect()
     }
 
-    pub fn reload_atlas(&mut self, key: &str) -> Result<()> {
+    pub fn reload_atlas(&mut self, key: &str) -> Result<TextureAtlasDiagnostics> {
         let source = self
             .atlas_sources
             .get(key)
@@ -1235,7 +1270,7 @@ impl AssetManager {
 
         let previous_image = self.atlases.get(key).map(|atlas| atlas.image_path.clone());
 
-        self.load_atlas_internal(key, &source)?;
+        let diagnostics = self.load_atlas_internal(key, &source)?;
 
         if let Some(image_path) = previous_image {
             self.texture_cache.remove(&image_path);
@@ -1249,7 +1284,7 @@ impl AssetManager {
                 }
             }
         }
-        Ok(())
+        Ok(diagnostics)
     }
 }
 

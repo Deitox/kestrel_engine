@@ -20,7 +20,7 @@ use crate::animation_validation::{
 };
 use crate::assets::{
     AnimationClip, AssetManager, ClipInterpolation, ClipKeyframe, ClipScalarTrack, ClipSegment,
-    ClipVec2Track, ClipVec4Track, SpriteTimeline,
+    ClipVec2Track, ClipVec4Track, SpriteTimeline, TextureAtlasDiagnostics,
 };
 use crate::audio::{AudioHealthSnapshot, AudioPlugin};
 use crate::camera::Camera2D;
@@ -532,10 +532,11 @@ pub struct App {
 }
 
 impl App {
-    pub fn hot_reload_atlas(&mut self, key: &str) -> Result<usize> {
-        self.assets.reload_atlas(key)?;
+    pub fn hot_reload_atlas(&mut self, key: &str) -> Result<(usize, TextureAtlasDiagnostics)> {
+        let diagnostics = self.assets.reload_atlas(key)?;
         self.invalidate_atlas_view(key);
-        Ok(self.ecs.refresh_sprite_animations_for_atlas(key, &self.assets))
+        let refreshed = self.ecs.refresh_sprite_animations_for_atlas(key, &self.assets);
+        Ok((refreshed, diagnostics))
     }
 
     fn sync_atlas_hot_reload(&mut self) {
@@ -667,6 +668,46 @@ impl App {
             self.animation_clip_status =
                 Some(format!("Detected {context} change but no validators ran: {}", path.display()));
             return;
+        }
+        for event in events {
+            self.pending_animation_validation_events.push(event.clone());
+            self.log_animation_validation_event(event);
+        }
+    }
+
+    fn record_atlas_validation_results(&mut self, key: &str, diagnostics: TextureAtlasDiagnostics) {
+        let Some(source_path) = self.assets.atlas_source(key).map(|s| s.to_string()) else {
+            eprintln!("[animation] atlas '{key}' hot-reloaded without a recorded source path");
+            return;
+        };
+        let path_buf = PathBuf::from(&source_path);
+        if self.consume_validation_suppression(&path_buf) {
+            return;
+        }
+        let mut events = Vec::new();
+        let info_message = if let Some(snapshot) = self.assets.atlas_snapshot(key) {
+            let region_count = snapshot.regions.len();
+            let timeline_count = snapshot.animations.len();
+            let image_label = snapshot.image_path.display().to_string();
+            format!(
+                "Parsed atlas '{key}' with {region_count} region{} and {timeline_count} timeline{} (image: {image_label}).",
+                if region_count == 1 { "" } else { "s" },
+                if timeline_count == 1 { "" } else { "s" }
+            )
+        } else {
+            format!("Reloaded atlas '{key}' ({source_path})")
+        };
+        events.push(AnimationValidationEvent {
+            severity: AnimationValidationSeverity::Info,
+            path: path_buf.clone(),
+            message: info_message,
+        });
+        for warning in diagnostics.warnings {
+            events.push(AnimationValidationEvent {
+                severity: AnimationValidationSeverity::Warning,
+                path: path_buf.clone(),
+                message: warning,
+            });
         }
         for event in events {
             self.pending_animation_validation_events.push(event.clone());
@@ -1913,11 +1954,12 @@ impl App {
         unique.dedup();
         for key in unique {
             match self.hot_reload_atlas(&key) {
-                Ok(updated) => {
+                Ok((updated, diagnostics)) => {
                     println!(
                         "[assets] Hot reloaded atlas '{key}' ({updated} animation component{} refreshed)",
                         if updated == 1 { "" } else { "s" }
                     );
+                    self.record_atlas_validation_results(&key, diagnostics);
                 }
                 Err(err) => {
                     eprintln!("[assets] Failed to hot reload atlas '{key}': {err}");
@@ -3923,6 +3965,10 @@ impl ApplicationHandler for App {
         render_time_ms = render_start.elapsed().as_secs_f32() * 1000.0;
 
         let palette_upload_stats = self.renderer.take_palette_upload_metrics();
+        let light_cluster_snapshot = *self.renderer.light_cluster_metrics();
+        if let Some(analytics) = self.analytics_plugin_mut() {
+            analytics.record_light_cluster_metrics(light_cluster_snapshot);
+        }
         if self.egui_winit.is_none() {
             frame.present();
             let frame_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
