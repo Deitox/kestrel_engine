@@ -2,6 +2,10 @@ mod animation_keyframe_panel;
 mod animation_tooling;
 mod mesh_preview_tooling;
 mod prefab_tooling;
+mod script_console;
+mod inspector_tooling;
+mod asset_watch_tooling;
+mod telemetry_tooling;
 mod animation_watch;
 mod atlas_watch;
 mod editor_shell;
@@ -16,11 +20,13 @@ use self::animation_keyframe_panel::{
     AnimationTrackSummary, KeyframeDetail, KeyframeId, KeyframeValue,
 };
 use self::animation_watch::{AnimationAssetKind, AnimationAssetWatcher};
-use self::atlas_watch::{normalize_path_for_watch, AtlasHotReload};
+use self::atlas_watch::AtlasHotReload;
 use self::editor_shell::{EditorShell, EditorUiState, EditorUiStateParams, EmitterUiDefaults};
 use self::plugin_host::{BuiltinPluginFactory, PluginHost};
 use self::plugin_runtime::{PluginContextInputs, PluginRuntime};
 use self::runtime_loop::{RuntimeLoop, RuntimeTick};
+pub(crate) use self::telemetry_tooling::FrameBudgetSnapshot;
+use self::telemetry_tooling::{FrameProfiler, GpuTimingFrame, TelemetryCache};
 #[cfg(feature = "alloc_profiler")]
 use crate::alloc_profiler;
 use crate::analytics::{
@@ -362,121 +368,6 @@ pub struct FrameTimingSample {
     pub ui_ms: f32,
 }
 
-struct FrameProfiler {
-    history: VecDeque<FrameTimingSample>,
-    capacity: usize,
-}
-
-impl FrameProfiler {
-    fn new(capacity: usize) -> Self {
-        Self { history: VecDeque::with_capacity(capacity), capacity: capacity.max(1) }
-    }
-
-    fn push(&mut self, sample: FrameTimingSample) {
-        if self.history.len() == self.capacity {
-            self.history.pop_front();
-        }
-        self.history.push_back(sample);
-    }
-
-    fn latest(&self) -> Option<FrameTimingSample> {
-        self.history.back().copied()
-    }
-}
-
-#[derive(Default)]
-struct TelemetryCache {
-    mesh_keys: VersionedTelemetry<String>,
-    environment_options: VersionedTelemetry<(String, String)>,
-    prefab_entries: VersionedTelemetry<editor_ui::PrefabShelfEntry>,
-}
-
-impl TelemetryCache {
-    fn mesh_keys(&mut self, registry: &MeshRegistry) -> Arc<[String]> {
-        self.mesh_keys.get_or_update(registry.version(), || {
-            let mut keys = registry.keys().map(|k| k.to_string()).collect::<Vec<_>>();
-            keys.sort();
-            keys
-        })
-    }
-
-    fn environment_options(&mut self, registry: &EnvironmentRegistry) -> Arc<[(String, String)]> {
-        self.environment_options.get_or_update(registry.version(), || {
-            let mut options = registry
-                .keys()
-                .filter_map(|key| {
-                    registry.definition(key).map(|definition| (key.clone(), definition.label().to_string()))
-                })
-                .collect::<Vec<_>>();
-            options.sort_by(|a, b| a.1.cmp(&b.1));
-            options
-        })
-    }
-
-    fn prefab_entries(&mut self, library: &PrefabLibrary) -> Arc<[editor_ui::PrefabShelfEntry]> {
-        self.prefab_entries.get_or_update(library.version(), || {
-            library
-                .entries()
-                .iter()
-                .map(|entry| {
-                    let relative = entry
-                        .path
-                        .strip_prefix(library.root())
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|_| entry.path.display().to_string());
-                    editor_ui::PrefabShelfEntry {
-                        name: entry.name.clone(),
-                        format: entry.format,
-                        path_display: relative,
-                    }
-                })
-                .collect()
-        })
-    }
-}
-
-struct VersionedTelemetry<T> {
-    version: Option<u64>,
-    data: Option<Arc<[T]>>,
-}
-
-impl<T> Default for VersionedTelemetry<T> {
-    fn default() -> Self {
-        Self { version: None, data: None }
-    }
-}
-
-impl<T> VersionedTelemetry<T> {
-    fn get_or_update<F>(&mut self, version: u64, rebuild: F) -> Arc<[T]>
-    where
-        F: FnOnce() -> Vec<T>,
-    {
-        if let (Some(current_version), Some(data)) = (&self.version, &self.data) {
-            if *current_version == version {
-                return Arc::clone(data);
-            }
-        }
-        let values = rebuild();
-        let arc: Arc<[T]> = Arc::from(values.into_boxed_slice());
-        self.version = Some(version);
-        self.data = Some(Arc::clone(&arc));
-        arc
-    }
-}
-
-#[derive(Clone, Copy, Default)]
-struct FrameBudgetSnapshot {
-    timing: Option<FrameTimingSample>,
-    #[cfg(feature = "alloc_profiler")]
-    alloc_delta: Option<alloc_profiler::AllocationDelta>,
-}
-
-#[derive(Clone)]
-struct GpuTimingFrame {
-    frame_index: u64,
-    timings: Vec<GpuPassTiming>,
-}
-
 pub async fn run() -> Result<()> {
     run_with_overrides(AppConfigOverrides::default()).await
 }
@@ -600,10 +491,6 @@ impl App {
         self.editor_ui_state_mut().ui_scene_status = Some(message.into());
     }
 
-    fn set_inspector_status(&self, status: Option<String>) {
-        self.editor_ui_state_mut().inspector_status = status;
-    }
-
     fn set_sprite_guardrail_status(&self, status: Option<String>) {
         self.with_editor_ui_state_mut(|state| state.sprite_guardrail_status = status);
     }
@@ -615,117 +502,6 @@ impl App {
         Ok((refreshed, diagnostics))
     }
 
-    fn sync_atlas_hot_reload(&mut self) {
-        let Some(watcher) = self.atlas_hot_reload.as_mut() else {
-            return;
-        };
-        let mut desired = Vec::new();
-        for (key, path) in self.assets.atlas_sources() {
-            let path_buf = PathBuf::from(path);
-            if let Some((original, normalized)) = normalize_path_for_watch(&path_buf) {
-                desired.push((original, normalized, key));
-            } else {
-                eprintln!("[assets] skipping atlas '{key}' ΓÇô unable to resolve path for watching");
-            }
-        }
-        if let Err(err) = watcher.sync(&desired) {
-            eprintln!("[assets] failed to sync atlas hot-reload watchers: {err}");
-        }
-    }
-
-    fn sync_animation_asset_watch_roots(&mut self) {
-        let Some(watcher) = self.animation_asset_watcher.as_mut() else {
-            self.animation_watch_roots_queue.clear();
-            self.animation_watch_roots_pending.clear();
-            self.animation_watch_roots_registered.clear();
-            return;
-        };
-        while let Some((path, kind)) = self.animation_watch_roots_queue.pop() {
-            let key = (path.clone(), kind);
-            self.animation_watch_roots_pending.remove(&key);
-            if !path.exists() {
-                continue;
-            }
-            match watcher.watch_root(&path, kind) {
-                Ok(()) => {
-                    self.animation_watch_roots_registered.insert(key);
-                }
-                Err(err) => {
-                    eprintln!(
-                        "[animation] failed to watch {} directory {}: {err:?}",
-                        kind.label(),
-                        path.display()
-                    );
-                }
-            }
-        }
-    }
-
-    fn seed_animation_watch_roots(&mut self) {
-        for (_, source) in self.assets.clip_sources() {
-            self.queue_animation_watch_root(Path::new(&source), AnimationAssetKind::Clip);
-        }
-        for (_, source) in self.assets.skeleton_sources() {
-            self.queue_animation_watch_root(Path::new(&source), AnimationAssetKind::Skeletal);
-        }
-        for (_, source) in self.assets.animation_graph_sources() {
-            self.queue_animation_watch_root(Path::new(&source), AnimationAssetKind::Graph);
-        }
-    }
-
-    fn queue_animation_watch_root(&mut self, path: &Path, kind: AnimationAssetKind) {
-        let Some(root) = Self::watch_root_for_source(path) else {
-            return;
-        };
-        if !root.exists() {
-            return;
-        }
-        let normalized = Self::normalize_validation_path(&root);
-        let key = (normalized, kind);
-        if self.animation_watch_roots_registered.contains(&key)
-            || self.animation_watch_roots_pending.contains(&key)
-        {
-            return;
-        }
-        self.animation_watch_roots_pending.insert(key.clone());
-        self.animation_watch_roots_queue.push(key);
-    }
-
-    fn watch_root_for_source(path: &Path) -> Option<PathBuf> {
-        if path.is_dir() {
-            Some(path.to_path_buf())
-        } else if let Some(parent) = path.parent() {
-            Some(parent.to_path_buf())
-        } else {
-            Some(path.to_path_buf())
-        }
-    }
-
-    fn init_animation_asset_watcher() -> Option<AnimationAssetWatcher> {
-        let mut watcher = match AnimationAssetWatcher::new() {
-            Ok(watcher) => watcher,
-            Err(err) => {
-                eprintln!("[animation] asset watcher disabled: {err:?}");
-                return None;
-            }
-        };
-        let watch_roots = [
-            ("assets/animations/clips", AnimationAssetKind::Clip),
-            ("assets/animations/graphs", AnimationAssetKind::Graph),
-            ("assets/animations/skeletal", AnimationAssetKind::Skeletal),
-        ];
-        for (root, kind) in watch_roots {
-            let path = Path::new(root);
-            if !path.exists() {
-                continue;
-            }
-            if let Err(err) = watcher.watch_root(path, kind) {
-                eprintln!("[animation] failed to watch {} ({}): {err:?}", path.display(), kind.label())
-            }
-        }
-        Some(watcher)
-    }
-
     fn drain_animation_validation_results(&mut self) {
         let Some(worker) = self.animation_validation_worker.as_ref() else {
             return;
@@ -733,34 +509,6 @@ impl App {
         for result in worker.drain() {
             self.handle_validation_events(result.kind.label(), result.path.as_path(), result.events);
         }
-    }
-
-    fn process_animation_asset_watchers(&mut self) {
-        self.dispatch_animation_reload_queue();
-        self.drain_animation_reload_results();
-        self.drain_animation_validation_results();
-        self.sync_animation_asset_watch_roots();
-        let Some(watcher) = self.animation_asset_watcher.as_mut() else {
-            return;
-        };
-        let changes = watcher.drain_changes();
-        if changes.is_empty() {
-            return;
-        }
-        let mut dedup: HashSet<(PathBuf, AnimationAssetKind)> = HashSet::new();
-        for change in changes {
-            let normalized = Self::normalize_validation_path(&change.path);
-            if !dedup.insert((normalized.clone(), change.kind)) {
-                continue;
-            }
-            if let Some(mut request) = self.prepare_animation_reload_request(normalized, change.kind) {
-                request.skip_validation = self.consume_validation_suppression(&request.path);
-                self.enqueue_animation_reload(request);
-            }
-        }
-        self.dispatch_animation_reload_queue();
-        self.drain_animation_reload_results();
-        self.drain_animation_validation_results();
     }
 
     fn prepare_animation_reload_request(
@@ -1686,108 +1434,6 @@ impl App {
         }
     }
 
-    fn frame_plot_points_arc(&mut self) -> Arc<[eplot::PlotPoint]> {
-        let revision = self.analytics_plugin().map(|plugin| plugin.frame_history_revision()).unwrap_or(0);
-        if self.frame_plot_revision != revision {
-            let new_arc = if let Some(plugin) = self.analytics_plugin() {
-                let history = plugin.frame_history();
-                let mut data = Vec::with_capacity(history.len());
-                for (idx, value) in history.iter().enumerate() {
-                    data.push(eplot::PlotPoint::new(idx as f64, *value as f64));
-                }
-                Arc::from(data.into_boxed_slice())
-            } else {
-                Arc::from(Vec::<eplot::PlotPoint>::new().into_boxed_slice())
-            };
-            self.frame_plot_revision = revision;
-            self.frame_plot_points = Arc::clone(&new_arc);
-            return new_arc;
-        }
-        Arc::clone(&self.frame_plot_points)
-    }
-
-    fn capture_frame_budget_snapshot(&self) -> FrameBudgetSnapshot {
-        FrameBudgetSnapshot {
-            timing: self.frame_profiler.latest(),
-            #[cfg(feature = "alloc_profiler")]
-            alloc_delta: self.analytics_plugin().and_then(|plugin| plugin.allocation_delta()),
-        }
-    }
-
-    fn frame_budget_snapshot_view(snapshot: &FrameBudgetSnapshot) -> editor_ui::FrameBudgetSnapshotView {
-        editor_ui::FrameBudgetSnapshotView {
-            timing: snapshot.timing,
-            #[cfg(feature = "alloc_profiler")]
-            alloc_delta: snapshot.alloc_delta,
-        }
-    }
-
-    fn frame_budget_delta_message(&self) -> Option<String> {
-        let (baseline_snapshot, comparison_snapshot) = {
-            let state = self.editor_ui_state();
-            (state.frame_budget_idle_snapshot, state.frame_budget_panel_snapshot)
-        };
-        let baseline = baseline_snapshot?;
-        let comparison = comparison_snapshot?;
-        let idle = baseline.timing?;
-        let panel = comparison.timing?;
-        let update_delta = panel.update_ms - idle.update_ms;
-        let ui_delta = panel.ui_ms - idle.ui_ms;
-        #[cfg(feature = "alloc_profiler")]
-        let alloc_note = if let (Some(idle_alloc), Some(panel_alloc)) =
-            (baseline.alloc_delta, comparison.alloc_delta)
-        {
-            let diff = panel_alloc.net_bytes() - idle_alloc.net_bytes();
-            format!(", delta_alloc={:+} B", diff)
-        } else {
-            String::new()
-        };
-        #[cfg(not(feature = "alloc_profiler"))]
-        let alloc_note = String::new();
-        Some(format!(
-            "Frame budget delta: delta_update={:+.2} ms, delta_ui={:+.2} ms{alloc_note}",
-            update_delta, ui_delta
-        ))
-    }
-
-    fn handle_frame_budget_action(&mut self, action: Option<editor_ui::FrameBudgetAction>) {
-        use editor_ui::FrameBudgetAction;
-        let Some(action) = action else {
-            return;
-        };
-        match action {
-            FrameBudgetAction::CaptureIdle => {
-                let snapshot = self.capture_frame_budget_snapshot();
-                self.with_editor_ui_state_mut(|state| {
-                    state.frame_budget_idle_snapshot = Some(snapshot);
-                    state.frame_budget_status = Some(
-                        "Idle baseline captured. Toggle panels, then capture the panel snapshot.".to_string(),
-                    );
-                });
-            }
-            FrameBudgetAction::CapturePanel => {
-                let snapshot = self.capture_frame_budget_snapshot();
-                self.with_editor_ui_state_mut(|state| {
-                    state.frame_budget_panel_snapshot = Some(snapshot);
-                });
-                let status = self.frame_budget_delta_message().or_else(|| {
-                    Some(
-                        "Panel snapshot captured. Capture an idle baseline first for delta comparisons."
-                            .to_string(),
-                    )
-                });
-                self.with_editor_ui_state_mut(|state| state.frame_budget_status = status);
-            }
-            FrameBudgetAction::Clear => {
-                self.with_editor_ui_state_mut(|state| {
-                    state.frame_budget_idle_snapshot = None;
-                    state.frame_budget_panel_snapshot = None;
-                    state.frame_budget_status = Some("Cleared frame budget snapshots.".to_string());
-                });
-            }
-        }
-    }
-
     fn with_plugin_runtime<F, R>(&mut self, f: F) -> R
     where
         F: FnOnce(&mut PluginHost, &mut PluginManager, &mut PluginContext<'_>) -> R,
@@ -1889,106 +1535,6 @@ impl App {
         self.script_plugin().and_then(|plugin| plugin.resolve_handle(handle))
     }
 
-    fn remember_scene_path(&mut self, path: &str) {
-        let trimmed = path.trim();
-        if trimmed.is_empty() {
-            return;
-        }
-        let mut state = self.editor_ui_state_mut();
-        if let Some(pos) = state.scene_history.iter().position(|entry| entry == trimmed) {
-            state.scene_history.remove(pos);
-        }
-        state.scene_history.push_front(trimmed.to_string());
-        while state.scene_history.len() > 8 {
-            state.scene_history.pop_back();
-        }
-        state.scene_history_snapshot = None;
-    }
-
-    fn push_script_console(&mut self, kind: ScriptConsoleKind, text: impl Into<String>) {
-        let mut state = self.editor_ui_state_mut();
-        state.script_console.push_back(ScriptConsoleEntry { kind, text: text.into() });
-        while state.script_console.len() > SCRIPT_CONSOLE_CAPACITY {
-            state.script_console.pop_front();
-        }
-        state.script_console_snapshot = None;
-    }
-
-    fn script_console_entries(&mut self) -> Arc<[ScriptConsoleEntry]> {
-        let mut state = self.editor_ui_state_mut();
-        if let Some(cache) = &state.script_console_snapshot {
-            return Arc::clone(cache);
-        }
-        let data = state.script_console.iter().cloned().collect::<Vec<_>>();
-        let arc = Arc::from(data.into_boxed_slice());
-        state.script_console_snapshot = Some(Arc::clone(&arc));
-        arc
-    }
-
-    fn script_repl_history_arc(&mut self) -> Arc<[String]> {
-        let mut state = self.editor_ui_state_mut();
-        if let Some(cache) = &state.script_repl_history_snapshot {
-            return Arc::clone(cache);
-        }
-        let data = state.script_repl_history.iter().cloned().collect::<Vec<_>>();
-        let arc = Arc::from(data.into_boxed_slice());
-        state.script_repl_history_snapshot = Some(Arc::clone(&arc));
-        arc
-    }
-
-    fn scene_history_arc(&mut self) -> Arc<[String]> {
-        let mut state = self.editor_ui_state_mut();
-        if let Some(cache) = &state.scene_history_snapshot {
-            return Arc::clone(cache);
-        }
-        let data = state.scene_history.iter().cloned().collect::<Vec<_>>();
-        let arc = Arc::from(data.into_boxed_slice());
-        state.scene_history_snapshot = Some(Arc::clone(&arc));
-        arc
-    }
-
-    fn scene_atlas_refs_arc(&mut self) -> Arc<[String]> {
-        {
-            let state = self.editor_ui_state();
-            if let Some(cache) = &state.scene_atlas_snapshot {
-                return Arc::clone(cache);
-            }
-        }
-        let mut data = self.scene_atlas_refs.iter().cloned().collect::<Vec<_>>();
-        data.sort();
-        let arc = Arc::from(data.into_boxed_slice());
-        self.editor_ui_state_mut().scene_atlas_snapshot = Some(Arc::clone(&arc));
-        arc
-    }
-
-    fn scene_mesh_refs_arc(&mut self) -> Arc<[String]> {
-        {
-            let state = self.editor_ui_state();
-            if let Some(cache) = &state.scene_mesh_snapshot {
-                return Arc::clone(cache);
-            }
-        }
-        let mut data = self.scene_mesh_refs.iter().cloned().collect::<Vec<_>>();
-        data.sort();
-        let arc = Arc::from(data.into_boxed_slice());
-        self.editor_ui_state_mut().scene_mesh_snapshot = Some(Arc::clone(&arc));
-        arc
-    }
-
-    fn scene_clip_refs_arc(&mut self) -> Arc<[String]> {
-        {
-            let state = self.editor_ui_state();
-            if let Some(cache) = &state.scene_clip_snapshot {
-                return Arc::clone(cache);
-            }
-        }
-        let mut data = self.scene_clip_refs.keys().cloned().collect::<Vec<_>>();
-        data.sort();
-        let arc = Arc::from(data.into_boxed_slice());
-        self.editor_ui_state_mut().scene_clip_snapshot = Some(Arc::clone(&arc));
-        arc
-    }
-
     fn refresh_editor_analytics_state(&mut self) {
         let mut shadow_pass_metric = None;
         let mut mesh_pass_metric = None;
@@ -2049,90 +1595,6 @@ impl App {
             "[alloc] frame delta: +{}B allocated, +{}B freed (net {:+} B)",
             delta.allocated_bytes, delta.deallocated_bytes, net
         );
-    }
-
-    fn append_script_history(&mut self, command: &str) {
-        if command.is_empty() {
-            return;
-        }
-        let mut state = self.editor_ui_state_mut();
-        state.script_repl_history.push_back(command.to_string());
-        while state.script_repl_history.len() > SCRIPT_HISTORY_CAPACITY {
-            state.script_repl_history.pop_front();
-        }
-        state.script_repl_history_index = None;
-        state.script_repl_history_snapshot = None;
-    }
-
-    fn execute_repl_command(&mut self, command: String) {
-        let trimmed = command.trim();
-        if trimmed.is_empty() {
-            return;
-        }
-        self.append_script_history(trimmed);
-        self.push_script_console(ScriptConsoleKind::Input, format!("> {trimmed}"));
-        {
-            let mut state = self.editor_ui_state_mut();
-            state.script_repl_input.clear();
-            state.script_focus_repl = true;
-        }
-        let result: Result<Option<String>, String> = if let Some(plugin) = self.script_plugin_mut() {
-            match plugin.eval_repl(trimmed) {
-                Ok(value) => Ok(value),
-                Err(err) => {
-                    let message = err.to_string();
-                    plugin.set_error_message(message.clone());
-                    Err(message)
-                }
-            }
-        } else {
-            Err("Script plugin unavailable; cannot evaluate command.".to_string())
-        };
-        match result {
-            Ok(Some(value)) => self.push_script_console(ScriptConsoleKind::Output, value),
-            Ok(None) => {}
-            Err(message) => {
-                self.push_script_console(ScriptConsoleKind::Error, message);
-                let mut state = self.editor_ui_state_mut();
-                state.script_debugger_open = true;
-                state.script_focus_repl = true;
-            }
-        }
-    }
-
-    fn sync_script_error_state(&mut self) {
-        let current_error =
-            self.script_plugin().and_then(|plugin| plugin.last_error().map(|err| err.to_string()));
-        {
-            let mut state = self.editor_ui_state_mut();
-            if current_error == state.last_reported_script_error {
-                return;
-            }
-            state.last_reported_script_error = current_error.clone();
-        }
-        if let Some(err) = current_error {
-            self.push_script_console(ScriptConsoleKind::Error, format!("Runtime error: {err}"));
-            let mut state = self.editor_ui_state_mut();
-            state.script_debugger_open = true;
-            state.script_focus_repl = true;
-        }
-    }
-
-    fn focus_selection(&mut self) -> bool {
-        let Some(entity) = self.selected_entity else {
-            return false;
-        };
-        let Some(info) = self.ecs.entity_info(entity) else {
-            return false;
-        };
-        self.camera_follow_target = None;
-        self.active_camera_bookmark = None;
-        self.camera.position = info.translation;
-        if let Some(plugin) = self.mesh_preview_plugin_mut() {
-            plugin.focus_selection_with_info(&info)
-        } else {
-            true
-        }
     }
 
     fn should_keep_environment(&self, key: &str) -> bool {

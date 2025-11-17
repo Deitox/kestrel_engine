@@ -32,6 +32,12 @@
 - `src/events.rs` defines `GameEvent` plus the `EventBus` resource that records gameplay signals for tooling and audio.
 - `src/scene.rs` describes the JSON scene format, tracks atlas/mesh dependencies, and handles serialization/deserialization of entity hierarchies for save/load operations.
 - `src/audio.rs` exposes `AudioManager` plus an `AudioPlugin` wrapper so rodio-backed cues react to `GameEvent`s through the shared plugin system.
+- `src/app/script_console.rs` owns the editor REPL plumbing (history snapshots, console log buffering, and command evaluation) so `App` can simply route egui requests to the `ScriptPlugin`.
+- `src/app/inspector_tooling.rs` maintains inspector-specific status messaging plus the cached scene/atlas/mesh/clip lists that populate the inspector panels, and exposes helpers (e.g., focus selection) so gizmo workflows live outside the core loop.
+- `src/app/asset_watch_tooling.rs` centralizes atlas/animation file-watcher glue, syncing hot-reload watchers and queueing new roots so `App` only forwards reload requests.
+- `src/app/telemetry_tooling.rs` keeps the editor telemetry caches, frame profiler, and frame-budget helpers bundled together so UI panels consume snapshot data without bloating `App`.
+- `src/renderer/sprite_pass.rs` encapsulates the sprite pipeline setup, globals buffer, instancing buffer management, and atlas bind-group cache so the main renderer only orchestrates pass sequencing.
+- `src/renderer/mesh_pass.rs` holds the mesh pass state (pipeline resources, uniform buffers, skinning palette cache, and palette upload stats) so the renderer can manage mesh/shadow coordination without a monolithic struct.
 
 ### Frame Flow
 1. **Input ingest** - `ApplicationHandler::window_event` converts Winit events into `InputEvent` values, storing them on `Input`.

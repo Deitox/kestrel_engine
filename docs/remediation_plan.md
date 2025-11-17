@@ -33,23 +33,26 @@ This document tracks the staged remediation work. Each section calls out the goa
 
 **Goal:** Separate responsibilities so runtime, editor UI, and plugin orchestration can evolve and be tested independently.
 
-**Status:** **In Progress** - Plugin plumbing now lives in `app::plugin_runtime`, `app::runtime_loop` owns timing/fixed-step bookkeeping, the animation/keyframe tooling resides in `app::animation_tooling`, prefab workflows in `app::prefab_tooling`, and mesh-preview helpers in `app::mesh_preview_tooling`. Remaining work focuses on the last editor-facing helpers (analytics tables, mesh inspectors) before we document the new architecture.
+**Status:** **In Progress** - Plugin plumbing now lives in `app::plugin_runtime`, `app::runtime_loop` owns timing/fixed-step bookkeeping, the animation/keyframe tooling resides in `app::animation_tooling`, prefab workflows in `app::prefab_tooling`, mesh-preview helpers in `app::mesh_preview_tooling`, and analytics/plugin telemetry snapshots flow through `EditorUiState`. The script console helpers and inspector utilities were carved into `app::script_console` / `app::inspector_tooling`, file watcher glue now lives in `app::asset_watch_tooling`, and the telemetry caches/frame budget helpers sit in `app::telemetry_tooling`. `docs/ARCHITECTURE.md` reflects the new module boundaries, so the last pre-renderer work item is exploratory testing before Step 4 kicks off.
 
 **Tasks**
 - [x] Extract a `RuntimeLoop` module that owns the tick/fixed-step bookkeeping so `App` depends on a single loop abstraction instead of raw `Time`/accumulator fields.
 - [x] Move plugin plumbing into `app::plugin_runtime`, with narrow APIs for loading, updating, and telemetry.
-- [ ] Create an `EditorShell` module that owns egui state, telemetry caches, prefab workflows, script console, and animation tooling.
-- [ ] Incrementally migrate subsystems (analytics UI, prefab shelf, mesh preview, REPL, file watchers) into focused modules, adding unit tests where practical.
-- [ ] Update `docs/ARCHITECTURE.md` after each milestone to capture the new ownership diagram.
+- [x] Create an `EditorShell` module that owns egui state, telemetry caches, prefab workflows, script console, and animation tooling.
+- [x] Incrementally migrate subsystems (analytics UI caches, prefab shelf, mesh preview, REPL tooling, inspector utilities) into focused modules, adding unit tests where practical.
+- [x] Extract the remaining editor-only helpers (file watcher glue, lingering telemetry caches) into focused modules.
+- [x] Update `docs/ARCHITECTURE.md` after each milestone to capture the new ownership diagram.
 
 ## 4. Renderer Pass Decomposition & Upload Efficiency (Weeks 5-6)
 
 **Goal:** Reduce the 140 kB renderer monolith into manageable passes and eliminate avoidable CPU work per frame.
 
-**Status:** **Not Started**
+**Status:** **In Progress** - Sprite rendering lives in `src/renderer/sprite_pass.rs`, and the mesh pass state (pipeline resources, uniforms, skinning caches, palette metrics) now lives in `src/renderer/mesh_pass.rs`. The main `Renderer` orchestrates passes while these focused modules manage their own buffers/bind groups, so the remaining work can focus on the mesh/shadow/light-cluster logic plus the upload improvements.
 
 **Tasks**
-- Split `Renderer` into pass-specific modules (swapchain/window management, sprite pass, mesh/shadow pass, light clusters, egui compositing).
+- [x] Move sprite rendering into `renderer::sprite_pass` so instancing, uniforms, and atlas bind groups stay self-contained.
+- [x] Extract mesh pass state/helpers into `renderer::mesh_pass` to stage the remaining render-pass break up.
+- [ ] Extract the remaining passes (swapchain/window management, mesh/shadow, light clusters, egui compositing) into dedicated modules.
 - Convert frequently rebuilt temporaries into struct fields that reuse allocations by calling `Vec::clear()` instead of reallocating.
 - Introduce a persistently mapped or ring-buffer-based instance upload path so large sprite batches no longer rewrite the full buffer each frame.
 - Add pass-level tests/benchmarks (via the headless renderer hooks) to validate culling, light clustering, and GPU timing in isolation.

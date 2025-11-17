@@ -1,3 +1,6 @@
+mod mesh_pass;
+mod sprite_pass;
+
 use crate::camera3d::Camera3D;
 use crate::config::WindowConfig;
 use crate::ecs::{InstanceData, MeshLightingInfo};
@@ -17,12 +20,8 @@ use winit::window::{Fullscreen, Window};
 
 // egui
 use egui_wgpu::{Renderer as EguiRenderer, ScreenDescriptor};
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct Globals {
-    proj: [[f32; 4]; 4],
-}
+use self::mesh_pass::{MeshDrawData, MeshFrameData, MeshPass, MeshPipelineResources, PaletteUploadStats};
+use self::sprite_pass::SpritePass;
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const MAX_SKIN_JOINTS: usize = 256;
@@ -34,28 +33,6 @@ pub const LIGHT_CLUSTER_MAX_LIGHTS: usize = 256;
 const LIGHT_CLUSTER_MAX_LIGHTS_PER_CLUSTER: usize = 64;
 const LIGHT_CLUSTER_RECORD_STRIDE_WORDS: u32 = 2;
 const LIGHT_CLUSTER_CACHE_QUANTIZE: f32 = 1e-3;
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct MeshFrameData {
-    view_proj: [[f32; 4]; 4],
-    view: [[f32; 4]; 4],
-    camera_pos: [f32; 4],
-    light_dir: [f32; 4],
-    light_color: [f32; 4],
-    ambient_color: [f32; 4],
-    exposure_params: [f32; 4],
-    cascade_splits: [f32; 4],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct MeshDrawData {
-    model: [[f32; 4]; 4],
-    base_color: [f32; 4],
-    emissive: [f32; 4],
-    material_params: [f32; 4],
-}
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -179,12 +156,6 @@ pub struct SpriteBatch {
     pub atlas: Arc<str>,
     pub range: Range<u32>,
     pub view: Arc<wgpu::TextureView>,
-}
-
-struct SpriteBindCacheEntry {
-    view: Arc<wgpu::TextureView>,
-    sampler_id: u64,
-    bind_group: Arc<wgpu::BindGroup>,
 }
 
 #[derive(Debug, Clone)]
@@ -448,33 +419,6 @@ struct HeadlessTarget {
     texture: wgpu::Texture,
 }
 
-struct MeshPipelineResources {
-    pipeline: wgpu::RenderPipeline,
-    frame_draw_bgl: Arc<wgpu::BindGroupLayout>,
-    skinning_bgl: Arc<wgpu::BindGroupLayout>,
-    material_bgl: Arc<wgpu::BindGroupLayout>,
-    environment_bgl: Arc<wgpu::BindGroupLayout>,
-    light_cluster_bgl: Arc<wgpu::BindGroupLayout>,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct PaletteUploadStats {
-    pub calls: u32,
-    pub joints_uploaded: u32,
-    pub total_cpu_ms: f32,
-}
-
-impl PaletteUploadStats {
-    fn record(&mut self, joints: usize, cpu_ms: f32) {
-        if joints == 0 {
-            return;
-        }
-        self.calls = self.calls.saturating_add(1);
-        self.joints_uploaded = self.joints_uploaded.saturating_add(joints as u32);
-        self.total_cpu_ms += cpu_ms;
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LightClusterMetrics {
     pub total_lights: u32,
@@ -494,20 +438,6 @@ impl LightClusterMetrics {
     pub fn culled_lights(&self) -> u32 {
         self.total_lights.saturating_sub(self.visible_lights)
     }
-}
-
-#[derive(Default)]
-struct MeshPass {
-    resources: Option<MeshPipelineResources>,
-    frame_buffer: Option<wgpu::Buffer>,
-    draw_buffer: Option<wgpu::Buffer>,
-    frame_draw_bind_group: Option<wgpu::BindGroup>,
-    skinning_identity_buffer: Option<wgpu::Buffer>,
-    skinning_identity_bind_group: Option<wgpu::BindGroup>,
-    skinning_palette_buffers: Vec<wgpu::Buffer>,
-    skinning_palette_bind_groups: Vec<wgpu::BindGroup>,
-    palette_staging: Vec<[f32; 16]>,
-    skinning_cursor: usize,
 }
 
 #[derive(Default)]
@@ -1062,19 +992,6 @@ pub struct Renderer {
     vsync: bool,
     fullscreen: bool,
 
-    pipeline: Option<wgpu::RenderPipeline>,
-    vertex_buffer: Option<wgpu::Buffer>,
-    index_buffer: Option<wgpu::Buffer>,
-    globals_buf: Option<wgpu::Buffer>,
-    globals_bg: Option<wgpu::BindGroup>,
-    globals_bgl: Option<wgpu::BindGroupLayout>,
-
-    texture_bg: Option<wgpu::BindGroup>,
-    texture_bgl: Option<wgpu::BindGroupLayout>,
-
-    instance_buffer: Option<wgpu::Buffer>,
-    instance_capacity: usize,
-
     depth_texture: Option<wgpu::Texture>,
     depth_view: Option<wgpu::TextureView>,
     mesh_pass: MeshPass,
@@ -1083,8 +1000,7 @@ pub struct Renderer {
     light_cluster_scratch: LightClusterScratch,
     lighting: SceneLightingState,
     environment_state: Option<RendererEnvironmentState>,
-
-    sprite_bind_cache: HashMap<String, SpriteBindCacheEntry>,
+    sprite_pass: SpritePass,
     present_modes: Vec<wgpu::PresentMode>,
     gpu_timer: GpuTimer,
     skinning_limit_warnings: HashSet<usize>,
@@ -1118,25 +1034,15 @@ impl Renderer {
             title: window_cfg.title.clone(),
             vsync: window_cfg.vsync,
             fullscreen: window_cfg.fullscreen,
-            pipeline: None,
-            vertex_buffer: None,
-            index_buffer: None,
-            globals_buf: None,
-            globals_bg: None,
-            globals_bgl: None,
-            texture_bg: None,
-            texture_bgl: None,
-            instance_buffer: None,
-            instance_capacity: 0,
             depth_texture: None,
             depth_view: None,
-            mesh_pass: MeshPass::default(),
+            mesh_pass: MeshPass::new(),
             shadow_pass: ShadowPass::default(),
             light_clusters: LightClusterPass::default(),
             light_cluster_scratch: LightClusterScratch::default(),
             lighting: SceneLightingState::default(),
             environment_state: None,
-            sprite_bind_cache: HashMap::new(),
+            sprite_pass: SpritePass::new(),
             present_modes: Vec::new(),
             gpu_timer: GpuTimer::default(),
             skinning_limit_warnings: HashSet::new(),
@@ -1351,183 +1257,11 @@ impl Renderer {
         atlas_view: wgpu::TextureView,
         sampler: wgpu::Sampler,
     ) -> Result<()> {
-        self.clear_sprite_bind_cache();
+        self.sprite_pass.clear_bind_cache();
         let device = self.device.as_ref().context("GPU device not initialized")?;
-
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Sprite Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../assets/shaders/sprite_batch.wgsl").into()),
-        });
-
-        let globals_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Globals BGL"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
-        let globals_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Globals Buffer"),
-            size: std::mem::size_of::<Globals>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let globals_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Globals BG"),
-            layout: &globals_bgl,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: globals_buf.as_entire_binding() }],
-        });
-
-        let texture_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Texture BGL"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
-        let texture_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Texture BG"),
-            layout: &texture_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&atlas_view),
-                },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
-            ],
-        });
-
-        // Unit quad
-        let vertices: [[f32; 5]; 4] = [
-            [-0.5, 0.5, 0.0, 0.0, 0.0],
-            [0.5, 0.5, 0.0, 1.0, 0.0],
-            [0.5, -0.5, 0.0, 1.0, 1.0],
-            [-0.5, -0.5, 0.0, 0.0, 1.0],
-        ];
-        let indices: [u16; 6] = [0, 1, 2, 0, 2, 3];
-        let vb = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("VB"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let ib = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("IB"),
-            contents: bytemuck::cast_slice(&indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Pipeline Layout"),
-            bind_group_layouts: &[&globals_bgl, &texture_bgl],
-            push_constant_ranges: &[],
-        });
-
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Sprite Pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[
-                    wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<[f32; 5]>() as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &[
-                            wgpu::VertexAttribute {
-                                shader_location: 0,
-                                format: wgpu::VertexFormat::Float32x3,
-                                offset: 0,
-                            },
-                            wgpu::VertexAttribute {
-                                shader_location: 1,
-                                format: wgpu::VertexFormat::Float32x2,
-                                offset: 12,
-                            },
-                        ],
-                    },
-                    wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<InstanceData>() as u64,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &[
-                            wgpu::VertexAttribute {
-                                shader_location: 2,
-                                format: wgpu::VertexFormat::Float32x4,
-                                offset: 0,
-                            },
-                            wgpu::VertexAttribute {
-                                shader_location: 3,
-                                format: wgpu::VertexFormat::Float32x4,
-                                offset: 16,
-                            },
-                            wgpu::VertexAttribute {
-                                shader_location: 4,
-                                format: wgpu::VertexFormat::Float32x4,
-                                offset: 32,
-                            },
-                            wgpu::VertexAttribute {
-                                shader_location: 5,
-                                format: wgpu::VertexFormat::Float32x4,
-                                offset: 48,
-                            },
-                            wgpu::VertexAttribute {
-                                shader_location: 6,
-                                format: wgpu::VertexFormat::Float32x4,
-                                offset: 64,
-                            },
-                        ],
-                    },
-                ],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: self.config.as_ref().context("Surface configuration missing")?.format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
-
-        self.pipeline = Some(pipeline);
-        self.vertex_buffer = Some(vb);
-        self.index_buffer = Some(ib);
-        self.globals_bgl = Some(globals_bgl);
-        self.globals_buf = Some(globals_buf);
-        self.globals_bg = Some(globals_bg);
-        self.texture_bgl = Some(texture_bgl);
-        self.texture_bg = Some(texture_bg);
-        Ok(())
+        let config = self.config.as_ref().context("Surface configuration missing")?;
+        self.sprite_pass
+            .init_pipeline_with_atlas(device, config.format, atlas_view, sampler)
     }
 
     pub fn init_mesh_pipeline(&mut self) -> Result<()> {
@@ -2794,72 +2528,12 @@ impl Renderer {
         }
     }
 
-    fn ensure_instance_capacity(&mut self, count: usize) -> Result<()> {
-        let device = self.device.as_ref().context("GPU device not initialized")?;
-        let required = count.max(1);
-        if self.instance_capacity >= required && self.instance_buffer.is_some() {
-            return Ok(());
-        }
-        let mut new_cap = self.instance_capacity.max(256);
-        if new_cap == 0 {
-            new_cap = 256;
-        }
-        while new_cap < required {
-            new_cap *= 2;
-        }
-        let buf_size = (new_cap * std::mem::size_of::<InstanceData>()) as u64;
-        let new_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Instance Buffer"),
-            size: buf_size,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        self.instance_buffer = Some(new_buf);
-        self.instance_capacity = new_cap;
-        Ok(())
-    }
-
-    fn sprite_bind_group(
-        &mut self,
-        atlas: &str,
-        view: &Arc<wgpu::TextureView>,
-        sampler: &wgpu::Sampler,
-    ) -> Result<Arc<wgpu::BindGroup>> {
-        let sampler_id = sampler as *const wgpu::Sampler as usize as u64;
-        if let Some(entry) = self.sprite_bind_cache.get(atlas) {
-            if Arc::ptr_eq(&entry.view, view) && entry.sampler_id == sampler_id {
-                return Ok(entry.bind_group.clone());
-            }
-        }
-
-        let device = self.device.as_ref().context("GPU device not initialized")?;
-        let layout = self.texture_bgl.as_ref().context("Texture bind group layout missing")?;
-        let bind_group = Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Sprite Atlas Bind Group"),
-            layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(view.as_ref()),
-                },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
-            ],
-        }));
-
-        self.sprite_bind_cache.insert(
-            atlas.to_string(),
-            SpriteBindCacheEntry { view: view.clone(), sampler_id, bind_group: bind_group.clone() },
-        );
-
-        Ok(bind_group)
-    }
-
     pub fn clear_sprite_bind_cache(&mut self) {
-        self.sprite_bind_cache.clear();
+        self.sprite_pass.clear_bind_cache();
     }
 
     pub fn invalidate_sprite_bind_group(&mut self, atlas: &str) {
-        self.sprite_bind_cache.remove(atlas);
+        self.sprite_pass.invalidate_bind_group(atlas);
     }
 
     fn trim_skinning_cache(
@@ -3052,27 +2726,13 @@ impl Renderer {
     ) -> Result<SurfaceFrame> {
         self.palette_stats_frame = PaletteUploadStats::default();
         self.light_clusters.metrics = LightClusterMetrics::default();
-        {
-            let queue = self.queue.as_ref().context("GPU queue not initialized")?;
-            let globals = self.globals_buf.as_ref().context("Globals buffer missing")?;
-            queue.write_buffer(
-                globals,
-                0,
-                bytemuck::bytes_of(&Globals { proj: sprite_view_proj.to_cols_array_2d() }),
-            );
-        }
-
-        self.ensure_instance_capacity(instances.len())?;
-
-        let byte_data = bytemuck::cast_slice(instances);
-        {
-            let instance_buffer = self.instance_buffer.as_ref().context("Instance buffer missing")?;
-            let queue = self.queue.as_ref().context("GPU queue not initialized")?;
-            queue.write_buffer(instance_buffer, 0, byte_data);
-        }
-
         let frame = self.acquire_surface_frame()?;
         let device = self.device.as_ref().context("GPU device not initialized")?;
+        {
+            let queue = self.queue.as_ref().context("GPU queue not initialized")?;
+            self.sprite_pass.write_globals(queue, sprite_view_proj)?;
+            self.sprite_pass.upload_instances(device, queue, instances)?;
+        }
         let view = frame.view();
         let encoder_label =
             format!("Frame Encoder (sprites={}, meshes={})", instances.len(), mesh_draws.len());
@@ -3083,7 +2743,10 @@ impl Renderer {
 
         let mut sprite_bind_groups: Vec<(Range<u32>, Arc<wgpu::BindGroup>)> = Vec::new();
         for batch in sprite_batches {
-            match self.sprite_bind_group(batch.atlas.as_ref(), &batch.view, sampler) {
+            match self
+                .sprite_pass
+                .sprite_bind_group(device, batch.atlas.as_ref(), &batch.view, sampler)
+            {
                 Ok(bind_group) => sprite_bind_groups.push((batch.range.clone(), bind_group)),
                 Err(err) => {
                     eprintln!(
@@ -3128,57 +2791,8 @@ impl Renderer {
                 occlusion_query_set: None,
                 timestamp_writes: None,
             });
-            pass.set_pipeline(self.pipeline.as_ref().context("Sprite pipeline missing")?);
-            pass.set_bind_group(0, self.globals_bg.as_ref().context("Globals bind group missing")?, &[]);
-            let vertex_buffer = self.vertex_buffer.as_ref().context("Vertex buffer missing")?;
-            pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-            let instance_buffer = self.instance_buffer.as_ref().context("Instance buffer missing")?;
-            pass.set_vertex_buffer(1, instance_buffer.slice(..));
-            let (vp_x, vp_y) = viewport.origin;
-            let (vp_w, vp_h) = viewport.size;
-            let vp_w = vp_w.max(1.0);
-            let vp_h = vp_h.max(1.0);
-            pass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
-            let mut sc_x = vp_x.max(0.0).floor() as u32;
-            let mut sc_y = vp_y.max(0.0).floor() as u32;
-            let mut sc_w = vp_w.floor() as u32;
-            let mut sc_h = vp_h.floor() as u32;
-            if sc_w == 0 {
-                sc_w = 1;
-            }
-            if sc_h == 0 {
-                sc_h = 1;
-            }
-            let limit_w = self.size.width.max(1);
-            let limit_h = self.size.height.max(1);
-            if sc_x >= limit_w {
-                sc_x = limit_w.saturating_sub(1);
-            }
-            if sc_y >= limit_h {
-                sc_y = limit_h.saturating_sub(1);
-            }
-            let avail_w = limit_w.saturating_sub(sc_x).max(1);
-            let avail_h = limit_h.saturating_sub(sc_y).max(1);
-            sc_w = sc_w.min(avail_w);
-            sc_h = sc_h.min(avail_h);
-            pass.set_scissor_rect(sc_x, sc_y, sc_w, sc_h);
-            pass.set_index_buffer(
-                self.index_buffer.as_ref().context("Index buffer missing")?.slice(..),
-                wgpu::IndexFormat::Uint16,
-            );
-            if sprite_bind_groups.is_empty() {
-                if !instances.is_empty() {
-                    if let Some(bg) = self.texture_bg.as_ref() {
-                        pass.set_bind_group(1, bg, &[]);
-                        pass.draw_indexed(0..6, 0, 0..(instances.len() as u32));
-                    }
-                }
-            } else {
-                for (range, bind_group) in sprite_bind_groups.iter() {
-                    pass.set_bind_group(1, bind_group.as_ref(), &[]);
-                    pass.draw_indexed(0..6, 0, range.clone());
-                }
-            }
+            self.sprite_pass
+                .encode_pass(&mut pass, viewport, self.size, instances, &sprite_bind_groups)?;
         }
         self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::SpriteEnd);
         self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::FrameEnd);
