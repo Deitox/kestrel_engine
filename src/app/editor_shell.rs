@@ -9,6 +9,7 @@ use crate::scene::{SceneDependencies, SceneDependencyFingerprints};
 use egui::Context as EguiCtx;
 use egui_wgpu::{Renderer as EguiRenderer, ScreenDescriptor};
 use egui_winit::State as EguiWinit;
+use std::cell::{Ref, RefCell, RefMut};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,7 +22,7 @@ pub(crate) struct EditorShell {
     pub egui_renderer: Option<EguiRenderer>,
     pub egui_screen: Option<ScreenDescriptor>,
     #[allow(dead_code)]
-    pub ui_state: Option<EditorUiState>,
+    pub ui_state: Option<RefCell<EditorUiState>>,
 }
 
 impl EditorShell {
@@ -37,17 +38,17 @@ impl EditorShell {
 
     #[allow(dead_code)]
     pub fn install_ui_state(&mut self, state: EditorUiState) {
-        self.ui_state = Some(state);
+        self.ui_state = Some(RefCell::new(state));
     }
 
     #[allow(dead_code)]
-    pub fn ui_state(&self) -> Option<&EditorUiState> {
-        self.ui_state.as_ref()
+    pub fn ui_state(&self) -> Option<Ref<'_, EditorUiState>> {
+        self.ui_state.as_ref().map(|cell| cell.borrow())
     }
 
     #[allow(dead_code)]
-    pub fn ui_state_mut(&mut self) -> Option<&mut EditorUiState> {
-        self.ui_state.as_mut()
+    pub fn ui_state_mut(&mut self) -> Option<RefMut<'_, EditorUiState>> {
+        self.ui_state.as_ref().map(|cell| cell.borrow_mut())
     }
 }
 

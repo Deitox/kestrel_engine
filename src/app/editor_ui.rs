@@ -704,6 +704,11 @@ pub(super) struct EditorUiParams {
     pub prefab_name_input: String,
     pub prefab_format: PrefabFormat,
     pub prefab_status: Option<PrefabStatusMessage>,
+    pub ui_scene_path: String,
+    pub ui_scene_status: Option<String>,
+    pub animation_group_input: String,
+    pub animation_group_scale_input: f32,
+    pub inspector_status: Option<String>,
     pub script_debugger: ScriptDebuggerParams,
     pub id_lookup_input: String,
     pub id_lookup_active: bool,
@@ -757,6 +762,12 @@ pub(super) struct EditorUiOutput {
     pub prefab_name_input: String,
     pub prefab_format: PrefabFormat,
     pub prefab_status: Option<PrefabStatusMessage>,
+    pub ui_scene_path: String,
+    pub ui_scene_status: Option<String>,
+    pub animation_group_input: String,
+    pub animation_group_scale_input: f32,
+    pub inspector_status: Option<String>,
+    pub clear_scene_history: bool,
 }
 
 impl App {
@@ -840,6 +851,11 @@ impl App {
             mut prefab_name_input,
             mut prefab_format,
             prefab_status,
+            mut ui_scene_path,
+            mut ui_scene_status,
+            mut animation_group_input,
+            mut animation_group_scale_input,
+            mut inspector_status,
             mut script_debugger,
         } = params;
 
@@ -848,6 +864,7 @@ impl App {
         let mut camera_bookmark_delete: Option<String> = None;
         let mut camera_follow_selection = false;
         let mut camera_follow_clear = false;
+        let mut clear_scene_history = false;
         let (
             preview_mesh_key,
             mesh_control_mode_state,
@@ -1207,7 +1224,7 @@ impl App {
                             }
                             if ui.checkbox(&mut ui_spatial_use_quadtree, "Enable quadtree fallback").changed()
                             {
-                                self.inspector_status = Some(if ui_spatial_use_quadtree {
+                                inspector_status = Some(if ui_spatial_use_quadtree {
                                     "Quadtree fallback enabled.".to_string()
                                 } else {
                                     "Quadtree fallback disabled.".to_string()
@@ -1353,30 +1370,29 @@ impl App {
                             ui.label("Add / update group override");
                             ui.horizontal(|ui| {
                                 ui.label("Group");
-                                ui.text_edit_singleline(&mut self.animation_group_input);
+                                ui.text_edit_singleline(&mut animation_group_input);
                             });
                             ui.horizontal(|ui| {
                                 ui.label("Scale");
                                 ui.add(
-                                    egui::Slider::new(&mut self.animation_group_scale_input, 0.0..=4.0)
+                                    egui::Slider::new(&mut animation_group_scale_input, 0.0..=4.0)
                                         .clamping(SliderClamping::Always)
                                         .text("x"),
                                 );
                                 if ui.button("Apply").clicked() {
-                                    let name = self.animation_group_input.trim();
+                                    let name = animation_group_input.trim();
                                     if !name.is_empty() {
-                                        let value = self.animation_group_scale_input.max(0.0);
-                                        if let Some(entry) = animation_group_entries
-                                            .iter_mut()
-                                            .find(|(existing, _)| existing == name)
+                                        let value = animation_group_scale_input.max(0.0);
+                                        if let Some(entry) =
+                                            animation_group_entries.iter_mut().find(|(existing, _)| existing == name)
                                         {
                                             entry.1 = value;
                                         } else {
                                             animation_group_entries.push((name.to_string(), value));
                                             animation_group_entries.sort_by(|a, b| a.0.cmp(&b.0));
                                         }
-                                        self.animation_group_input.clear();
-                                        self.animation_group_scale_input = 1.0;
+                                        animation_group_input.clear();
+                                        animation_group_scale_input = 1.0;
                                     }
                                 }
                             });
@@ -1635,30 +1651,28 @@ impl App {
                         }
                     });
                     ui.separator();
-                    {
-                        let inspector_ctx = entity_inspector::InspectorAppContext {
-                            ecs: &mut self.ecs,
-                            gizmo_mode: &mut self.gizmo_mode,
-                            gizmo_interaction: &mut self.gizmo_interaction,
-                            input: &self.input,
-                            inspector_status: &mut self.inspector_status,
-                            material_registry: &mut self.material_registry,
-                            mesh_registry: &mut self.mesh_registry,
-                            scene_material_refs: &mut self.scene_material_refs,
-                            assets: &self.assets,
-                        };
-                        entity_inspector::show_entity_inspector(
-                            inspector_ctx,
-                            ui,
-                            &mut selected_entity,
-                            &mut selection_details,
-                            &mut id_lookup_input,
-                            &mut id_lookup_active,
-                            &mut frame_selection_request,
-                            &persistent_materials,
-                            &mut actions,
-                        );
-                    }
+                    let inspector_ctx = entity_inspector::InspectorAppContext {
+                        ecs: &mut self.ecs,
+                        gizmo_mode: &mut self.gizmo_mode,
+                        gizmo_interaction: &mut self.gizmo_interaction,
+                        input: &self.input,
+                        inspector_status: &mut inspector_status,
+                        material_registry: &mut self.material_registry,
+                        mesh_registry: &mut self.mesh_registry,
+                        scene_material_refs: &mut self.scene_material_refs,
+                        assets: &self.assets,
+                    };
+                    entity_inspector::show_entity_inspector(
+                        inspector_ctx,
+                        ui,
+                        &mut selected_entity,
+                        &mut selection_details,
+                        &mut id_lookup_input,
+                        &mut id_lookup_active,
+                        &mut frame_selection_request,
+                        &persistent_materials,
+                        &mut actions,
+                    );
                 });
 
             let mut lookup_open = id_lookup_active;
@@ -1931,20 +1945,20 @@ impl App {
                     ui.heading("Scene");
                     ui.horizontal(|ui| {
                         ui.label("Path");
-                        ui.text_edit_singleline(&mut self.ui_scene_path);
+                        ui.text_edit_singleline(&mut ui_scene_path);
                         ui.menu_button("Recent", |menu| {
                             if scene_history_list.is_empty() {
                                 menu.label("No saved paths yet");
                             } else {
                                 for entry in scene_history_list.iter() {
                                     if menu.button(entry).clicked() {
-                                        self.ui_scene_path = entry.clone();
+                                        ui_scene_path = entry.clone();
                                         menu.close();
                                     }
                                 }
                                 menu.separator();
                                 if menu.button("Clear history").clicked() {
-                                    self.scene_history.clear();
+                                    clear_scene_history = true;
                                     menu.close();
                                 }
                             }
@@ -1956,7 +1970,7 @@ impl App {
                             actions.load_scene = true;
                         }
                     });
-                    if let Some(status) = &self.ui_scene_status {
+                    if let Some(status) = ui_scene_status.as_ref() {
                         ui.label(status);
                     }
                     ui.collapsing("Dependency Summary", |ui| {
@@ -2661,18 +2675,16 @@ impl App {
                                             capability_metrics.get(&plugin_name),
                                         );
                                     }
-                                    {
-                                        let plugin_manager = self.plugin_runtime.manager_mut();
-                                        plugin_debug_ui(
-                                            ui,
-                                            &plugin_name,
-                                            asset_metrics.as_ref(),
-                                            ecs_history.as_ref(),
-                                            watchdog_events.as_ref(),
-                                            plugin_manager,
-                                            &mut self.ui_scene_status,
-                                        );
-                                    }
+                                    let plugin_manager = self.plugin_runtime.manager_mut();
+                                    plugin_debug_ui(
+                                        ui,
+                                        &plugin_name,
+                                        asset_metrics.as_ref(),
+                                        ecs_history.as_ref(),
+                                        watchdog_events.as_ref(),
+                                        plugin_manager,
+                                        &mut ui_scene_status,
+                                    );
                                 });
                                 if toggled {
                                     actions.plugin_toggles.push(PluginToggleRequest {
@@ -2706,18 +2718,16 @@ impl App {
                                 status.trust,
                                 capability_metrics.get(&status.name),
                             );
-                            {
-                                let plugin_manager = self.plugin_runtime.manager_mut();
-                                plugin_debug_ui(
-                                    ui,
-                                    &status.name,
-                                    asset_metrics.as_ref(),
-                                    ecs_history.as_ref(),
-                                    watchdog_events.as_ref(),
-                                    plugin_manager,
-                                    &mut self.ui_scene_status,
-                                );
-                            }
+                            let plugin_manager = self.plugin_runtime.manager_mut();
+                            plugin_debug_ui(
+                                ui,
+                                &status.name,
+                                asset_metrics.as_ref(),
+                                ecs_history.as_ref(),
+                                watchdog_events.as_ref(),
+                                plugin_manager,
+                                &mut ui_scene_status,
+                            );
                         }
                     }
                     if !builtin_statuses.is_empty() {
@@ -2759,18 +2769,16 @@ impl App {
                                     status.trust,
                                     capability_metrics.get(&status.name),
                                 );
-                                {
-                                    let plugin_manager = self.plugin_runtime.manager_mut();
-                                    plugin_debug_ui(
-                                        ui,
-                                        &status.name,
-                                        asset_metrics.as_ref(),
-                                        ecs_history.as_ref(),
-                                        watchdog_events.as_ref(),
-                                        plugin_manager,
-                                        &mut self.ui_scene_status,
-                                    );
-                                }
+                                let plugin_manager = self.plugin_runtime.manager_mut();
+                                plugin_debug_ui(
+                                    ui,
+                                    &status.name,
+                                    asset_metrics.as_ref(),
+                                    ecs_history.as_ref(),
+                                    watchdog_events.as_ref(),
+                                    plugin_manager,
+                                    &mut ui_scene_status,
+                                );
                             });
                             if toggled {
                                 actions.plugin_toggles.push(PluginToggleRequest {
@@ -3522,6 +3530,12 @@ impl App {
             prefab_name_input,
             prefab_format,
             prefab_status,
+            ui_scene_path,
+            ui_scene_status,
+            animation_group_input,
+            animation_group_scale_input,
+            inspector_status,
+            clear_scene_history,
         }
     }
 }

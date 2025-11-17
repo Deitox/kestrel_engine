@@ -63,6 +63,7 @@ use bevy_ecs::prelude::Entity;
 use glam::{Mat4, Vec2, Vec3, Vec4};
 
 use anyhow::{anyhow, Context, Result};
+use std::cell::{Ref, RefMut};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
@@ -549,20 +550,8 @@ pub struct App {
     ui_camera_zoom_max: f32,
     ui_sprite_guard_pixels: f32,
     ui_sprite_guard_mode: SpriteGuardrailMode,
-    ui_scale: f32,
-    ui_scene_path: String,
-    ui_scene_status: Option<String>,
-    prefab_name_input: String,
-    prefab_format: PrefabFormat,
-    prefab_status: Option<PrefabStatusMessage>,
-    animation_group_input: String,
-    animation_group_scale_input: f32,
-    camera_bookmark_input: String,
     scene_dependencies: Option<SceneDependencies>,
     scene_dependency_fingerprints: Option<SceneDependencyFingerprints>,
-    scene_history: VecDeque<String>,
-    scene_history_snapshot: Option<Arc<[String]>>,
-    inspector_status: Option<String>,
     debug_show_spatial_hash: bool,
     debug_show_colliders: bool,
     animation_keyframe_panel: AnimationKeyframePanel,
@@ -642,12 +631,20 @@ pub struct App {
 }
 
 impl App {
-    fn editor_ui_state(&self) -> &EditorUiState {
-        self.editor_shell.ui_state.as_ref().expect("editor UI state not initialized")
+    fn editor_ui_state(&self) -> Ref<'_, EditorUiState> {
+        self.editor_shell.ui_state.as_ref().expect("editor UI state not initialized").borrow()
     }
 
-    fn editor_ui_state_mut(&mut self) -> &mut EditorUiState {
-        self.editor_shell.ui_state.as_mut().expect("editor UI state not initialized")
+    fn editor_ui_state_mut(&self) -> RefMut<'_, EditorUiState> {
+        self.editor_shell.ui_state.as_ref().expect("editor UI state not initialized").borrow_mut()
+    }
+
+    fn set_ui_scene_status(&self, message: impl Into<String>) {
+        self.editor_ui_state_mut().ui_scene_status = Some(message.into());
+    }
+
+    fn set_inspector_status(&self, status: Option<String>) {
+        self.editor_ui_state_mut().inspector_status = status;
     }
 
     pub fn hot_reload_atlas(&mut self, key: &str) -> Result<(usize, TextureAtlasDiagnostics)> {
@@ -1071,7 +1068,7 @@ impl App {
         self.animation_clip_status = Some(formatted.clone());
         if matches!(event.severity, AnimationValidationSeverity::Warning | AnimationValidationSeverity::Error)
         {
-            self.inspector_status = Some(formatted);
+            self.set_inspector_status(Some(formatted));
         }
     }
 
@@ -2302,13 +2299,13 @@ impl App {
         match result {
             Ok(newly_loaded) => {
                 if newly_loaded.is_empty() {
-                    self.ui_scene_status = Some("Plugin manifest reloaded".to_string());
+                    self.set_ui_scene_status("Plugin manifest reloaded".to_string());
                 } else {
-                    self.ui_scene_status = Some(format!("Loaded plugins: {}", newly_loaded.join(", ")));
+                    self.set_ui_scene_status(format!("Loaded plugins: {}", newly_loaded.join(", ")));
                 }
             }
             Err(err) => {
-                self.ui_scene_status = Some(format!("Plugin reload failed: {err}"));
+                self.set_ui_scene_status(format!("Plugin reload failed: {err}"));
             }
         }
     }
@@ -2331,7 +2328,7 @@ impl App {
             match self.plugin_host_mut().apply_manifest_toggles(&dynamic_requests, &builtin_requests) {
                 Ok(summary) => summary,
                 Err(err) => {
-                    self.ui_scene_status = Some(format!("Plugin manifest update failed: {err}"));
+                    self.set_ui_scene_status(format!("Plugin manifest update failed: {err}"));
                     if let Err(load_err) = self.plugin_host_mut().reload_manifest_from_disk() {
                         eprintln!("[plugin] failed to reload manifest after error: {load_err:?}");
                     }
@@ -2340,7 +2337,7 @@ impl App {
             };
         if !summary.changed() {
             if !summary.dynamic.missing.is_empty() {
-                self.ui_scene_status = Some(format!(
+                self.set_ui_scene_status(format!(
                     "Plugin toggle skipped; missing manifest entr{} {}",
                     if summary.dynamic.missing.len() == 1 { "y:" } else { "ies:" },
                     summary.dynamic.missing.join(", ")
@@ -2349,7 +2346,7 @@ impl App {
                     eprintln!("[plugin] failed to reload manifest after missing entries: {err:?}");
                 }
             } else {
-                self.ui_scene_status = Some("Plugin manifest unchanged.".to_string());
+                self.set_ui_scene_status("Plugin manifest unchanged.".to_string());
             }
             return;
         }
@@ -2378,9 +2375,9 @@ impl App {
             parts.push("restart required for built-in changes".to_string());
         }
         if parts.is_empty() {
-            self.ui_scene_status = Some("Plugin manifest updated.".to_string());
+            self.set_ui_scene_status("Plugin manifest updated.".to_string());
         } else {
-            self.ui_scene_status = Some(format!("Plugin manifest {}", parts.join("; ")));
+            self.set_ui_scene_status(format!("Plugin manifest {}", parts.join("; ")));
         }
     }
     pub async fn new(config: AppConfig) -> Self {
@@ -2594,20 +2591,8 @@ impl App {
             ui_camera_zoom_max: editor_cfg.camera_zoom_max,
             ui_sprite_guard_pixels: editor_cfg.sprite_guard_max_pixels,
             ui_sprite_guard_mode: editor_cfg.sprite_guardrail_mode,
-            ui_scale: 1.0,
-            ui_scene_path: scene_path,
-            ui_scene_status: None,
-            prefab_name_input: String::new(),
-            prefab_format: PrefabFormat::Json,
-            prefab_status: None,
-            animation_group_input: String::new(),
-            animation_group_scale_input: 1.0,
-            camera_bookmark_input: String::new(),
             scene_dependencies: None,
             scene_dependency_fingerprints: None,
-            scene_history,
-            scene_history_snapshot: None,
-            inspector_status: None,
             debug_show_spatial_hash: false,
             debug_show_colliders: false,
             animation_keyframe_panel: AnimationKeyframePanel::default(),
@@ -2807,7 +2792,8 @@ impl App {
     }
 
     fn set_prefab_status(&mut self, kind: PrefabStatusKind, message: impl Into<String>) {
-        self.prefab_status = Some(PrefabStatusMessage { kind, message: message.into() });
+        self.editor_ui_state_mut().prefab_status =
+            Some(PrefabStatusMessage { kind, message: message.into() });
     }
 
     fn handle_save_prefab(&mut self, request: editor_ui::PrefabSaveRequest) {
@@ -2857,7 +2843,7 @@ impl App {
         let sanitized_name = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or(trimmed).to_string();
         match scene.save_to_path(&path) {
             Ok(()) => {
-                self.prefab_name_input = sanitized_name.clone();
+                self.editor_ui_state_mut().prefab_name_input = sanitized_name.clone();
                 if let Err(err) = self.prefab_library.refresh() {
                     self.set_prefab_status(
                         PrefabStatusKind::Warning,
@@ -3228,18 +3214,19 @@ impl App {
         if trimmed.is_empty() {
             return;
         }
-        if let Some(pos) = self.scene_history.iter().position(|entry| entry == trimmed) {
-            self.scene_history.remove(pos);
+        let mut state = self.editor_ui_state_mut();
+        if let Some(pos) = state.scene_history.iter().position(|entry| entry == trimmed) {
+            state.scene_history.remove(pos);
         }
-        self.scene_history.push_front(trimmed.to_string());
-        while self.scene_history.len() > 8 {
-            self.scene_history.pop_back();
+        state.scene_history.push_front(trimmed.to_string());
+        while state.scene_history.len() > 8 {
+            state.scene_history.pop_back();
         }
-        self.scene_history_snapshot = None;
+        state.scene_history_snapshot = None;
     }
 
     fn push_script_console(&mut self, kind: ScriptConsoleKind, text: impl Into<String>) {
-        let state = self.editor_ui_state_mut();
+        let mut state = self.editor_ui_state_mut();
         state.script_console.push_back(ScriptConsoleEntry { kind, text: text.into() });
         while state.script_console.len() > SCRIPT_CONSOLE_CAPACITY {
             state.script_console.pop_front();
@@ -3248,7 +3235,7 @@ impl App {
     }
 
     fn script_console_entries(&mut self) -> Arc<[ScriptConsoleEntry]> {
-        let state = self.editor_ui_state_mut();
+        let mut state = self.editor_ui_state_mut();
         if let Some(cache) = &state.script_console_snapshot {
             return Arc::clone(cache);
         }
@@ -3259,7 +3246,7 @@ impl App {
     }
 
     fn script_repl_history_arc(&mut self) -> Arc<[String]> {
-        let state = self.editor_ui_state_mut();
+        let mut state = self.editor_ui_state_mut();
         if let Some(cache) = &state.script_repl_history_snapshot {
             return Arc::clone(cache);
         }
@@ -3270,12 +3257,13 @@ impl App {
     }
 
     fn scene_history_arc(&mut self) -> Arc<[String]> {
-        if let Some(cache) = &self.scene_history_snapshot {
+        let mut state = self.editor_ui_state_mut();
+        if let Some(cache) = &state.scene_history_snapshot {
             return Arc::clone(cache);
         }
-        let data = self.scene_history.iter().cloned().collect::<Vec<_>>();
+        let data = state.scene_history.iter().cloned().collect::<Vec<_>>();
         let arc = Arc::from(data.into_boxed_slice());
-        self.scene_history_snapshot = Some(Arc::clone(&arc));
+        state.scene_history_snapshot = Some(Arc::clone(&arc));
         arc
     }
 
@@ -3328,7 +3316,7 @@ impl App {
         if command.is_empty() {
             return;
         }
-        let state = self.editor_ui_state_mut();
+        let mut state = self.editor_ui_state_mut();
         state.script_repl_history.push_back(command.to_string());
         while state.script_repl_history.len() > SCRIPT_HISTORY_CAPACITY {
             state.script_repl_history.pop_front();
@@ -3345,7 +3333,7 @@ impl App {
         self.append_script_history(trimmed);
         self.push_script_console(ScriptConsoleKind::Input, format!("> {trimmed}"));
         {
-            let state = self.editor_ui_state_mut();
+            let mut state = self.editor_ui_state_mut();
             state.script_repl_input.clear();
             state.script_focus_repl = true;
         }
@@ -3366,7 +3354,7 @@ impl App {
             Ok(None) => {}
             Err(message) => {
                 self.push_script_console(ScriptConsoleKind::Error, message);
-                let state = self.editor_ui_state_mut();
+                let mut state = self.editor_ui_state_mut();
                 state.script_debugger_open = true;
                 state.script_focus_repl = true;
             }
@@ -3377,7 +3365,7 @@ impl App {
         let current_error =
             self.script_plugin().and_then(|plugin| plugin.last_error().map(|err| err.to_string()));
         {
-            let state = self.editor_ui_state_mut();
+            let mut state = self.editor_ui_state_mut();
             if current_error == state.last_reported_script_error {
                 return;
             }
@@ -3385,7 +3373,7 @@ impl App {
         }
         if let Some(err) = current_error {
             self.push_script_console(ScriptConsoleKind::Error, format!("Runtime error: {err}"));
-            let state = self.editor_ui_state_mut();
+            let mut state = self.editor_ui_state_mut();
             state.script_debugger_open = true;
             state.script_focus_repl = true;
         }
@@ -3536,12 +3524,11 @@ impl App {
         match self.renderer.set_vsync(enabled) {
             Ok(()) => {
                 self.config.window.vsync = enabled;
-                self.ui_scene_status =
-                    Some(format!("VSync {}", if enabled { "enabled" } else { "disabled" }));
+                self.set_ui_scene_status(format!("VSync {}", if enabled { "enabled" } else { "disabled" }));
             }
             Err(err) => {
                 eprintln!("Failed to update VSync: {err:?}");
-                self.ui_scene_status = Some(format!("Failed to update VSync: {err}"));
+                self.set_ui_scene_status(format!("Failed to update VSync: {err}"));
             }
         }
     }
@@ -3848,7 +3835,7 @@ impl App {
         if let Some(environment) = metadata.environment.as_ref() {
             let intensity = environment.intensity.max(0.0);
             if let Err(err) = self.set_active_environment(&environment.key, intensity) {
-                self.ui_scene_status = Some(format!("Environment '{}' unavailable: {err}", environment.key));
+                self.set_ui_scene_status(format!("Environment '{}' unavailable: {err}", environment.key));
             }
         } else {
             let default_key = self.environment_registry.default_key().to_string();
@@ -4049,10 +4036,11 @@ impl ApplicationHandler for App {
             }
         };
         self.editor_shell.egui_renderer = Some(egui_renderer);
+        let ui_scale = self.editor_ui_state().ui_scale;
         let size = self.renderer.size();
         self.editor_shell.egui_screen = Some(ScreenDescriptor {
             size_in_pixels: [size.width, size.height],
-            pixels_per_point: self.renderer.pixels_per_point() * self.ui_scale,
+            pixels_per_point: self.renderer.pixels_per_point() * ui_scale,
         });
 
         self.with_plugins(|plugins, ctx| {
@@ -4092,9 +4080,10 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => self.should_close = true,
             WindowEvent::Resized(size) => {
                 self.renderer.resize(*size);
+                let ui_scale = self.editor_ui_state().ui_scale;
                 if let Some(sd) = &mut self.editor_shell.egui_screen {
                     sd.size_in_pixels = [size.width, size.height];
-                    sd.pixels_per_point = self.renderer.pixels_per_point() * self.ui_scale;
+                    sd.pixels_per_point = self.renderer.pixels_per_point() * ui_scale;
                 }
             }
             WindowEvent::KeyboardInput { event: KeyEvent { logical_key, state, .. }, .. } => {
@@ -4519,7 +4508,8 @@ impl ApplicationHandler for App {
             self.editor_shell.egui_winit.as_mut().unwrap().take_egui_input(window)
         };
         let base_pixels_per_point = self.renderer.pixels_per_point();
-        self.editor_shell.egui_ctx.set_pixels_per_point(base_pixels_per_point * self.ui_scale);
+        let ui_scale = self.editor_ui_state().ui_scale;
+        self.editor_shell.egui_ctx.set_pixels_per_point(base_pixels_per_point * ui_scale);
         let ui_pixels_per_point = self.editor_shell.egui_ctx.pixels_per_point();
         if let Some(screen) = self.editor_shell.egui_screen.as_mut() {
             screen.pixels_per_point = ui_pixels_per_point;
@@ -4593,8 +4583,11 @@ impl ApplicationHandler for App {
             } else {
                 Vec::new()
             };
-        if !BINARY_PREFABS_ENABLED && self.prefab_format == PrefabFormat::Binary {
-            self.prefab_format = PrefabFormat::Json;
+        if !BINARY_PREFABS_ENABLED {
+            let mut state = self.editor_ui_state_mut();
+            if state.prefab_format == PrefabFormat::Binary {
+                state.prefab_format = PrefabFormat::Json;
+            }
         }
         let transform_metrics = self.ecs.transform_clip_metrics();
         let skeletal_metrics = self.ecs.skeletal_metrics();
@@ -4647,6 +4640,31 @@ impl ApplicationHandler for App {
         let script_repl_history = self.script_repl_history_arc();
         let script_console_entries = self.script_console_entries();
 
+        let (
+            camera_bookmark_input_state,
+            prefab_name_input_state,
+            prefab_format_state,
+            prefab_status_state,
+            ui_scene_path_state,
+            ui_scene_status_state,
+            animation_group_input_state,
+            animation_group_scale_input_state,
+            inspector_status_state,
+        ) = {
+            let state = self.editor_ui_state();
+            (
+                state.camera_bookmark_input.clone(),
+                state.prefab_name_input.clone(),
+                state.prefab_format,
+                state.prefab_status.clone(),
+                state.ui_scene_path.clone(),
+                state.ui_scene_status.clone(),
+                state.animation_group_input.clone(),
+                state.animation_group_scale_input,
+                state.inspector_status.clone(),
+            )
+        };
+
         let editor_params = editor_ui::EditorUiParams {
             raw_input,
             base_pixels_per_point,
@@ -4667,7 +4685,7 @@ impl ApplicationHandler for App {
             sprite_eval_ms,
             sprite_pack_ms,
             sprite_upload_ms,
-            ui_scale: self.ui_scale,
+            ui_scale,
             ui_cell_size: self.ui_cell_size,
             ui_spatial_use_quadtree: self.ui_spatial_use_quadtree,
             ui_spatial_density_threshold: self.ui_spatial_density_threshold,
@@ -4703,7 +4721,7 @@ impl ApplicationHandler for App {
             camera_bookmarks: self.camera_bookmarks.clone(),
             active_camera_bookmark: self.active_camera_bookmark.clone(),
             camera_follow_target: self.camera_follow_target.as_ref().map(|id| id.as_str().to_string()),
-            camera_bookmark_input: self.camera_bookmark_input.clone(),
+            camera_bookmark_input: camera_bookmark_input_state,
             mesh_keys,
             environment_options,
             active_environment,
@@ -4722,9 +4740,14 @@ impl ApplicationHandler for App {
             audio_health,
             binary_prefabs_enabled: BINARY_PREFABS_ENABLED,
             prefab_entries,
-            prefab_name_input: self.prefab_name_input.clone(),
-            prefab_format: self.prefab_format,
-            prefab_status: self.prefab_status.clone(),
+            prefab_name_input: prefab_name_input_state,
+            prefab_format: prefab_format_state,
+            prefab_status: prefab_status_state,
+            ui_scene_path: ui_scene_path_state,
+            ui_scene_status: ui_scene_status_state,
+            animation_group_input: animation_group_input_state,
+            animation_group_scale_input: animation_group_scale_input_state,
+            inspector_status: inspector_status_state,
             script_debugger: editor_ui::ScriptDebuggerParams {
                 open: script_debugger_open,
                 available: script_plugin_available,
@@ -4749,7 +4772,7 @@ impl ApplicationHandler for App {
             full_output,
             mut actions,
             pending_viewport,
-            ui_scale,
+            ui_scale: new_ui_scale,
             ui_cell_size,
             ui_spatial_use_quadtree,
             ui_spatial_density_threshold,
@@ -4793,12 +4816,34 @@ impl ApplicationHandler for App {
             prefab_name_input,
             prefab_format,
             prefab_status,
+            ui_scene_path,
+            ui_scene_status,
+            animation_group_input,
+            animation_group_scale_input,
+            inspector_status,
+            clear_scene_history,
         } = editor_output;
 
         let frame_budget_action = actions.frame_budget_action;
         self.handle_frame_budget_action(frame_budget_action);
 
-        self.ui_scale = ui_scale;
+        {
+            let mut state = self.editor_ui_state_mut();
+            state.ui_scale = new_ui_scale;
+            state.camera_bookmark_input = camera_bookmark_input;
+            state.prefab_name_input = prefab_name_input;
+            state.prefab_format = prefab_format;
+            state.prefab_status = prefab_status;
+            state.ui_scene_path = ui_scene_path;
+            state.ui_scene_status = ui_scene_status;
+            state.animation_group_input = animation_group_input;
+            state.animation_group_scale_input = animation_group_scale_input;
+            state.inspector_status = inspector_status;
+            if clear_scene_history {
+                state.scene_history.clear();
+                state.scene_history_snapshot = None;
+            }
+        }
         self.ui_cell_size = ui_cell_size;
         self.ui_spatial_use_quadtree = ui_spatial_use_quadtree;
         self.ui_spatial_density_threshold = ui_spatial_density_threshold;
@@ -4821,23 +4866,19 @@ impl ApplicationHandler for App {
         self.ui_particle_max_emitter_backlog = ui_particle_max_emitter_backlog;
         self.id_lookup_input = id_lookup_input;
         self.id_lookup_active = id_lookup_active;
-        self.camera_bookmark_input = camera_bookmark_input;
         self.debug_show_spatial_hash = debug_show_spatial_hash;
         self.debug_show_colliders = debug_show_colliders;
-        self.prefab_name_input = prefab_name_input;
-        self.prefab_format = prefab_format;
-        self.prefab_status = prefab_status;
 
         if let Some(request) = id_lookup_request {
             let trimmed = request.trim();
             if trimmed.is_empty() {
-                self.ui_scene_status = Some("Enter an entity ID to select.".to_string());
+                self.set_ui_scene_status("Enter an entity ID to select.".to_string());
             } else if let Some(entity) = self.ecs.find_entity_by_scene_id(trimmed) {
                 selection.entity = Some(entity);
                 selection.details = self.ecs.entity_info(entity);
-                self.ui_scene_status = Some(format!("Selected entity {}", trimmed));
+                self.set_ui_scene_status(format!("Selected entity {}", trimmed));
             } else {
-                self.ui_scene_status = Some(format!("Entity {} not found", trimmed));
+                self.set_ui_scene_status(format!("Entity {} not found", trimmed));
             }
         }
 
@@ -4855,45 +4896,45 @@ impl ApplicationHandler for App {
             match request {
                 Some(name) => {
                     if !self.apply_camera_bookmark_by_name(&name) {
-                        self.ui_scene_status = Some(format!("Bookmark '{}' not found.", name));
+                        self.set_ui_scene_status(format!("Bookmark '{}' not found.", name));
                     }
                 }
                 None => {
                     self.active_camera_bookmark = None;
                     self.camera_follow_target = None;
-                    self.ui_scene_status = Some("Camera set to free mode.".to_string());
+                    self.set_ui_scene_status("Camera set to free mode.".to_string());
                 }
             }
         }
         if let Some(name) = camera_bookmark_save {
             if self.upsert_camera_bookmark(&name) {
-                self.ui_scene_status = Some(format!("Saved camera bookmark '{}'.", name.trim()));
+                self.set_ui_scene_status(format!("Saved camera bookmark '{}'.", name.trim()));
             } else {
-                self.ui_scene_status = Some("Enter a bookmark name to save.".to_string());
+                self.set_ui_scene_status("Enter a bookmark name to save.".to_string());
             }
         }
         if let Some(name) = camera_bookmark_delete {
             if self.delete_camera_bookmark(&name) {
-                self.ui_scene_status = Some(format!("Deleted camera bookmark '{}'.", name.trim()));
+                self.set_ui_scene_status(format!("Deleted camera bookmark '{}'.", name.trim()));
             } else {
-                self.ui_scene_status = Some(format!("Bookmark '{}' not found.", name.trim()));
+                self.set_ui_scene_status(format!("Bookmark '{}' not found.", name.trim()));
             }
         }
         if camera_follow_selection {
             if let Some(details) = selection.details.as_ref() {
                 let scene_id = details.scene_id.clone();
                 if self.set_camera_follow_scene_id(scene_id) {
-                    self.ui_scene_status = Some(format!("Following entity {}.", details.scene_id.as_str()));
+                    self.set_ui_scene_status(format!("Following entity {}.", details.scene_id.as_str()));
                 } else {
-                    self.ui_scene_status = Some("Unable to follow selected entity.".to_string());
+                    self.set_ui_scene_status("Unable to follow selected entity.".to_string());
                 }
             } else {
-                self.ui_scene_status = Some("Select an entity to follow.".to_string());
+                self.set_ui_scene_status("Select an entity to follow.".to_string());
             }
         }
         if camera_follow_clear && self.camera_follow_target.is_some() {
             self.clear_camera_follow();
-            self.ui_scene_status = Some("Camera follow cleared.".to_string());
+            self.set_ui_scene_status("Camera follow cleared.".to_string());
         }
 
         if let Some(mode) = viewport_mode_request {
@@ -4919,11 +4960,10 @@ impl ApplicationHandler for App {
         if let Some(environment_key) = environment_selection_request {
             match self.set_active_environment(&environment_key, self.environment_intensity) {
                 Ok(()) => {
-                    self.ui_scene_status = Some(format!("Environment set to {}", environment_key));
+                    self.set_ui_scene_status(format!("Environment set to {}", environment_key));
                 }
                 Err(err) => {
-                    self.ui_scene_status =
-                        Some(format!("Environment '{}' unavailable: {err}", environment_key));
+                    self.set_ui_scene_status(format!("Environment '{}' unavailable: {err}", environment_key));
                 }
             }
         }
@@ -4936,7 +4976,7 @@ impl ApplicationHandler for App {
         }
 
         {
-            let state = self.editor_ui_state_mut();
+            let mut state = self.editor_ui_state_mut();
             state.script_debugger_open = script_debugger.open;
             state.script_repl_input = script_debugger.repl_input;
             state.script_repl_history_index = script_debugger.repl_history_index;
@@ -4977,9 +5017,9 @@ impl ApplicationHandler for App {
         }
         if frame_selection_request {
             if self.focus_selection() {
-                self.inspector_status = Some("Viewport framed selection.".to_string());
+                self.set_inspector_status(Some("Viewport framed selection.".to_string()));
             } else {
-                self.inspector_status = Some("Selection unavailable.".to_string());
+                self.set_inspector_status(Some("Selection unavailable.".to_string()));
             }
         }
 
@@ -4988,23 +5028,23 @@ impl ApplicationHandler for App {
                 Ok(()) => {
                     self.scene_atlas_refs.insert(key.clone());
                     self.invalidate_atlas_view(&key);
-                    self.ui_scene_status = Some(format!("Retained atlas {}", key));
+                    self.set_ui_scene_status(format!("Retained atlas {}", key));
                 }
                 Err(err) => {
-                    self.ui_scene_status = Some(format!("Atlas retain failed: {err}"));
+                    self.set_ui_scene_status(format!("Atlas retain failed: {err}"));
                 }
             }
         }
         for (key, path) in actions.retain_clips {
             match self.assets.retain_clip(&key, path.as_deref()) {
                 Ok(()) => {
-                    self.ui_scene_status = Some(format!("Retained clip {}", key));
+                    self.set_ui_scene_status(format!("Retained clip {}", key));
                     if let Some(source) = path.as_deref() {
                         self.queue_animation_watch_root(Path::new(source), AnimationAssetKind::Clip);
                     }
                 }
                 Err(err) => {
-                    self.ui_scene_status = Some(format!("Clip retain failed: {err}"));
+                    self.set_ui_scene_status(format!("Clip retain failed: {err}"));
                 }
             }
         }
@@ -5020,7 +5060,10 @@ impl ApplicationHandler for App {
                             self.invalidate_atlas_view(&atlas);
                         }
                         Err(err) => {
-                            self.inspector_status = Some(format!("Failed to load atlas '{}': {err}", atlas));
+                            self.set_inspector_status(Some(format!(
+                                "Failed to load atlas '{}': {err}",
+                                atlas
+                            )));
                             continue;
                         }
                     }
@@ -5034,14 +5077,14 @@ impl ApplicationHandler for App {
                     } else {
                         format!("Sprite atlas set to {}", atlas)
                     };
-                    self.inspector_status = Some(status);
+                    self.set_inspector_status(Some(status));
                     self.scene_atlas_refs.insert(atlas.clone());
                     self.invalidate_atlas_view(&atlas);
                 } else {
-                    self.inspector_status = Some(format!("Failed to assign atlas '{}' to sprite", atlas));
+                    self.set_inspector_status(Some(format!("Failed to assign atlas '{}' to sprite", atlas)));
                 }
             } else {
-                self.inspector_status = Some(format!("Atlas '{}' not loaded; unable to assign", atlas));
+                self.set_inspector_status(Some(format!("Atlas '{}' not loaded; unable to assign", atlas)));
             }
         }
         for (key, path) in actions.retain_meshes {
@@ -5050,7 +5093,7 @@ impl ApplicationHandler for App {
                     self.scene_mesh_refs.insert(key.clone());
                     match self.mesh_registry.ensure_gpu(&key, &mut self.renderer) {
                         Ok(_) => {
-                            self.ui_scene_status = Some(format!("Retained mesh {}", key));
+                            self.set_ui_scene_status(format!("Retained mesh {}", key));
                         }
                         Err(err) => {
                             self.set_mesh_status(format!("Mesh upload failed: {err}"));
@@ -5058,7 +5101,7 @@ impl ApplicationHandler for App {
                     }
                 }
                 Err(err) => {
-                    self.ui_scene_status = Some(format!("Mesh retain failed: {err}"));
+                    self.set_ui_scene_status(format!("Mesh retain failed: {err}"));
                 }
             }
         }
@@ -5068,24 +5111,24 @@ impl ApplicationHandler for App {
                     let scene_requested = self.scene_environment_ref.as_deref() == Some(key.as_str());
                     let should_activate = scene_requested || self.active_environment_key == key;
                     if let Err(err) = self.environment_registry.ensure_gpu(&key, &mut self.renderer) {
-                        self.ui_scene_status = Some(format!("Environment upload failed: {err}"));
+                        self.set_ui_scene_status(format!("Environment upload failed: {err}"));
                         continue;
                     }
                     if should_activate {
                         match self.set_active_environment(&key, self.environment_intensity) {
                             Ok(()) => {
-                                self.ui_scene_status = Some(format!("Environment set to {}", key));
+                                self.set_ui_scene_status(format!("Environment set to {}", key));
                             }
                             Err(err) => {
-                                self.ui_scene_status = Some(format!("Environment bind failed: {err}"));
+                                self.set_ui_scene_status(format!("Environment bind failed: {err}"));
                             }
                         }
                     } else {
-                        self.ui_scene_status = Some(format!("Retained environment {}", key));
+                        self.set_ui_scene_status(format!("Retained environment {}", key));
                     }
                 }
                 Err(err) => {
-                    self.ui_scene_status = Some(format!("Environment retain failed: {err}"));
+                    self.set_ui_scene_status(format!("Environment retain failed: {err}"));
                 }
             }
         }
@@ -5123,17 +5166,18 @@ impl ApplicationHandler for App {
                 });
             scene.dependencies.set_environment_dependency(environment_dependency);
             scene.metadata = self.capture_scene_metadata();
-            match scene.save_to_path(&self.ui_scene_path) {
+            let scene_path = self.editor_ui_state().ui_scene_path.clone();
+            match scene.save_to_path(&scene_path) {
                 Ok(_) => {
-                    let path = self.ui_scene_path.clone();
-                    self.ui_scene_status = Some(format!("Saved {}", path));
-                    self.remember_scene_path(&path);
+                    self.set_ui_scene_status(format!("Saved {}", scene_path));
+                    self.remember_scene_path(&scene_path);
                 }
-                Err(err) => self.ui_scene_status = Some(format!("Save failed: {err}")),
+                Err(err) => self.set_ui_scene_status(format!("Save failed: {err}")),
             }
         }
         if actions.load_scene {
-            match Scene::load_from_path(&self.ui_scene_path) {
+            let scene_path = self.editor_ui_state().ui_scene_path.clone();
+            match Scene::load_from_path(&scene_path) {
                 Ok(scene) => match self.update_scene_dependencies(&scene.dependencies) {
                     Ok(()) => {
                         if let Err(err) = self.ecs.load_scene_with_dependencies(
@@ -5143,11 +5187,10 @@ impl ApplicationHandler for App {
                             |_, _| Ok(()),
                             |_, _| Ok(()),
                         ) {
-                            self.ui_scene_status = Some(format!("Load failed: {err}"));
+                            self.set_ui_scene_status(format!("Load failed: {err}"));
                         } else {
-                            let path = self.ui_scene_path.clone();
-                            self.ui_scene_status = Some(format!("Loaded {}", path));
-                            self.remember_scene_path(&path);
+                            self.set_ui_scene_status(format!("Loaded {}", scene_path));
+                            self.remember_scene_path(&scene_path);
                             self.apply_scene_metadata(&scene.metadata);
                             self.selected_entity = None;
                             self.gizmo_interaction = None;
@@ -5158,11 +5201,11 @@ impl ApplicationHandler for App {
                                 analytics.clear_frame_history();
                             }
                             self.sync_emitter_ui();
-                            self.inspector_status = None;
+                            self.set_inspector_status(None);
                         }
                     }
                     Err(err) => {
-                        self.ui_scene_status = Some(format!("Load failed: {err}"));
+                        self.set_ui_scene_status(format!("Load failed: {err}"));
                         self.ecs.clear_world();
                         self.clear_scene_atlases();
                         self.clear_scene_clips();
@@ -5172,11 +5215,11 @@ impl ApplicationHandler for App {
                             plugin.clear_handles();
                         }
                         self.sync_emitter_ui();
-                        self.inspector_status = None;
+                        self.set_inspector_status(None);
                     }
                 },
                 Err(err) => {
-                    self.ui_scene_status = Some(format!("Load failed: {err}"));
+                    self.set_ui_scene_status(format!("Load failed: {err}"));
                 }
             }
         }
@@ -5238,7 +5281,7 @@ impl ApplicationHandler for App {
                 plugin.clear_handles();
             }
             self.sync_emitter_ui();
-            self.inspector_status = None;
+            self.set_inspector_status(None);
         }
         if !actions.plugin_toggles.is_empty() {
             self.apply_plugin_toggles(&actions.plugin_toggles);

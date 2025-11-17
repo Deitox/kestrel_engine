@@ -95,7 +95,7 @@ impl App {
                                                         plane_normal,
                                                     });
                                                 gizmo_click_consumed = true;
-                                                self.inspector_status = None;
+                                                self.set_inspector_status(None);
                                             }
                                         }
                                     }
@@ -133,7 +133,7 @@ impl App {
                                                             plane_normal,
                                                         });
                                                     gizmo_click_consumed = true;
-                                                    self.inspector_status = None;
+                                                    self.set_inspector_status(None);
                                                 }
                                             }
                                         }
@@ -173,7 +173,7 @@ impl App {
                                                             start_vector: start_vec,
                                                         });
                                                     gizmo_click_consumed = true;
-                                                    self.inspector_status = None;
+                                                    self.set_inspector_status(None);
                                                 }
                                             }
                                         }
@@ -204,7 +204,7 @@ impl App {
                                             });
                                         }
                                         gizmo_click_consumed = true;
-                                        self.inspector_status = None;
+                                        self.set_inspector_status(None);
                                     }
                                 }
                             }
@@ -234,7 +234,7 @@ impl App {
                                         handle,
                                     });
                                     gizmo_click_consumed = true;
-                                    self.inspector_status = None;
+                                    self.set_inspector_status(None);
                                 }
                             }
                         }
@@ -259,7 +259,7 @@ impl App {
                                                 start_angle,
                                             });
                                             gizmo_click_consumed = true;
-                                            self.inspector_status = None;
+                                            self.set_inspector_status(None);
                                         }
                                     }
                                 }
@@ -284,20 +284,20 @@ impl App {
                             }
                             self.selected_entity = picked;
                             if self.selected_entity.is_some() {
-                                self.inspector_status = None;
+                                self.set_inspector_status(None);
                             }
                         } else if cursor_in_viewport {
                             self.selected_entity = None;
-                            self.inspector_status = None;
+                            self.set_inspector_status(None);
                         }
                     }
                     ViewportCameraMode::Ortho2D => {
                         if let Some(world) = cursor_world_2d {
                             self.selected_entity = self.ecs.pick_entity(world);
-                            self.inspector_status = None;
+                            self.set_inspector_status(None);
                         } else if cursor_in_viewport {
                             self.selected_entity = None;
-                            self.inspector_status = None;
+                            self.set_inspector_status(None);
                         }
                     }
                 }
