@@ -724,6 +724,8 @@ pub(super) struct EditorUiParams {
     pub animation_group_input: String,
     pub animation_group_scale_input: f32,
     pub inspector_status: Option<String>,
+    pub sprite_guardrail_status: Option<String>,
+    pub gpu_metrics_status: Option<String>,
     pub keyframe_panel_open: bool,
     pub script_debugger: ScriptDebuggerParams,
     pub id_lookup_input: String,
@@ -800,6 +802,7 @@ pub(super) struct EditorUiOutput {
     pub inspector_status: Option<String>,
     pub clear_scene_history: bool,
     pub keyframe_panel_open: bool,
+    pub gpu_metrics_status: Option<String>,
     pub editor_settings_dirty: bool,
 }
 
@@ -904,6 +907,8 @@ impl App {
             mut animation_group_input,
             mut animation_group_scale_input,
             mut inspector_status,
+            sprite_guardrail_status,
+            mut gpu_metrics_status,
             mut keyframe_panel_open,
             mut script_debugger,
         } = params;
@@ -1523,7 +1528,7 @@ impl App {
                         } else {
                             ui.label("Cursor world: n/a");
                         }
-                        if let Some(status) = self.sprite_guardrail_status.as_ref() {
+                        if let Some(status) = sprite_guardrail_status.as_ref() {
                             ui.colored_label(egui::Color32::from_rgb(255, 180, 80), status);
                         }
                         ui.separator();
@@ -2875,7 +2880,7 @@ impl App {
                         if ui.button("Export GPU CSV").clicked() {
                             gpu_export_requested = true;
                         }
-                        if let Some(status) = self.gpu_metrics_status.as_ref() {
+                        if let Some(status) = gpu_metrics_status.as_ref() {
                             ui.small(status.as_str());
                         }
                     }
@@ -3488,10 +3493,10 @@ impl App {
         if gpu_export_requested {
             match self.export_gpu_timings_csv("target/gpu_timings.csv") {
                 Ok(path) => {
-                    self.gpu_metrics_status = Some(format!("GPU timings exported to {}", path.display()));
+                    gpu_metrics_status = Some(format!("GPU timings exported to {}", path.display()));
                 }
                 Err(err) => {
-                    self.gpu_metrics_status = Some(format!("GPU timing export failed: {err}"));
+                    gpu_metrics_status = Some(format!("GPU timing export failed: {err}"));
                 }
             }
         }
@@ -3596,6 +3601,7 @@ impl App {
             inspector_status,
             clear_scene_history,
             keyframe_panel_open,
+            gpu_metrics_status,
             editor_settings_dirty,
         }
     }

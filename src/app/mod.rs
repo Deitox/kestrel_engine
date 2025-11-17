@@ -537,12 +537,9 @@ pub struct App {
     config: AppConfig,
 
     scene_atlas_refs: HashSet<String>,
-    scene_atlas_snapshot: Option<Arc<[String]>>,
     persistent_atlases: HashSet<String>,
     scene_clip_refs: HashMap<String, usize>,
-    scene_clip_snapshot: Option<Arc<[String]>>,
     scene_mesh_refs: HashSet<String>,
-    scene_mesh_snapshot: Option<Arc<[String]>>,
     pub(crate) scene_material_refs: HashSet<String>,
 
     pub(crate) material_registry: MaterialRegistry,
@@ -561,10 +558,6 @@ pub struct App {
     gpu_timing_history: VecDeque<GpuTimingFrame>,
     gpu_timing_history_capacity: usize,
     gpu_frame_counter: u64,
-    gpu_metrics_status: Option<String>,
-    frame_budget_idle_snapshot: Option<FrameBudgetSnapshot>,
-    frame_budget_panel_snapshot: Option<FrameBudgetSnapshot>,
-    frame_budget_status: Option<String>,
 
     // Particles
     emitter_entity: Option<Entity>,
@@ -581,7 +574,6 @@ pub struct App {
     animation_validation_worker: Option<AnimationValidationWorker>,
     sprite_guardrail_mode: SpriteGuardrailMode,
     sprite_guardrail_max_pixels: f32,
-    sprite_guardrail_status: Option<String>,
     sprite_batch_map: HashMap<Arc<str>, Vec<InstanceData>>,
     sprite_batch_pool: Vec<Vec<InstanceData>>,
     sprite_batch_order: Vec<Arc<str>>,
@@ -610,6 +602,10 @@ impl App {
 
     fn set_inspector_status(&self, status: Option<String>) {
         self.editor_ui_state_mut().inspector_status = status;
+    }
+
+    fn set_sprite_guardrail_status(&self, status: Option<String>) {
+        self.with_editor_ui_state_mut(|state| state.sprite_guardrail_status = status);
     }
 
     pub fn hot_reload_atlas(&mut self, key: &str) -> Result<(usize, TextureAtlasDiagnostics)> {
@@ -2585,12 +2581,9 @@ impl App {
             gizmo_mode: GizmoMode::default(),
             gizmo_interaction: None,
             scene_atlas_refs: HashSet::new(),
-            scene_atlas_snapshot: None,
             persistent_atlases: HashSet::new(),
             scene_clip_refs,
-            scene_clip_snapshot: None,
             scene_mesh_refs: HashSet::new(),
-            scene_mesh_snapshot: None,
             scene_material_refs,
             material_registry,
             mesh_registry,
@@ -2614,7 +2607,6 @@ impl App {
             animation_validation_worker,
             sprite_guardrail_mode: editor_cfg.sprite_guardrail_mode,
             sprite_guardrail_max_pixels: editor_cfg.sprite_guard_max_pixels,
-            sprite_guardrail_status: None,
             frame_profiler: FrameProfiler::new(240),
             #[cfg(feature = "alloc_profiler")]
             last_alloc_snapshot: alloc_profiler::allocation_snapshot(),
@@ -2625,10 +2617,6 @@ impl App {
             gpu_timing_history: VecDeque::with_capacity(240),
             gpu_timing_history_capacity: 240,
             gpu_frame_counter: 0,
-            gpu_metrics_status: None,
-            frame_budget_idle_snapshot: None,
-            frame_budget_panel_snapshot: None,
-            frame_budget_status: None,
             sprite_batch_map: HashMap::new(),
             sprite_batch_pool: Vec::new(),
             sprite_batch_order: Vec::new(),
@@ -2670,12 +2658,12 @@ impl App {
             || viewport_size.height == 0
             || self.sprite_guardrail_mode == SpriteGuardrailMode::Off
         {
-            self.sprite_guardrail_status = None;
+            self.set_sprite_guardrail_status(None);
             return sprite_instances;
         }
 
         let Some(guardrail_projection) = SpriteGuardrailProjection::new(&self.camera, viewport_size) else {
-            self.sprite_guardrail_status = None;
+            self.set_sprite_guardrail_status(None);
             return sprite_instances;
         };
 
@@ -2728,9 +2716,9 @@ impl App {
                 )),
                 SpriteGuardrailMode::Off => None,
             };
-            self.sprite_guardrail_status = status;
+            self.set_sprite_guardrail_status(status);
         } else {
-            self.sprite_guardrail_status = None;
+            self.set_sprite_guardrail_status(None);
         }
 
         filtered
@@ -3033,24 +3021,29 @@ impl App {
     }
 
     fn frame_budget_delta_message(&self) -> Option<String> {
-        let baseline = self.frame_budget_idle_snapshot?;
-        let comparison = self.frame_budget_panel_snapshot?;
+        let (baseline_snapshot, comparison_snapshot) = {
+            let state = self.editor_ui_state();
+            (state.frame_budget_idle_snapshot, state.frame_budget_panel_snapshot)
+        };
+        let baseline = baseline_snapshot?;
+        let comparison = comparison_snapshot?;
         let idle = baseline.timing?;
         let panel = comparison.timing?;
         let update_delta = panel.update_ms - idle.update_ms;
         let ui_delta = panel.ui_ms - idle.ui_ms;
         #[cfg(feature = "alloc_profiler")]
-        let alloc_note =
-            if let (Some(idle_alloc), Some(panel_alloc)) = (baseline.alloc_delta, comparison.alloc_delta) {
-                let diff = panel_alloc.net_bytes() - idle_alloc.net_bytes();
-                format!(", Δalloc={:+} B", diff)
-            } else {
-                String::new()
-            };
+        let alloc_note = if let (Some(idle_alloc), Some(panel_alloc)) =
+            (baseline.alloc_delta, comparison.alloc_delta)
+        {
+            let diff = panel_alloc.net_bytes() - idle_alloc.net_bytes();
+            format!(", delta_alloc={:+} B", diff)
+        } else {
+            String::new()
+        };
         #[cfg(not(feature = "alloc_profiler"))]
         let alloc_note = String::new();
         Some(format!(
-            "Frame budget delta: Δupdate={:+.2} ms, Δui={:+.2} ms{alloc_note}",
+            "Frame budget delta: delta_update={:+.2} ms, delta_ui={:+.2} ms{alloc_note}",
             update_delta, ui_delta
         ))
     }
@@ -3062,24 +3055,33 @@ impl App {
         };
         match action {
             FrameBudgetAction::CaptureIdle => {
-                self.frame_budget_idle_snapshot = Some(self.capture_frame_budget_snapshot());
-                self.frame_budget_status = Some(
-                    "Idle baseline captured. Toggle panels, then capture the panel snapshot.".to_string(),
-                );
+                let snapshot = self.capture_frame_budget_snapshot();
+                self.with_editor_ui_state_mut(|state| {
+                    state.frame_budget_idle_snapshot = Some(snapshot);
+                    state.frame_budget_status = Some(
+                        "Idle baseline captured. Toggle panels, then capture the panel snapshot.".to_string(),
+                    );
+                });
             }
             FrameBudgetAction::CapturePanel => {
-                self.frame_budget_panel_snapshot = Some(self.capture_frame_budget_snapshot());
-                self.frame_budget_status = self.frame_budget_delta_message().or_else(|| {
+                let snapshot = self.capture_frame_budget_snapshot();
+                self.with_editor_ui_state_mut(|state| {
+                    state.frame_budget_panel_snapshot = Some(snapshot);
+                });
+                let status = self.frame_budget_delta_message().or_else(|| {
                     Some(
                         "Panel snapshot captured. Capture an idle baseline first for delta comparisons."
                             .to_string(),
                     )
                 });
+                self.with_editor_ui_state_mut(|state| state.frame_budget_status = status);
             }
             FrameBudgetAction::Clear => {
-                self.frame_budget_idle_snapshot = None;
-                self.frame_budget_panel_snapshot = None;
-                self.frame_budget_status = Some("Cleared frame budget snapshots.".to_string());
+                self.with_editor_ui_state_mut(|state| {
+                    state.frame_budget_idle_snapshot = None;
+                    state.frame_budget_panel_snapshot = None;
+                    state.frame_budget_status = Some("Cleared frame budget snapshots.".to_string());
+                });
             }
         }
     }
@@ -3250,35 +3252,44 @@ impl App {
     }
 
     fn scene_atlas_refs_arc(&mut self) -> Arc<[String]> {
-        if let Some(cache) = &self.scene_atlas_snapshot {
-            return Arc::clone(cache);
+        {
+            let state = self.editor_ui_state();
+            if let Some(cache) = &state.scene_atlas_snapshot {
+                return Arc::clone(cache);
+            }
         }
         let mut data = self.scene_atlas_refs.iter().cloned().collect::<Vec<_>>();
         data.sort();
         let arc = Arc::from(data.into_boxed_slice());
-        self.scene_atlas_snapshot = Some(Arc::clone(&arc));
+        self.editor_ui_state_mut().scene_atlas_snapshot = Some(Arc::clone(&arc));
         arc
     }
 
     fn scene_mesh_refs_arc(&mut self) -> Arc<[String]> {
-        if let Some(cache) = &self.scene_mesh_snapshot {
-            return Arc::clone(cache);
+        {
+            let state = self.editor_ui_state();
+            if let Some(cache) = &state.scene_mesh_snapshot {
+                return Arc::clone(cache);
+            }
         }
         let mut data = self.scene_mesh_refs.iter().cloned().collect::<Vec<_>>();
         data.sort();
         let arc = Arc::from(data.into_boxed_slice());
-        self.scene_mesh_snapshot = Some(Arc::clone(&arc));
+        self.editor_ui_state_mut().scene_mesh_snapshot = Some(Arc::clone(&arc));
         arc
     }
 
     fn scene_clip_refs_arc(&mut self) -> Arc<[String]> {
-        if let Some(cache) = &self.scene_clip_snapshot {
-            return Arc::clone(cache);
+        {
+            let state = self.editor_ui_state();
+            if let Some(cache) = &state.scene_clip_snapshot {
+                return Arc::clone(cache);
+            }
         }
         let mut data = self.scene_clip_refs.keys().cloned().collect::<Vec<_>>();
         data.sort();
         let arc = Arc::from(data.into_boxed_slice());
-        self.scene_clip_snapshot = Some(Arc::clone(&arc));
+        self.editor_ui_state_mut().scene_clip_snapshot = Some(Arc::clone(&arc));
         arc
     }
 
@@ -3587,7 +3598,7 @@ impl App {
                 }
             }
             self.scene_atlas_refs = next;
-            self.scene_atlas_snapshot = None;
+            self.with_editor_ui_state_mut(|state| state.scene_atlas_snapshot = None);
         }
 
         if clip_dirty {
@@ -3649,7 +3660,7 @@ impl App {
                     .with_context(|| format!("Failed to retain mesh '{key}'"))?;
             }
             self.scene_mesh_refs = next_mesh;
-            self.scene_mesh_snapshot = None;
+            self.with_editor_ui_state_mut(|state| state.scene_mesh_snapshot = None);
         }
 
         if material_dirty {
@@ -3847,7 +3858,7 @@ impl App {
             self.invalidate_atlas_view(&key);
         }
         self.scene_atlas_refs = self.persistent_atlases.clone();
-        self.scene_atlas_snapshot = None;
+        self.with_editor_ui_state_mut(|state| state.scene_atlas_snapshot = None);
         let persistent_meshes: HashSet<String> = self
             .mesh_preview_plugin()
             .map(|plugin| plugin.persistent_meshes().iter().cloned().collect())
@@ -3858,7 +3869,7 @@ impl App {
             self.mesh_registry.release_mesh(key);
         }
         self.scene_mesh_refs = persistent_meshes.clone();
-        self.scene_mesh_snapshot = None;
+        self.with_editor_ui_state_mut(|state| state.scene_mesh_snapshot = None);
 
         let persistent_materials: HashSet<String> = self
             .mesh_preview_plugin()
@@ -3883,7 +3894,7 @@ impl App {
             self.assets.release_clip(&key);
         }
         self.scene_clip_refs.clear();
-        self.scene_clip_snapshot = None;
+        self.with_editor_ui_state_mut(|state| state.scene_clip_snapshot = None);
     }
 
     fn viewport_physical_size(&self) -> PhysicalSize<u32> {
@@ -4651,11 +4662,14 @@ impl ApplicationHandler for App {
         }
         let prefab_entries = self.telemetry_cache.prefab_entries(&self.prefab_library);
         let latest_frame_timing = self.frame_profiler.latest();
-        let frame_budget_idle =
-            self.frame_budget_idle_snapshot.as_ref().map(Self::frame_budget_snapshot_view);
-        let frame_budget_panel =
-            self.frame_budget_panel_snapshot.as_ref().map(Self::frame_budget_snapshot_view);
-        let frame_budget_status = self.frame_budget_status.clone();
+        let (frame_budget_idle, frame_budget_panel, frame_budget_status) = {
+            let state = self.editor_ui_state();
+            (
+                state.frame_budget_idle_snapshot.as_ref().map(Self::frame_budget_snapshot_view),
+                state.frame_budget_panel_snapshot.as_ref().map(Self::frame_budget_snapshot_view),
+                state.frame_budget_status.clone(),
+            )
+        };
 
         let (script_debugger_open, script_repl_input, script_repl_history_index, script_focus_repl) = {
             let state = self.editor_ui_state();
@@ -4713,6 +4727,8 @@ impl ApplicationHandler for App {
             ui_sprite_guard_pixels_state,
             ui_sprite_guard_mode_state,
             keyframe_panel_open_state,
+            sprite_guardrail_status_state,
+            gpu_metrics_status_state,
         ) = {
             let state = self.editor_ui_state();
             (
@@ -4759,6 +4775,8 @@ impl ApplicationHandler for App {
                 state.ui_sprite_guard_pixels,
                 state.ui_sprite_guard_mode,
                 state.animation_keyframe_panel.is_open(),
+                state.sprite_guardrail_status.clone(),
+                state.gpu_metrics_status.clone(),
             )
         };
 
@@ -4860,6 +4878,8 @@ impl ApplicationHandler for App {
             animation_group_input: animation_group_input_state,
             animation_group_scale_input: animation_group_scale_input_state,
             inspector_status: inspector_status_state,
+            sprite_guardrail_status: sprite_guardrail_status_state,
+            gpu_metrics_status: gpu_metrics_status_state,
             keyframe_panel_open: keyframe_panel_open_state,
             script_debugger: editor_ui::ScriptDebuggerParams {
                 open: script_debugger_open,
@@ -4951,6 +4971,7 @@ impl ApplicationHandler for App {
             inspector_status,
             clear_scene_history,
             keyframe_panel_open,
+            gpu_metrics_status,
             editor_settings_dirty,
         } = editor_output;
 
@@ -4972,6 +4993,7 @@ impl ApplicationHandler for App {
             if state.animation_keyframe_panel.is_open() != keyframe_panel_open {
                 state.animation_keyframe_panel.toggle();
             }
+            state.gpu_metrics_status = gpu_metrics_status;
             state.ui_cell_size = ui_cell_size;
             state.ui_spatial_use_quadtree = ui_spatial_use_quadtree;
             state.ui_spatial_density_threshold = ui_spatial_density_threshold;

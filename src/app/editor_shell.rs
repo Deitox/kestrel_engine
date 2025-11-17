@@ -1,5 +1,5 @@
 use super::animation_keyframe_panel::AnimationKeyframePanel;
-use super::{ClipEditRecord, ScriptConsoleEntry};
+use super::{ClipEditRecord, FrameBudgetSnapshot, ScriptConsoleEntry};
 use crate::animation_validation::AnimationValidationEvent;
 use crate::assets::AnimationClip;
 use crate::config::{EditorConfig, ParticleConfig, SpriteGuardrailMode};
@@ -100,9 +100,17 @@ pub(crate) struct EditorUiState {
     pub scene_dependency_fingerprints: Option<SceneDependencyFingerprints>,
     pub scene_history: VecDeque<String>,
     pub scene_history_snapshot: Option<Arc<[String]>>,
+    pub scene_atlas_snapshot: Option<Arc<[String]>>,
+    pub scene_mesh_snapshot: Option<Arc<[String]>>,
+    pub scene_clip_snapshot: Option<Arc<[String]>>,
     pub inspector_status: Option<String>,
     pub debug_show_spatial_hash: bool,
     pub debug_show_colliders: bool,
+    pub sprite_guardrail_status: Option<String>,
+    pub gpu_metrics_status: Option<String>,
+    pub frame_budget_idle_snapshot: Option<FrameBudgetSnapshot>,
+    pub frame_budget_panel_snapshot: Option<FrameBudgetSnapshot>,
+    pub frame_budget_status: Option<String>,
     pub script_debugger_open: bool,
     pub script_focus_repl: bool,
     pub script_repl_input: String,
@@ -196,9 +204,17 @@ impl EditorUiState {
             scene_dependency_fingerprints: None,
             scene_history: params.scene_history,
             scene_history_snapshot: None,
+            scene_atlas_snapshot: None,
+            scene_mesh_snapshot: None,
+            scene_clip_snapshot: None,
             inspector_status: None,
             debug_show_spatial_hash: false,
             debug_show_colliders: false,
+            sprite_guardrail_status: None,
+            gpu_metrics_status: None,
+            frame_budget_idle_snapshot: None,
+            frame_budget_panel_snapshot: None,
+            frame_budget_status: None,
             script_debugger_open: false,
             script_focus_repl: false,
             script_repl_input: String::new(),
