@@ -517,28 +517,10 @@ pub struct App {
     editor_shell: EditorShell,
 
     // UI State
-    ui_spawn_per_press: i32,
-    ui_auto_spawn_rate: f32, // per second
-    ui_cell_size: f32,
-    ui_spatial_use_quadtree: bool,
-    ui_spatial_density_threshold: f32,
-    ui_root_spin: f32,
-    ui_emitter_rate: f32,
-    ui_emitter_spread: f32,
-    ui_emitter_speed: f32,
-    ui_emitter_lifetime: f32,
-    ui_emitter_start_size: f32,
-    ui_emitter_end_size: f32,
-    ui_emitter_start_color: [f32; 4],
-    ui_emitter_end_color: [f32; 4],
-    ui_particle_max_spawn_per_frame: u32,
-    ui_particle_max_total: u32,
-    ui_particle_max_emitter_backlog: f32,
     ui_light_direction: Vec3,
     ui_light_color: Vec3,
     ui_light_ambient: Vec3,
     ui_light_exposure: f32,
-    ui_environment_intensity: f32,
     ui_shadow_distance: f32,
     ui_shadow_bias: f32,
     ui_shadow_strength: f32,
@@ -2558,28 +2540,10 @@ impl App {
             environment_intensity,
             should_close: false,
             editor_shell: EditorShell::new(),
-            ui_spawn_per_press: 200,
-            ui_auto_spawn_rate: 0.0,
-            ui_cell_size: 0.25,
-            ui_spatial_use_quadtree: false,
-            ui_spatial_density_threshold: 6.0,
-            ui_root_spin: 1.2,
-            ui_emitter_rate,
-            ui_emitter_spread,
-            ui_emitter_speed,
-            ui_emitter_lifetime,
-            ui_emitter_start_size,
-            ui_emitter_end_size,
-            ui_emitter_start_color,
-            ui_emitter_end_color,
-            ui_particle_max_spawn_per_frame: particle_config.max_spawn_per_frame,
-            ui_particle_max_total: particle_config.max_total,
-            ui_particle_max_emitter_backlog: particle_config.max_emitter_backlog,
             ui_light_direction: lighting_state.direction,
             ui_light_color: lighting_state.color,
             ui_light_ambient: lighting_state.ambient,
             ui_light_exposure: lighting_state.exposure,
-            ui_environment_intensity: environment_intensity,
             ui_shadow_distance: lighting_state.shadow_distance,
             ui_shadow_bias: lighting_state.shadow_bias,
             ui_shadow_strength: lighting_state.shadow_strength,
@@ -3410,7 +3374,7 @@ impl App {
         }
         if self.active_environment_key == key {
             self.environment_intensity = intensity;
-            self.ui_environment_intensity = intensity;
+            self.editor_ui_state_mut().ui_environment_intensity = intensity;
             if self.renderer.environment_parameters().is_some() {
                 self.renderer.set_environment_intensity(intensity);
             } else {
@@ -3421,7 +3385,7 @@ impl App {
         self.bind_environment(key, intensity)?;
         let previous = std::mem::replace(&mut self.active_environment_key, key.to_string());
         self.environment_intensity = intensity;
-        self.ui_environment_intensity = intensity;
+        self.editor_ui_state_mut().ui_environment_intensity = intensity;
         if previous != self.active_environment_key && !self.should_keep_environment(&previous) {
             self.environment_registry.release(&previous);
         }
@@ -3534,14 +3498,18 @@ impl App {
     }
 
     fn apply_particle_caps(&mut self) {
-        if self.ui_particle_max_spawn_per_frame > self.ui_particle_max_total {
-            self.ui_particle_max_spawn_per_frame = self.ui_particle_max_total;
-        }
-        let caps = ParticleCaps::new(
-            self.ui_particle_max_spawn_per_frame,
-            self.ui_particle_max_total,
-            self.ui_particle_max_emitter_backlog,
-        );
+        let (max_spawn_per_frame, max_total, max_emitter_backlog) = {
+            let mut state = self.editor_ui_state_mut();
+            if state.ui_particle_max_spawn_per_frame > state.ui_particle_max_total {
+                state.ui_particle_max_spawn_per_frame = state.ui_particle_max_total;
+            }
+            (
+                state.ui_particle_max_spawn_per_frame,
+                state.ui_particle_max_total,
+                state.ui_particle_max_emitter_backlog,
+            )
+        };
+        let caps = ParticleCaps::new(max_spawn_per_frame, max_total, max_emitter_backlog);
         self.ecs.set_particle_caps(caps);
     }
 
@@ -3549,14 +3517,15 @@ impl App {
         if let Some(entity) = self.ecs.first_emitter() {
             self.emitter_entity = Some(entity);
             if let Some(snapshot) = self.ecs.emitter_snapshot(entity) {
-                self.ui_emitter_rate = snapshot.rate;
-                self.ui_emitter_spread = snapshot.spread;
-                self.ui_emitter_speed = snapshot.speed;
-                self.ui_emitter_lifetime = snapshot.lifetime;
-                self.ui_emitter_start_size = snapshot.start_size;
-                self.ui_emitter_end_size = snapshot.end_size;
-                self.ui_emitter_start_color = snapshot.start_color.to_array();
-                self.ui_emitter_end_color = snapshot.end_color.to_array();
+                let mut state = self.editor_ui_state_mut();
+                state.ui_emitter_rate = snapshot.rate;
+                state.ui_emitter_spread = snapshot.spread;
+                state.ui_emitter_speed = snapshot.speed;
+                state.ui_emitter_lifetime = snapshot.lifetime;
+                state.ui_emitter_start_size = snapshot.start_size;
+                state.ui_emitter_end_size = snapshot.end_size;
+                state.ui_emitter_start_color = snapshot.start_color.to_array();
+                state.ui_emitter_end_color = snapshot.end_color.to_array();
             }
         } else {
             self.emitter_entity = None;
@@ -4136,18 +4105,23 @@ impl ApplicationHandler for App {
             }
         }
 
-        if self.ui_auto_spawn_rate > 0.0 {
-            let to_spawn = (self.ui_auto_spawn_rate * dt) as i32;
+        let (ui_auto_spawn_rate, ui_spawn_per_press) = {
+            let state = self.editor_ui_state();
+            (state.ui_auto_spawn_rate, state.ui_spawn_per_press)
+        };
+        if ui_auto_spawn_rate > 0.0 {
+            let to_spawn = (ui_auto_spawn_rate * dt) as i32;
             if to_spawn > 0 {
                 self.ecs.spawn_burst(&self.assets, to_spawn as usize);
             }
         }
 
         if self.input.take_space_pressed() {
-            self.ecs.spawn_burst(&self.assets, self.ui_spawn_per_press as usize);
+            self.ecs.spawn_burst(&self.assets, ui_spawn_per_press as usize);
         }
         if self.input.take_b_pressed() {
-            self.ecs.spawn_burst(&self.assets, (self.ui_spawn_per_press * 5).max(1000) as usize);
+            self.ecs
+                .spawn_burst(&self.assets, (ui_spawn_per_press * 5).max(1000) as usize);
         }
 
         self.with_plugins(|plugins, ctx| plugins.update(ctx, dt));
@@ -4258,20 +4232,50 @@ impl ApplicationHandler for App {
         let gizmo_changed = self.gizmo_interaction != prev_gizmo_interaction;
         selected_info = self.selected_entity.and_then(|entity| self.ecs.entity_info(entity));
 
-        self.ecs.set_spatial_cell(self.ui_cell_size.max(0.05));
-        self.ecs.set_spatial_quadtree_enabled(self.ui_spatial_use_quadtree);
-        self.ecs.set_spatial_density_threshold(self.ui_spatial_density_threshold);
+        let (cell_size, use_quadtree, density_threshold) = {
+            let state = self.editor_ui_state();
+            (
+                state.ui_cell_size.max(0.05),
+                state.ui_spatial_use_quadtree,
+                state.ui_spatial_density_threshold,
+            )
+        };
+        self.ecs.set_spatial_cell(cell_size);
+        self.ecs.set_spatial_quadtree_enabled(use_quadtree);
+        self.ecs.set_spatial_density_threshold(density_threshold);
         if let Some(emitter) = self.emitter_entity {
-            self.ecs.set_emitter_rate(emitter, self.ui_emitter_rate);
-            self.ecs.set_emitter_spread(emitter, self.ui_emitter_spread);
-            self.ecs.set_emitter_speed(emitter, self.ui_emitter_speed);
-            self.ecs.set_emitter_lifetime(emitter, self.ui_emitter_lifetime);
+            let (
+                emitter_rate,
+                emitter_spread,
+                emitter_speed,
+                emitter_lifetime,
+                emitter_start_size,
+                emitter_end_size,
+                emitter_start_color,
+                emitter_end_color,
+            ) = {
+                let state = self.editor_ui_state();
+                (
+                    state.ui_emitter_rate,
+                    state.ui_emitter_spread,
+                    state.ui_emitter_speed,
+                    state.ui_emitter_lifetime,
+                    state.ui_emitter_start_size,
+                    state.ui_emitter_end_size,
+                    state.ui_emitter_start_color,
+                    state.ui_emitter_end_color,
+                )
+            };
+            self.ecs.set_emitter_rate(emitter, emitter_rate);
+            self.ecs.set_emitter_spread(emitter, emitter_spread);
+            self.ecs.set_emitter_speed(emitter, emitter_speed);
+            self.ecs.set_emitter_lifetime(emitter, emitter_lifetime);
             self.ecs.set_emitter_colors(
                 emitter,
-                Vec4::from_array(self.ui_emitter_start_color),
-                Vec4::from_array(self.ui_emitter_end_color),
+                Vec4::from_array(emitter_start_color),
+                Vec4::from_array(emitter_end_color),
             );
-            self.ecs.set_emitter_sizes(emitter, self.ui_emitter_start_size, self.ui_emitter_end_size);
+            self.ecs.set_emitter_sizes(emitter, emitter_start_size, emitter_end_size);
         }
         let commands = self.drain_script_commands();
         self.apply_script_commands(commands);
@@ -4650,6 +4654,24 @@ impl ApplicationHandler for App {
             animation_group_input_state,
             animation_group_scale_input_state,
             inspector_status_state,
+            ui_cell_size_state,
+            ui_spatial_use_quadtree_state,
+            ui_spatial_density_threshold_state,
+            ui_spawn_per_press_state,
+            ui_auto_spawn_rate_state,
+            ui_environment_intensity_state,
+            ui_root_spin_state,
+            ui_emitter_rate_state,
+            ui_emitter_spread_state,
+            ui_emitter_speed_state,
+            ui_emitter_lifetime_state,
+            ui_emitter_start_size_state,
+            ui_emitter_end_size_state,
+            ui_emitter_start_color_state,
+            ui_emitter_end_color_state,
+            ui_particle_max_spawn_per_frame_state,
+            ui_particle_max_total_state,
+            ui_particle_max_emitter_backlog_state,
         ) = {
             let state = self.editor_ui_state();
             (
@@ -4662,6 +4684,24 @@ impl ApplicationHandler for App {
                 state.animation_group_input.clone(),
                 state.animation_group_scale_input,
                 state.inspector_status.clone(),
+                state.ui_cell_size,
+                state.ui_spatial_use_quadtree,
+                state.ui_spatial_density_threshold,
+                state.ui_spawn_per_press,
+                state.ui_auto_spawn_rate,
+                state.ui_environment_intensity,
+                state.ui_root_spin,
+                state.ui_emitter_rate,
+                state.ui_emitter_spread,
+                state.ui_emitter_speed,
+                state.ui_emitter_lifetime,
+                state.ui_emitter_start_size,
+                state.ui_emitter_end_size,
+                state.ui_emitter_start_color,
+                state.ui_emitter_end_color,
+                state.ui_particle_max_spawn_per_frame,
+                state.ui_particle_max_total,
+                state.ui_particle_max_emitter_backlog,
             )
         };
 
@@ -4686,24 +4726,24 @@ impl ApplicationHandler for App {
             sprite_pack_ms,
             sprite_upload_ms,
             ui_scale,
-            ui_cell_size: self.ui_cell_size,
-            ui_spatial_use_quadtree: self.ui_spatial_use_quadtree,
-            ui_spatial_density_threshold: self.ui_spatial_density_threshold,
-            ui_spawn_per_press: self.ui_spawn_per_press,
-            ui_auto_spawn_rate: self.ui_auto_spawn_rate,
-            ui_environment_intensity: self.ui_environment_intensity,
-            ui_root_spin: self.ui_root_spin,
-            ui_emitter_rate: self.ui_emitter_rate,
-            ui_emitter_spread: self.ui_emitter_spread,
-            ui_emitter_speed: self.ui_emitter_speed,
-            ui_emitter_lifetime: self.ui_emitter_lifetime,
-            ui_emitter_start_size: self.ui_emitter_start_size,
-            ui_emitter_end_size: self.ui_emitter_end_size,
-            ui_emitter_start_color: self.ui_emitter_start_color,
-            ui_emitter_end_color: self.ui_emitter_end_color,
-            ui_particle_max_spawn_per_frame: self.ui_particle_max_spawn_per_frame,
-            ui_particle_max_total: self.ui_particle_max_total,
-            ui_particle_max_emitter_backlog: self.ui_particle_max_emitter_backlog,
+            ui_cell_size: ui_cell_size_state,
+            ui_spatial_use_quadtree: ui_spatial_use_quadtree_state,
+            ui_spatial_density_threshold: ui_spatial_density_threshold_state,
+            ui_spawn_per_press: ui_spawn_per_press_state,
+            ui_auto_spawn_rate: ui_auto_spawn_rate_state,
+            ui_environment_intensity: ui_environment_intensity_state,
+            ui_root_spin: ui_root_spin_state,
+            ui_emitter_rate: ui_emitter_rate_state,
+            ui_emitter_spread: ui_emitter_spread_state,
+            ui_emitter_speed: ui_emitter_speed_state,
+            ui_emitter_lifetime: ui_emitter_lifetime_state,
+            ui_emitter_start_size: ui_emitter_start_size_state,
+            ui_emitter_end_size: ui_emitter_end_size_state,
+            ui_emitter_start_color: ui_emitter_start_color_state,
+            ui_emitter_end_color: ui_emitter_end_color_state,
+            ui_particle_max_spawn_per_frame: ui_particle_max_spawn_per_frame_state,
+            ui_particle_max_total: ui_particle_max_total_state,
+            ui_particle_max_emitter_backlog: ui_particle_max_emitter_backlog_state,
             selected_entity: self.selected_entity,
             selection_details: selected_info.clone(),
             prev_selected_entity,
@@ -4839,31 +4879,31 @@ impl ApplicationHandler for App {
             state.animation_group_input = animation_group_input;
             state.animation_group_scale_input = animation_group_scale_input;
             state.inspector_status = inspector_status;
+            state.ui_cell_size = ui_cell_size;
+            state.ui_spatial_use_quadtree = ui_spatial_use_quadtree;
+            state.ui_spatial_density_threshold = ui_spatial_density_threshold;
+            state.ui_spawn_per_press = ui_spawn_per_press;
+            state.ui_auto_spawn_rate = ui_auto_spawn_rate;
+            state.ui_environment_intensity = ui_environment_intensity;
+            state.ui_root_spin = ui_root_spin;
+            state.ui_emitter_rate = ui_emitter_rate;
+            state.ui_emitter_spread = ui_emitter_spread;
+            state.ui_emitter_speed = ui_emitter_speed;
+            state.ui_emitter_lifetime = ui_emitter_lifetime;
+            state.ui_emitter_start_size = ui_emitter_start_size;
+            state.ui_emitter_end_size = ui_emitter_end_size;
+            state.ui_emitter_start_color = ui_emitter_start_color;
+            state.ui_emitter_end_color = ui_emitter_end_color;
+            state.ui_particle_max_spawn_per_frame = ui_particle_max_spawn_per_frame;
+            state.ui_particle_max_total = ui_particle_max_total;
+            state.ui_particle_max_emitter_backlog = ui_particle_max_emitter_backlog;
             if clear_scene_history {
                 state.scene_history.clear();
                 state.scene_history_snapshot = None;
             }
         }
-        self.ui_cell_size = ui_cell_size;
-        self.ui_spatial_use_quadtree = ui_spatial_use_quadtree;
-        self.ui_spatial_density_threshold = ui_spatial_density_threshold;
-        self.ui_spawn_per_press = ui_spawn_per_press;
-        self.ui_auto_spawn_rate = ui_auto_spawn_rate;
-        self.ui_environment_intensity = ui_environment_intensity;
         self.environment_intensity = ui_environment_intensity;
         self.renderer.set_environment_intensity(self.environment_intensity);
-        self.ui_root_spin = ui_root_spin;
-        self.ui_emitter_rate = ui_emitter_rate;
-        self.ui_emitter_spread = ui_emitter_spread;
-        self.ui_emitter_speed = ui_emitter_speed;
-        self.ui_emitter_lifetime = ui_emitter_lifetime;
-        self.ui_emitter_start_size = ui_emitter_start_size;
-        self.ui_emitter_end_size = ui_emitter_end_size;
-        self.ui_emitter_start_color = ui_emitter_start_color;
-        self.ui_emitter_end_color = ui_emitter_end_color;
-        self.ui_particle_max_spawn_per_frame = ui_particle_max_spawn_per_frame;
-        self.ui_particle_max_total = ui_particle_max_total;
-        self.ui_particle_max_emitter_backlog = ui_particle_max_emitter_backlog;
         self.id_lookup_input = id_lookup_input;
         self.id_lookup_active = id_lookup_active;
         self.debug_show_spatial_hash = debug_show_spatial_hash;
@@ -5230,7 +5270,8 @@ impl ApplicationHandler for App {
             self.handle_instantiate_prefab(request);
         }
         if actions.spawn_now {
-            self.ecs.spawn_burst(&self.assets, self.ui_spawn_per_press as usize);
+            let spawn_per_press = self.editor_ui_state().ui_spawn_per_press;
+            self.ecs.spawn_burst(&self.assets, spawn_per_press as usize);
         }
         if let Some(mesh_key) = actions.spawn_mesh {
             self.spawn_mesh_entity(&mesh_key);
@@ -5246,29 +5287,54 @@ impl ApplicationHandler for App {
         }
         if actions.clear_particles {
             self.ecs.clear_particles();
-            self.ui_emitter_rate = 0.0;
-            self.ui_emitter_spread = std::f32::consts::PI / 3.0;
-            self.ui_emitter_speed = 0.8;
-            self.ui_emitter_lifetime = 1.2;
-            self.ui_emitter_start_size = 0.05;
-            self.ui_emitter_end_size = 0.05;
-            self.ui_emitter_start_color = [1.0, 1.0, 1.0, 1.0];
-            self.ui_emitter_end_color = [1.0, 1.0, 1.0, 0.0];
+            {
+                let mut state = self.editor_ui_state_mut();
+                state.ui_emitter_rate = 0.0;
+                state.ui_emitter_spread = std::f32::consts::PI / 3.0;
+                state.ui_emitter_speed = 0.8;
+                state.ui_emitter_lifetime = 1.2;
+                state.ui_emitter_start_size = 0.05;
+                state.ui_emitter_end_size = 0.05;
+                state.ui_emitter_start_color = [1.0, 1.0, 1.0, 1.0];
+                state.ui_emitter_end_color = [1.0, 1.0, 1.0, 0.0];
+            }
             if let Some(plugin) = self.script_plugin_mut() {
                 plugin.clear_handles();
             }
             self.gizmo_interaction = None;
             if let Some(emitter) = self.emitter_entity {
-                self.ecs.set_emitter_rate(emitter, self.ui_emitter_rate);
-                self.ecs.set_emitter_spread(emitter, self.ui_emitter_spread);
-                self.ecs.set_emitter_speed(emitter, self.ui_emitter_speed);
-                self.ecs.set_emitter_lifetime(emitter, self.ui_emitter_lifetime);
+                let (
+                    emitter_rate,
+                    emitter_spread,
+                    emitter_speed,
+                    emitter_lifetime,
+                    emitter_start_size,
+                    emitter_end_size,
+                    emitter_start_color,
+                    emitter_end_color,
+                ) = {
+                    let state = self.editor_ui_state();
+                    (
+                        state.ui_emitter_rate,
+                        state.ui_emitter_spread,
+                        state.ui_emitter_speed,
+                        state.ui_emitter_lifetime,
+                        state.ui_emitter_start_size,
+                        state.ui_emitter_end_size,
+                        state.ui_emitter_start_color,
+                        state.ui_emitter_end_color,
+                    )
+                };
+                self.ecs.set_emitter_rate(emitter, emitter_rate);
+                self.ecs.set_emitter_spread(emitter, emitter_spread);
+                self.ecs.set_emitter_speed(emitter, emitter_speed);
+                self.ecs.set_emitter_lifetime(emitter, emitter_lifetime);
                 self.ecs.set_emitter_colors(
                     emitter,
-                    Vec4::from_array(self.ui_emitter_start_color),
-                    Vec4::from_array(self.ui_emitter_end_color),
+                    Vec4::from_array(emitter_start_color),
+                    Vec4::from_array(emitter_end_color),
                 );
-                self.ecs.set_emitter_sizes(emitter, self.ui_emitter_start_size, self.ui_emitter_end_size);
+                self.ecs.set_emitter_sizes(emitter, emitter_start_size, emitter_end_size);
             }
         }
         if actions.reset_world {
@@ -5342,7 +5408,8 @@ impl ApplicationHandler for App {
             self.apply_vsync_toggle(enabled);
         }
 
-        self.ecs.set_root_spin(self.ui_root_spin);
+        let ui_root_spin = self.editor_ui_state().ui_root_spin;
+        self.ecs.set_root_spin(ui_root_spin);
 
         if let Some(w) = self.renderer.window() {
             w.request_redraw();
@@ -5474,72 +5541,84 @@ impl App {
                     }
                 }
                 ScriptCommand::SetAutoSpawnRate { rate } => {
-                    self.ui_auto_spawn_rate = rate.max(0.0);
+                    let clamped = rate.max(0.0);
+                    self.editor_ui_state_mut().ui_auto_spawn_rate = clamped;
                 }
                 ScriptCommand::SetSpawnPerPress { count } => {
-                    self.ui_spawn_per_press = count.max(0);
+                    let clamped = count.max(0);
+                    self.editor_ui_state_mut().ui_spawn_per_press = clamped;
                 }
                 ScriptCommand::SetEmitterRate { rate } => {
-                    self.ui_emitter_rate = rate.max(0.0);
+                    let clamped = rate.max(0.0);
+                    self.editor_ui_state_mut().ui_emitter_rate = clamped;
                     if let Some(emitter) = self.emitter_entity {
-                        self.ecs.set_emitter_rate(emitter, self.ui_emitter_rate);
+                        self.ecs.set_emitter_rate(emitter, clamped);
                     }
                 }
                 ScriptCommand::SetEmitterSpread { spread } => {
-                    self.ui_emitter_spread = spread.clamp(0.0, std::f32::consts::PI);
+                    let clamped = spread.clamp(0.0, std::f32::consts::PI);
+                    self.editor_ui_state_mut().ui_emitter_spread = clamped;
                     if let Some(emitter) = self.emitter_entity {
-                        self.ecs.set_emitter_spread(emitter, self.ui_emitter_spread);
+                        self.ecs.set_emitter_spread(emitter, clamped);
                     }
                 }
                 ScriptCommand::SetEmitterSpeed { speed } => {
-                    self.ui_emitter_speed = speed.max(0.0);
+                    let clamped = speed.max(0.0);
+                    self.editor_ui_state_mut().ui_emitter_speed = clamped;
                     if let Some(emitter) = self.emitter_entity {
-                        self.ecs.set_emitter_speed(emitter, self.ui_emitter_speed);
+                        self.ecs.set_emitter_speed(emitter, clamped);
                     }
                 }
                 ScriptCommand::SetEmitterLifetime { lifetime } => {
-                    self.ui_emitter_lifetime = lifetime.max(0.05);
+                    let clamped = lifetime.max(0.05);
+                    self.editor_ui_state_mut().ui_emitter_lifetime = clamped;
                     if let Some(emitter) = self.emitter_entity {
-                        self.ecs.set_emitter_lifetime(emitter, self.ui_emitter_lifetime);
+                        self.ecs.set_emitter_lifetime(emitter, clamped);
                     }
                 }
                 ScriptCommand::SetEmitterStartColor { color } => {
-                    self.ui_emitter_start_color = color.to_array();
+                    self.editor_ui_state_mut().ui_emitter_start_color = color.to_array();
                     if let Some(emitter) = self.emitter_entity {
+                        let end_color = self.editor_ui_state().ui_emitter_end_color;
                         self.ecs.set_emitter_colors(
                             emitter,
                             color,
-                            Vec4::from_array(self.ui_emitter_end_color),
+                            Vec4::from_array(end_color),
                         );
                     }
                 }
                 ScriptCommand::SetEmitterEndColor { color } => {
-                    self.ui_emitter_end_color = color.to_array();
+                    self.editor_ui_state_mut().ui_emitter_end_color = color.to_array();
                     if let Some(emitter) = self.emitter_entity {
+                        let start_color = self.editor_ui_state().ui_emitter_start_color;
                         self.ecs.set_emitter_colors(
                             emitter,
-                            Vec4::from_array(self.ui_emitter_start_color),
+                            Vec4::from_array(start_color),
                             color,
                         );
                     }
                 }
                 ScriptCommand::SetEmitterStartSize { size } => {
-                    self.ui_emitter_start_size = size.max(0.01);
+                    let clamped = size.max(0.01);
+                    self.editor_ui_state_mut().ui_emitter_start_size = clamped;
                     if let Some(emitter) = self.emitter_entity {
+                        let end_size = self.editor_ui_state().ui_emitter_end_size;
                         self.ecs.set_emitter_sizes(
                             emitter,
-                            self.ui_emitter_start_size,
-                            self.ui_emitter_end_size,
+                            clamped,
+                            end_size,
                         );
                     }
                 }
                 ScriptCommand::SetEmitterEndSize { size } => {
-                    self.ui_emitter_end_size = size.max(0.01);
+                    let clamped = size.max(0.01);
+                    self.editor_ui_state_mut().ui_emitter_end_size = clamped;
                     if let Some(emitter) = self.emitter_entity {
+                        let start_size = self.editor_ui_state().ui_emitter_start_size;
                         self.ecs.set_emitter_sizes(
                             emitter,
-                            self.ui_emitter_start_size,
-                            self.ui_emitter_end_size,
+                            start_size,
+                            clamped,
                         );
                     }
                 }

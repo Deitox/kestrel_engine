@@ -2442,7 +2442,6 @@ impl App {
                                 self.ui_shadow_resolution = default_shadow.resolution;
                                 self.ui_shadow_split_lambda = default_shadow.split_lambda;
                                 self.ui_shadow_pcf_radius = default_shadow.pcf_radius;
-                                self.ui_environment_intensity = 1.0;
                                 ui_environment_intensity = 1.0;
                                 self.renderer.lighting_mut().point_lights.clear();
                                 lighting_dirty = true;
