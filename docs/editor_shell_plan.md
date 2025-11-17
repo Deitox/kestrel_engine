@@ -93,3 +93,5 @@ Next up for Step 3: update `App::new` to populate `EditorUiState` via these help
 - Eleventh migration batch: file watcher plumbing moved into `app::asset_watch_tooling` (atlas hot-reload sync, animation watch roots, queue helpers) and the remaining telemetry caches + frame budget utilities live in `app::telemetry_tooling`. With `TelemetryCache`, `FrameProfiler`, and the frame-budget helpers centralized, `App` now just orchestrates state transitions while the tooling modules manage editor-only caching.
 
 Next slices for Step 3: run a round of exploratory/editor shake tests to confirm the modular shell behaves identically, then hand off to the renderer decomposition work (Step 4) now that the editor-only helpers are isolated.
+
+2025-11-17 validation note: ran `cargo test --locked` after relocating the animation helper unit tests into `app::animation_tooling`, giving the shell wiring an automated smoke check before scheduling the interactive editor sweep.

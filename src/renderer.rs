@@ -1,4 +1,7 @@
+mod egui_pass;
+mod light_clusters;
 mod mesh_pass;
+mod shadow_pass;
 mod sprite_pass;
 
 use crate::camera3d::Camera3D;
@@ -20,7 +23,10 @@ use winit::window::{Fullscreen, Window};
 
 // egui
 use egui_wgpu::{Renderer as EguiRenderer, ScreenDescriptor};
+pub use self::light_clusters::LightClusterMetrics;
+use self::light_clusters::{LightClusterParams, LightClusterPass, LightClusterScratch};
 use self::mesh_pass::{MeshDrawData, MeshFrameData, MeshPass, MeshPipelineResources, PaletteUploadStats};
+use self::shadow_pass::{ShadowPass, ShadowPassParams};
 use self::sprite_pass::SpritePass;
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -33,22 +39,6 @@ pub const LIGHT_CLUSTER_MAX_LIGHTS: usize = 256;
 const LIGHT_CLUSTER_MAX_LIGHTS_PER_CLUSTER: usize = 64;
 const LIGHT_CLUSTER_RECORD_STRIDE_WORDS: u32 = 2;
 const LIGHT_CLUSTER_CACHE_QUANTIZE: f32 = 1e-3;
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct ShadowUniform {
-    light_view_proj: [[[f32; 4]; 4]; MAX_SHADOW_CASCADES],
-    params: [f32; 4],
-    cascade_params: [[f32; 4]; MAX_SHADOW_CASCADES],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct ShadowDrawUniform {
-    model: [[f32; 4]; 4],
-    joint_count: u32,
-    _padding: [u32; 3],
-}
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable, Default)]
@@ -81,68 +71,6 @@ struct ClusterConfigUniform {
 struct ClusterLightUniform {
     config: ClusterConfigUniform,
     lights: [PointLightGpu; LIGHT_CLUSTER_MAX_LIGHTS],
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct LightClusterCache {
-    viewport: PhysicalSize<u32>,
-    view_key: [i32; 16],
-    proj_key: [i32; 16],
-    lights_hash: u64,
-    metrics: LightClusterMetrics,
-    valid: bool,
-}
-
-impl LightClusterCache {
-    fn matches(&self, viewport: PhysicalSize<u32>, view: Mat4, proj: Mat4, lights_hash: u64) -> bool {
-        self.valid
-            && self.viewport == viewport
-            && self.view_key == quantize_matrix(view)
-            && self.proj_key == quantize_matrix(proj)
-            && self.lights_hash == lights_hash
-    }
-
-    fn update(
-        &mut self,
-        viewport: PhysicalSize<u32>,
-        view: Mat4,
-        proj: Mat4,
-        lights_hash: u64,
-        metrics: LightClusterMetrics,
-    ) {
-        self.viewport = viewport;
-        self.view_key = quantize_matrix(view);
-        self.proj_key = quantize_matrix(proj);
-        self.lights_hash = lights_hash;
-        self.metrics = metrics;
-        self.valid = true;
-    }
-
-    fn invalidate(&mut self) {
-        self.valid = false;
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct LightClusterSpan {
-    light_index: u32,
-    start_x: u32,
-    end_x: u32,
-    start_y: u32,
-    end_y: u32,
-    start_z: u32,
-    end_z: u32,
-}
-
-#[derive(Default)]
-struct LightClusterScratch {
-    spans: Vec<LightClusterSpan>,
-    cluster_counts: Vec<u16>,
-    cluster_write_offsets: Vec<u16>,
-    cluster_records: Vec<ClusterRecordGpu>,
-    cluster_indices: Vec<u32>,
-    cluster_data_words: Vec<u32>,
-    gpu_lights: Vec<PointLightGpu>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -419,515 +347,10 @@ struct HeadlessTarget {
     texture: wgpu::Texture,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct LightClusterMetrics {
-    pub total_lights: u32,
-    pub visible_lights: u32,
-    pub grid_dims: [u32; 3],
-    pub active_clusters: u32,
-    pub total_clusters: u32,
-    pub average_lights_per_cluster: f32,
-    pub max_lights_per_cluster: u32,
-    pub overflow_clusters: u32,
-    pub light_assignments: u32,
-    pub tile_size_px: u32,
-    pub truncated_lights: u32,
-}
-
-impl LightClusterMetrics {
-    pub fn culled_lights(&self) -> u32 {
-        self.total_lights.saturating_sub(self.visible_lights)
-    }
-}
-
-#[derive(Default)]
-struct LightClusterPass {
-    layout: Option<Arc<wgpu::BindGroupLayout>>,
-    uniform_buffer: Option<wgpu::Buffer>,
-    storage_buffer: Option<wgpu::Buffer>,
-    bind_group: Option<wgpu::BindGroup>,
-    storage_capacity_words: usize,
-    metrics: LightClusterMetrics,
-    grid_dims: [u32; 3],
-    tile_size_px: u32,
-    cache: LightClusterCache,
-}
-
-struct LightClusterBuildData<'a> {
-    uniform: ClusterLightUniform,
-    cluster_data_words: &'a [u32],
-    metrics: LightClusterMetrics,
-}
-
-impl LightClusterPass {
-    fn update_resources<'a>(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        layout: &Arc<wgpu::BindGroupLayout>,
-        data: &LightClusterBuildData<'a>,
-    ) -> Result<()> {
-        if self.uniform_buffer.is_none() {
-            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Light Cluster Uniform"),
-                size: std::mem::size_of::<ClusterLightUniform>() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            self.uniform_buffer = Some(buffer);
-            self.bind_group = None;
-        }
-        if self.storage_buffer.is_none() || self.storage_capacity_words < data.cluster_data_words.len() {
-            let capacity = data.cluster_data_words.len().max(1);
-            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Light Cluster Storage"),
-                size: (capacity * std::mem::size_of::<u32>()) as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            self.storage_buffer = Some(buffer);
-            self.storage_capacity_words = capacity;
-            self.bind_group = None;
-        }
-
-        let uniform_buffer = self.uniform_buffer.as_ref().context("Light cluster uniform missing")?;
-        queue.write_buffer(uniform_buffer, 0, bytemuck::bytes_of(&data.uniform));
-
-        let storage_buffer = self.storage_buffer.as_ref().context("Light cluster storage missing")?;
-        queue.write_buffer(storage_buffer, 0, bytemuck::cast_slice(data.cluster_data_words));
-
-        if self.bind_group.is_none() {
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Light Cluster Bind Group"),
-                layout,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: storage_buffer.as_entire_binding() },
-                ],
-            });
-            self.bind_group = Some(bind_group);
-        }
-
-        self.metrics = data.metrics;
-        self.grid_dims = data.metrics.grid_dims;
-        self.tile_size_px = data.metrics.tile_size_px;
-        self.layout = Some(layout.clone());
-        Ok(())
-    }
-}
-
-fn build_light_cluster_data<'a>(
-    lights: &[ScenePointLight],
-    camera: &Camera3D,
-    viewport: PhysicalSize<u32>,
-    view: Mat4,
-    proj: Mat4,
-    scratch: &'a mut LightClusterScratch,
-) -> LightClusterBuildData<'a> {
-    let width = viewport.width.max(1);
-    let height = viewport.height.max(1);
-    let grid_x = ((width + LIGHT_CLUSTER_TILE_SIZE - 1) / LIGHT_CLUSTER_TILE_SIZE).max(1);
-    let grid_y = ((height + LIGHT_CLUSTER_TILE_SIZE - 1) / LIGHT_CLUSTER_TILE_SIZE).max(1);
-    let grid_z = LIGHT_CLUSTER_Z_SLICES.max(1);
-    let total_clusters = grid_x.saturating_mul(grid_y).saturating_mul(grid_z).max(1);
-    let aspect = if height > 0 { width as f32 / height as f32 } else { 1.0 };
-    let near = camera.near;
-    let far = camera.far.max(near + 0.0001);
-    let depth_range = (far - near).max(0.0001);
-    let inv_depth_range = 1.0 / depth_range;
-    let view_proj = proj * view;
-    let frustum_planes = Renderer::extract_frustum_planes(view_proj);
-    let width_f = width as f32;
-    let height_f = height as f32;
-    let viewport_inv_width = if width == 0 { 0.0 } else { 1.0 / width as f32 };
-    let viewport_inv_height = if height == 0 { 0.0 } else { 1.0 / height as f32 };
-    let half_width = width_f * 0.5;
-    let half_height = height_f * 0.5;
-    let half_fov = (camera.fov_y_radians * 0.5).max(0.001);
-    let focal_y = 1.0 / half_fov.tan();
-    let focal_x = focal_y / aspect.max(0.001);
-
-    let mut uniform = ClusterLightUniform {
-        config: ClusterConfigUniform {
-            viewport: [width as f32, height as f32, viewport_inv_width, viewport_inv_height],
-            depth_params: [near, far, inv_depth_range, 0.0],
-            grid_dims: [grid_x, grid_y, grid_z, total_clusters as u32],
-            stats: [0, LIGHT_CLUSTER_MAX_LIGHTS_PER_CLUSTER as u32, LIGHT_CLUSTER_TILE_SIZE, 0],
-            data_meta: [0, LIGHT_CLUSTER_RECORD_STRIDE_WORDS, 0, 0],
-        },
-        lights: [PointLightGpu::default(); LIGHT_CLUSTER_MAX_LIGHTS],
-    };
-
-    scratch.spans.clear();
-    scratch.gpu_lights.clear();
-    scratch.cluster_counts.clear();
-    scratch.cluster_counts.resize(total_clusters as usize, 0);
-    scratch.cluster_write_offsets.clear();
-    scratch.cluster_write_offsets.resize(total_clusters as usize, 0);
-    scratch.cluster_records.clear();
-    scratch.cluster_indices.clear();
-    scratch.cluster_data_words.clear();
-
-    let mut overflow_clusters = 0u32;
-    let mut truncated_lights = 0u32;
-
-    for light in lights {
-        if scratch.gpu_lights.len() >= LIGHT_CLUSTER_MAX_LIGHTS {
-            truncated_lights = truncated_lights.saturating_add(1);
-            continue;
-        }
-        let radius = light.radius.max(0.01);
-        if !Renderer::sphere_in_frustum(light.position, radius, &frustum_planes) {
-            continue;
-        }
-        let world_pos = light.position.extend(1.0);
-        let view_pos = view * world_pos;
-        let view_vec = view_pos.truncate();
-        let depth = -view_vec.z;
-        if depth <= 0.0 || depth + radius <= near || depth - radius >= far {
-            continue;
-        }
-        let clip_pos = proj * Vec4::new(view_vec.x, view_vec.y, view_vec.z, 1.0);
-        if clip_pos.w.abs() < 1e-5 {
-            continue;
-        }
-        let ndc = clip_pos.truncate() / clip_pos.w;
-        let screen_x = (ndc.x * 0.5 + 0.5) * width_f;
-        let screen_y = (1.0 - (ndc.y * 0.5 + 0.5)) * height_f;
-        let screen_radius_x = ((radius / depth) * focal_x * half_width).abs().max(1.0);
-        let screen_radius_y = ((radius / depth) * focal_y * half_height).abs().max(1.0);
-
-        let min_screen_x = screen_x - screen_radius_x;
-        let max_screen_x = screen_x + screen_radius_x;
-        let min_screen_y = screen_y - screen_radius_y;
-        let max_screen_y = screen_y + screen_radius_y;
-
-        if max_screen_x < 0.0 || min_screen_x > width_f || max_screen_y < 0.0 || min_screen_y > height_f {
-            continue;
-        }
-
-        let min_norm_x = (min_screen_x / width_f).clamp(0.0, 1.0);
-        let max_norm_x = (max_screen_x / width_f).clamp(0.0, 1.0);
-        let min_norm_y = (min_screen_y / height_f).clamp(0.0, 1.0);
-        let max_norm_y = (max_screen_y / height_f).clamp(0.0, 1.0);
-        let depth_min = (depth - radius).max(near);
-        let depth_max = (depth + radius).min(far);
-        if depth_max <= near {
-            continue;
-        }
-        let min_norm_z = ((depth_min - near) * inv_depth_range).clamp(0.0, 1.0);
-        let max_norm_z = ((depth_max - near) * inv_depth_range).clamp(0.0, 1.0);
-
-        let start_x = cluster_start_index(min_norm_x, grid_x);
-        let end_x = cluster_end_index(max_norm_x, grid_x);
-        let start_y = cluster_start_index(min_norm_y, grid_y);
-        let end_y = cluster_end_index(max_norm_y, grid_y);
-        let start_z = cluster_start_index(min_norm_z, grid_z);
-        let end_z = cluster_end_index(max_norm_z, grid_z);
-        if start_x > end_x || start_y > end_y || start_z > end_z {
-            continue;
-        }
-
-        let light_index = scratch.gpu_lights.len() as u32;
-        let color = light.color;
-        scratch.gpu_lights.push(PointLightGpu {
-            position_radius: [light.position.x, light.position.y, light.position.z, radius],
-            color_intensity: [color.x, color.y, color.z, light.intensity.max(0.0)],
-        });
-
-        scratch.spans.push(LightClusterSpan { light_index, start_x, end_x, start_y, end_y, start_z, end_z });
-    }
-
-    if scratch.spans.is_empty() {
-        let metrics = LightClusterMetrics {
-            total_lights: lights.len() as u32,
-            visible_lights: scratch.gpu_lights.len() as u32,
-            grid_dims: [grid_x, grid_y, grid_z],
-            active_clusters: 0,
-            total_clusters: total_clusters as u32,
-            average_lights_per_cluster: 0.0,
-            max_lights_per_cluster: 0,
-            overflow_clusters: 0,
-            light_assignments: 0,
-            tile_size_px: LIGHT_CLUSTER_TILE_SIZE,
-            truncated_lights,
-        };
-        uniform.config.stats = [
-            scratch.gpu_lights.len() as u32,
-            LIGHT_CLUSTER_MAX_LIGHTS_PER_CLUSTER as u32,
-            LIGHT_CLUSTER_TILE_SIZE,
-            total_clusters as u32,
-        ];
-        uniform.config.data_meta = [0, LIGHT_CLUSTER_RECORD_STRIDE_WORDS, 0, 0];
-        for (idx, light) in scratch.gpu_lights.iter().enumerate() {
-            if idx < LIGHT_CLUSTER_MAX_LIGHTS {
-                uniform.lights[idx] = *light;
-            }
-        }
-        return LightClusterBuildData { uniform, cluster_data_words: &scratch.cluster_data_words, metrics };
-    }
-
-    for span in &scratch.spans {
-        for z in span.start_z..=span.end_z {
-            for y in span.start_y..=span.end_y {
-                for x in span.start_x..=span.end_x {
-                    let idx = cluster_flat_index(x, y, z, grid_x, grid_y);
-                    let count = &mut scratch.cluster_counts[idx];
-                    if (*count as usize) < LIGHT_CLUSTER_MAX_LIGHTS_PER_CLUSTER {
-                        *count += 1;
-                    } else {
-                        overflow_clusters = overflow_clusters.saturating_add(1);
-                    }
-                }
-            }
-        }
-    }
-
-    scratch.cluster_records.clear();
-    scratch.cluster_records.reserve(scratch.cluster_counts.len());
-    let mut indices_total = 0u32;
-    for &count in &scratch.cluster_counts {
-        let limited = count.min(LIGHT_CLUSTER_MAX_LIGHTS_PER_CLUSTER as u16) as u32;
-        scratch.cluster_records.push(ClusterRecordGpu {
-            offset: indices_total,
-            count: limited,
-            ..Default::default()
-        });
-        indices_total += limited;
-    }
-
-    scratch.cluster_indices.clear();
-    scratch.cluster_indices.resize(indices_total as usize, 0);
-    scratch.cluster_write_offsets.iter_mut().for_each(|v| *v = 0);
-    for span in &scratch.spans {
-        for z in span.start_z..=span.end_z {
-            for y in span.start_y..=span.end_y {
-                for x in span.start_x..=span.end_x {
-                    let idx = cluster_flat_index(x, y, z, grid_x, grid_y);
-                    let record = &scratch.cluster_records[idx];
-                    if record.count == 0 {
-                        continue;
-                    }
-                    let write_count = &mut scratch.cluster_write_offsets[idx];
-                    if (*write_count as u32) >= record.count {
-                        continue;
-                    }
-                    let dst = record.offset + *write_count as u32;
-                    scratch.cluster_indices[dst as usize] = span.light_index;
-                    *write_count += 1;
-                }
-            }
-        }
-    }
-
-    let mut active_clusters = 0u32;
-    let mut max_lights_per_cluster = 0u32;
-    let mut light_assignments = 0u32;
-    for record in &scratch.cluster_records {
-        if record.count > 0 {
-            active_clusters = active_clusters.saturating_add(1);
-            max_lights_per_cluster = max_lights_per_cluster.max(record.count);
-        }
-        light_assignments = light_assignments.saturating_add(record.count);
-    }
-
-    let metrics = LightClusterMetrics {
-        total_lights: lights.len() as u32,
-        visible_lights: scratch.gpu_lights.len() as u32,
-        grid_dims: [grid_x, grid_y, grid_z],
-        active_clusters,
-        total_clusters: total_clusters as u32,
-        average_lights_per_cluster: if active_clusters > 0 {
-            light_assignments as f32 / active_clusters as f32
-        } else {
-            0.0
-        },
-        max_lights_per_cluster,
-        overflow_clusters,
-        light_assignments,
-        tile_size_px: LIGHT_CLUSTER_TILE_SIZE,
-        truncated_lights,
-    };
-
-    uniform.config.stats = [
-        scratch.gpu_lights.len() as u32,
-        LIGHT_CLUSTER_MAX_LIGHTS_PER_CLUSTER as u32,
-        LIGHT_CLUSTER_TILE_SIZE,
-        scratch.cluster_records.len() as u32,
-    ];
-    uniform.config.data_meta = [
-        scratch.cluster_records.len() as u32,
-        LIGHT_CLUSTER_RECORD_STRIDE_WORDS,
-        0,
-        scratch.cluster_indices.len() as u32,
-    ];
-    for (idx, light) in scratch.gpu_lights.iter().enumerate() {
-        if idx < LIGHT_CLUSTER_MAX_LIGHTS {
-            uniform.lights[idx] = *light;
-        }
-    }
-
-    scratch.cluster_data_words.reserve(
-        scratch.cluster_records.len() * LIGHT_CLUSTER_RECORD_STRIDE_WORDS as usize
-            + (scratch.cluster_indices.len() + 1) / 2,
-    );
-    for record in &scratch.cluster_records {
-        scratch.cluster_data_words.push(record.offset);
-        scratch.cluster_data_words.push(record.count);
-    }
-    let indices_offset_words = scratch.cluster_data_words.len() as u32;
-    for chunk in scratch.cluster_indices.chunks(2) {
-        let first = chunk[0] & 0xFFFF;
-        let second = chunk.get(1).copied().unwrap_or(0) & 0xFFFF;
-        let packed = (second << 16) | first;
-        scratch.cluster_data_words.push(packed);
-    }
-    uniform.config.data_meta = [
-        scratch.cluster_records.len() as u32,
-        LIGHT_CLUSTER_RECORD_STRIDE_WORDS,
-        indices_offset_words,
-        scratch.cluster_indices.len() as u32,
-    ];
-
-    LightClusterBuildData { uniform, cluster_data_words: &scratch.cluster_data_words, metrics }
-}
-
-fn cluster_start_index(norm: f32, count: u32) -> u32 {
-    if count <= 1 {
-        return 0;
-    }
-    let value = (norm * count as f32).floor();
-    value.clamp(0.0, (count - 1) as f32) as u32
-}
-
-fn cluster_end_index(norm: f32, count: u32) -> u32 {
-    if count <= 1 {
-        return 0;
-    }
-    let value = (norm * count as f32).ceil() as i32 - 1;
-    value.clamp(0, count as i32 - 1) as u32
-}
-
-fn cluster_flat_index(x: u32, y: u32, z: u32, grid_x: u32, grid_y: u32) -> usize {
-    (z as usize * grid_x as usize * grid_y as usize) + (y as usize * grid_x as usize) + x as usize
-}
-
-fn hash_point_lights(lights: &[ScenePointLight]) -> u64 {
-    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x100000001b3;
-    let mut hash = FNV_OFFSET ^ (lights.len() as u64);
-    for light in lights {
-        for value in [
-            light.position.x.to_bits(),
-            light.position.y.to_bits(),
-            light.position.z.to_bits(),
-            light.color.x.to_bits(),
-            light.color.y.to_bits(),
-            light.color.z.to_bits(),
-            light.radius.to_bits(),
-            light.intensity.to_bits(),
-        ] {
-            hash ^= value as u64;
-            hash = hash.wrapping_mul(FNV_PRIME);
-        }
-    }
-    hash
-}
-
-fn quantize_matrix(mat: Mat4) -> [i32; 16] {
-    let mut key = [0i32; 16];
-    let cols = mat.to_cols_array();
-    for (dst, value) in key.iter_mut().zip(cols.iter()) {
-        *dst = (value / LIGHT_CLUSTER_CACHE_QUANTIZE).round() as i32;
-    }
-    key
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn build_light_cluster_data_counts_visible_lights() {
-        let camera = Camera3D::new(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, 60.0_f32.to_radians(), 0.1, 100.0);
-        let viewport = PhysicalSize::new(640, 480);
-        let view = camera.view_matrix();
-        let proj = camera.projection_matrix(viewport.width as f32 / viewport.height as f32);
-        let mut scratch = LightClusterScratch::default();
-        let lights = vec![
-            ScenePointLight::new(Vec3::ZERO, Vec3::splat(1.0), 4.0, 1.0),
-            ScenePointLight::new(Vec3::new(50.0, 0.0, 0.0), Vec3::splat(1.0), 2.0, 1.0),
-        ];
-        let data = build_light_cluster_data(&lights, &camera, viewport, view, proj, &mut scratch);
-        assert_eq!(data.metrics.total_lights, 2);
-        assert!(data.metrics.visible_lights >= 1);
-        assert!(data.metrics.total_clusters > 0);
-    }
-}
-
 struct RendererEnvironmentState {
     bind_group: Arc<wgpu::BindGroup>,
     mip_count: u32,
     intensity: f32,
-}
-
-struct ShadowPipelineResources {
-    pipeline: wgpu::RenderPipeline,
-    skinning_bgl: Arc<wgpu::BindGroupLayout>,
-}
-
-struct ShadowPass {
-    resources: Option<ShadowPipelineResources>,
-    uniform_buffer: Option<wgpu::Buffer>,
-    frame_bind_group: Option<wgpu::BindGroup>,
-    draw_buffer: Option<wgpu::Buffer>,
-    draw_bind_group: Option<wgpu::BindGroup>,
-    skinning_identity_buffer: Option<wgpu::Buffer>,
-    skinning_identity_bind_group: Option<wgpu::BindGroup>,
-    skinning_palette_buffers: Vec<wgpu::Buffer>,
-    skinning_palette_bind_groups: Vec<wgpu::BindGroup>,
-    palette_staging: Vec<[f32; 16]>,
-    skinning_cursor: usize,
-    map_texture: Option<wgpu::Texture>,
-    map_view: Option<wgpu::TextureView>,
-    cascade_views: Vec<wgpu::TextureView>,
-    sampler: Option<wgpu::Sampler>,
-    sample_layout: Option<Arc<wgpu::BindGroupLayout>>,
-    sample_bind_group: Option<wgpu::BindGroup>,
-    resolution: u32,
-    cascade_matrices: [Mat4; MAX_SHADOW_CASCADES],
-    cascade_splits: [f32; MAX_SHADOW_CASCADES],
-    cascade_count: usize,
-    dirty: bool,
-}
-
-impl Default for ShadowPass {
-    fn default() -> Self {
-        Self {
-            resources: None,
-            uniform_buffer: None,
-            frame_bind_group: None,
-            draw_buffer: None,
-            draw_bind_group: None,
-            skinning_identity_buffer: None,
-            skinning_identity_bind_group: None,
-            skinning_palette_buffers: Vec::new(),
-            skinning_palette_bind_groups: Vec::new(),
-            palette_staging: Vec::new(),
-            skinning_cursor: 0,
-            map_texture: None,
-            map_view: None,
-            cascade_views: Vec::new(),
-            sampler: None,
-            sample_layout: None,
-            sample_bind_group: None,
-            resolution: 2048,
-            cascade_matrices: [Mat4::IDENTITY; MAX_SHADOW_CASCADES],
-            cascade_splits: [0.0; MAX_SHADOW_CASCADES],
-            cascade_count: MAX_SHADOW_CASCADES,
-            dirty: true,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -1004,6 +427,7 @@ pub struct Renderer {
     present_modes: Vec<wgpu::PresentMode>,
     gpu_timer: GpuTimer,
     skinning_limit_warnings: HashSet<usize>,
+    sprite_bind_groups: Vec<(Range<u32>, Arc<wgpu::BindGroup>)>,
     #[cfg(test)]
     resize_invocations: usize,
     headless_target: Option<HeadlessTarget>,
@@ -1046,6 +470,7 @@ impl Renderer {
             present_modes: Vec::new(),
             gpu_timer: GpuTimer::default(),
             skinning_limit_warnings: HashSet::new(),
+            sprite_bind_groups: Vec::new(),
             #[cfg(test)]
             resize_invocations: 0,
             headless_target: None,
@@ -1086,30 +511,11 @@ impl Renderer {
         self.lighting.color = color;
         self.lighting.ambient = ambient;
         self.lighting.exposure = exposure.max(0.001);
-        self.shadow_pass.dirty = true;
+        self.shadow_pass.mark_dirty();
     }
 
     pub fn mark_shadow_settings_dirty(&mut self) {
-        self.shadow_pass.dirty = true;
-    }
-
-    fn sync_shadow_map_config(&mut self) -> Result<()> {
-        let desired_cascades =
-            self.lighting.shadow_cascade_count.clamp(1, MAX_SHADOW_CASCADES as u32) as usize;
-        let desired_resolution = self.lighting.shadow_resolution.clamp(256, 8192);
-        let mut needs_recreate = false;
-        if self.shadow_pass.cascade_count != desired_cascades {
-            self.shadow_pass.cascade_count = desired_cascades;
-            needs_recreate = true;
-        }
-        if self.shadow_pass.resolution != desired_resolution {
-            self.shadow_pass.resolution = desired_resolution;
-            needs_recreate = true;
-        }
-        if needs_recreate {
-            self.recreate_shadow_map()?;
-        }
-        Ok(())
+        self.shadow_pass.mark_dirty();
     }
 
     pub fn set_environment(&mut self, environment: &EnvironmentGpu, intensity: f32) -> Result<()> {
@@ -1554,11 +960,9 @@ impl Renderer {
         self.mesh_pass.frame_draw_bind_group = None;
         self.mesh_pass.skinning_identity_buffer = None;
         self.mesh_pass.skinning_identity_bind_group = None;
-        self.shadow_pass.sample_layout = Some(shadow_bgl);
-        self.shadow_pass.sample_bind_group = None;
-        self.light_clusters.layout = Some(light_cluster_bgl);
-        self.light_clusters.bind_group = None;
-        self.light_clusters.cache.invalidate();
+        self.shadow_pass.set_sample_layout(shadow_bgl);
+        self.light_clusters.set_layout(light_cluster_bgl);
+        self.light_clusters.invalidate_cache();
         Ok(())
     }
 
@@ -1612,14 +1016,17 @@ impl Renderer {
         let view_proj = camera.view_projection(vp_size);
         let view_matrix = camera.view_matrix();
         let lighting_dir = self.lighting.direction.normalize_or_zero();
-        let cluster_layout = {
-            let mesh_resources =
-                self.mesh_pass.resources.as_ref().context("Mesh pipeline not initialized")?;
-            mesh_resources.light_cluster_bgl.clone()
-        };
-        self.prepare_light_clusters(camera, vp_size, cluster_layout)?;
         let mesh_resources = self.mesh_pass.resources.as_ref().context("Mesh pipeline not initialized")?;
         let depth_view = self.depth_view.as_ref().context("Depth texture missing")?;
+        let queue = self.queue()?.clone();
+        self.light_clusters.prepare(LightClusterParams {
+            device: &device,
+            queue: &queue,
+            camera,
+            viewport: vp_size,
+            lighting: &self.lighting,
+            scratch: &mut self.light_cluster_scratch,
+        })?;
         let frame_data = MeshFrameData {
             view_proj: view_proj.to_cols_array_2d(),
             view: view_matrix.to_cols_array_2d(),
@@ -1633,7 +1040,7 @@ impl Renderer {
                 environment_intensity,
                 0.0,
             ],
-            cascade_splits: self.shadow_pass.cascade_splits,
+            cascade_splits: self.shadow_pass.cascade_splits(),
         };
 
         if self.mesh_pass.frame_buffer.is_none() {
@@ -1673,17 +1080,20 @@ impl Renderer {
             self.mesh_pass.frame_draw_bind_group = Some(bind_group);
         }
 
-        let queue = self.queue()?.clone();
         queue.write_buffer(&frame_buffer, 0, bytemuck::bytes_of(&frame_data));
 
         let frame_draw_bind_group =
             self.mesh_pass.frame_draw_bind_group.as_ref().context("Mesh frame/draw bind group missing")?;
+        if self.shadow_pass.sample_bind_group().is_none() {
+            let lighting_clone = self.lighting.clone();
+            self.shadow_pass.ensure_sample_bind_group(&lighting_clone, &device, &queue)?;
+        }
         let shadow_bind_group =
-            self.shadow_pass.sample_bind_group.as_ref().context("Shadow sample bind group missing")?;
+            self.shadow_pass.sample_bind_group().context("Shadow sample bind group missing")?;
         let environment_bind_group =
             self.environment_state.as_ref().context("Environment state not configured")?.bind_group.as_ref();
         let light_cluster_bind_group =
-            self.light_clusters.bind_group.as_ref().context("Light cluster bind group missing")?;
+            self.light_clusters.bind_group().context("Light cluster bind group missing")?;
 
         if self.mesh_pass.skinning_identity_buffer.is_none() {
             let identity = Mat4::IDENTITY.to_cols_array();
@@ -1898,318 +1308,6 @@ impl Renderer {
         Ok(())
     }
 
-    fn prepare_light_clusters(
-        &mut self,
-        camera: &Camera3D,
-        viewport: PhysicalSize<u32>,
-        layout: Arc<wgpu::BindGroupLayout>,
-    ) -> Result<()> {
-        if self.mesh_pass.resources.is_none() {
-            self.init_mesh_pipeline()?;
-        }
-        let view = camera.view_matrix();
-        let aspect = if viewport.height > 0 { viewport.width as f32 / viewport.height as f32 } else { 1.0 };
-        let proj = camera.projection_matrix(aspect);
-        let light_hash = hash_point_lights(&self.lighting.point_lights);
-        if self.light_clusters.cache.matches(viewport, view, proj, light_hash)
-            && self.light_clusters.bind_group.is_some()
-        {
-            self.light_clusters.metrics = self.light_clusters.cache.metrics;
-            return Ok(());
-        }
-        let device = self.device()?.clone();
-        let queue = self.queue()?.clone();
-        let build_data = build_light_cluster_data(
-            &self.lighting.point_lights,
-            camera,
-            viewport,
-            view,
-            proj,
-            &mut self.light_cluster_scratch,
-        );
-        if build_data.metrics.truncated_lights > 0 && self.light_clusters.metrics.truncated_lights == 0 {
-            eprintln!(
-                "[renderer] {} point light(s) exceeded the clustered lighting budget (max {}). Extra lights will be ignored.",
-                build_data.metrics.truncated_lights,
-                LIGHT_CLUSTER_MAX_LIGHTS
-            );
-        }
-        self.light_clusters.update_resources(&device, &queue, &layout, &build_data)?;
-        self.light_clusters.cache.update(viewport, view, proj, light_hash, build_data.metrics);
-        self.light_clusters.metrics = build_data.metrics;
-        Ok(())
-    }
-
-    fn recreate_shadow_map(&mut self) -> Result<()> {
-        let device = self.device()?.clone();
-        let resolution = self.shadow_pass.resolution.max(1);
-        let cascade_layers = self.shadow_pass.cascade_count.max(1);
-        let extent = wgpu::Extent3d {
-            width: resolution,
-            height: resolution,
-            depth_or_array_layers: cascade_layers as u32,
-        };
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Shadow Map"),
-            size: extent,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: DEPTH_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("Shadow Map Array View"),
-            format: Some(DEPTH_FORMAT),
-            dimension: Some(wgpu::TextureViewDimension::D2Array),
-            base_mip_level: 0,
-            mip_level_count: None,
-            base_array_layer: 0,
-            array_layer_count: None,
-            ..Default::default()
-        });
-        let mut layer_views = Vec::with_capacity(cascade_layers);
-        for layer in 0..cascade_layers {
-            layer_views.push(texture.create_view(&wgpu::TextureViewDescriptor {
-                label: Some("Shadow Map Cascade Layer"),
-                format: Some(DEPTH_FORMAT),
-                dimension: Some(wgpu::TextureViewDimension::D2),
-                base_mip_level: 0,
-                mip_level_count: None,
-                base_array_layer: layer as u32,
-                array_layer_count: Some(1),
-                ..Default::default()
-            }));
-        }
-        self.shadow_pass.map_texture = Some(texture);
-        self.shadow_pass.map_view = Some(view);
-        self.shadow_pass.cascade_views = layer_views;
-        self.shadow_pass.sample_bind_group = None;
-        self.shadow_pass.dirty = true;
-        Ok(())
-    }
-
-    fn ensure_shadow_resources(&mut self) -> Result<()> {
-        let device = self.device()?.clone();
-        if self.shadow_pass.resources.is_none() {
-            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("Shadow Shader"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("../assets/shaders/mesh_shadow.wgsl").into()),
-            });
-
-            let frame_bgl = Arc::new(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Shadow Frame BGL"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            }));
-
-            let draw_bgl = Arc::new(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Shadow Draw BGL"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            }));
-
-            let skinning_bgl = Arc::new(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Shadow Skinning BGL"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            }));
-
-            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Shadow Pipeline Layout"),
-                bind_group_layouts: &[frame_bgl.as_ref(), draw_bgl.as_ref(), skinning_bgl.as_ref()],
-                push_constant_ranges: &[],
-            });
-
-            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("Shadow Pipeline"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[MeshVertex::layout()],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                fragment: None,
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: Some(wgpu::Face::Back),
-                    unclipped_depth: false,
-                    polygon_mode: wgpu::PolygonMode::Fill,
-                    conservative: false,
-                    strip_index_format: None,
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: DEPTH_FORMAT,
-                    depth_write_enabled: true,
-                    depth_compare: wgpu::CompareFunction::LessEqual,
-                    stencil: wgpu::StencilState::default(),
-                    bias: wgpu::DepthBiasState::default(),
-                }),
-                multisample: wgpu::MultisampleState::default(),
-                multiview: None,
-                cache: None,
-            });
-
-            self.shadow_pass.resources = Some(ShadowPipelineResources { pipeline, skinning_bgl });
-            self.shadow_pass.skinning_identity_buffer = None;
-            self.shadow_pass.skinning_identity_bind_group = None;
-
-            let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Shadow Uniform Buffer"),
-                size: std::mem::size_of::<ShadowUniform>() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            self.shadow_pass.uniform_buffer = Some(uniform_buffer);
-
-            let draw_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Shadow Draw Buffer"),
-                size: std::mem::size_of::<ShadowDrawUniform>() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            self.shadow_pass.draw_buffer = Some(draw_buffer);
-
-            let uniform_buffer_ref =
-                self.shadow_pass.uniform_buffer.as_ref().context("Shadow uniform buffer missing")?;
-            let frame_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Shadow Frame BG"),
-                layout: frame_bgl.as_ref(),
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform_buffer_ref.as_entire_binding(),
-                }],
-            });
-            self.shadow_pass.frame_bind_group = Some(frame_bind_group);
-
-            let draw_buffer_ref =
-                self.shadow_pass.draw_buffer.as_ref().context("Shadow draw buffer missing")?;
-            let draw_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Shadow Draw BG"),
-                layout: draw_bgl.as_ref(),
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: draw_buffer_ref.as_entire_binding(),
-                }],
-            });
-            self.shadow_pass.draw_bind_group = Some(draw_bind_group);
-
-            self.shadow_pass.dirty = true;
-        }
-
-        if self.shadow_pass.map_texture.is_none() || self.shadow_pass.map_view.is_none() {
-            self.recreate_shadow_map()?;
-        }
-
-        if self.shadow_pass.sampler.is_none() {
-            let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some("Shadow Sampler"),
-                address_mode_u: wgpu::AddressMode::ClampToEdge,
-                address_mode_v: wgpu::AddressMode::ClampToEdge,
-                address_mode_w: wgpu::AddressMode::ClampToEdge,
-                mag_filter: wgpu::FilterMode::Linear,
-                min_filter: wgpu::FilterMode::Linear,
-                mipmap_filter: wgpu::FilterMode::Nearest,
-                lod_min_clamp: 0.0,
-                lod_max_clamp: 0.0,
-                compare: Some(wgpu::CompareFunction::LessEqual),
-                anisotropy_clamp: 1,
-                border_color: None,
-            });
-            self.shadow_pass.sampler = Some(sampler);
-        }
-
-        if self.shadow_pass.sample_bind_group.is_none() {
-            if let (Some(layout), Some(buffer), Some(view), Some(sampler)) = (
-                self.shadow_pass.sample_layout.as_ref(),
-                self.shadow_pass.uniform_buffer.as_ref(),
-                self.shadow_pass.map_view.as_ref(),
-                self.shadow_pass.sampler.as_ref(),
-            ) {
-                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("Shadow Sample BG"),
-                    layout: layout.as_ref(),
-                    entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::TextureView(view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: wgpu::BindingResource::Sampler(sampler),
-                        },
-                    ],
-                });
-                self.shadow_pass.sample_bind_group = Some(bind_group);
-            }
-        }
-
-        Ok(())
-    }
-
-    fn write_shadow_uniform(
-        &mut self,
-        matrices: &[Mat4; MAX_SHADOW_CASCADES],
-        strength: f32,
-        cascade_count: usize,
-        active_cascade: usize,
-    ) -> Result<()> {
-        let queue = self.queue()?;
-        let buffer = self.shadow_pass.uniform_buffer.as_ref().context("Shadow uniform buffer missing")?;
-        let bias = self.lighting.shadow_bias.clamp(0.00001, 0.05);
-        let clamped_count = cascade_count.clamp(1, MAX_SHADOW_CASCADES);
-        let mut gpu_matrices = [[[0.0f32; 4]; 4]; MAX_SHADOW_CASCADES];
-        for (dst, src) in gpu_matrices.iter_mut().zip(matrices.iter()) {
-            *dst = src.to_cols_array_2d();
-        }
-        let inv_resolution = 1.0 / self.shadow_pass.resolution.max(1) as f32;
-        let base_radius = self.lighting.shadow_pcf_radius.max(0.0);
-        let mut cascade_params = [[0.0f32; 4]; MAX_SHADOW_CASCADES];
-        for (idx, params) in cascade_params.iter_mut().enumerate() {
-            let cascade_factor = 1.0 + (idx as f32 * 0.35);
-            params[0] = inv_resolution;
-            params[1] = (base_radius * cascade_factor).max(0.0);
-        }
-        let params = [
-            bias,
-            strength.clamp(0.0, 1.0),
-            clamped_count as f32,
-            active_cascade.min(clamped_count - 1) as f32,
-        ];
-        let data = ShadowUniform { light_view_proj: gpu_matrices, params, cascade_params };
-        queue.write_buffer(buffer, 0, bytemuck::bytes_of(&data));
-        self.shadow_pass.dirty = false;
-        Ok(())
-    }
-
     fn prepare_shadow_map(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -2218,208 +1316,19 @@ impl Renderer {
         viewport: RenderViewport,
     ) -> Result<()> {
         self.init_mesh_pipeline()?;
-        self.ensure_shadow_resources()?;
-        self.sync_shadow_map_config()?;
         let device = self.device()?.clone();
-        let shadow_strength = self.lighting.shadow_strength.clamp(0.0, 1.0);
-        let casters: Vec<&MeshDraw> = draws.iter().filter(|draw| draw.casts_shadows).collect();
-        if casters.is_empty() || shadow_strength <= 0.0 {
-            self.shadow_pass.cascade_matrices = [Mat4::IDENTITY; MAX_SHADOW_CASCADES];
-            self.shadow_pass.cascade_splits = [0.0; MAX_SHADOW_CASCADES];
-            let matrices = self.shadow_pass.cascade_matrices;
-            let cascade_count = self.shadow_pass.cascade_count;
-            self.write_shadow_uniform(&matrices, 0.0, cascade_count, 0)?;
-            return Ok(());
-        }
-
-        let mut light_dir = self.lighting.direction.normalize_or_zero();
-        if light_dir.length_squared() < 1e-4 {
-            light_dir = Vec3::new(0.4, 0.8, 0.35).normalize();
-        }
-        let viewport_size = PhysicalSize::new(
-            viewport.size.0.max(1.0).round() as u32,
-            viewport.size.1.max(1.0).round() as u32,
-        );
-        let aspect = if viewport_size.height > 0 {
-            viewport_size.width as f32 / viewport_size.height as f32
-        } else {
-            1.0
-        };
-        let splits = self.compute_cascade_splits(camera);
-        let mut prev_split = camera.near;
-        for (idx, split) in splits.iter().enumerate().take(self.shadow_pass.cascade_count) {
-            let cascade_far = split.max(prev_split + 0.01);
-            self.shadow_pass.cascade_matrices[idx] =
-                self.build_cascade_matrix(camera, aspect, prev_split, cascade_far, light_dir);
-            prev_split = cascade_far;
-        }
-        for idx in self.shadow_pass.cascade_count..MAX_SHADOW_CASCADES {
-            self.shadow_pass.cascade_matrices[idx] = Mat4::IDENTITY;
-        }
-        self.shadow_pass.cascade_splits = splits;
-
-        let pipeline = self
-            .shadow_pass
-            .resources
-            .as_ref()
-            .context("Shadow pipeline resources missing")?
-            .pipeline
-            .clone();
-        let skinning_bgl = self
-            .shadow_pass
-            .resources
-            .as_ref()
-            .context("Shadow pipeline resources missing")?
-            .skinning_bgl
-            .clone();
-        let frame_bg =
-            self.shadow_pass.frame_bind_group.as_ref().context("Shadow frame bind group missing")?.clone();
-        let draw_bg =
-            self.shadow_pass.draw_bind_group.as_ref().context("Shadow draw bind group missing")?.clone();
-        let draw_buffer =
-            self.shadow_pass.draw_buffer.as_ref().context("Shadow draw buffer missing")?.clone();
         let queue = self.queue()?.clone();
-
-        if self.shadow_pass.skinning_identity_buffer.is_none() {
-            let identity = Mat4::IDENTITY.to_cols_array();
-            let palette: Vec<[f32; 16]> = vec![identity; MAX_SKIN_JOINTS];
-            let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Shadow Skinning Identity Buffer"),
-                contents: bytemuck::cast_slice(&palette),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
-            self.shadow_pass.skinning_identity_buffer = Some(buffer);
-            self.shadow_pass.skinning_identity_bind_group = None;
-        }
-        if self.shadow_pass.skinning_identity_bind_group.is_none() {
-            let buffer = self
-                .shadow_pass
-                .skinning_identity_buffer
-                .as_ref()
-                .context("Shadow skinning identity buffer missing")?;
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Shadow Skinning Identity BG"),
-                layout: skinning_bgl.as_ref(),
-                entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
-            });
-            self.shadow_pass.skinning_identity_bind_group = Some(bind_group);
-        }
-        let shadow_skinning_identity = self
-            .shadow_pass
-            .skinning_identity_bind_group
-            .as_ref()
-            .context("Shadow skinning identity bind group missing")?
-            .clone();
-
-        let resolution = self.shadow_pass.resolution.max(1);
-        self.shadow_pass.skinning_cursor = 0;
-        let identity_cols = Mat4::IDENTITY.to_cols_array();
-        if self.shadow_pass.palette_staging.len() != MAX_SKIN_JOINTS {
-            self.shadow_pass.palette_staging.clear();
-            self.shadow_pass.palette_staging.resize(MAX_SKIN_JOINTS, identity_cols);
-        }
-
-        for cascade_index in 0..self.shadow_pass.cascade_count {
-            let layer_view = self
-                .shadow_pass
-                .cascade_views
-                .get(cascade_index)
-                .cloned()
-                .context("Shadow cascade view missing")?;
-            let matrices = self.shadow_pass.cascade_matrices;
-            let cascade_count = self.shadow_pass.cascade_count;
-            self.write_shadow_uniform(&matrices, shadow_strength, cascade_count, cascade_index)?;
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Shadow Pass"),
-                color_attachments: &[],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &layer_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                occlusion_query_set: None,
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&pipeline);
-            let res_f = resolution as f32;
-            pass.set_viewport(0.0, 0.0, res_f, res_f, 0.0, 1.0);
-            pass.set_scissor_rect(0, 0, resolution, resolution);
-            pass.set_bind_group(0, &frame_bg, &[]);
-
-            for draw in &casters {
-                let palette_len = draw.skin_palette.as_ref().map(|palette| palette.len()).unwrap_or(0);
-                if palette_len > MAX_SKIN_JOINTS && self.skinning_limit_warnings.insert(palette_len) {
-                    eprintln!(
-                        "[renderer] Skin palette has {} joints; only the first {} will be uploaded.",
-                        palette_len, MAX_SKIN_JOINTS
-                    );
-                }
-                let joint_count = palette_len.min(MAX_SKIN_JOINTS);
-                let draw_uniform = ShadowDrawUniform {
-                    model: draw.model.to_cols_array_2d(),
-                    joint_count: joint_count as u32,
-                    _padding: [0; 3],
-                };
-                queue.write_buffer(&draw_buffer, 0, bytemuck::bytes_of(&draw_uniform));
-                pass.set_bind_group(1, &draw_bg, &[]);
-                if joint_count > 0 {
-                    {
-                        let staging = &mut self.shadow_pass.palette_staging;
-                        for slot in staging.iter_mut() {
-                            *slot = identity_cols;
-                        }
-                        if let Some(palette) = draw.skin_palette.as_ref() {
-                            for (dst, mat) in staging.iter_mut().zip(palette.iter()).take(joint_count) {
-                                *dst = mat.to_cols_array();
-                            }
-                        }
-                    }
-                    let slot = self.shadow_pass.skinning_cursor;
-                    self.shadow_pass.skinning_cursor += 1;
-                    while self.shadow_pass.skinning_palette_buffers.len() <= slot {
-                        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                            label: Some("Shadow Skinning Palette Buffer"),
-                            size: (MAX_SKIN_JOINTS * std::mem::size_of::<[f32; 16]>()) as u64,
-                            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                            mapped_at_creation: false,
-                        });
-                        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                            label: Some("Shadow Skinning Palette BG"),
-                            layout: skinning_bgl.as_ref(),
-                            entries: &[wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: buffer.as_entire_binding(),
-                            }],
-                        });
-                        self.shadow_pass.skinning_palette_buffers.push(buffer);
-                        self.shadow_pass.skinning_palette_bind_groups.push(bind_group);
-                    }
-                    let buffer = &self.shadow_pass.skinning_palette_buffers[slot];
-                    let upload_start = Instant::now();
-                    queue.write_buffer(buffer, 0, bytemuck::cast_slice(&self.shadow_pass.palette_staging));
-                    let elapsed_ms = upload_start.elapsed().as_secs_f32() * 1000.0;
-                    self.palette_stats_frame.record(joint_count, elapsed_ms);
-                    let bind_group = &self.shadow_pass.skinning_palette_bind_groups[slot];
-                    pass.set_bind_group(2, bind_group, &[]);
-                } else {
-                    pass.set_bind_group(2, &shadow_skinning_identity, &[]);
-                }
-                pass.set_vertex_buffer(0, draw.mesh.vertex_buffer.slice(..));
-                pass.set_index_buffer(draw.mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..draw.mesh.index_count, 0, 0..1);
-            }
-        }
-
-        Self::trim_skinning_cache(
-            &mut self.shadow_pass.skinning_palette_buffers,
-            &mut self.shadow_pass.skinning_palette_bind_groups,
-            self.shadow_pass.skinning_cursor,
-        );
-
-        Ok(())
+        self.shadow_pass.prepare(ShadowPassParams {
+            encoder,
+            draws,
+            camera,
+            viewport,
+            lighting: &self.lighting,
+            device: &device,
+            queue: &queue,
+            skinning_limit_warnings: &mut self.skinning_limit_warnings,
+            palette_stats: &mut self.palette_stats_frame,
+        })
     }
 
     pub fn take_palette_upload_metrics(&mut self) -> PaletteUploadStats {
@@ -2429,7 +1338,7 @@ impl Renderer {
     }
 
     pub fn light_cluster_metrics(&self) -> &LightClusterMetrics {
-        &self.light_clusters.metrics
+        self.light_clusters.metrics()
     }
 
     pub fn window(&self) -> Option<&Window> {
@@ -2570,86 +1479,6 @@ impl Renderer {
         Ok((texture, view))
     }
 
-    fn compute_cascade_splits(&self, camera: &Camera3D) -> [f32; MAX_SHADOW_CASCADES] {
-        let safe_near = camera.near.max(0.01);
-        let mut target_far = (safe_near + self.lighting.shadow_distance).min(camera.far);
-        if target_far <= safe_near {
-            target_far = safe_near + 0.01;
-        }
-        let range = (target_far - safe_near).max(0.01);
-        let mut splits = [target_far; MAX_SHADOW_CASCADES];
-        let cascade_count = self.shadow_pass.cascade_count.max(1);
-        let lambda = self.lighting.shadow_split_lambda.clamp(0.0, 1.0);
-        for cascade in 0..cascade_count {
-            let p = (cascade + 1) as f32 / cascade_count as f32;
-            let uniform_split = safe_near + range * p;
-            let log_split = safe_near * (target_far / safe_near).powf(p);
-            let split = uniform_split + (log_split - uniform_split) * lambda;
-            splits[cascade] = split.min(target_far);
-        }
-        for idx in 1..MAX_SHADOW_CASCADES {
-            if splits[idx] <= splits[idx - 1] {
-                splits[idx] = splits[idx - 1] + 0.01;
-            }
-        }
-        splits[MAX_SHADOW_CASCADES - 1] = target_far;
-        splits
-    }
-
-    fn build_cascade_matrix(
-        &self,
-        camera: &Camera3D,
-        aspect: f32,
-        near: f32,
-        far: f32,
-        light_dir: Vec3,
-    ) -> Mat4 {
-        let corners = Self::frustum_corners(camera, aspect, near, far);
-        let mut center = Vec3::ZERO;
-        for corner in &corners {
-            center += *corner;
-        }
-        center /= corners.len() as f32;
-        let mut up = Vec3::Y;
-        if up.dot(light_dir).abs() > 0.95 {
-            up = Vec3::X;
-        }
-        let distance = (far - near).max(1.0);
-        let eye = center - light_dir * (distance + self.lighting.shadow_distance * 0.5);
-        let view = Mat4::look_at_rh(eye, center, up);
-        let mut min = Vec3::splat(f32::MAX);
-        let mut max = Vec3::splat(f32::MIN);
-        for corner in corners {
-            let light_space = view.transform_point3(corner);
-            min = min.min(light_space);
-            max = max.max(light_space);
-        }
-        let padding = 10.0;
-        min -= Vec3::splat(padding);
-        max += Vec3::splat(padding);
-        Mat4::orthographic_rh(min.x, max.x, min.y, max.y, min.z - padding, max.z + padding) * view
-    }
-
-    fn frustum_corners(camera: &Camera3D, aspect: f32, near: f32, far: f32) -> [Vec3; 8] {
-        let proj = Mat4::perspective_rh_gl(camera.fov_y_radians, aspect.max(0.0001), near, far);
-        let view = camera.view_matrix();
-        let inv = (proj * view).inverse();
-        let mut corners = [Vec3::ZERO; 8];
-        let mut idx = 0;
-        for &x in &[-1.0, 1.0] {
-            for &y in &[-1.0, 1.0] {
-                for &z in &[-1.0, 1.0] {
-                    let clip = Vec4::new(x, y, z, 1.0);
-                    let world = inv * clip;
-                    let point = world.truncate() / world.w.max(1e-6);
-                    corners[idx] = point;
-                    idx += 1;
-                }
-            }
-        }
-        corners
-    }
-
     fn cull_mesh_draws<'a>(
         &self,
         draws: &[MeshDraw<'a>],
@@ -2725,29 +1554,27 @@ impl Renderer {
         mesh_camera: Option<&Camera3D>,
     ) -> Result<SurfaceFrame> {
         self.palette_stats_frame = PaletteUploadStats::default();
-        self.light_clusters.metrics = LightClusterMetrics::default();
+        self.light_clusters.reset_metrics();
         let frame = self.acquire_surface_frame()?;
-        let device = self.device.as_ref().context("GPU device not initialized")?;
-        {
-            let queue = self.queue.as_ref().context("GPU queue not initialized")?;
-            self.sprite_pass.write_globals(queue, sprite_view_proj)?;
-            self.sprite_pass.upload_instances(device, queue, instances)?;
-        }
+        let device = self.device.as_ref().context("GPU device not initialized")?.clone();
+        let queue = self.queue.as_ref().context("GPU queue not initialized")?.clone();
+        self.sprite_pass.write_globals(&queue, sprite_view_proj)?;
         let view = frame.view();
         let encoder_label =
             format!("Frame Encoder (sprites={}, meshes={})", instances.len(), mesh_draws.len());
         let mut encoder = device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(encoder_label.as_str()) });
+        self.sprite_pass.upload_instances(&device, &mut encoder, instances)?;
         self.gpu_timer.begin_frame();
         self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::FrameStart);
 
-        let mut sprite_bind_groups: Vec<(Range<u32>, Arc<wgpu::BindGroup>)> = Vec::new();
+        self.sprite_bind_groups.clear();
         for batch in sprite_batches {
             match self
                 .sprite_pass
-                .sprite_bind_group(device, batch.atlas.as_ref(), &batch.view, sampler)
+                .sprite_bind_group(&device, batch.atlas.as_ref(), &batch.view, sampler)
             {
-                Ok(bind_group) => sprite_bind_groups.push((batch.range.clone(), bind_group)),
+                Ok(bind_group) => self.sprite_bind_groups.push((batch.range.clone(), bind_group)),
                 Err(err) => {
                     eprintln!(
                         "Failed to prepare sprite bind group for atlas '{}': {err:?}",
@@ -2792,16 +1619,15 @@ impl Renderer {
                 timestamp_writes: None,
             });
             self.sprite_pass
-                .encode_pass(&mut pass, viewport, self.size, instances, &sprite_bind_groups)?;
+                .encode_pass(&mut pass, viewport, self.size, instances, &self.sprite_bind_groups)?;
         }
         self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::SpriteEnd);
         self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::FrameEnd);
 
-        if let Some(queue) = self.queue.as_ref() {
-            queue.submit(std::iter::once(encoder.finish()));
-        } else {
-            return Err(anyhow!("GPU queue not initialized"));
-        }
+        self.sprite_pass.finish_uploads();
+        queue.submit(std::iter::once(encoder.finish()));
+        let _ = device.poll(wgpu::PollType::Poll);
+        self.sprite_pass.recall_uploads();
         Ok(frame)
     }
 
@@ -2861,38 +1687,7 @@ impl Renderer {
     ) -> Result<()> {
         let device = self.device.as_ref().context("GPU device not initialized")?;
         let queue = self.queue.as_ref().context("GPU queue not initialized")?;
-        let view = frame.view();
-
-        let mut encoder =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Egui Encoder") });
-        self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::EguiStart);
-        let mut extra_cmd = painter.update_buffers(device, queue, &mut encoder, paint_jobs, screen);
-
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Egui Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
-            });
-            let pass = unsafe {
-                std::mem::transmute::<&mut wgpu::RenderPass<'_>, &mut wgpu::RenderPass<'static>>(&mut pass)
-            };
-            painter.render(pass, paint_jobs, screen);
-        }
-        self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::EguiEnd);
-        self.gpu_timer.finish_frame(&mut encoder);
-        extra_cmd.push(encoder.finish());
-        queue.submit(extra_cmd.into_iter());
-        self.gpu_timer.collect_results(device);
-        frame.present();
-        Ok(())
+        egui_pass::render(&mut self.gpu_timer, device, queue, painter, paint_jobs, screen, frame)
     }
 
     pub fn gpu_timing_supported(&self) -> bool {

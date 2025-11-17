@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use glam::Mat4;
-use wgpu::util::DeviceExt;
+use wgpu::util::{DeviceExt, StagingBelt};
 use winit::dpi::PhysicalSize;
 
 use super::{InstanceData, RenderViewport};
@@ -33,6 +33,7 @@ pub struct SpritePass {
     instance_buffer: Option<wgpu::Buffer>,
     instance_capacity: usize,
     bind_cache: HashMap<String, SpriteBindCacheEntry>,
+    staging_belt: StagingBelt,
 }
 
 impl Default for SpritePass {
@@ -49,6 +50,7 @@ impl Default for SpritePass {
             instance_buffer: None,
             instance_capacity: 0,
             bind_cache: HashMap::new(),
+            staging_belt: StagingBelt::new(64 * 1024),
         }
     }
 }
@@ -258,13 +260,28 @@ impl SpritePass {
     pub fn upload_instances(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
         instances: &[InstanceData],
     ) -> Result<()> {
         self.ensure_instance_capacity(device, instances.len())?;
+        if instances.is_empty() {
+            return Ok(());
+        }
         let instance_buffer = self.instance_buffer.as_ref().context("Instance buffer missing")?;
-        queue.write_buffer(instance_buffer, 0, bytemuck::cast_slice(instances));
+        let byte_len = (instances.len() * std::mem::size_of::<InstanceData>()) as u64;
+        let size = wgpu::BufferSize::new(byte_len).context("Instance byte size overflow")?;
+        let mut view =
+            self.staging_belt.write_buffer(encoder, instance_buffer, 0, size, device);
+        view.copy_from_slice(bytemuck::cast_slice(instances));
         Ok(())
+    }
+
+    pub fn finish_uploads(&mut self) {
+        self.staging_belt.finish();
+    }
+
+    pub fn recall_uploads(&mut self) {
+        self.staging_belt.recall();
     }
 
     pub fn sprite_bind_group(

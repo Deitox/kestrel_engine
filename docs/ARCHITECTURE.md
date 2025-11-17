@@ -38,6 +38,9 @@
 - `src/app/telemetry_tooling.rs` keeps the editor telemetry caches, frame profiler, and frame-budget helpers bundled together so UI panels consume snapshot data without bloating `App`.
 - `src/renderer/sprite_pass.rs` encapsulates the sprite pipeline setup, globals buffer, instancing buffer management, and atlas bind-group cache so the main renderer only orchestrates pass sequencing.
 - `src/renderer/mesh_pass.rs` holds the mesh pass state (pipeline resources, uniform buffers, skinning palette cache, and palette upload stats) so the renderer can manage mesh/shadow coordination without a monolithic struct.
+- `src/renderer/shadow_pass.rs` manages the cascaded shadow map (uniform buffers, depth atlas, palette uploads, and render pass encoding) so the main renderer only forwards mesh draw calls and lighting settings.
+- `src/renderer/light_clusters.rs` owns point-light clustering, GPU buffer updates, and the metrics snapshot used by the analytics overlay, keeping the heavy math/data churn out of `renderer.rs`.
+- `src/renderer/egui_pass.rs` wraps the egui render pass (buffer uploads, command submission, timestamp hooks) so UI composition has a single entry point instead of being interleaved with the main frame encoder.
 
 ### Frame Flow
 1. **Input ingest** - `ApplicationHandler::window_event` converts Winit events into `InputEvent` values, storing them on `Input`.
