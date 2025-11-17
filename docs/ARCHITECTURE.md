@@ -21,7 +21,8 @@
 - `src/input.rs` accumulates keyboard/mouse state and tracks held keys used by both the 2D camera and the mesh preview's orbit/free-fly controls.
 - `src/time.rs` tracks elapsed time and maintains the fixed 60 Hz timestep.
 - `src/ecs.rs` hosts the Bevy ECS world: sprites, meshes, transforms, Rapier physics, particle emitters, and utility resources.
-- `src/renderer.rs` owns WGPU device and swapchain setup, sprite batching, the mesh pass, and egui rendering.
+- `src/renderer.rs` orchestrates sprite batching, mesh/shadow/light-cluster passes, and egui rendering while delegating window/swapchain state to `renderer::window_surface`.
+- `src/renderer/window_surface.rs` initializes the WGPU device, swapchain, depth buffers, present-mode toggling, and headless render targets so the main renderer only depends on a narrow API.
 - `src/assets.rs` lazily loads texture atlases and exposes UV lookups to the ECS.
 - `src/mesh.rs` describes CPU-side mesh data and helpers such as procedural cubes or glTF import.
 - `src/mesh_registry.rs` caches CPU/GPU meshes, resolves dependencies, and exposes registered keys to the editor. Mesh entities combine a `MeshRef` with a `MeshSurface` component storing material and lighting metadata.
@@ -36,7 +37,7 @@
 - `src/app/inspector_tooling.rs` maintains inspector-specific status messaging plus the cached scene/atlas/mesh/clip lists that populate the inspector panels, and exposes helpers (e.g., focus selection) so gizmo workflows live outside the core loop.
 - `src/app/asset_watch_tooling.rs` centralizes atlas/animation file-watcher glue, syncing hot-reload watchers and queueing new roots so `App` only forwards reload requests.
 - `src/app/telemetry_tooling.rs` keeps the editor telemetry caches, frame profiler, and frame-budget helpers bundled together so UI panels consume snapshot data without bloating `App`.
-- `src/renderer/sprite_pass.rs` encapsulates the sprite pipeline setup, globals buffer, instancing buffer management, and atlas bind-group cache so the main renderer only orchestrates pass sequencing.
+- `src/renderer/sprite_pass.rs` encapsulates the sprite pipeline setup, globals buffer, instancing buffer management (including the persistent staging belt used for uploads), and atlas bind-group cache so the main renderer only orchestrates pass sequencing.
 - `src/renderer/mesh_pass.rs` holds the mesh pass state (pipeline resources, uniform buffers, skinning palette cache, and palette upload stats) so the renderer can manage mesh/shadow coordination without a monolithic struct.
 - `src/renderer/shadow_pass.rs` manages the cascaded shadow map (uniform buffers, depth atlas, palette uploads, and render pass encoding) so the main renderer only forwards mesh draw calls and lighting settings.
 - `src/renderer/light_clusters.rs` owns point-light clustering, GPU buffer updates, and the metrics snapshot used by the analytics overlay, keeping the heavy math/data churn out of `renderer.rs`.

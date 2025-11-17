@@ -3,6 +3,7 @@ mod light_clusters;
 mod mesh_pass;
 mod shadow_pass;
 mod sprite_pass;
+mod window_surface;
 
 use crate::camera3d::Camera3D;
 use crate::config::WindowConfig;
@@ -10,7 +11,7 @@ use crate::ecs::{InstanceData, MeshLightingInfo};
 use crate::environment::EnvironmentGpu;
 use crate::material_registry::MaterialGpu;
 use crate::mesh::{Mesh, MeshBounds, MeshVertex};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use glam::{Mat4, Vec3, Vec4};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -19,15 +20,17 @@ use std::time::Instant;
 use wgpu::util::DeviceExt;
 use winit::dpi::PhysicalSize;
 use winit::event_loop::ActiveEventLoop;
-use winit::window::{Fullscreen, Window};
+use winit::window::Window;
 
 // egui
 use egui_wgpu::{Renderer as EguiRenderer, ScreenDescriptor};
 pub use self::light_clusters::LightClusterMetrics;
+pub use self::window_surface::SurfaceFrame;
 use self::light_clusters::{LightClusterParams, LightClusterPass, LightClusterScratch};
 use self::mesh_pass::{MeshDrawData, MeshFrameData, MeshPass, MeshPipelineResources, PaletteUploadStats};
 use self::shadow_pass::{ShadowPass, ShadowPassParams};
 use self::sprite_pass::SpritePass;
+use self::window_surface::WindowSurface;
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const MAX_SKIN_JOINTS: usize = 256;
@@ -317,36 +320,6 @@ pub struct MeshDraw<'a> {
     pub skin_palette: Option<Arc<[Mat4]>>,
 }
 
-pub struct SurfaceFrame {
-    view: wgpu::TextureView,
-    surface: Option<wgpu::SurfaceTexture>,
-}
-
-impl SurfaceFrame {
-    fn new(surface: wgpu::SurfaceTexture) -> Self {
-        let view = surface.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        Self { view, surface: Some(surface) }
-    }
-
-    fn headless(view: wgpu::TextureView) -> Self {
-        Self { view, surface: None }
-    }
-
-    pub fn view(&self) -> &wgpu::TextureView {
-        &self.view
-    }
-
-    pub fn present(mut self) {
-        if let Some(surface) = self.surface.take() {
-            surface.present();
-        }
-    }
-}
-
-struct HeadlessTarget {
-    texture: wgpu::Texture,
-}
-
 struct RendererEnvironmentState {
     bind_group: Arc<wgpu::BindGroup>,
     mip_count: u32,
@@ -405,18 +378,7 @@ impl ScenePointLight {
 }
 
 pub struct Renderer {
-    surface: Option<wgpu::Surface<'static>>,
-    device: Option<wgpu::Device>,
-    queue: Option<wgpu::Queue>,
-    config: Option<wgpu::SurfaceConfiguration>,
-    size: PhysicalSize<u32>,
-    window: Option<Arc<Window>>,
-    title: String,
-    vsync: bool,
-    fullscreen: bool,
-
-    depth_texture: Option<wgpu::Texture>,
-    depth_view: Option<wgpu::TextureView>,
+    window_surface: WindowSurface,
     mesh_pass: MeshPass,
     shadow_pass: ShadowPass,
     light_clusters: LightClusterPass,
@@ -424,42 +386,16 @@ pub struct Renderer {
     lighting: SceneLightingState,
     environment_state: Option<RendererEnvironmentState>,
     sprite_pass: SpritePass,
-    present_modes: Vec<wgpu::PresentMode>,
     gpu_timer: GpuTimer,
     skinning_limit_warnings: HashSet<usize>,
     sprite_bind_groups: Vec<(Range<u32>, Arc<wgpu::BindGroup>)>,
-    #[cfg(test)]
-    resize_invocations: usize,
-    headless_target: Option<HeadlessTarget>,
-    #[cfg(test)]
-    surface_error_injector: Option<wgpu::SurfaceError>,
     palette_stats_frame: PaletteUploadStats,
-}
-
-const DEFAULT_PRESENT_MODES: [wgpu::PresentMode; 1] = [wgpu::PresentMode::Fifo];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SurfaceErrorAction {
-    Reconfigure,
-    Retry,
-    OutOfMemory,
-    Unknown,
 }
 
 impl Renderer {
     pub async fn new(window_cfg: &WindowConfig) -> Self {
         Self {
-            surface: None,
-            device: None,
-            queue: None,
-            config: None,
-            size: PhysicalSize::new(window_cfg.width, window_cfg.height),
-            window: None,
-            title: window_cfg.title.clone(),
-            vsync: window_cfg.vsync,
-            fullscreen: window_cfg.fullscreen,
-            depth_texture: None,
-            depth_view: None,
+            window_surface: WindowSurface::new(window_cfg),
             mesh_pass: MeshPass::new(),
             shadow_pass: ShadowPass::default(),
             light_clusters: LightClusterPass::default(),
@@ -467,42 +403,19 @@ impl Renderer {
             lighting: SceneLightingState::default(),
             environment_state: None,
             sprite_pass: SpritePass::new(),
-            present_modes: Vec::new(),
             gpu_timer: GpuTimer::default(),
             skinning_limit_warnings: HashSet::new(),
             sprite_bind_groups: Vec::new(),
-            #[cfg(test)]
-            resize_invocations: 0,
-            headless_target: None,
-            #[cfg(test)]
-            surface_error_injector: None,
             palette_stats_frame: PaletteUploadStats::default(),
         }
     }
 
     pub fn ensure_window(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
-        if self.window.is_some() {
-            return Ok(());
+        self.window_surface.ensure_window(event_loop)?;
+        if let Ok((device, queue)) = self.window_surface.device_and_queue() {
+            let supported = self.window_surface.gpu_timing_supported();
+            self.gpu_timer.configure(device, queue, supported);
         }
-        let mut attrs =
-            Window::default_attributes().with_title(self.title.clone()).with_inner_size(self.size);
-        if self.fullscreen {
-            attrs = attrs.with_fullscreen(Some(Fullscreen::Borderless(None)));
-        } else {
-            attrs = attrs.with_maximized(true);
-        }
-        let window = Arc::new(event_loop.create_window(attrs).context("Failed to create window")?);
-        if !self.fullscreen {
-            window.set_maximized(true);
-        }
-        pollster::block_on(self.init_wgpu(&window))?;
-        if !self.fullscreen {
-            let maximized_size = window.inner_size();
-            if maximized_size.width > 0 && maximized_size.height > 0 && maximized_size != self.size {
-                self.resize(maximized_size);
-            }
-        }
-        self.window = Some(window);
         Ok(())
     }
 
@@ -574,89 +487,6 @@ impl Renderer {
         &mut self.lighting
     }
 
-    fn choose_surface_format(formats: &[wgpu::TextureFormat]) -> wgpu::TextureFormat {
-        formats.iter().copied().find(|f| f.is_srgb()).unwrap_or(formats[0])
-    }
-
-    fn select_present_mode(&self, modes: &[wgpu::PresentMode]) -> wgpu::PresentMode {
-        if self.vsync {
-            wgpu::PresentMode::Fifo
-        } else {
-            modes
-                .iter()
-                .copied()
-                .find(|mode| *mode != wgpu::PresentMode::Fifo)
-                .unwrap_or(wgpu::PresentMode::Fifo)
-        }
-    }
-
-    async fn init_wgpu(&mut self, window: &Arc<Window>) -> Result<()> {
-        let instance = wgpu::Instance::default();
-        let surface = instance.create_surface(window.clone()).context("Failed to create WGPU surface")?;
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            })
-            .await
-            .context("Failed to request WGPU adapter")?;
-        let adapter_features = adapter.features();
-        let supports_timestamp = adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY);
-        let supports_encoder_queries =
-            adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
-        let gpu_timing_supported = supports_timestamp && supports_encoder_queries;
-        let mut required_features = wgpu::Features::empty();
-        if supports_timestamp {
-            required_features |= wgpu::Features::TIMESTAMP_QUERY;
-        }
-        if supports_encoder_queries {
-            required_features |= wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
-        }
-        let mut required_limits = adapter.limits();
-        required_limits.max_bind_groups = required_limits.max_bind_groups.max(6);
-        required_limits.max_storage_buffers_per_shader_stage =
-            required_limits.max_storage_buffers_per_shader_stage.max(1);
-        let device_desc = wgpu::DeviceDescriptor {
-            label: Some("Device"),
-            required_features,
-            required_limits,
-            experimental_features: wgpu::ExperimentalFeatures::default(),
-            memory_hints: wgpu::MemoryHints::default(),
-            trace: wgpu::Trace::default(),
-        };
-        let (device, queue) =
-            adapter.request_device(&device_desc).await.context("Failed to request WGPU device")?;
-
-        let caps = surface.get_capabilities(&adapter);
-        let format = Self::choose_surface_format(&caps.formats);
-        let size = window.inner_size();
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format,
-            width: size.width,
-            height: size.height,
-            present_mode: self.select_present_mode(&caps.present_modes),
-            alpha_mode: caps.alpha_modes[0],
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-        };
-        surface.configure(&device, &config);
-
-        let (depth_texture, depth_view) = Self::create_depth_texture(&device, size)?;
-
-        self.surface = Some(surface);
-        self.device = Some(device);
-        self.queue = Some(queue);
-        if let (Some(device), Some(queue)) = (self.device.as_ref(), self.queue.as_ref()) {
-            self.gpu_timer.configure(device, queue, gpu_timing_supported);
-        }
-        self.config = Some(config);
-        self.depth_texture = Some(depth_texture);
-        self.depth_view = Some(depth_view);
-        self.present_modes = caps.present_modes.clone();
-        Ok(())
-    }
 
     pub fn init_sprite_pipeline_with_atlas(
         &mut self,
@@ -664,17 +494,14 @@ impl Renderer {
         sampler: wgpu::Sampler,
     ) -> Result<()> {
         self.sprite_pass.clear_bind_cache();
-        let device = self.device.as_ref().context("GPU device not initialized")?;
-        let config = self.config.as_ref().context("Surface configuration missing")?;
-        self.sprite_pass
-            .init_pipeline_with_atlas(device, config.format, atlas_view, sampler)
+        let device = self.window_surface.device()?;
+        let format = self.window_surface.surface_format()?;
+        self.sprite_pass.init_pipeline_with_atlas(device, format, atlas_view, sampler)
     }
 
     pub fn init_mesh_pipeline(&mut self) -> Result<()> {
-        if self.depth_texture.is_none() {
-            self.recreate_depth_texture()?;
-        }
-        let device = self.device()?.clone();
+        self.window_surface.ensure_depth_texture()?;
+        let device = self.window_surface.device()?.clone();
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Mesh Shader"),
@@ -1001,9 +828,7 @@ impl Renderer {
         if self.mesh_pass.resources.is_none() {
             self.init_mesh_pipeline()?;
         }
-        if self.depth_texture.is_none() {
-            self.recreate_depth_texture()?;
-        }
+        self.window_surface.ensure_depth_texture()?;
         let (environment_mip_count, environment_intensity) = {
             let env = self.environment_state.as_ref().context("Environment state not configured")?;
             (env.mip_count, env.intensity)
@@ -1017,7 +842,7 @@ impl Renderer {
         let view_matrix = camera.view_matrix();
         let lighting_dir = self.lighting.direction.normalize_or_zero();
         let mesh_resources = self.mesh_pass.resources.as_ref().context("Mesh pipeline not initialized")?;
-        let depth_view = self.depth_view.as_ref().context("Depth texture missing")?;
+        let depth_view = self.window_surface.depth_view()?;
         let queue = self.queue()?.clone();
         self.light_clusters.prepare(LightClusterParams {
             device: &device,
@@ -1149,8 +974,9 @@ impl Renderer {
         let mut sc_y = viewport.origin.1.max(0.0).floor() as u32;
         let mut sc_w = viewport.size.0.max(1.0).floor() as u32;
         let mut sc_h = viewport.size.1.max(1.0).floor() as u32;
-        let limit_w = self.size.width.max(1);
-        let limit_h = self.size.height.max(1);
+        let surface_size = self.window_surface.size();
+        let limit_w = surface_size.width.max(1);
+        let limit_h = surface_size.height.max(1);
         if sc_x >= limit_w {
             sc_x = limit_w.saturating_sub(1);
         }
@@ -1263,15 +1089,13 @@ impl Renderer {
     }
 
     pub fn device_and_queue(&self) -> Result<(&wgpu::Device, &wgpu::Queue)> {
-        let device = self.device.as_ref().context("GPU device not initialized")?;
-        let queue = self.queue.as_ref().context("GPU queue not initialized")?;
-        Ok((device, queue))
+        self.window_surface.device_and_queue()
     }
     pub fn device(&self) -> Result<&wgpu::Device> {
-        self.device.as_ref().context("GPU device not initialized")
+        self.window_surface.device()
     }
     pub fn queue(&self) -> Result<&wgpu::Queue> {
-        self.queue.as_ref().context("GPU queue not initialized")
+        self.window_surface.queue()
     }
     pub fn material_bind_group_layout(&mut self) -> Result<Arc<wgpu::BindGroupLayout>> {
         if self.mesh_pass.resources.is_none() {
@@ -1288,24 +1112,13 @@ impl Renderer {
         Ok(resources.environment_bgl.clone())
     }
     pub fn surface_format(&self) -> Result<wgpu::TextureFormat> {
-        Ok(self.config.as_ref().context("Surface configuration missing")?.format)
+        self.window_surface.surface_format()
     }
     pub fn size(&self) -> PhysicalSize<u32> {
-        self.size
+        self.window_surface.size()
     }
     pub fn pixels_per_point(&self) -> f32 {
-        1.0
-    }
-
-    fn recreate_depth_texture(&mut self) -> Result<()> {
-        let depth_sources = {
-            let device = self.device.as_ref().context("GPU device not initialized")?;
-            Self::create_depth_texture(device, self.size)?
-        };
-        let (depth_texture, depth_view) = depth_sources;
-        self.depth_texture = Some(depth_texture);
-        self.depth_view = Some(depth_view);
-        Ok(())
+        self.window_surface.pixels_per_point()
     }
 
     fn prepare_shadow_map(
@@ -1342,99 +1155,38 @@ impl Renderer {
     }
 
     pub fn window(&self) -> Option<&Window> {
-        self.window.as_deref()
+        self.window_surface.window()
     }
 
-    fn acquire_surface_frame(&mut self) -> Result<SurfaceFrame> {
-        #[cfg(test)]
-        if let Some(err) = self.surface_error_injector.take() {
-            return Err(self.handle_surface_error(&err));
-        }
-        if let Some(surface) = self.surface.as_ref() {
-            match surface.get_current_texture() {
-                Ok(frame) => Ok(SurfaceFrame::new(frame)),
-                Err(err) => Err(self.handle_surface_error(&err)),
-            }
-        } else if let Some(target) = self.headless_target.as_ref() {
-            let view = target.texture.create_view(&wgpu::TextureViewDescriptor::default());
-            Ok(SurfaceFrame::headless(view))
-        } else {
-            Err(anyhow!("Surface not initialized"))
-        }
-    }
 
     #[cfg(test)]
     pub fn resize_invocations_for_test(&self) -> usize {
-        self.resize_invocations
+        self.window_surface.resize_invocations_for_test()
     }
 
     pub fn prepare_headless_render_target(&mut self) -> Result<()> {
-        let device = self.device()?;
-        if self.size.width == 0 || self.size.height == 0 {
-            return Err(anyhow!("Headless render target requires non-zero dimensions"));
-        }
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Headless Render Target"),
-            size: wgpu::Extent3d {
-                width: self.size.width,
-                height: self.size.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Bgra8UnormSrgb,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        self.headless_target = Some(HeadlessTarget { texture });
-        Ok(())
+        self.window_surface.prepare_headless_render_target()
     }
 
     #[cfg(test)]
     pub fn inject_surface_error_for_test(&mut self, error: wgpu::SurfaceError) {
-        self.surface_error_injector = Some(error);
+        self.window_surface.inject_surface_error_for_test(error);
     }
 
     pub fn vsync_enabled(&self) -> bool {
-        self.vsync
+        self.window_surface.vsync_enabled()
     }
 
     pub fn set_vsync(&mut self, enabled: bool) -> Result<()> {
-        if self.vsync == enabled {
-            return Ok(());
-        }
-        self.vsync = enabled;
-        self.reconfigure_present_mode()
+        self.window_surface.set_vsync(enabled)
     }
 
     pub fn aspect_ratio(&self) -> f32 {
-        if self.size.height == 0 {
-            1.0
-        } else {
-            self.size.width as f32 / self.size.height as f32
-        }
+        self.window_surface.aspect_ratio()
     }
 
     pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
-        self.size = new_size;
-        #[cfg(test)]
-        {
-            self.resize_invocations = self.resize_invocations.saturating_add(1);
-        }
-        self.headless_target = None;
-        if new_size.width > 0 && new_size.height > 0 {
-            if let Some(config) = self.config.as_mut() {
-                config.width = new_size.width;
-                config.height = new_size.height;
-                if let Err(err) = self.configure_surface() {
-                    eprintln!("Surface resize failed: {err:?}");
-                }
-            }
-            if let Err(err) = self.recreate_depth_texture() {
-                eprintln!("Depth texture resize failed: {err:?}");
-            }
-        }
+        self.window_surface.resize(new_size);
     }
 
     pub fn clear_sprite_bind_cache(&mut self) {
@@ -1457,26 +1209,6 @@ impl Renderer {
         if bind_groups.len() > desired {
             bind_groups.truncate(desired);
         }
-    }
-
-    fn create_depth_texture(
-        device: &wgpu::Device,
-        size: PhysicalSize<u32>,
-    ) -> Result<(wgpu::Texture, wgpu::TextureView)> {
-        let extent =
-            wgpu::Extent3d { width: size.width.max(1), height: size.height.max(1), depth_or_array_layers: 1 };
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Depth Texture"),
-            size: extent,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: DEPTH_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        Ok((texture, view))
     }
 
     fn cull_mesh_draws<'a>(
@@ -1555,9 +1287,9 @@ impl Renderer {
     ) -> Result<SurfaceFrame> {
         self.palette_stats_frame = PaletteUploadStats::default();
         self.light_clusters.reset_metrics();
-        let frame = self.acquire_surface_frame()?;
-        let device = self.device.as_ref().context("GPU device not initialized")?.clone();
-        let queue = self.queue.as_ref().context("GPU queue not initialized")?.clone();
+        let frame = self.window_surface.acquire_surface_frame()?;
+        let device = self.device()?.clone();
+        let queue = self.queue()?.clone();
         self.sprite_pass.write_globals(&queue, sprite_view_proj)?;
         let view = frame.view();
         let encoder_label =
@@ -1619,7 +1351,7 @@ impl Renderer {
                 timestamp_writes: None,
             });
             self.sprite_pass
-                .encode_pass(&mut pass, viewport, self.size, instances, &self.sprite_bind_groups)?;
+                .encode_pass(&mut pass, viewport, self.window_surface.size(), instances, &self.sprite_bind_groups)?;
         }
         self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::SpriteEnd);
         self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::FrameEnd);
@@ -1631,53 +1363,6 @@ impl Renderer {
         Ok(frame)
     }
 
-    fn handle_surface_error(&mut self, error: &wgpu::SurfaceError) -> anyhow::Error {
-        match Self::surface_error_action(error) {
-            SurfaceErrorAction::Reconfigure => {
-                self.resize(self.size);
-                anyhow!("Surface lost or outdated; reconfigured surface")
-            }
-            SurfaceErrorAction::Retry => anyhow!("Surface acquisition timed out"),
-            SurfaceErrorAction::OutOfMemory => anyhow!("Surface out of memory"),
-            SurfaceErrorAction::Unknown => anyhow!("Surface reported an unknown error"),
-        }
-    }
-
-    fn surface_error_action(error: &wgpu::SurfaceError) -> SurfaceErrorAction {
-        match error {
-            wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated => SurfaceErrorAction::Reconfigure,
-            wgpu::SurfaceError::Timeout => SurfaceErrorAction::Retry,
-            wgpu::SurfaceError::OutOfMemory => SurfaceErrorAction::OutOfMemory,
-            wgpu::SurfaceError::Other => SurfaceErrorAction::Unknown,
-        }
-    }
-
-    fn configure_surface(&mut self) -> Result<()> {
-        let surface = self.surface.as_ref().context("Surface not initialized")?;
-        let device = self.device.as_ref().context("GPU device not initialized")?;
-        let config = self.config.as_mut().context("Surface configuration missing")?;
-        surface.configure(device, config);
-        Ok(())
-    }
-
-    fn reconfigure_present_mode(&mut self) -> Result<()> {
-        if self.surface.is_none() {
-            // Nothing to reconfigure yet; init_wgpu will respect the new flag.
-            return Ok(());
-        }
-        let modes: &[wgpu::PresentMode] = if self.present_modes.is_empty() {
-            &DEFAULT_PRESENT_MODES
-        } else {
-            self.present_modes.as_slice()
-        };
-        let present_mode = self.select_present_mode(modes);
-        {
-            let config = self.config.as_mut().context("Surface configuration missing")?;
-            config.present_mode = present_mode;
-        }
-        self.configure_surface()
-    }
-
     pub fn render_egui(
         &mut self,
         painter: &mut EguiRenderer,
@@ -1685,9 +1370,9 @@ impl Renderer {
         screen: &ScreenDescriptor,
         frame: SurfaceFrame,
     ) -> Result<()> {
-        let device = self.device.as_ref().context("GPU device not initialized")?;
-        let queue = self.queue.as_ref().context("GPU queue not initialized")?;
-        egui_pass::render(&mut self.gpu_timer, device, queue, painter, paint_jobs, screen, frame)
+        let device = self.device()?.clone();
+        let queue = self.queue()?.clone();
+        egui_pass::render(&mut self.gpu_timer, &device, &queue, painter, paint_jobs, screen, frame)
     }
 
     pub fn gpu_timing_supported(&self) -> bool {
@@ -1708,44 +1393,6 @@ mod surface_tests {
     #[test]
     fn mesh_draw_data_layout() {
         assert_eq!(std::mem::size_of::<MeshDrawData>(), 112);
-    }
-    #[test]
-    fn present_mode_respects_vsync_flag() {
-        let cfg = WindowConfig::default();
-        let mut renderer = block_on(Renderer::new(&cfg));
-        renderer.vsync = false;
-        let modes = vec![wgpu::PresentMode::Immediate, wgpu::PresentMode::Fifo];
-        assert_eq!(renderer.select_present_mode(&modes), wgpu::PresentMode::Immediate);
-
-        let mut vsync_renderer = block_on(Renderer::new(&cfg));
-        vsync_renderer.vsync = true;
-        assert_eq!(vsync_renderer.select_present_mode(&modes), wgpu::PresentMode::Fifo);
-    }
-
-    #[test]
-    fn surface_error_action_matches_variants() {
-        assert_eq!(
-            Renderer::surface_error_action(&wgpu::SurfaceError::Lost),
-            SurfaceErrorAction::Reconfigure
-        );
-        assert_eq!(
-            Renderer::surface_error_action(&wgpu::SurfaceError::Outdated),
-            SurfaceErrorAction::Reconfigure
-        );
-        assert_eq!(Renderer::surface_error_action(&wgpu::SurfaceError::Timeout), SurfaceErrorAction::Retry);
-        assert_eq!(
-            Renderer::surface_error_action(&wgpu::SurfaceError::OutOfMemory),
-            SurfaceErrorAction::OutOfMemory
-        );
-        assert_eq!(Renderer::surface_error_action(&wgpu::SurfaceError::Other), SurfaceErrorAction::Unknown);
-    }
-
-    #[test]
-    fn surface_loss_triggers_resize_attempt_even_without_surface() {
-        let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
-        assert_eq!(renderer.resize_invocations_for_test(), 0);
-        let _ = renderer.handle_surface_error(&wgpu::SurfaceError::Lost);
-        assert_eq!(renderer.resize_invocations_for_test(), 1);
     }
 
     #[test]
@@ -1809,63 +1456,10 @@ mod surface_tests {
 
 impl Renderer {
     pub async fn init_headless_for_test(&mut self) -> Result<()> {
-        if self.device.is_some() {
-            return Ok(());
-        }
-        let instance = wgpu::Instance::default();
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-            })
-            .await
-            .context("Failed to request headless adapter")?;
-        let adapter_features = adapter.features();
-        let supports_timestamp = adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY);
-        let supports_encoder_queries =
-            adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
-        let gpu_timing_supported = supports_timestamp && supports_encoder_queries;
-        let mut required_features = wgpu::Features::empty();
-        if supports_timestamp {
-            required_features |= wgpu::Features::TIMESTAMP_QUERY;
-        }
-        if supports_encoder_queries {
-            required_features |= wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
-        }
-        let mut required_limits = adapter.limits();
-        required_limits.max_bind_groups = required_limits.max_bind_groups.max(6);
-        required_limits.max_storage_buffers_per_shader_stage =
-            required_limits.max_storage_buffers_per_shader_stage.max(1);
-        let device_desc = wgpu::DeviceDescriptor {
-            label: Some("Headless Device"),
-            required_features,
-            required_limits,
-            experimental_features: wgpu::ExperimentalFeatures::default(),
-            memory_hints: wgpu::MemoryHints::default(),
-            trace: wgpu::Trace::default(),
-        };
-        let (device, queue) =
-            adapter.request_device(&device_desc).await.context("Failed to request headless device")?;
-        self.device = Some(device);
-        self.queue = Some(queue);
-        if let (Some(device), Some(queue)) = (self.device.as_ref(), self.queue.as_ref()) {
-            self.gpu_timer.configure(device, queue, gpu_timing_supported);
-        }
-        if self.config.is_none() {
-            self.config = Some(wgpu::SurfaceConfiguration {
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                format: wgpu::TextureFormat::Bgra8UnormSrgb,
-                width: self.size.width.max(1),
-                height: self.size.height.max(1),
-                present_mode: wgpu::PresentMode::Fifo,
-                alpha_mode: wgpu::CompositeAlphaMode::Opaque,
-                view_formats: vec![],
-                desired_maximum_frame_latency: 2,
-            });
-        }
-        if self.depth_texture.is_none() {
-            self.recreate_depth_texture()?;
+        self.window_surface.init_headless_for_test().await?;
+        if let Ok((device, queue)) = self.window_surface.device_and_queue() {
+            let supported = self.window_surface.gpu_timing_supported();
+            self.gpu_timer.configure(device, queue, supported);
         }
         Ok(())
     }
@@ -1873,7 +1467,7 @@ impl Renderer {
 
 #[cfg(test)]
 mod depth_texture_tests {
-    use super::*;
+    use super::window_surface::create_depth_texture;
     use pollster::block_on;
     use winit::dpi::PhysicalSize;
 
@@ -1899,7 +1493,7 @@ mod depth_texture_tests {
             };
             let (device, _) = adapter.request_device(&device_desc).await.expect("device");
             let size = PhysicalSize::new(321, 123);
-            let (texture, view) = Renderer::create_depth_texture(&device, size).expect("depth texture");
+            let (texture, view) = create_depth_texture(&device, size).expect("depth texture");
             let extent = texture.size();
             assert_eq!(extent.width, 321);
             assert_eq!(extent.height, 123);

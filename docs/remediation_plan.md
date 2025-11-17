@@ -47,12 +47,12 @@ This document tracks the staged remediation work. Each section calls out the goa
 
 **Goal:** Reduce the 140 kB renderer monolith into manageable passes and eliminate avoidable CPU work per frame.
 
-**Status:** **In Progress** - Sprite rendering lives in `src/renderer/sprite_pass.rs`, the mesh pass state (pipeline resources, uniforms, skinning caches, palette metrics) now lives in `src/renderer/mesh_pass.rs`, shadows/light clusters/egui compositing were extracted into `src/renderer/{shadow_pass,light_clusters,egui_pass}.rs`, and `Renderer` reuses its sprite bind-group vector instead of re-allocating every frame. The remaining work can focus on the swapchain/window glue, the instance upload improvements, and the pass-level validation.
+**Status:** **In Progress** - Sprite rendering lives in `src/renderer/sprite_pass.rs`, the mesh pass state (pipeline resources, uniforms, skinning caches, palette metrics) now lives in `src/renderer/mesh_pass.rs`, shadows/light clusters/egui compositing were extracted into `src/renderer/{shadow_pass,light_clusters,egui_pass}.rs`, and the swapchain/window/depth plumbing sits in `src/renderer/window_surface.rs` so `Renderer` only orchestrates passes while reusing its sprite bind-group vector. The remaining work can focus on the instance upload improvements and the pass-level validation.
 
 **Tasks**
 - [x] Move sprite rendering into `renderer::sprite_pass` so instancing, uniforms, and atlas bind groups stay self-contained.
 - [x] Extract mesh pass state/helpers into `renderer::mesh_pass` to stage the remaining render-pass break up.
-- [ ] Extract the remaining passes (swapchain/window management, renderer orchestration glue) into dedicated modules; shadow/light clusters/egui compositing already live in focused files.
+- [x] Extract the remaining passes (swapchain/window management, renderer orchestration glue) into dedicated modules; shadow/light clusters/egui compositing already live in focused files.
 - [x] Convert frequently rebuilt temporaries into struct fields that reuse allocations by calling `Vec::clear()` instead of reallocating (`Renderer::sprite_bind_groups` now persists between frames).
 - [x] Introduce a persistent staging belt for sprite instance uploads so we stream data into the vertex buffer via a ring buffer instead of rewriting the entire allocation every frame.
 - Introduce a persistently mapped or ring-buffer-based instance upload path so large sprite batches no longer rewrite the full buffer each frame.
