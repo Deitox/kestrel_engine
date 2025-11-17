@@ -1,10 +1,12 @@
 use super::animation_keyframe_panel::AnimationKeyframePanel;
 use super::{ClipEditRecord, FrameBudgetSnapshot, ScriptConsoleEntry};
+use crate::analytics::{AnimationBudgetSample, GpuPassMetric, KeyframeEditorEvent, KeyframeEditorUsageSnapshot};
 use crate::animation_validation::AnimationValidationEvent;
 use crate::assets::AnimationClip;
 use crate::config::{EditorConfig, ParticleConfig, SpriteGuardrailMode};
+use crate::plugins::{CapabilityViolationLog, PluginAssetReadbackEvent, PluginCapabilityEvent, PluginWatchdogEvent};
 use crate::prefab::{PrefabFormat, PrefabStatusMessage};
-use crate::renderer::SceneLightingState;
+use crate::renderer::{LightClusterMetrics, SceneLightingState};
 use crate::scene::{SceneDependencies, SceneDependencyFingerprints};
 use egui::Context as EguiCtx;
 use egui_wgpu::{Renderer as EguiRenderer, ScreenDescriptor};
@@ -111,6 +113,17 @@ pub(crate) struct EditorUiState {
     pub frame_budget_idle_snapshot: Option<FrameBudgetSnapshot>,
     pub frame_budget_panel_snapshot: Option<FrameBudgetSnapshot>,
     pub frame_budget_status: Option<String>,
+    pub shadow_pass_metric: Option<GpuPassMetric>,
+    pub mesh_pass_metric: Option<GpuPassMetric>,
+    pub plugin_capability_metrics: Arc<HashMap<String, CapabilityViolationLog>>,
+    pub plugin_capability_events: Arc<[PluginCapabilityEvent]>,
+    pub plugin_asset_readbacks: Arc<[PluginAssetReadbackEvent]>,
+    pub plugin_watchdog_events: Arc<[PluginWatchdogEvent]>,
+    pub animation_validation_log: Arc<[AnimationValidationEvent]>,
+    pub animation_budget_sample: Option<AnimationBudgetSample>,
+    pub light_cluster_metrics_overlay: Option<LightClusterMetrics>,
+    pub keyframe_editor_usage: Option<KeyframeEditorUsageSnapshot>,
+    pub keyframe_event_log: Arc<[KeyframeEditorEvent]>,
     pub script_debugger_open: bool,
     pub script_focus_repl: bool,
     pub script_repl_input: String,
@@ -215,6 +228,17 @@ impl EditorUiState {
             frame_budget_idle_snapshot: None,
             frame_budget_panel_snapshot: None,
             frame_budget_status: None,
+            shadow_pass_metric: None,
+            mesh_pass_metric: None,
+            plugin_capability_metrics: Arc::new(HashMap::new()),
+            plugin_capability_events: Arc::from(Vec::<PluginCapabilityEvent>::new().into_boxed_slice()),
+            plugin_asset_readbacks: Arc::from(Vec::<PluginAssetReadbackEvent>::new().into_boxed_slice()),
+            plugin_watchdog_events: Arc::from(Vec::<PluginWatchdogEvent>::new().into_boxed_slice()),
+            animation_validation_log: Arc::from(Vec::<AnimationValidationEvent>::new().into_boxed_slice()),
+            animation_budget_sample: None,
+            light_cluster_metrics_overlay: None,
+            keyframe_editor_usage: None,
+            keyframe_event_log: Arc::from(Vec::<KeyframeEditorEvent>::new().into_boxed_slice()),
             script_debugger_open: false,
             script_focus_repl: false,
             script_repl_input: String::new(),

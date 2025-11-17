@@ -5,7 +5,7 @@ use super::{
 #[cfg(feature = "alloc_profiler")]
 use crate::alloc_profiler::AllocationDelta;
 use crate::analytics::{
-    AnimationBudgetSample, KeyframeEditorEvent, KeyframeEditorEventKind, KeyframeEditorTrackKind,
+    AnimationBudgetSample, GpuPassMetric, KeyframeEditorEvent, KeyframeEditorEventKind, KeyframeEditorTrackKind,
     KeyframeEditorUsageSnapshot,
 };
 use crate::animation_validation::{AnimationValidationEvent, AnimationValidationSeverity};
@@ -23,8 +23,8 @@ use crate::gizmo::{
 };
 use crate::mesh_preview::{GIZMO_3D_AXIS_LENGTH_SCALE, GIZMO_3D_AXIS_MAX, GIZMO_3D_AXIS_MIN};
 use crate::plugins::{
-    AssetReadbackStats, CapabilityViolationLog, PluginCapability, PluginManager, PluginState, PluginStatus,
-    PluginTrust, PluginWatchdogEvent,
+    AssetReadbackStats, CapabilityViolationLog, PluginAssetReadbackEvent, PluginCapability, PluginCapabilityEvent,
+    PluginManager, PluginState, PluginStatus, PluginTrust, PluginWatchdogEvent,
 };
 use crate::prefab::{PrefabFormat, PrefabStatusKind, PrefabStatusMessage};
 use crate::renderer::{LightClusterMetrics, ScenePointLight, LIGHT_CLUSTER_MAX_LIGHTS, MAX_SHADOW_CASCADES};
@@ -637,6 +637,17 @@ pub(super) struct EditorUiParams {
     pub frame_budget_idle: Option<FrameBudgetSnapshotView>,
     pub frame_budget_panel: Option<FrameBudgetSnapshotView>,
     pub frame_budget_status: Option<String>,
+    pub shadow_pass_metric: Option<GpuPassMetric>,
+    pub mesh_pass_metric: Option<GpuPassMetric>,
+    pub plugin_capability_metrics: Arc<HashMap<String, CapabilityViolationLog>>,
+    pub plugin_capability_events: Arc<[PluginCapabilityEvent]>,
+    pub plugin_asset_readback_log: Arc<[PluginAssetReadbackEvent]>,
+    pub plugin_watchdog_log: Arc<[PluginWatchdogEvent]>,
+    pub animation_validation_log: Arc<[AnimationValidationEvent]>,
+    pub animation_budget_sample: Option<AnimationBudgetSample>,
+    pub light_cluster_metrics_overlay: Option<LightClusterMetrics>,
+    pub keyframe_editor_usage: Option<KeyframeEditorUsageSnapshot>,
+    pub keyframe_event_log: Arc<[KeyframeEditorEvent]>,
     pub system_timings: Vec<SystemTimingSummary>,
     pub entity_count: usize,
     pub instances_drawn: usize,
@@ -818,6 +829,17 @@ impl App {
             frame_budget_idle,
             frame_budget_panel,
             frame_budget_status,
+            shadow_pass_metric,
+            mesh_pass_metric,
+            plugin_capability_metrics,
+            plugin_capability_events,
+            plugin_asset_readback_log,
+            plugin_watchdog_log,
+            animation_validation_log,
+            animation_budget_sample,
+            light_cluster_metrics_overlay,
+            keyframe_editor_usage,
+            keyframe_event_log,
             system_timings,
             entity_count,
             instances_drawn,
@@ -991,38 +1013,6 @@ impl App {
             reload: false,
         };
 
-        let shadow_pass_metric =
-            self.analytics_plugin().and_then(|analytics| analytics.gpu_pass_metric("Shadow pass"));
-        let mesh_pass_metric =
-            self.analytics_plugin().and_then(|analytics| analytics.gpu_pass_metric("Mesh pass"));
-        let plugin_capability_metrics_snapshot = self
-            .analytics_plugin()
-            .map(|analytics| analytics.plugin_capability_metrics())
-            .unwrap_or_else(|| Arc::new(HashMap::new()));
-        let plugin_capability_events_snapshot =
-            self.analytics_plugin().map(|analytics| analytics.plugin_capability_events()).unwrap_or_default();
-        let plugin_asset_readback_log =
-            self.analytics_plugin().map(|analytics| analytics.plugin_asset_readbacks()).unwrap_or_default();
-        let plugin_watchdog_log =
-            self.analytics_plugin().map(|analytics| analytics.plugin_watchdog_events()).unwrap_or_default();
-        let animation_validation_log: Arc<[AnimationValidationEvent]> =
-            if let Some(analytics) = self.analytics_plugin_mut() {
-                analytics.animation_validation_events_arc()
-            } else {
-                Arc::from([])
-            };
-        let animation_budget_sample =
-            self.analytics_plugin().and_then(|analytics| analytics.animation_budget_sample());
-        let light_cluster_metrics_overlay =
-            self.analytics_plugin().and_then(|analytics| analytics.light_cluster_metrics());
-        let keyframe_editor_usage =
-            self.analytics_plugin().map(|analytics| analytics.keyframe_editor_usage());
-        let keyframe_event_log: Arc<[KeyframeEditorEvent]> =
-            if let Some(analytics) = self.analytics_plugin_mut() {
-                analytics.keyframe_editor_events_arc()
-            } else {
-                Arc::from([])
-            };
         let plugin_manifest_error = self.plugin_host().manifest_error().map(|err| err.to_string());
         let (plugin_manifest_entries, plugin_manifest_disabled_builtins, plugin_manifest_path) =
             if let Some(manifest) = self.plugin_host().manifest() {
@@ -1300,10 +1290,10 @@ impl App {
                                 id_lookup_active = true;
                             }
                         });
-                        if !plugin_capability_metrics_snapshot.is_empty() {
+                        if !plugin_capability_metrics.is_empty() {
                             ui.separator();
                             ui.label("Plugin Capability Metrics");
-                            let mut rows = plugin_capability_metrics_snapshot.iter().collect::<Vec<_>>();
+                            let mut rows = plugin_capability_metrics.iter().collect::<Vec<_>>();
                             rows.sort_by(|a, b| a.0.cmp(b.0));
                             for (plugin, log) in rows {
                                 let (color, summary) = capability_violation_summary(Some(log));
@@ -1316,10 +1306,10 @@ impl App {
                                 });
                             }
                         }
-                        if !plugin_capability_events_snapshot.is_empty() {
+                        if !plugin_capability_events.is_empty() {
                             ui.separator();
                             ui.label("Capability Violations");
-                            for event in plugin_capability_events_snapshot.iter().take(6) {
+                            for event in plugin_capability_events.iter().take(6) {
                                 let ago = event
                                     .timestamp
                                     .elapsed()

@@ -33,7 +33,7 @@ This document tracks the staged remediation work. Each section calls out the goa
 
 **Goal:** Separate responsibilities so runtime, editor UI, and plugin orchestration can evolve and be tested independently.
 
-**Status:** **In Progress** - Plugin plumbing now lives in `app::plugin_runtime`, and `app::runtime_loop` owns timing/fixed-step bookkeeping so `App` no longer manipulates raw accumulators. The editor shell extraction remains.
+**Status:** **In Progress** - Plugin plumbing now lives in `app::plugin_runtime`, `app::runtime_loop` owns timing/fixed-step bookkeeping, the animation/keyframe tooling resides in `app::animation_tooling`, prefab workflows in `app::prefab_tooling`, and mesh-preview helpers in `app::mesh_preview_tooling`. Remaining work focuses on the last editor-facing helpers (analytics tables, mesh inspectors) before we document the new architecture.
 
 **Tasks**
 - [x] Extract a `RuntimeLoop` module that owns the tick/fixed-step bookkeeping so `App` depends on a single loop abstraction instead of raw `Time`/accumulator fields.
