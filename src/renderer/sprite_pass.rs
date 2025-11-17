@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use glam::Mat4;
-use wgpu::util::{DeviceExt, StagingBelt};
+use wgpu::util::DeviceExt;
 use winit::dpi::PhysicalSize;
 
 use super::{InstanceData, RenderViewport};
@@ -33,7 +33,8 @@ pub struct SpritePass {
     instance_buffer: Option<wgpu::Buffer>,
     instance_capacity: usize,
     bind_cache: HashMap<String, SpriteBindCacheEntry>,
-    staging_belt: StagingBelt,
+    instance_span: Range<wgpu::BufferAddress>,
+    instance_cursor: wgpu::BufferAddress,
 }
 
 impl Default for SpritePass {
@@ -50,7 +51,8 @@ impl Default for SpritePass {
             instance_buffer: None,
             instance_capacity: 0,
             bind_cache: HashMap::new(),
-            staging_belt: StagingBelt::new(64 * 1024),
+            instance_span: 0..0,
+            instance_cursor: 0,
         }
     }
 }
@@ -260,28 +262,32 @@ impl SpritePass {
     pub fn upload_instances(
         &mut self,
         device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
+        queue: &wgpu::Queue,
         instances: &[InstanceData],
     ) -> Result<()> {
         self.ensure_instance_capacity(device, instances.len())?;
+        self.instance_span = 0..0;
         if instances.is_empty() {
             return Ok(());
         }
         let instance_buffer = self.instance_buffer.as_ref().context("Instance buffer missing")?;
-        let byte_len = (instances.len() * std::mem::size_of::<InstanceData>()) as u64;
-        let size = wgpu::BufferSize::new(byte_len).context("Instance byte size overflow")?;
-        let mut view =
-            self.staging_belt.write_buffer(encoder, instance_buffer, 0, size, device);
-        view.copy_from_slice(bytemuck::cast_slice(instances));
+        let byte_len = (instances.len() * std::mem::size_of::<InstanceData>()) as wgpu::BufferAddress;
+        let capacity_bytes = self.instance_capacity_bytes();
+        let alignment = wgpu::COPY_BUFFER_ALIGNMENT;
+        let mut write_offset = align_to(self.instance_cursor, alignment);
+        if write_offset + byte_len > capacity_bytes {
+            write_offset = 0;
+        }
+        let span_end = write_offset + byte_len;
+        let cursor_advance = align_to(byte_len, alignment);
+        self.instance_cursor = span_end + (cursor_advance - byte_len);
+        self.instance_span = write_offset..span_end;
+        queue.write_buffer(
+            instance_buffer,
+            write_offset,
+            bytemuck::cast_slice(instances),
+        );
         Ok(())
-    }
-
-    pub fn finish_uploads(&mut self) {
-        self.staging_belt.finish();
-    }
-
-    pub fn recall_uploads(&mut self) {
-        self.staging_belt.recall();
     }
 
     pub fn sprite_bind_group(
@@ -332,7 +338,12 @@ impl SpritePass {
         let vertex_buffer = self.vertex_buffer.as_ref().context("Sprite vertex buffer missing")?;
         pass.set_vertex_buffer(0, vertex_buffer.slice(..));
         let instance_buffer = self.instance_buffer.as_ref().context("Instance buffer missing")?;
-        pass.set_vertex_buffer(1, instance_buffer.slice(..));
+        if instances.is_empty() {
+            // No sprites to draw, so skip binding the per-instance buffer to avoid zero-length slices.
+            return Ok(());
+        }
+        let instance_span = self.instance_span.clone();
+        pass.set_vertex_buffer(1, instance_buffer.slice(instance_span));
         let (vp_x, vp_y) = viewport.origin;
         let (vp_w, vp_h) = viewport.size;
         let vp_w = vp_w.max(1.0);
@@ -403,6 +414,20 @@ impl SpritePass {
         });
         self.instance_buffer = Some(new_buf);
         self.instance_capacity = new_cap;
+        self.instance_span = 0..0;
+        self.instance_cursor = 0;
         Ok(())
+    }
+
+    fn instance_capacity_bytes(&self) -> wgpu::BufferAddress {
+        (self.instance_capacity.max(1) * std::mem::size_of::<InstanceData>()) as wgpu::BufferAddress
+    }
+}
+
+fn align_to(value: wgpu::BufferAddress, alignment: wgpu::BufferAddress) -> wgpu::BufferAddress {
+    if alignment == 0 {
+        value
+    } else {
+        ((value + alignment - 1) / alignment) * alignment
     }
 }

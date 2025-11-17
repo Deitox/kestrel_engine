@@ -47,7 +47,7 @@ This document tracks the staged remediation work. Each section calls out the goa
 
 **Goal:** Reduce the 140 kB renderer monolith into manageable passes and eliminate avoidable CPU work per frame.
 
-**Status:** **In Progress** - Sprite rendering lives in `src/renderer/sprite_pass.rs`, the mesh pass state (pipeline resources, uniforms, skinning caches, palette metrics) now lives in `src/renderer/mesh_pass.rs`, shadows/light clusters/egui compositing were extracted into `src/renderer/{shadow_pass,light_clusters,egui_pass}.rs`, and the swapchain/window/depth plumbing sits in `src/renderer/window_surface.rs` so `Renderer` only orchestrates passes while reusing its sprite bind-group vector. The remaining work can focus on the instance upload improvements and the pass-level validation.
+**Status:** **In Progress** - Sprite rendering lives in `src/renderer/sprite_pass.rs`, the mesh pass state (pipeline resources, uniforms, skinning caches, palette metrics) now lives in `src/renderer/mesh_pass.rs`, shadows/light clusters/egui compositing were extracted into `src/renderer/{shadow_pass,light_clusters,egui_pass}.rs`, `src/renderer/window_surface.rs` owns swapchain/window/depth plumbing, sprite uploads now stream through a ring-buffered staging path so we only advance offsets instead of rewriting the full buffer, and new headless tests exercise frustum culling plus GPU timing collection without needing a platform surface.
 
 **Tasks**
 - [x] Move sprite rendering into `renderer::sprite_pass` so instancing, uniforms, and atlas bind groups stay self-contained.
@@ -55,8 +55,8 @@ This document tracks the staged remediation work. Each section calls out the goa
 - [x] Extract the remaining passes (swapchain/window management, renderer orchestration glue) into dedicated modules; shadow/light clusters/egui compositing already live in focused files.
 - [x] Convert frequently rebuilt temporaries into struct fields that reuse allocations by calling `Vec::clear()` instead of reallocating (`Renderer::sprite_bind_groups` now persists between frames).
 - [x] Introduce a persistent staging belt for sprite instance uploads so we stream data into the vertex buffer via a ring buffer instead of rewriting the entire allocation every frame.
-- Introduce a persistently mapped or ring-buffer-based instance upload path so large sprite batches no longer rewrite the full buffer each frame.
-- Add pass-level tests/benchmarks (via the headless renderer hooks) to validate culling, light clustering, and GPU timing in isolation.
+- [x] Introduce a persistently mapped or ring-buffer-based instance upload path so large sprite batches no longer rewrite the full buffer each frame.
+- [x] Add pass-level tests/benchmarks (via the headless renderer hooks) to validate culling, light clustering, and GPU timing in isolation.
 
 ## 5. Telemetry & UI Snapshot Stabilization (Week 6)
 

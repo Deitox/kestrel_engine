@@ -305,7 +305,7 @@ idx.as_array().iter().enumerate().for_each(|(k,&v)| frame_idx[i+k]=v);
 - [x] 2.1 SoA animator storage (feature-gated). (`Cargo.toml:11` exposes `sprite_anim_soa`, and `src/ecs/systems/animation.rs:54` introduces `SpriteAnimatorSoa` with fast/slow driver paths such as `sys_drive_sprite_animations` delegating to the SoA runtime when the feature is enabled.)
 - [x] 2.2 Fixed-point or SIMD kernels (decide based on SoA results). (`sprite_anim_fixed_point` builds on the SoA runtime by mirroring per-field fixed-point buffers and running the fast-loop advance via `advance_animation_fast_loop_slot` (`src/ecs/systems/animation.rs:4141`), while public ECS APIs remain f32-facing.)
 - [ ] 2.3 Prefetch/next-dt cache for var-dt.
-- [ ] 2.4 Single write-combined GPU upload.
+- [x] 2.4 Single write-combined GPU upload.
 - [ ] 3.x Deep refactors if needed: slope sampling, workload bucketing, PGO/BOLT.
 - [ ] Final bench & sign-off against acceptance criteria.
 

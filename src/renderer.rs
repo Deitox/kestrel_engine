@@ -1296,7 +1296,7 @@ impl Renderer {
             format!("Frame Encoder (sprites={}, meshes={})", instances.len(), mesh_draws.len());
         let mut encoder = device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(encoder_label.as_str()) });
-        self.sprite_pass.upload_instances(&device, &mut encoder, instances)?;
+        self.sprite_pass.upload_instances(&device, &queue, instances)?;
         self.gpu_timer.begin_frame();
         self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::FrameStart);
 
@@ -1356,10 +1356,8 @@ impl Renderer {
         self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::SpriteEnd);
         self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::FrameEnd);
 
-        self.sprite_pass.finish_uploads();
         queue.submit(std::iter::once(encoder.finish()));
         let _ = device.poll(wgpu::PollType::Poll);
-        self.sprite_pass.recall_uploads();
         Ok(frame)
     }
 
@@ -1451,6 +1449,156 @@ mod surface_tests {
         assert!(renderer.resize_invocations_for_test() >= 1);
         renderer.prepare_headless_render_target().expect("headless target reinit");
         render_once(&mut renderer).expect("render after recovery");
+    }
+}
+
+#[cfg(test)]
+mod pass_tests {
+    use super::*;
+    use crate::material_registry::MaterialRegistry;
+    use crate::mesh::Mesh;
+    use crate::ecs::MeshLightingInfo;
+    use egui_wgpu::RendererOptions;
+    use glam::Vec3;
+    use pollster::block_on;
+
+    fn test_window_config() -> WindowConfig {
+        WindowConfig { title: "PassTests".into(), width: 96, height: 64, vsync: false, fullscreen: false }
+    }
+
+    fn create_headless_renderer() -> Renderer {
+        let cfg = test_window_config();
+        let mut renderer = block_on(Renderer::new(&cfg));
+        block_on(renderer.init_headless_for_test()).expect("init headless");
+        renderer
+    }
+
+    fn create_test_atlas(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> (wgpu::TextureView, wgpu::Sampler, wgpu::Sampler) {
+        let atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Test Atlas"),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &atlas_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &[255, 255, 255, 255],
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4), rows_per_image: Some(1) },
+            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        );
+        let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let pipeline_sampler = device.create_sampler(&wgpu::SamplerDescriptor::default());
+        let draw_sampler = device.create_sampler(&wgpu::SamplerDescriptor::default());
+        (atlas_view, pipeline_sampler, draw_sampler)
+    }
+
+    #[test]
+    fn cull_mesh_draws_respects_camera_frustum() {
+        let mut renderer = create_headless_renderer();
+        let mesh = Mesh::cube(1.0);
+        let gpu_mesh = renderer.create_gpu_mesh(&mesh).expect("gpu mesh");
+        let mut registry = MaterialRegistry::new();
+        let default_key = registry.default_key().to_string();
+        let material = registry
+            .prepare_material_gpu(&default_key, &mut renderer)
+            .expect("material gpu");
+        let lighting = MeshLightingInfo::default();
+        let visible_draw = MeshDraw {
+            mesh: &gpu_mesh,
+            model: Mat4::IDENTITY,
+            lighting: lighting.clone(),
+            material: material.clone(),
+            casts_shadows: true,
+            skin_palette: None,
+        };
+        let hidden_draw = MeshDraw {
+            mesh: &gpu_mesh,
+            model: Mat4::from_translation(Vec3::new(10_000.0, 0.0, 0.0)),
+            lighting,
+            material,
+            casts_shadows: true,
+            skin_palette: None,
+        };
+        let draws = vec![visible_draw.clone(), hidden_draw];
+        let camera = Camera3D::new(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, 60f32.to_radians(), 0.1, 500.0);
+        let viewport = RenderViewport { origin: (0.0, 0.0), size: (96.0, 64.0) };
+        let culled = renderer.cull_mesh_draws(&draws, &camera, viewport);
+        assert_eq!(culled.len(), 1);
+        assert!(culled.first().is_some_and(|draw| draw.model == visible_draw.model));
+    }
+
+    #[test]
+    fn headless_render_collects_gpu_timings() {
+        let mut renderer = create_headless_renderer();
+        renderer.prepare_headless_render_target().expect("headless target");
+        let device = renderer.device().expect("device").clone();
+        let queue = renderer.queue().expect("queue").clone();
+        let (atlas_view, pipeline_sampler, draw_sampler) = create_test_atlas(&device, &queue);
+        renderer.init_sprite_pipeline_with_atlas(atlas_view, pipeline_sampler).expect("sprite pipeline");
+        let cfg = test_window_config();
+        let viewport =
+            RenderViewport { origin: (0.0, 0.0), size: (cfg.width as f32, cfg.height as f32) };
+        let frame = renderer
+            .render_frame(&[], &[], &draw_sampler, Mat4::IDENTITY, viewport, &[], None)
+            .expect("render frame");
+        let format = renderer.surface_format().expect("format");
+        let mut egui_renderer = EguiRenderer::new(&device, format, RendererOptions::default());
+        let screen = ScreenDescriptor {
+            size_in_pixels: [cfg.width, cfg.height],
+            pixels_per_point: renderer.pixels_per_point(),
+        };
+        renderer
+            .render_egui(&mut egui_renderer, &[], &screen, frame)
+            .expect("render egui");
+        let timings = renderer.take_gpu_timings();
+        if renderer.gpu_timing_supported() {
+            assert!(!timings.is_empty());
+        }
+    }
+
+    #[test]
+    fn light_cluster_metrics_track_visible_lights() {
+        let mut renderer = create_headless_renderer();
+        renderer.init_mesh_pipeline().expect("mesh pipeline");
+        let device = renderer.device().expect("device").clone();
+        let queue = renderer.queue().expect("queue").clone();
+        let mut lighting = SceneLightingState::default();
+        lighting.point_lights = vec![
+            ScenePointLight::new(Vec3::new(0.0, 2.0, 0.0), Vec3::splat(1.0), 5.0, 2.0),
+            ScenePointLight::new(Vec3::new(2.0, 1.0, -3.0), Vec3::splat(0.8), 3.0, 1.5),
+        ];
+        let camera = Camera3D::new(Vec3::new(0.0, 0.0, 8.0), Vec3::ZERO, 60f32.to_radians(), 0.1, 100.0);
+        let viewport = PhysicalSize::new(test_window_config().width, test_window_config().height);
+        let mut scratch = LightClusterScratch::default();
+        renderer.light_clusters.reset_metrics();
+        renderer
+            .light_clusters
+            .prepare(LightClusterParams {
+                device: &device,
+                queue: &queue,
+                camera: &camera,
+                viewport,
+                lighting: &lighting,
+                scratch: &mut scratch,
+            })
+            .expect("prepare light clusters");
+        let metrics = renderer.light_clusters.metrics();
+        assert_eq!(metrics.total_lights, lighting.point_lights.len() as u32);
+        assert!(metrics.visible_lights > 0);
+        assert!(metrics.active_clusters > 0);
+        assert!(metrics.grid_dims.iter().all(|dim| *dim > 0));
     }
 }
 

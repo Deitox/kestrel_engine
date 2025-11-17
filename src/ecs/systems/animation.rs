@@ -4290,12 +4290,8 @@ fn queue_sprite_frame_update(
     debug_assert_eq!(animation.frames.len(), animation.frame_hot_data.len());
     // SAFETY: frame_index already validated against frame_count earlier in the loop.
     let hot = unsafe { animation.frame_hot_data.get_unchecked(animation.frame_index) };
-    let region = if sprite_state.region_initialized {
-        None
-    } else {
-        let frame = unsafe { animation.frames.get_unchecked(animation.frame_index) };
-        Some(&frame.region)
-    };
+    let frame = unsafe { animation.frames.get_unchecked(animation.frame_index) };
+    let region = Some(&frame.region);
     sprite_state.update_from_hot_frame(hot, region);
     if sprite_state.queued_for_apply {
         return;
@@ -4316,12 +4312,8 @@ fn queue_sprite_frame_update_from_soa(
     let hot_frames = runtime.frame_hot_data[slot].as_ref();
     let frames = runtime.frames[slot].as_ref();
     let hot = unsafe { hot_frames.get_unchecked(index) };
-    let region = if sprite_state.region_initialized {
-        None
-    } else {
-        let frame = unsafe { frames.get_unchecked(index) };
-        Some(&frame.region)
-    };
+    let frame = unsafe { frames.get_unchecked(index) };
+    let region = Some(&frame.region);
     sprite_state.update_from_hot_frame(hot, region);
     if sprite_state.queued_for_apply {
         return;

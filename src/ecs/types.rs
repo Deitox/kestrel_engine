@@ -138,18 +138,14 @@ impl SpriteFrameState {
     pub fn update_from_frame(&mut self, frame: &SpriteAnimationFrame) {
         self.region_id = frame.region_id;
         self.uv = frame.uv;
-        if !self.region_initialized {
-            self.pending_region = Some(frame.region.clone());
-        }
+        self.pending_region = Some(frame.region.clone());
     }
 
     pub fn update_from_hot_frame(&mut self, frame: &SpriteFrameHotData, region: Option<&Arc<str>>) {
         self.region_id = frame.region_id;
         self.uv = frame.uv;
-        if !self.region_initialized {
-            if let Some(region) = region {
-                self.pending_region = Some(Arc::clone(region));
-            }
+        if let Some(region) = region {
+            self.pending_region = Some(Arc::clone(region));
         }
     }
 
