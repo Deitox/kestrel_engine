@@ -666,6 +666,21 @@ pub(super) struct EditorUiParams {
     pub ui_particle_max_spawn_per_frame: u32,
     pub ui_particle_max_total: u32,
     pub ui_particle_max_emitter_backlog: f32,
+    pub ui_light_direction: Vec3,
+    pub ui_light_color: Vec3,
+    pub ui_light_ambient: Vec3,
+    pub ui_light_exposure: f32,
+    pub ui_shadow_distance: f32,
+    pub ui_shadow_bias: f32,
+    pub ui_shadow_strength: f32,
+    pub ui_shadow_cascade_count: u32,
+    pub ui_shadow_resolution: u32,
+    pub ui_shadow_split_lambda: f32,
+    pub ui_shadow_pcf_radius: f32,
+    pub ui_camera_zoom_min: f32,
+    pub ui_camera_zoom_max: f32,
+    pub ui_sprite_guard_pixels: f32,
+    pub ui_sprite_guard_mode: SpriteGuardrailMode,
     pub selected_entity: Option<Entity>,
     pub selection_details: Option<EntityInfo>,
     pub prev_selected_entity: Option<Entity>,
@@ -709,6 +724,7 @@ pub(super) struct EditorUiParams {
     pub animation_group_input: String,
     pub animation_group_scale_input: f32,
     pub inspector_status: Option<String>,
+    pub keyframe_panel_open: bool,
     pub script_debugger: ScriptDebuggerParams,
     pub id_lookup_input: String,
     pub id_lookup_active: bool,
@@ -737,6 +753,21 @@ pub(super) struct EditorUiOutput {
     pub ui_particle_max_spawn_per_frame: u32,
     pub ui_particle_max_total: u32,
     pub ui_particle_max_emitter_backlog: f32,
+    pub ui_light_direction: Vec3,
+    pub ui_light_color: Vec3,
+    pub ui_light_ambient: Vec3,
+    pub ui_light_exposure: f32,
+    pub ui_shadow_distance: f32,
+    pub ui_shadow_bias: f32,
+    pub ui_shadow_strength: f32,
+    pub ui_shadow_cascade_count: u32,
+    pub ui_shadow_resolution: u32,
+    pub ui_shadow_split_lambda: f32,
+    pub ui_shadow_pcf_radius: f32,
+    pub ui_camera_zoom_min: f32,
+    pub ui_camera_zoom_max: f32,
+    pub ui_sprite_guard_pixels: f32,
+    pub ui_sprite_guard_mode: SpriteGuardrailMode,
     pub selection: SelectionResult,
     pub viewport_mode_request: Option<ViewportCameraMode>,
     pub camera_bookmark_select: Option<Option<String>>,
@@ -768,6 +799,8 @@ pub(super) struct EditorUiOutput {
     pub animation_group_scale_input: f32,
     pub inspector_status: Option<String>,
     pub clear_scene_history: bool,
+    pub keyframe_panel_open: bool,
+    pub editor_settings_dirty: bool,
 }
 
 impl App {
@@ -805,6 +838,21 @@ impl App {
             mut ui_particle_max_spawn_per_frame,
             mut ui_particle_max_total,
             mut ui_particle_max_emitter_backlog,
+            mut ui_light_direction,
+            mut ui_light_color,
+            mut ui_light_ambient,
+            mut ui_light_exposure,
+            mut ui_shadow_distance,
+            mut ui_shadow_bias,
+            mut ui_shadow_strength,
+            mut ui_shadow_cascade_count,
+            mut ui_shadow_resolution,
+            mut ui_shadow_split_lambda,
+            mut ui_shadow_pcf_radius,
+            mut ui_camera_zoom_min,
+            mut ui_camera_zoom_max,
+            mut ui_sprite_guard_pixels,
+            mut ui_sprite_guard_mode,
             mut selected_entity,
             mut selection_details,
             prev_selected_entity,
@@ -856,6 +904,7 @@ impl App {
             mut animation_group_input,
             mut animation_group_scale_input,
             mut inspector_status,
+            mut keyframe_panel_open,
             mut script_debugger,
         } = params;
 
@@ -1296,12 +1345,12 @@ impl App {
                             }
                         }
                         ui.separator();
-                        let panel_open = self.animation_keyframe_panel.is_open();
                         let button_label =
-                            if panel_open { "Hide Keyframe Editor" } else { "Open Keyframe Editor" };
+                            if keyframe_panel_open { "Hide Keyframe Editor" } else { "Open Keyframe Editor" };
                         if ui.button(button_label).clicked() {
-                            self.animation_keyframe_panel.toggle();
-                            let event = if panel_open {
+                            let was_open = keyframe_panel_open;
+                            keyframe_panel_open = !keyframe_panel_open;
+                            let event = if was_open {
                                 KeyframeEditorEventKind::PanelClosed
                             } else {
                                 KeyframeEditorEventKind::PanelOpened
@@ -1482,7 +1531,7 @@ impl App {
                         let mut guardrail_dirty = false;
                         if ui
                             .add(
-                                egui::Slider::new(&mut self.ui_camera_zoom_min, 0.05..=10.0)
+                                egui::Slider::new(&mut ui_camera_zoom_min, 0.05..=10.0)
                                     .text("Min zoom")
                                     .logarithmic(true),
                             )
@@ -1492,7 +1541,7 @@ impl App {
                         }
                         if ui
                             .add(
-                                egui::Slider::new(&mut self.ui_camera_zoom_max, 0.1..=20.0)
+                                egui::Slider::new(&mut ui_camera_zoom_max, 0.1..=20.0)
                                     .text("Max zoom")
                                     .logarithmic(true),
                             )
@@ -1502,7 +1551,7 @@ impl App {
                         }
                         if ui
                             .add(
-                                egui::Slider::new(&mut self.ui_sprite_guard_pixels, 256.0..=8192.0)
+                                egui::Slider::new(&mut ui_sprite_guard_pixels, 256.0..=8192.0)
                                     .text("Sprite guard (px)")
                                     .logarithmic(true),
                             )
@@ -1510,7 +1559,7 @@ impl App {
                         {
                             guardrail_dirty = true;
                         }
-                        let mut guard_mode = self.ui_sprite_guard_mode;
+                        let mut guard_mode = ui_sprite_guard_mode;
                         egui::ComboBox::from_id_salt("sprite_guardrail_mode")
                             .selected_text(guard_mode.label())
                             .show_ui(ui, |ui| {
@@ -1526,8 +1575,8 @@ impl App {
                                     }
                                 }
                             });
-                        if guard_mode != self.ui_sprite_guard_mode {
-                            self.ui_sprite_guard_mode = guard_mode;
+                        if guard_mode != ui_sprite_guard_mode {
+                            ui_sprite_guard_mode = guard_mode;
                             guardrail_dirty = true;
                         }
                         if guardrail_dirty {
@@ -2153,7 +2202,7 @@ impl App {
                         |ui| {
                             let mut lighting_dirty = false;
                             let default_dir = glam::Vec3::new(0.4, 0.8, 0.35).normalize();
-                            let mut light_dir = self.ui_light_direction;
+                            let mut light_dir = ui_light_direction;
                             ui.horizontal(|ui| {
                                 ui.label("Direction (XYZ)");
                                 let mut changed = false;
@@ -2175,72 +2224,72 @@ impl App {
                                             light_dir = default_dir;
                                         }
                                     }
-                                    self.ui_light_direction = light_dir;
+                                    ui_light_direction = light_dir;
                                     lighting_dirty = true;
                                 }
                             });
                             ui.horizontal(|ui| {
                                 ui.label("Color");
-                                let mut color_arr = self.ui_light_color.to_array();
+                                let mut color_arr = ui_light_color.to_array();
                                 if ui.color_edit_button_rgb(&mut color_arr).changed() {
-                                    self.ui_light_color = Vec3::from_array(color_arr);
+                                    ui_light_color = Vec3::from_array(color_arr);
                                     lighting_dirty = true;
                                 }
                             });
                             ui.horizontal(|ui| {
                                 ui.label("Ambient");
-                                let mut ambient_arr = self.ui_light_ambient.to_array();
+                                let mut ambient_arr = ui_light_ambient.to_array();
                                 if ui.color_edit_button_rgb(&mut ambient_arr).changed() {
-                                    self.ui_light_ambient = Vec3::from_array(ambient_arr);
+                                    ui_light_ambient = Vec3::from_array(ambient_arr);
                                     lighting_dirty = true;
                                 }
                             });
                             if ui
                                 .add(
-                                    egui::Slider::new(&mut self.ui_light_exposure, 0.1..=5.0)
+                                    egui::Slider::new(&mut ui_light_exposure, 0.1..=5.0)
                                         .text("Exposure")
                                         .logarithmic(true),
                                 )
                                 .changed()
                             {
-                                self.ui_light_exposure = self.ui_light_exposure.clamp(0.1, 20.0);
+                                ui_light_exposure = ui_light_exposure.clamp(0.1, 20.0);
                                 lighting_dirty = true;
                             }
                             if ui
                                 .add(
-                                    egui::Slider::new(&mut self.ui_shadow_distance, 5.0..=200.0)
+                                    egui::Slider::new(&mut ui_shadow_distance, 5.0..=200.0)
                                         .text("Shadow distance"),
                                 )
                                 .changed()
                             {
-                                self.ui_shadow_distance = self.ui_shadow_distance.clamp(5.0, 200.0);
+                                ui_shadow_distance = ui_shadow_distance.clamp(5.0, 200.0);
                                 lighting_dirty = true;
                             }
                             if ui
                                 .add(
-                                    egui::Slider::new(&mut self.ui_shadow_bias, 0.0001..=0.02)
+                                    egui::Slider::new(&mut ui_shadow_bias, 0.0001..=0.02)
                                         .text("Shadow bias")
                                         .logarithmic(true),
                                 )
                                 .changed()
                             {
-                                self.ui_shadow_bias = self.ui_shadow_bias.clamp(0.0001, 0.02);
+                                ui_shadow_bias = ui_shadow_bias.clamp(0.0001, 0.02);
                                 lighting_dirty = true;
                             }
                             if ui
                                 .add(
-                                    egui::Slider::new(&mut self.ui_shadow_strength, 0.0..=1.0)
+                                    egui::Slider::new(&mut ui_shadow_strength, 0.0..=1.0)
                                         .text("Shadow strength"),
                                 )
                                 .changed()
                             {
-                                self.ui_shadow_strength = self.ui_shadow_strength.clamp(0.0, 1.0);
+                                ui_shadow_strength = ui_shadow_strength.clamp(0.0, 1.0);
                                 lighting_dirty = true;
                             }
                             if ui
                                 .add(
                                     egui::Slider::new(
-                                        &mut self.ui_shadow_cascade_count,
+                                        &mut ui_shadow_cascade_count,
                                         1..=MAX_SHADOW_CASCADES as u32,
                                     )
                                     .text("Shadow cascades"),
@@ -2254,7 +2303,7 @@ impl App {
                                 ui.label("Shadow resolution");
                                 if ui
                                     .add(
-                                        egui::DragValue::new(&mut self.ui_shadow_resolution)
+                                        egui::DragValue::new(&mut ui_shadow_resolution)
                                             .suffix(" px")
                                             .speed(64.0),
                                     )
@@ -2264,27 +2313,27 @@ impl App {
                                 }
                             });
                             if resolution_changed {
-                                self.ui_shadow_resolution = self.ui_shadow_resolution.clamp(256, 8192);
+                                ui_shadow_resolution = ui_shadow_resolution.clamp(256, 8192);
                                 lighting_dirty = true;
                             }
                             if ui
                                 .add(
-                                    egui::Slider::new(&mut self.ui_shadow_split_lambda, 0.0..=1.0)
+                                    egui::Slider::new(&mut ui_shadow_split_lambda, 0.0..=1.0)
                                         .text("Cascade split bias"),
                                 )
                                 .changed()
                             {
-                                self.ui_shadow_split_lambda = self.ui_shadow_split_lambda.clamp(0.0, 1.0);
+                                ui_shadow_split_lambda = ui_shadow_split_lambda.clamp(0.0, 1.0);
                                 lighting_dirty = true;
                             }
                             if ui
                                 .add(
-                                    egui::Slider::new(&mut self.ui_shadow_pcf_radius, 0.0..=4.0)
+                                    egui::Slider::new(&mut ui_shadow_pcf_radius, 0.0..=4.0)
                                         .text("PCF radius"),
                                 )
                                 .changed()
                             {
-                                self.ui_shadow_pcf_radius = self.ui_shadow_pcf_radius.clamp(0.0, 10.0);
+                                ui_shadow_pcf_radius = ui_shadow_pcf_radius.clamp(0.0, 10.0);
                                 lighting_dirty = true;
                             }
                             ui.separator();
@@ -2431,35 +2480,35 @@ impl App {
 
                             if ui.button("Reset lighting").clicked() {
                                 let default_shadow = SceneShadowData::default();
-                                self.ui_light_direction = default_dir;
-                                self.ui_light_color = Vec3::new(1.05, 0.98, 0.92);
-                                self.ui_light_ambient = Vec3::splat(0.03);
-                                self.ui_light_exposure = 1.0;
-                                self.ui_shadow_distance = default_shadow.distance;
-                                self.ui_shadow_bias = default_shadow.bias;
-                                self.ui_shadow_strength = default_shadow.strength;
-                                self.ui_shadow_cascade_count = default_shadow.cascade_count;
-                                self.ui_shadow_resolution = default_shadow.resolution;
-                                self.ui_shadow_split_lambda = default_shadow.split_lambda;
-                                self.ui_shadow_pcf_radius = default_shadow.pcf_radius;
+                                ui_light_direction = default_dir;
+                                ui_light_color = Vec3::new(1.05, 0.98, 0.92);
+                                ui_light_ambient = Vec3::splat(0.03);
+                                ui_light_exposure = 1.0;
+                                ui_shadow_distance = default_shadow.distance;
+                                ui_shadow_bias = default_shadow.bias;
+                                ui_shadow_strength = default_shadow.strength;
+                                ui_shadow_cascade_count = default_shadow.cascade_count;
+                                ui_shadow_resolution = default_shadow.resolution;
+                                ui_shadow_split_lambda = default_shadow.split_lambda;
+                                ui_shadow_pcf_radius = default_shadow.pcf_radius;
                                 ui_environment_intensity = 1.0;
                                 self.renderer.lighting_mut().point_lights.clear();
                                 lighting_dirty = true;
                             }
                             if lighting_dirty {
                                 let lighting = self.renderer.lighting_mut();
-                                lighting.direction = self.ui_light_direction;
-                                lighting.color = self.ui_light_color;
-                                lighting.ambient = self.ui_light_ambient;
-                                lighting.exposure = self.ui_light_exposure;
-                                lighting.shadow_distance = self.ui_shadow_distance.clamp(1.0, 500.0);
-                                lighting.shadow_bias = self.ui_shadow_bias.clamp(0.00005, 0.05);
-                                lighting.shadow_strength = self.ui_shadow_strength.clamp(0.0, 1.0);
+                                lighting.direction = ui_light_direction;
+                                lighting.color = ui_light_color;
+                                lighting.ambient = ui_light_ambient;
+                                lighting.exposure = ui_light_exposure;
+                                lighting.shadow_distance = ui_shadow_distance.clamp(1.0, 500.0);
+                                lighting.shadow_bias = ui_shadow_bias.clamp(0.00005, 0.05);
+                                lighting.shadow_strength = ui_shadow_strength.clamp(0.0, 1.0);
                                 lighting.shadow_cascade_count =
-                                    self.ui_shadow_cascade_count.clamp(1, MAX_SHADOW_CASCADES as u32);
-                                lighting.shadow_resolution = self.ui_shadow_resolution.clamp(256, 8192);
-                                lighting.shadow_split_lambda = self.ui_shadow_split_lambda.clamp(0.0, 1.0);
-                                lighting.shadow_pcf_radius = self.ui_shadow_pcf_radius.clamp(0.0, 10.0);
+                                    ui_shadow_cascade_count.clamp(1, MAX_SHADOW_CASCADES as u32);
+                                lighting.shadow_resolution = ui_shadow_resolution.clamp(256, 8192);
+                                lighting.shadow_split_lambda = ui_shadow_split_lambda.clamp(0.0, 1.0);
+                                lighting.shadow_pcf_radius = ui_shadow_pcf_radius.clamp(0.0, 10.0);
                                 self.renderer.mark_shadow_settings_dirty();
                             }
                         },
@@ -3447,10 +3496,6 @@ impl App {
             }
         }
 
-        if editor_settings_dirty {
-            self.apply_editor_camera_settings();
-        }
-
         let approx_eq = |a: f32, b: f32| (a - b).abs() <= 1e-4;
         if !approx_eq(animation_scale, animation_snapshot.scale) {
             self.ecs.set_animation_time_scale(animation_scale);
@@ -3504,6 +3549,21 @@ impl App {
             ui_particle_max_spawn_per_frame,
             ui_particle_max_total,
             ui_particle_max_emitter_backlog,
+            ui_light_direction,
+            ui_light_color,
+            ui_light_ambient,
+            ui_light_exposure,
+            ui_shadow_distance,
+            ui_shadow_bias,
+            ui_shadow_strength,
+            ui_shadow_cascade_count,
+            ui_shadow_resolution,
+            ui_shadow_split_lambda,
+            ui_shadow_pcf_radius,
+            ui_camera_zoom_min,
+            ui_camera_zoom_max,
+            ui_sprite_guard_pixels,
+            ui_sprite_guard_mode,
             selection: SelectionResult { entity: selected_entity, details: selection_details },
             viewport_mode_request,
             camera_bookmark_select,
@@ -3535,6 +3595,8 @@ impl App {
             animation_group_scale_input,
             inspector_status,
             clear_scene_history,
+            keyframe_panel_open,
+            editor_settings_dirty,
         }
     }
 }

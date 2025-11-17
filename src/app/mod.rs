@@ -9,8 +9,8 @@ mod plugin_runtime;
 mod runtime_loop;
 
 use self::animation_keyframe_panel::{
-    AnimationKeyframePanel, AnimationKeyframePanelState, AnimationPanelCommand, AnimationTrackBinding,
-    AnimationTrackId, AnimationTrackKind, AnimationTrackSummary, KeyframeDetail, KeyframeId, KeyframeValue,
+    AnimationKeyframePanelState, AnimationPanelCommand, AnimationTrackBinding, AnimationTrackId, AnimationTrackKind,
+    AnimationTrackSummary, KeyframeDetail, KeyframeId, KeyframeValue,
 };
 use self::animation_watch::{AnimationAssetKind, AnimationAssetWatcher};
 use self::atlas_watch::{normalize_path_for_watch, AtlasHotReload};
@@ -517,33 +517,8 @@ pub struct App {
     editor_shell: EditorShell,
 
     // UI State
-    ui_light_direction: Vec3,
-    ui_light_color: Vec3,
-    ui_light_ambient: Vec3,
-    ui_light_exposure: f32,
-    ui_shadow_distance: f32,
-    ui_shadow_bias: f32,
-    ui_shadow_strength: f32,
-    ui_shadow_cascade_count: u32,
-    ui_shadow_resolution: u32,
-    ui_shadow_split_lambda: f32,
-    ui_shadow_pcf_radius: f32,
-    ui_camera_zoom_min: f32,
-    ui_camera_zoom_max: f32,
-    ui_sprite_guard_pixels: f32,
-    ui_sprite_guard_mode: SpriteGuardrailMode,
     scene_dependencies: Option<SceneDependencies>,
     scene_dependency_fingerprints: Option<SceneDependencyFingerprints>,
-    debug_show_spatial_hash: bool,
-    debug_show_colliders: bool,
-    animation_keyframe_panel: AnimationKeyframePanel,
-    clip_dirty: HashSet<String>,
-    clip_edit_history: Vec<ClipEditRecord>,
-    clip_edit_redo: Vec<ClipEditRecord>,
-    animation_clip_status: Option<String>,
-    clip_edit_overrides: HashMap<String, Arc<AnimationClip>>,
-    pending_animation_validation_events: Vec<AnimationValidationEvent>,
-    suppressed_validation_paths: HashSet<PathBuf>,
 
     // Plugins
     plugin_runtime: PluginRuntime,
@@ -619,6 +594,14 @@ impl App {
 
     fn editor_ui_state_mut(&self) -> RefMut<'_, EditorUiState> {
         self.editor_shell.ui_state.as_ref().expect("editor UI state not initialized").borrow_mut()
+    }
+
+    fn with_editor_ui_state_mut<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut EditorUiState) -> R,
+    {
+        let mut state = self.editor_ui_state_mut();
+        f(&mut state)
     }
 
     fn set_ui_scene_status(&self, message: impl Into<String>) {
@@ -871,11 +854,14 @@ impl App {
                 self.queue_animation_watch_root(&result.request.path, AnimationAssetKind::Clip);
                 if let Some(updated) = self.assets.clip(&key) {
                     let canonical = Arc::new(updated.clone());
-                    self.clip_edit_overrides.remove(&key);
-                    self.clip_dirty.remove(&key);
+                    {
+                        let mut state = self.editor_ui_state_mut();
+                        state.clip_edit_overrides.remove(&key);
+                        state.clip_dirty.remove(&key);
+                        state.animation_clip_status =
+                            Some(format!("Reloaded clip '{}' from {}", key, result.request.path.display()));
+                    }
                     self.apply_clip_override_to_instances(&key, Arc::clone(&canonical));
-                    self.animation_clip_status =
-                        Some(format!("Reloaded clip '{}' from {}", key, result.request.path.display()));
                 }
                 if !result.request.skip_validation {
                     self.enqueue_animation_validation_job(AnimationAssetReload {
@@ -890,11 +876,13 @@ impl App {
                 let path_string = result.request.path.to_string_lossy().to_string();
                 self.assets.replace_animation_graph(&key, &path_string, graph);
                 self.queue_animation_watch_root(&result.request.path, AnimationAssetKind::Graph);
-                self.animation_clip_status = Some(format!(
-                    "Reloaded animation graph '{}' from {}",
-                    key,
-                    result.request.path.display()
-                ));
+                self.with_editor_ui_state_mut(|state| {
+                    state.animation_clip_status = Some(format!(
+                        "Reloaded animation graph '{}' from {}",
+                        key,
+                        result.request.path.display()
+                    ));
+                });
                 if !result.request.skip_validation {
                     self.enqueue_animation_validation_job(AnimationAssetReload {
                         path: result.request.path.clone(),
@@ -934,8 +922,10 @@ impl App {
                         let _ = self.ecs.set_skeleton_clip_group(snapshot.entity, snapshot.group.as_deref());
                     }
                 }
-                self.animation_clip_status =
-                    Some(format!("Reloaded skeleton '{}' from {}", key, result.request.path.display()));
+                self.with_editor_ui_state_mut(|state| {
+                    state.animation_clip_status =
+                        Some(format!("Reloaded skeleton '{}' from {}", key, result.request.path.display()));
+                });
                 if !result.request.skip_validation {
                     self.enqueue_animation_validation_job(AnimationAssetReload {
                         path: result.request.path.clone(),
@@ -946,11 +936,13 @@ impl App {
             }
             Err(err) => {
                 eprintln!("[animation] reload failed for {}: {err:?}", result.request.path.display());
-                self.animation_clip_status = Some(format!(
-                    "Reload failed for {} from {}: {err}",
-                    result.request.key,
-                    result.request.path.display()
-                ));
+                self.with_editor_ui_state_mut(|state| {
+                    state.animation_clip_status = Some(format!(
+                        "Reload failed for {} from {}: {err}",
+                        result.request.key,
+                        result.request.path.display()
+                    ));
+                });
             }
         }
     }
@@ -978,12 +970,14 @@ impl App {
                 "[animation] detected change for {} ({context}) but no validations ran",
                 path.display()
             );
-            self.animation_clip_status =
-                Some(format!("Detected {context} change but no validators ran: {}", path.display()));
+            self.with_editor_ui_state_mut(|state| {
+                state.animation_clip_status =
+                    Some(format!("Detected {context} change but no validators ran: {}", path.display()));
+            });
             return;
         }
         for event in events {
-            self.pending_animation_validation_events.push(event.clone());
+            self.with_editor_ui_state_mut(|state| state.pending_animation_validation_events.push(event.clone()));
             self.log_animation_validation_event(event);
         }
     }
@@ -1023,19 +1017,21 @@ impl App {
             });
         }
         for event in events {
-            self.pending_animation_validation_events.push(event.clone());
+            self.with_editor_ui_state_mut(|state| state.pending_animation_validation_events.push(event.clone()));
             self.log_animation_validation_event(event);
         }
     }
 
     fn suppress_validation_for_path(&mut self, path: &Path) {
         let normalized = Self::normalize_validation_path(path);
-        self.suppressed_validation_paths.insert(normalized);
+        self.with_editor_ui_state_mut(|state| {
+            state.suppressed_validation_paths.insert(normalized);
+        });
     }
 
     fn consume_validation_suppression(&mut self, path: &Path) -> bool {
         let normalized = Self::normalize_validation_path(path);
-        self.suppressed_validation_paths.remove(&normalized)
+        self.with_editor_ui_state_mut(|state| state.suppressed_validation_paths.remove(&normalized))
     }
 
     fn normalize_validation_path(path: &Path) -> PathBuf {
@@ -1047,7 +1043,7 @@ impl App {
         let formatted =
             format!("[animation] validation {severity} for {}: {}", event.path.display(), event.message);
         eprintln!("{formatted}");
-        self.animation_clip_status = Some(formatted.clone());
+        self.with_editor_ui_state_mut(|state| state.animation_clip_status = Some(formatted.clone()));
         if matches!(event.severity, AnimationValidationSeverity::Warning | AnimationValidationSeverity::Error)
         {
             self.set_inspector_status(Some(formatted));
@@ -1055,22 +1051,31 @@ impl App {
     }
 
     fn drain_animation_validation_events(&mut self) -> Vec<AnimationValidationEvent> {
-        std::mem::take(&mut self.pending_animation_validation_events)
+        self.with_editor_ui_state_mut(|state| std::mem::take(&mut state.pending_animation_validation_events))
     }
 
     fn show_animation_keyframe_panel(&mut self, ctx: &egui::Context, animation_time: &AnimationTime) {
-        if !self.animation_keyframe_panel.is_open() {
+        let panel_open = {
+            let state = self.editor_ui_state();
+            state.animation_keyframe_panel.is_open()
+        };
+        if !panel_open {
             return;
         }
-        let state = AnimationKeyframePanelState {
-            animation_time,
-            selected_entity: self.selected_entity,
-            track_summaries: self.collect_animation_track_summaries(),
-            can_undo: !self.clip_edit_history.is_empty(),
-            can_redo: !self.clip_edit_redo.is_empty(),
-            status_message: self.animation_clip_status.clone(),
+        let panel_state = {
+            let state = self.editor_ui_state();
+            AnimationKeyframePanelState {
+                animation_time,
+                selected_entity: self.selected_entity,
+                track_summaries: self.collect_animation_track_summaries(),
+                can_undo: !state.clip_edit_history.is_empty(),
+                can_redo: !state.clip_edit_redo.is_empty(),
+                status_message: state.animation_clip_status.clone(),
+            }
         };
-        self.animation_keyframe_panel.render_window(ctx, state);
+        self.with_editor_ui_state_mut(|state| {
+            state.animation_keyframe_panel.render_window(ctx, panel_state);
+        });
         self.process_animation_panel_commands();
     }
 
@@ -1087,7 +1092,7 @@ impl App {
     }
 
     fn process_animation_panel_commands(&mut self) {
-        let commands = self.animation_keyframe_panel.drain_commands();
+        let commands = self.with_editor_ui_state_mut(|state| state.animation_keyframe_panel.drain_commands());
         for command in commands {
             match command {
                 AnimationPanelCommand::ScrubTrack { binding, time } => {
@@ -1231,7 +1236,10 @@ impl App {
     ) {
         if let Some(clip) = info.transform_clip.as_ref() {
             let clip_asset = self.clip_resource(&clip.clip_key);
-            let clip_dirty = self.clip_dirty.contains(&clip.clip_key);
+            let clip_dirty = {
+                let state = self.editor_ui_state();
+                state.clip_dirty.contains(&clip.clip_key)
+            };
             if clip.has_translation {
                 let track_id = AnimationTrackId::for_entity_slot(entity, *slot_index);
                 *slot_index += 1;
@@ -1496,7 +1504,9 @@ impl App {
         }
         self.recompute_clip_duration(&mut clip);
         let clip_arc = Arc::new(clip);
-        self.clip_edit_overrides.insert(clip_info.clip_key.clone(), Arc::clone(&clip_arc));
+        self.with_editor_ui_state_mut(|state| {
+            state.clip_edit_overrides.insert(clip_info.clip_key.clone(), Arc::clone(&clip_arc));
+        });
         self.apply_clip_override_to_instances(&clip_info.clip_key, Arc::clone(&clip_arc));
         self.record_clip_edit(&clip_info.clip_key, before_arc, Arc::clone(&clip_arc));
         self.persist_clip_edit(&clip_info.clip_key, clip_arc);
@@ -1616,8 +1626,11 @@ impl App {
     }
 
     fn clip_resource(&self, key: &str) -> Option<Arc<AnimationClip>> {
-        if let Some(override_clip) = self.clip_edit_overrides.get(key) {
-            return Some(Arc::clone(override_clip));
+        if let Some(override_clip) = {
+            let state = self.editor_ui_state();
+            state.clip_edit_overrides.get(key).cloned()
+        } {
+            return Some(override_clip);
         }
         self.assets.clip(key).map(|clip| Arc::new(clip.clone()))
     }
@@ -1633,49 +1646,63 @@ impl App {
     }
 
     fn record_clip_edit(&mut self, clip_key: &str, before: Arc<AnimationClip>, after: Arc<AnimationClip>) {
-        self.clip_edit_history.push(ClipEditRecord { clip_key: clip_key.to_string(), before, after });
-        self.clip_edit_redo.clear();
+        self.with_editor_ui_state_mut(|state| {
+            state.clip_edit_history.push(ClipEditRecord { clip_key: clip_key.to_string(), before, after });
+            state.clip_edit_redo.clear();
+        });
     }
 
     fn undo_clip_edit(&mut self) {
-        if let Some(record) = self.clip_edit_history.pop() {
-            self.clip_edit_redo.push(record.clone());
+        if let Some(record) = self.with_editor_ui_state_mut(|state| state.clip_edit_history.pop()) {
+            self.with_editor_ui_state_mut(|state| state.clip_edit_redo.push(record.clone()));
             self.apply_clip_history_state(&record.clip_key, Arc::clone(&record.before));
-            self.animation_clip_status = Some(format!("Undid edit on '{}'", record.clip_key));
+            self.with_editor_ui_state_mut(|state| {
+                state.animation_clip_status = Some(format!("Undid edit on '{}'", record.clip_key));
+            });
         }
     }
 
     fn redo_clip_edit(&mut self) {
-        if let Some(record) = self.clip_edit_redo.pop() {
+        if let Some(record) = self.with_editor_ui_state_mut(|state| state.clip_edit_redo.pop()) {
             let clip_key = record.clip_key.clone();
-            self.clip_edit_history.push(record.clone());
+            self.with_editor_ui_state_mut(|state| state.clip_edit_history.push(record.clone()));
             self.apply_clip_history_state(&clip_key, Arc::clone(&record.after));
-            self.animation_clip_status = Some(format!("Redid edit on '{}'", clip_key));
+            self.with_editor_ui_state_mut(|state| {
+                state.animation_clip_status = Some(format!("Redid edit on '{}'", clip_key));
+            });
         }
     }
 
     fn apply_clip_history_state(&mut self, clip_key: &str, clip: Arc<AnimationClip>) {
-        self.clip_edit_overrides.insert(clip_key.to_string(), Arc::clone(&clip));
+        self.with_editor_ui_state_mut(|state| {
+            state.clip_edit_overrides.insert(clip_key.to_string(), Arc::clone(&clip));
+        });
         self.apply_clip_override_to_instances(clip_key, Arc::clone(&clip));
         self.persist_clip_edit(clip_key, clip);
     }
 
     fn persist_clip_edit(&mut self, clip_key: &str, clip: Arc<AnimationClip>) {
-        self.clip_dirty.insert(clip_key.to_string());
+        self.with_editor_ui_state_mut(|state| {
+            state.clip_dirty.insert(clip_key.to_string());
+        });
         let clip_source_path = self.assets.clip_source(clip_key).map(|p| p.to_string());
         if let Some(path) = clip_source_path.as_deref() {
             self.suppress_validation_for_path(Path::new(path));
         }
         if let Err(err) = self.assets.save_clip(clip_key, clip.as_ref()) {
             eprintln!("[animation] failed to save clip '{clip_key}': {err:?}");
-            self.animation_clip_status = Some(format!("Failed to save '{clip_key}': {err}"));
+            self.with_editor_ui_state_mut(|state| {
+                state.animation_clip_status = Some(format!("Failed to save '{clip_key}': {err}"));
+            });
             return;
         }
         let mut status_note = format!("Saved clip '{clip_key}'");
         if let Some(path) = clip_source_path.as_deref() {
             if let Err(err) = self.assets.load_clip(clip_key, path) {
                 eprintln!("[animation] failed to reload clip '{clip_key}' after save: {err:?}");
-                self.animation_clip_status = Some(format!("Reload failed for '{clip_key}': {err}"));
+                self.with_editor_ui_state_mut(|state| {
+                    state.animation_clip_status = Some(format!("Reload failed for '{clip_key}': {err}"));
+                });
                 return;
             }
         } else {
@@ -1684,15 +1711,21 @@ impl App {
         if let Some(updated) = self.assets.clip(clip_key) {
             let canonical = Arc::new(updated.clone());
             self.apply_clip_override_to_instances(clip_key, Arc::clone(&canonical));
-            self.clip_edit_overrides.remove(clip_key);
+            self.with_editor_ui_state_mut(|state| {
+                state.clip_edit_overrides.remove(clip_key);
+            });
         }
-        self.clip_dirty.remove(clip_key);
+        self.with_editor_ui_state_mut(|state| {
+            state.clip_dirty.remove(clip_key);
+        });
         if let Some(path) = clip_source_path {
             let path_buf = PathBuf::from(&path);
             let events = AnimationValidator::validate_path(path_buf.as_path());
             self.handle_validation_events("clip edit", path_buf.as_path(), events);
         }
-        self.animation_clip_status = Some(status_note);
+        self.with_editor_ui_state_mut(|state| {
+            state.animation_clip_status = Some(status_note);
+        });
     }
 
     fn edit_vec2_track(
@@ -2540,33 +2573,8 @@ impl App {
             environment_intensity,
             should_close: false,
             editor_shell: EditorShell::new(),
-            ui_light_direction: lighting_state.direction,
-            ui_light_color: lighting_state.color,
-            ui_light_ambient: lighting_state.ambient,
-            ui_light_exposure: lighting_state.exposure,
-            ui_shadow_distance: lighting_state.shadow_distance,
-            ui_shadow_bias: lighting_state.shadow_bias,
-            ui_shadow_strength: lighting_state.shadow_strength,
-            ui_shadow_cascade_count: lighting_state.shadow_cascade_count,
-            ui_shadow_resolution: lighting_state.shadow_resolution,
-            ui_shadow_split_lambda: lighting_state.shadow_split_lambda,
-            ui_shadow_pcf_radius: lighting_state.shadow_pcf_radius,
-            ui_camera_zoom_min: editor_cfg.camera_zoom_min,
-            ui_camera_zoom_max: editor_cfg.camera_zoom_max,
-            ui_sprite_guard_pixels: editor_cfg.sprite_guard_max_pixels,
-            ui_sprite_guard_mode: editor_cfg.sprite_guardrail_mode,
             scene_dependencies: None,
             scene_dependency_fingerprints: None,
-            debug_show_spatial_hash: false,
-            debug_show_colliders: false,
-            animation_keyframe_panel: AnimationKeyframePanel::default(),
-            clip_dirty: HashSet::new(),
-            clip_edit_history: Vec::new(),
-            clip_edit_redo: Vec::new(),
-            animation_clip_status: None,
-            clip_edit_overrides: HashMap::new(),
-            pending_animation_validation_events: Vec::new(),
-            suppressed_validation_paths: HashSet::new(),
             plugin_runtime,
             camera,
             viewport_camera_mode: ViewportCameraMode::default(),
@@ -2743,16 +2751,26 @@ impl App {
         self.sprite_batch_order.clear();
     }
     fn apply_editor_camera_settings(&mut self) {
-        self.ui_camera_zoom_min = self.ui_camera_zoom_min.clamp(0.05, 20.0);
-        self.ui_camera_zoom_max = self.ui_camera_zoom_max.max(self.ui_camera_zoom_min + 0.01).min(40.0);
-        self.camera.set_zoom_limits(self.ui_camera_zoom_min, self.ui_camera_zoom_max);
-        self.ui_sprite_guard_pixels = self.ui_sprite_guard_pixels.clamp(256.0, 8192.0);
-        self.sprite_guardrail_mode = self.ui_sprite_guard_mode;
-        self.sprite_guardrail_max_pixels = self.ui_sprite_guard_pixels;
-        self.config.editor.camera_zoom_min = self.ui_camera_zoom_min;
-        self.config.editor.camera_zoom_max = self.ui_camera_zoom_max;
-        self.config.editor.sprite_guard_max_pixels = self.ui_sprite_guard_pixels;
-        self.config.editor.sprite_guardrail_mode = self.ui_sprite_guard_mode;
+        let (zoom_min, zoom_max, guard_pixels, guard_mode) = {
+            let mut state = self.editor_ui_state_mut();
+            state.ui_camera_zoom_min = state.ui_camera_zoom_min.clamp(0.05, 20.0);
+            state.ui_camera_zoom_max =
+                state.ui_camera_zoom_max.max(state.ui_camera_zoom_min + 0.01).min(40.0);
+            state.ui_sprite_guard_pixels = state.ui_sprite_guard_pixels.clamp(256.0, 8192.0);
+            (
+                state.ui_camera_zoom_min,
+                state.ui_camera_zoom_max,
+                state.ui_sprite_guard_pixels,
+                state.ui_sprite_guard_mode,
+            )
+        };
+        self.camera.set_zoom_limits(zoom_min, zoom_max);
+        self.sprite_guardrail_mode = guard_mode;
+        self.sprite_guardrail_max_pixels = guard_pixels;
+        self.config.editor.camera_zoom_min = zoom_min;
+        self.config.editor.camera_zoom_max = zoom_max;
+        self.config.editor.sprite_guard_max_pixels = guard_pixels;
+        self.config.editor.sprite_guardrail_mode = guard_mode;
     }
 
     fn set_prefab_status(&mut self, kind: PrefabStatusKind, message: impl Into<String>) {
@@ -3788,17 +3806,20 @@ impl App {
                     .collect();
             }
             let renderer_lighting = self.renderer.lighting();
-            self.ui_light_direction = renderer_lighting.direction;
-            self.ui_light_color = renderer_lighting.color;
-            self.ui_light_ambient = renderer_lighting.ambient;
-            self.ui_light_exposure = renderer_lighting.exposure;
-            self.ui_shadow_distance = renderer_lighting.shadow_distance;
-            self.ui_shadow_bias = renderer_lighting.shadow_bias;
-            self.ui_shadow_strength = renderer_lighting.shadow_strength;
-            self.ui_shadow_cascade_count = renderer_lighting.shadow_cascade_count;
-            self.ui_shadow_resolution = renderer_lighting.shadow_resolution;
-            self.ui_shadow_split_lambda = renderer_lighting.shadow_split_lambda;
-            self.ui_shadow_pcf_radius = renderer_lighting.shadow_pcf_radius;
+            {
+                let mut state = self.editor_ui_state_mut();
+                state.ui_light_direction = renderer_lighting.direction;
+                state.ui_light_color = renderer_lighting.color;
+                state.ui_light_ambient = renderer_lighting.ambient;
+                state.ui_light_exposure = renderer_lighting.exposure;
+                state.ui_shadow_distance = renderer_lighting.shadow_distance;
+                state.ui_shadow_bias = renderer_lighting.shadow_bias;
+                state.ui_shadow_strength = renderer_lighting.shadow_strength;
+                state.ui_shadow_cascade_count = renderer_lighting.shadow_cascade_count;
+                state.ui_shadow_resolution = renderer_lighting.shadow_resolution;
+                state.ui_shadow_split_lambda = renderer_lighting.shadow_split_lambda;
+                state.ui_shadow_pcf_radius = renderer_lighting.shadow_pcf_radius;
+            }
             self.renderer.mark_shadow_settings_dirty();
         }
         if let Some(environment) = metadata.environment.as_ref() {
@@ -4575,14 +4596,18 @@ impl ApplicationHandler for App {
         let clip_snapshot = self.scene_clip_refs_arc();
         let environment_options = self.telemetry_cache.environment_options(&self.environment_registry);
         let active_environment = self.active_environment_key.clone();
+        let (debug_show_spatial_hash_state, debug_show_colliders_state) = {
+            let state = self.editor_ui_state();
+            (state.debug_show_spatial_hash, state.debug_show_colliders)
+        };
         let collider_rects =
-            if self.debug_show_colliders && self.viewport_camera_mode == ViewportCameraMode::Ortho2D {
+            if debug_show_colliders_state && self.viewport_camera_mode == ViewportCameraMode::Ortho2D {
                 self.ecs.collider_rects()
             } else {
                 Vec::new()
             };
         let spatial_hash_rects =
-            if self.debug_show_spatial_hash && self.viewport_camera_mode == ViewportCameraMode::Ortho2D {
+            if debug_show_spatial_hash_state && self.viewport_camera_mode == ViewportCameraMode::Ortho2D {
                 self.ecs.spatial_hash_rects()
             } else {
                 Vec::new()
@@ -4672,6 +4697,22 @@ impl ApplicationHandler for App {
             ui_particle_max_spawn_per_frame_state,
             ui_particle_max_total_state,
             ui_particle_max_emitter_backlog_state,
+            ui_light_direction_state,
+            ui_light_color_state,
+            ui_light_ambient_state,
+            ui_light_exposure_state,
+            ui_shadow_distance_state,
+            ui_shadow_bias_state,
+            ui_shadow_strength_state,
+            ui_shadow_cascade_count_state,
+            ui_shadow_resolution_state,
+            ui_shadow_split_lambda_state,
+            ui_shadow_pcf_radius_state,
+            ui_camera_zoom_min_state,
+            ui_camera_zoom_max_state,
+            ui_sprite_guard_pixels_state,
+            ui_sprite_guard_mode_state,
+            keyframe_panel_open_state,
         ) = {
             let state = self.editor_ui_state();
             (
@@ -4702,6 +4743,22 @@ impl ApplicationHandler for App {
                 state.ui_particle_max_spawn_per_frame,
                 state.ui_particle_max_total,
                 state.ui_particle_max_emitter_backlog,
+                state.ui_light_direction,
+                state.ui_light_color,
+                state.ui_light_ambient,
+                state.ui_light_exposure,
+                state.ui_shadow_distance,
+                state.ui_shadow_bias,
+                state.ui_shadow_strength,
+                state.ui_shadow_cascade_count,
+                state.ui_shadow_resolution,
+                state.ui_shadow_split_lambda,
+                state.ui_shadow_pcf_radius,
+                state.ui_camera_zoom_min,
+                state.ui_camera_zoom_max,
+                state.ui_sprite_guard_pixels,
+                state.ui_sprite_guard_mode,
+                state.animation_keyframe_panel.is_open(),
             )
         };
 
@@ -4744,6 +4801,21 @@ impl ApplicationHandler for App {
             ui_particle_max_spawn_per_frame: ui_particle_max_spawn_per_frame_state,
             ui_particle_max_total: ui_particle_max_total_state,
             ui_particle_max_emitter_backlog: ui_particle_max_emitter_backlog_state,
+            ui_light_direction: ui_light_direction_state,
+            ui_light_color: ui_light_color_state,
+            ui_light_ambient: ui_light_ambient_state,
+            ui_light_exposure: ui_light_exposure_state,
+            ui_shadow_distance: ui_shadow_distance_state,
+            ui_shadow_bias: ui_shadow_bias_state,
+            ui_shadow_strength: ui_shadow_strength_state,
+            ui_shadow_cascade_count: ui_shadow_cascade_count_state,
+            ui_shadow_resolution: ui_shadow_resolution_state,
+            ui_shadow_split_lambda: ui_shadow_split_lambda_state,
+            ui_shadow_pcf_radius: ui_shadow_pcf_radius_state,
+            ui_camera_zoom_min: ui_camera_zoom_min_state,
+            ui_camera_zoom_max: ui_camera_zoom_max_state,
+            ui_sprite_guard_pixels: ui_sprite_guard_pixels_state,
+            ui_sprite_guard_mode: ui_sprite_guard_mode_state,
             selected_entity: self.selected_entity,
             selection_details: selected_info.clone(),
             prev_selected_entity,
@@ -4765,8 +4837,8 @@ impl ApplicationHandler for App {
             mesh_keys,
             environment_options,
             active_environment,
-            debug_show_spatial_hash: self.debug_show_spatial_hash,
-            debug_show_colliders: self.debug_show_colliders,
+            debug_show_spatial_hash: debug_show_spatial_hash_state,
+            debug_show_colliders: debug_show_colliders_state,
             spatial_hash_rects,
             collider_rects,
 
@@ -4788,6 +4860,7 @@ impl ApplicationHandler for App {
             animation_group_input: animation_group_input_state,
             animation_group_scale_input: animation_group_scale_input_state,
             inspector_status: inspector_status_state,
+            keyframe_panel_open: keyframe_panel_open_state,
             script_debugger: editor_ui::ScriptDebuggerParams {
                 open: script_debugger_open,
                 available: script_plugin_available,
@@ -4831,6 +4904,21 @@ impl ApplicationHandler for App {
             ui_particle_max_spawn_per_frame,
             ui_particle_max_total,
             ui_particle_max_emitter_backlog,
+            ui_light_direction,
+            ui_light_color,
+            ui_light_ambient,
+            ui_light_exposure,
+            ui_shadow_distance,
+            ui_shadow_bias,
+            ui_shadow_strength,
+            ui_shadow_cascade_count,
+            ui_shadow_resolution,
+            ui_shadow_split_lambda,
+            ui_shadow_pcf_radius,
+            ui_camera_zoom_min,
+            ui_camera_zoom_max,
+            ui_sprite_guard_pixels,
+            ui_sprite_guard_mode,
             mut selection,
             viewport_mode_request,
             camera_bookmark_select,
@@ -4862,6 +4950,8 @@ impl ApplicationHandler for App {
             animation_group_scale_input,
             inspector_status,
             clear_scene_history,
+            keyframe_panel_open,
+            editor_settings_dirty,
         } = editor_output;
 
         let frame_budget_action = actions.frame_budget_action;
@@ -4879,6 +4969,9 @@ impl ApplicationHandler for App {
             state.animation_group_input = animation_group_input;
             state.animation_group_scale_input = animation_group_scale_input;
             state.inspector_status = inspector_status;
+            if state.animation_keyframe_panel.is_open() != keyframe_panel_open {
+                state.animation_keyframe_panel.toggle();
+            }
             state.ui_cell_size = ui_cell_size;
             state.ui_spatial_use_quadtree = ui_spatial_use_quadtree;
             state.ui_spatial_density_threshold = ui_spatial_density_threshold;
@@ -4897,17 +4990,35 @@ impl ApplicationHandler for App {
             state.ui_particle_max_spawn_per_frame = ui_particle_max_spawn_per_frame;
             state.ui_particle_max_total = ui_particle_max_total;
             state.ui_particle_max_emitter_backlog = ui_particle_max_emitter_backlog;
+            state.ui_light_direction = ui_light_direction;
+            state.ui_light_color = ui_light_color;
+            state.ui_light_ambient = ui_light_ambient;
+            state.ui_light_exposure = ui_light_exposure;
+            state.ui_shadow_distance = ui_shadow_distance;
+            state.ui_shadow_bias = ui_shadow_bias;
+            state.ui_shadow_strength = ui_shadow_strength;
+            state.ui_shadow_cascade_count = ui_shadow_cascade_count;
+            state.ui_shadow_resolution = ui_shadow_resolution;
+            state.ui_shadow_split_lambda = ui_shadow_split_lambda;
+            state.ui_shadow_pcf_radius = ui_shadow_pcf_radius;
+            state.ui_camera_zoom_min = ui_camera_zoom_min;
+            state.ui_camera_zoom_max = ui_camera_zoom_max;
+            state.ui_sprite_guard_pixels = ui_sprite_guard_pixels;
+            state.ui_sprite_guard_mode = ui_sprite_guard_mode;
+            state.debug_show_spatial_hash = debug_show_spatial_hash;
+            state.debug_show_colliders = debug_show_colliders;
             if clear_scene_history {
                 state.scene_history.clear();
                 state.scene_history_snapshot = None;
             }
         }
+        if editor_settings_dirty {
+            self.apply_editor_camera_settings();
+        }
         self.environment_intensity = ui_environment_intensity;
         self.renderer.set_environment_intensity(self.environment_intensity);
         self.id_lookup_input = id_lookup_input;
         self.id_lookup_active = id_lookup_active;
-        self.debug_show_spatial_hash = debug_show_spatial_hash;
-        self.debug_show_colliders = debug_show_colliders;
 
         if let Some(request) = id_lookup_request {
             let trimmed = request.trim();
