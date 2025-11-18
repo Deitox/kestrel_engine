@@ -835,8 +835,11 @@ pub(super) struct EditorUiParams {
     pub ui_sprite_guard_mode: SpriteGuardrailMode,
     pub selected_entity: Option<Entity>,
     pub selection_details: Option<EntityInfo>,
+    pub prev_selection_details: Option<EntityInfo>,
     pub prev_selected_entity: Option<Entity>,
     pub prev_gizmo_interaction: Option<GizmoInteraction>,
+    pub selection_bounds_2d: Option<(Vec2, Vec2)>,
+    pub prev_selection_bounds_2d: Option<(Vec2, Vec2)>,
     pub gizmo_interaction: Option<GizmoInteraction>,
     pub selection_changed: bool,
     pub gizmo_changed: bool,
@@ -1066,8 +1069,11 @@ impl App {
             mut ui_sprite_guard_mode,
             mut selected_entity,
             mut selection_details,
+            prev_selection_details,
             prev_selected_entity,
             prev_gizmo_interaction,
+            mut selection_bounds_2d,
+            prev_selection_bounds_2d,
             mut gizmo_interaction,
             mut selection_changed,
             mut gizmo_changed,
@@ -3332,7 +3338,8 @@ impl App {
             if !cursor_in_new_viewport {
                 if selection_changed {
                     selected_entity = prev_selected_entity;
-                    selection_details = selected_entity.and_then(|entity| self.ecs.entity_info(entity));
+                    selection_details = prev_selection_details.clone();
+                    selection_bounds_2d = prev_selection_bounds_2d;
                     selection_changed = false;
                 }
                 if gizmo_changed {
@@ -3344,9 +3351,9 @@ impl App {
             let mut highlight_rect = None;
             let mut gizmo_center_px = None;
             let mut gizmo_center_world3d = None;
-            if let Some(entity) = selected_entity {
+            if selected_entity.is_some() {
                 if viewport_camera_mode == ViewportCameraMode::Ortho2D {
-                    if let Some((min, max)) = self.ecs.entity_bounds(entity) {
+                    if let Some((min, max)) = selection_bounds_2d {
                         if let Some((min_px_view, max_px_view)) =
                             camera_2d.world_rect_to_screen_bounds(min, max, viewport_size_physical)
                         {
@@ -3365,8 +3372,8 @@ impl App {
                             gizmo_center_px = Some((min_screen + max_screen) * 0.5);
                         }
                     }
-                } else if let Some(info) = self.ecs.entity_info(entity) {
-                    if let Some(mesh_tx) = info.mesh_transform {
+                } else if let Some(info) = selection_details.as_ref() {
+                    if let Some(mesh_tx) = info.mesh_transform.as_ref() {
                         if let Some(center_view) =
                             mesh_camera_for_ui.project_point(mesh_tx.translation, viewport_size_physical)
                         {

@@ -2441,6 +2441,7 @@ impl ApplicationHandler for App {
         };
         let cursor_in_viewport = cursor_viewport.is_some();
         let mut selected_info = self.selected_entity().and_then(|entity| self.ecs.entity_info(entity));
+        let mut selection_bounds_2d = self.selected_entity().and_then(|entity| self.ecs.entity_bounds(entity));
         let mesh_center_world = selected_info.as_ref().and_then(|info| {
             info.mesh_transform
                 .as_ref()
@@ -2461,6 +2462,8 @@ impl ApplicationHandler for App {
         };
         let prev_selected_entity = self.selected_entity();
         let prev_gizmo_interaction = self.gizmo_interaction();
+        let prev_selection_details = selected_info.clone();
+        let prev_selection_bounds_2d = selection_bounds_2d;
 
         if self.viewport_camera_mode == ViewportCameraMode::Ortho2D
             && mesh_control_mode == MeshControlMode::Disabled
@@ -2494,6 +2497,7 @@ impl ApplicationHandler for App {
         let selection_changed = self.selected_entity() != prev_selected_entity;
         let gizmo_changed = self.gizmo_interaction() != prev_gizmo_interaction;
         selected_info = self.selected_entity().and_then(|entity| self.ecs.entity_info(entity));
+        selection_bounds_2d = self.selected_entity().and_then(|entity| self.ecs.entity_bounds(entity));
 
         let (cell_size, use_quadtree, density_threshold) = {
             let state = self.editor_ui_state();
@@ -3390,8 +3394,11 @@ impl ApplicationHandler for App {
             ui_sprite_guard_mode: ui_sprite_guard_mode_state,
             selected_entity: self.selected_entity(),
             selection_details: selected_info.clone(),
+            prev_selection_details: prev_selection_details.clone(),
             prev_selected_entity,
             prev_gizmo_interaction,
+            selection_bounds_2d,
+            prev_selection_bounds_2d,
             gizmo_interaction: self.gizmo_interaction(),
             selection_changed,
             gizmo_changed,
