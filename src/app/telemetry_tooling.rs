@@ -128,7 +128,11 @@ pub(crate) struct FrameBudgetSnapshot {
 impl App {
     pub(super) fn frame_plot_points_arc(&mut self) -> Arc<[eplot::PlotPoint]> {
         let revision = self.analytics_plugin().map(|plugin| plugin.frame_history_revision()).unwrap_or(0);
-        if self.frame_plot_revision != revision {
+        let needs_refresh = {
+            let state = self.editor_ui_state();
+            state.frame_plot_revision != revision
+        };
+        if needs_refresh {
             let new_arc = if let Some(plugin) = self.analytics_plugin() {
                 let history = plugin.frame_history();
                 let mut data = Vec::with_capacity(history.len());
@@ -139,16 +143,19 @@ impl App {
             } else {
                 Arc::from(Vec::<eplot::PlotPoint>::new().into_boxed_slice())
             };
-            self.frame_plot_revision = revision;
-            self.frame_plot_points = Arc::clone(&new_arc);
+            self.with_editor_ui_state_mut(|state| {
+                state.frame_plot_revision = revision;
+                state.frame_plot_points = Arc::clone(&new_arc);
+            });
             return new_arc;
         }
-        Arc::clone(&self.frame_plot_points)
+        let state = self.editor_ui_state();
+        Arc::clone(&state.frame_plot_points)
     }
 
     pub(super) fn capture_frame_budget_snapshot(&self) -> FrameBudgetSnapshot {
         FrameBudgetSnapshot {
-            timing: self.frame_profiler.latest(),
+            timing: self.latest_frame_timing(),
             #[cfg(feature = "alloc_profiler")]
             alloc_delta: self.analytics_plugin().and_then(|plugin| plugin.allocation_delta()),
         }

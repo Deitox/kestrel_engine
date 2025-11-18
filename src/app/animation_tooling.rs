@@ -20,7 +20,7 @@ impl App {
             let state = self.editor_ui_state();
             AnimationKeyframePanelState {
                 animation_time,
-                selected_entity: self.selected_entity,
+                selected_entity: self.selected_entity(),
                 track_summaries: self.collect_animation_track_summaries(),
                 can_undo: !state.clip_edit_history.is_empty(),
                 can_redo: !state.clip_edit_redo.is_empty(),
@@ -35,7 +35,7 @@ impl App {
 
     fn collect_animation_track_summaries(&self) -> Vec<AnimationTrackSummary> {
         let mut summaries = Vec::new();
-        if let Some(entity) = self.selected_entity {
+        if let Some(entity) = self.selected_entity() {
             if let Some(info) = self.ecs.entity_info(entity) {
                 let mut slot_index = 0_u32;
                 self.collect_sprite_track_summaries(entity, &info, &mut slot_index, &mut summaries);

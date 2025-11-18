@@ -48,7 +48,6 @@ pub(super) struct MeshPipelineResources {
     pub skinning_bgl: Arc<wgpu::BindGroupLayout>,
     pub material_bgl: Arc<wgpu::BindGroupLayout>,
     pub environment_bgl: Arc<wgpu::BindGroupLayout>,
-    pub light_cluster_bgl: Arc<wgpu::BindGroupLayout>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]

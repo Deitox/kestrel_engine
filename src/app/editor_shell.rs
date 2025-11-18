@@ -1,14 +1,18 @@
 use super::animation_keyframe_panel::AnimationKeyframePanel;
-use super::{ClipEditRecord, FrameBudgetSnapshot, ScriptConsoleEntry};
+use super::telemetry_tooling::{FrameProfiler, GpuTimingFrame, TelemetryCache};
+use super::{CameraBookmark, ClipEditRecord, FrameBudgetSnapshot, ScriptConsoleEntry};
 use crate::analytics::{AnimationBudgetSample, GpuPassMetric, KeyframeEditorEvent, KeyframeEditorUsageSnapshot};
 use crate::animation_validation::AnimationValidationEvent;
 use crate::assets::AnimationClip;
 use crate::config::{EditorConfig, ParticleConfig, SpriteGuardrailMode};
+use crate::gizmo::{GizmoInteraction, GizmoMode};
 use crate::plugins::{CapabilityViolationLog, PluginAssetReadbackEvent, PluginCapabilityEvent, PluginWatchdogEvent};
 use crate::prefab::{PrefabFormat, PrefabStatusMessage};
-use crate::renderer::{LightClusterMetrics, SceneLightingState};
+use crate::renderer::{GpuPassTiming, LightClusterMetrics, SceneLightingState};
 use crate::scene::{SceneDependencies, SceneDependencyFingerprints};
+use bevy_ecs::prelude::Entity;
 use egui::Context as EguiCtx;
+use egui_plot as eplot;
 use egui_wgpu::{Renderer as EguiRenderer, ScreenDescriptor};
 use egui_winit::State as EguiWinit;
 use std::cell::{Ref, RefCell, RefMut};
@@ -23,38 +27,29 @@ pub(crate) struct EditorShell {
     pub egui_winit: Option<EguiWinit>,
     pub egui_renderer: Option<EguiRenderer>,
     pub egui_screen: Option<ScreenDescriptor>,
-    #[allow(dead_code)]
-    pub ui_state: Option<RefCell<EditorUiState>>,
+    ui_state: RefCell<EditorUiState>,
 }
 
 impl EditorShell {
-    pub fn new() -> Self {
+    pub fn new(ui_state: EditorUiState) -> Self {
         Self {
             egui_ctx: EguiCtx::default(),
             egui_winit: None,
             egui_renderer: None,
             egui_screen: None,
-            ui_state: None,
+            ui_state: RefCell::new(ui_state),
         }
     }
 
-    #[allow(dead_code)]
-    pub fn install_ui_state(&mut self, state: EditorUiState) {
-        self.ui_state = Some(RefCell::new(state));
+    pub fn ui_state(&self) -> Ref<'_, EditorUiState> {
+        self.ui_state.borrow()
     }
 
-    #[allow(dead_code)]
-    pub fn ui_state(&self) -> Option<Ref<'_, EditorUiState>> {
-        self.ui_state.as_ref().map(|cell| cell.borrow())
-    }
-
-    #[allow(dead_code)]
-    pub fn ui_state_mut(&mut self) -> Option<RefMut<'_, EditorUiState>> {
-        self.ui_state.as_ref().map(|cell| cell.borrow_mut())
+    pub fn ui_state_mut(&self) -> RefMut<'_, EditorUiState> {
+        self.ui_state.borrow_mut()
     }
 }
 
-#[allow(dead_code)]
 pub(crate) struct EditorUiState {
     pub ui_spawn_per_press: i32,
     pub ui_auto_spawn_rate: f32,
@@ -86,10 +81,13 @@ pub(crate) struct EditorUiState {
     pub ui_shadow_split_lambda: f32,
     pub ui_shadow_pcf_radius: f32,
     pub ui_camera_zoom_min: f32,
-    pub ui_camera_zoom_max: f32,
-    pub ui_sprite_guard_pixels: f32,
+   pub ui_camera_zoom_max: f32,
+   pub ui_sprite_guard_pixels: f32,
     pub ui_sprite_guard_mode: SpriteGuardrailMode,
     pub ui_scale: f32,
+    pub selected_entity: Option<Entity>,
+    pub gizmo_mode: GizmoMode,
+    pub gizmo_interaction: Option<GizmoInteraction>,
     pub ui_scene_path: String,
     pub ui_scene_status: Option<String>,
     pub prefab_name_input: String,
@@ -98,6 +96,8 @@ pub(crate) struct EditorUiState {
     pub animation_group_input: String,
     pub animation_group_scale_input: f32,
     pub camera_bookmark_input: String,
+    pub camera_bookmarks: Vec<CameraBookmark>,
+    pub active_camera_bookmark: Option<String>,
     pub scene_dependencies: Option<SceneDependencies>,
     pub scene_dependency_fingerprints: Option<SceneDependencyFingerprints>,
     pub scene_history: VecDeque<String>,
@@ -106,6 +106,8 @@ pub(crate) struct EditorUiState {
     pub scene_mesh_snapshot: Option<Arc<[String]>>,
     pub scene_clip_snapshot: Option<Arc<[String]>>,
     pub inspector_status: Option<String>,
+    pub id_lookup_input: String,
+    pub id_lookup_active: bool,
     pub debug_show_spatial_hash: bool,
     pub debug_show_colliders: bool,
     pub sprite_guardrail_status: Option<String>,
@@ -141,9 +143,16 @@ pub(crate) struct EditorUiState {
     pub clip_edit_overrides: HashMap<String, Arc<AnimationClip>>,
     pub pending_animation_validation_events: Vec<AnimationValidationEvent>,
     pub suppressed_validation_paths: HashSet<PathBuf>,
+    pub telemetry_cache: TelemetryCache,
+    pub frame_plot_points: Arc<[eplot::PlotPoint]>,
+    pub frame_plot_revision: u64,
+    pub gpu_timings: Arc<[GpuPassTiming]>,
+    pub frame_profiler: FrameProfiler,
+    pub gpu_timing_history: VecDeque<GpuTimingFrame>,
+    pub gpu_timing_history_capacity: usize,
+    pub gpu_frame_counter: u64,
 }
 
-#[allow(dead_code)]
 pub(crate) struct EditorUiStateParams {
     pub scene_path: String,
     pub scene_history: VecDeque<String>,
@@ -152,10 +161,11 @@ pub(crate) struct EditorUiStateParams {
     pub lighting_state: SceneLightingState,
     pub environment_intensity: f32,
     pub editor_config: EditorConfig,
+    pub camera_bookmarks: Vec<CameraBookmark>,
+    pub active_camera_bookmark: Option<String>,
 }
 
 #[derive(Clone, Copy)]
-#[allow(dead_code)]
 pub(crate) struct EmitterUiDefaults {
     pub rate: f32,
     pub spread: f32,
@@ -167,7 +177,6 @@ pub(crate) struct EmitterUiDefaults {
     pub end_color: [f32; 4],
 }
 
-#[allow(dead_code)]
 impl EditorUiState {
     pub fn new(params: EditorUiStateParams) -> Self {
         Self {
@@ -205,6 +214,9 @@ impl EditorUiState {
             ui_sprite_guard_pixels: params.editor_config.sprite_guard_max_pixels,
             ui_sprite_guard_mode: params.editor_config.sprite_guardrail_mode,
             ui_scale: 1.0,
+            selected_entity: None,
+            gizmo_mode: GizmoMode::default(),
+            gizmo_interaction: None,
             ui_scene_path: params.scene_path,
             ui_scene_status: None,
             prefab_name_input: String::new(),
@@ -213,6 +225,8 @@ impl EditorUiState {
             animation_group_input: String::new(),
             animation_group_scale_input: 1.0,
             camera_bookmark_input: String::new(),
+            camera_bookmarks: params.camera_bookmarks,
+            active_camera_bookmark: params.active_camera_bookmark,
             scene_dependencies: None,
             scene_dependency_fingerprints: None,
             scene_history: params.scene_history,
@@ -221,6 +235,8 @@ impl EditorUiState {
             scene_mesh_snapshot: None,
             scene_clip_snapshot: None,
             inspector_status: None,
+            id_lookup_input: String::new(),
+            id_lookup_active: false,
             debug_show_spatial_hash: false,
             debug_show_colliders: false,
             sprite_guardrail_status: None,
@@ -256,6 +272,14 @@ impl EditorUiState {
             clip_edit_overrides: HashMap::new(),
             pending_animation_validation_events: Vec::new(),
             suppressed_validation_paths: HashSet::new(),
+            telemetry_cache: TelemetryCache::default(),
+            frame_plot_points: Arc::from(Vec::<eplot::PlotPoint>::new().into_boxed_slice()),
+            frame_plot_revision: 0,
+            gpu_timings: Arc::from(Vec::<GpuPassTiming>::new().into_boxed_slice()),
+            frame_profiler: FrameProfiler::new(240),
+            gpu_timing_history: VecDeque::with_capacity(240),
+            gpu_timing_history_capacity: 240,
+            gpu_frame_counter: 0,
         }
     }
 }

@@ -33,7 +33,7 @@ This document tracks the staged remediation work. Each section calls out the goa
 
 **Goal:** Separate responsibilities so runtime, editor UI, and plugin orchestration can evolve and be tested independently.
 
-**Status:** **In Progress** - Plugin plumbing now lives in `app::plugin_runtime`, `app::runtime_loop` owns timing/fixed-step bookkeeping, the animation/keyframe tooling resides in `app::animation_tooling`, prefab workflows in `app::prefab_tooling`, mesh-preview helpers in `app::mesh_preview_tooling`, and analytics/plugin telemetry snapshots flow through `EditorUiState`. The script console helpers and inspector utilities were carved into `app::script_console` / `app::inspector_tooling`, file watcher glue now lives in `app::asset_watch_tooling`, and the telemetry caches/frame budget helpers sit in `app::telemetry_tooling`. `docs/ARCHITECTURE.md` reflects the new module boundaries, and `cargo test --locked` now passes after shifting the animation helper unit tests into `app::animation_tooling`, so the last pre-renderer work item is exploratory testing before Step 4 kicks off.
+**Status:** **In Progress** - Plugin plumbing now lives in `app::plugin_runtime`, `app::runtime_loop` owns timing/fixed-step bookkeeping, the animation/keyframe tooling resides in `app::animation_tooling`, prefab workflows in `app::prefab_tooling`, mesh-preview helpers in `app::mesh_preview_tooling`, and analytics/plugin telemetry snapshots flow through `EditorUiState`. The script console helpers and inspector utilities were carved into `app::script_console` / `app::inspector_tooling`, file watcher glue now lives in `app::asset_watch_tooling`, and the telemetry caches/frame budget helpers sit in `app::telemetry_tooling`. Selection + gizmo state, the frame profiler, and the GPU timing history now ride inside the editor shell (with `EditorUiOutput` returning the pending gizmo state) so App no longer owns UI-bound state, `docs/ARCHITECTURE.md` reflects the new module boundaries, and `cargo test --locked` now passes after shifting the animation helper unit tests into `app::animation_tooling`, so the last pre-renderer work item is exploratory testing before Step 4 kicks off.
 
 **Tasks**
 - [x] Extract a `RuntimeLoop` module that owns the tick/fixed-step bookkeeping so `App` depends on a single loop abstraction instead of raw `Time`/accumulator fields.
@@ -42,6 +42,7 @@ This document tracks the staged remediation work. Each section calls out the goa
 - [x] Incrementally migrate subsystems (analytics UI caches, prefab shelf, mesh preview, REPL tooling, inspector utilities) into focused modules, adding unit tests where practical.
 - [x] Extract the remaining editor-only helpers (file watcher glue, lingering telemetry caches) into focused modules.
 - [x] Update `docs/ARCHITECTURE.md` after each milestone to capture the new ownership diagram.
+- [x] Route selection/gizmo UI state, camera bookmarks, and frame-profiling/GPU snapshot caches through `EditorUiState`/`EditorUiOutput` so App no longer owns UI-only fields.
 
 ## 4. Renderer Pass Decomposition & Upload Efficiency (Weeks 5-6)
 

@@ -587,6 +587,7 @@ pub(super) struct UiActions {
     pub frame_budget_action: Option<FrameBudgetAction>,
     pub save_prefab: Option<PrefabSaveRequest>,
     pub instantiate_prefab: Option<PrefabInstantiateRequest>,
+    pub point_light_update: Option<Vec<ScenePointLight>>,
 }
 
 pub(super) struct SpriteAtlasRequest {
@@ -646,6 +647,8 @@ pub(super) struct EditorUiParams {
     pub animation_validation_log: Arc<[AnimationValidationEvent]>,
     pub animation_budget_sample: Option<AnimationBudgetSample>,
     pub light_cluster_metrics_overlay: Option<LightClusterMetrics>,
+    pub light_cluster_metrics: LightClusterMetrics,
+    pub point_lights: Vec<ScenePointLight>,
     pub keyframe_editor_usage: Option<KeyframeEditorUsageSnapshot>,
     pub keyframe_event_log: Arc<[KeyframeEditorEvent]>,
     pub system_timings: Vec<SystemTimingSummary>,
@@ -696,6 +699,7 @@ pub(super) struct EditorUiParams {
     pub selection_details: Option<EntityInfo>,
     pub prev_selected_entity: Option<Entity>,
     pub prev_gizmo_interaction: Option<GizmoInteraction>,
+    pub gizmo_interaction: Option<GizmoInteraction>,
     pub selection_changed: bool,
     pub gizmo_changed: bool,
     pub cursor_screen: Option<Vec2>,
@@ -782,6 +786,7 @@ pub(super) struct EditorUiOutput {
     pub ui_sprite_guard_pixels: f32,
     pub ui_sprite_guard_mode: SpriteGuardrailMode,
     pub selection: SelectionResult,
+    pub gizmo_interaction: Option<GizmoInteraction>,
     pub viewport_mode_request: Option<ViewportCameraMode>,
     pub camera_bookmark_select: Option<Option<String>>,
     pub camera_bookmark_save: Option<String>,
@@ -838,6 +843,8 @@ impl App {
             animation_validation_log,
             animation_budget_sample,
             light_cluster_metrics_overlay,
+            light_cluster_metrics,
+            mut point_lights,
             keyframe_editor_usage,
             keyframe_event_log,
             system_timings,
@@ -882,6 +889,7 @@ impl App {
             mut selection_details,
             prev_selected_entity,
             prev_gizmo_interaction,
+            mut gizmo_interaction,
             mut selection_changed,
             mut gizmo_changed,
             cursor_screen,
@@ -1028,7 +1036,34 @@ impl App {
 
         let mut keyframe_panel_toggle_event: Option<KeyframeEditorEventKind> = None;
         let mut editor_settings_dirty = false;
+        let mut point_lights_dirty = false;
         let keyframe_panel_ctx = self.editor_shell.egui_ctx.clone();
+        let scene_dependencies_snapshot = {
+            let state = self.editor_ui_state();
+            state.scene_dependencies.clone()
+        };
+        let gpu_timing_snapshot = {
+            let state = self.editor_ui_state();
+            Arc::clone(&state.gpu_timings)
+        };
+        let (gpu_history_empty, gpu_timing_averages) = {
+            let state = self.editor_ui_state();
+            if state.gpu_timing_history.is_empty() {
+                (true, BTreeMap::new())
+            } else {
+                let mut averages = BTreeMap::new();
+                for frame in &state.gpu_timing_history {
+                    for timing in &frame.timings {
+                        let entry = averages.entry(timing.label).or_insert((0.0, 0));
+                        entry.0 += timing.duration_ms;
+                        entry.1 += 1;
+                    }
+                }
+                (false, averages)
+            }
+        };
+        let mut gizmo_mode_state = self.gizmo_mode();
+        let original_gizmo_mode = gizmo_mode_state;
         let full_output = self.editor_shell.egui_ctx.run(raw_input, |ctx| {
             let left_panel =
                 egui::SidePanel::left("kestrel_left_panel").default_width(340.0).show(ctx, |ui| {
@@ -1107,7 +1142,7 @@ impl App {
                             );
                             ui.separator();
                         }
-                        let metrics = self.renderer.light_cluster_metrics();
+                        let metrics = light_cluster_metrics;
                         egui::CollapsingHeader::new("Light Culling").default_open(false).show(ui, |ui| {
                             ui.label(format!(
                                 "Lights: {} visible / {} total (culled {})",
@@ -1697,8 +1732,8 @@ impl App {
                     ui.separator();
                     let inspector_ctx = entity_inspector::InspectorAppContext {
                         ecs: &mut self.ecs,
-                        gizmo_mode: &mut self.gizmo_mode,
-                        gizmo_interaction: &mut self.gizmo_interaction,
+                        gizmo_mode: &mut gizmo_mode_state,
+                        gizmo_interaction: &mut gizmo_interaction,
                         input: &self.input,
                         inspector_status: &mut inspector_status,
                         material_registry: &mut self.material_registry,
@@ -2039,7 +2074,7 @@ impl App {
                                     egui::Color32::from_rgb(220, 120, 120)
                                 };
                                 let status_label = if loaded { "loaded" } else { "missing" };
-                                let path_opt = self.scene_dependencies.as_ref().and_then(|deps| {
+                                let path_opt = scene_dependencies_snapshot.as_ref().and_then(|deps| {
                                     deps.atlas_dependencies()
                                         .find(|dep| dep.key() == atlas.as_str())
                                         .and_then(|dep| dep.path().map(|p| p.to_string()))
@@ -2084,7 +2119,7 @@ impl App {
                                     egui::Color32::from_rgb(220, 120, 120)
                                 };
                                 let status_label = if loaded { "loaded" } else { "missing" };
-                                let path_opt = self.scene_dependencies.as_ref().and_then(|deps| {
+                                let path_opt = scene_dependencies_snapshot.as_ref().and_then(|deps| {
                                     deps.mesh_dependencies()
                                         .find(|dep| dep.key() == mesh_key.as_str())
                                         .and_then(|dep| dep.path().map(|p| p.to_string()))
@@ -2122,7 +2157,7 @@ impl App {
                                     egui::Color32::from_rgb(220, 120, 120)
                                 };
                                 let status_label = if loaded { "loaded" } else { "missing" };
-                                let path_opt = self.scene_dependencies.as_ref().and_then(|deps| {
+                                let path_opt = scene_dependencies_snapshot.as_ref().and_then(|deps| {
                                     deps.clip_dependencies()
                                         .find(|dep| dep.key() == clip_key.as_str())
                                         .and_then(|dep| dep.path().map(|p| p.to_string()))
@@ -2144,7 +2179,7 @@ impl App {
                                 });
                             }
                         }
-                        if let Some(deps) = self.scene_dependencies.as_ref() {
+                        if let Some(deps) = scene_dependencies_snapshot.as_ref() {
                             if let Some(environment_dep) = deps.environment_dependency() {
                                 let key = environment_dep.key();
                                 let loaded = self.environment_registry.definition(key).is_some();
@@ -2186,7 +2221,7 @@ impl App {
                         } else {
                             ui.small("Load or save a scene to populate environment dependencies.");
                         }
-                        if self.scene_dependencies.is_none() {
+                        if scene_dependencies_snapshot.is_none() {
                             ui.small("Load or save a scene to populate dependency details.");
                         }
                     });
@@ -2332,7 +2367,7 @@ impl App {
                                 lighting_dirty = true;
                             }
                             ui.separator();
-                            let cluster_metrics = self.renderer.light_cluster_metrics();
+                            let cluster_metrics = light_cluster_metrics;
                             ui.label("Clustered light culling");
                             ui.label(format!(
                                 "Runtime lights: {} visible / {} total (culled {})",
@@ -2366,12 +2401,11 @@ impl App {
                             }
 
                             ui.separator();
-                            let point_light_count = self.renderer.lighting().point_lights.len();
+                            let point_light_count = point_lights.len();
                             let point_lights_header = format!("Point lights ({point_light_count})");
                             egui::CollapsingHeader::new(point_lights_header)
                                 .default_open(point_light_count > 0 && point_light_count <= 2)
                                 .show(ui, |ui| {
-                                    let point_lights = &mut self.renderer.lighting_mut().point_lights;
                                     if point_lights.is_empty() {
                                         ui.label("No point lights configured.");
                                     }
@@ -2383,35 +2417,56 @@ impl App {
                                             |ui| {
                                                 ui.horizontal(|ui| {
                                                     ui.label("Position");
-                                                    ui.add(
-                                                        egui::DragValue::new(&mut light.position.x)
-                                                            .speed(0.1),
-                                                    );
-                                                    ui.add(
-                                                        egui::DragValue::new(&mut light.position.y)
-                                                            .speed(0.1),
-                                                    );
-                                                    ui.add(
-                                                        egui::DragValue::new(&mut light.position.z)
-                                                            .speed(0.1),
-                                                    );
+                                                    let mut changed = false;
+                                                    changed |= ui
+                                                        .add(
+                                                            egui::DragValue::new(&mut light.position.x)
+                                                                .speed(0.1),
+                                                        )
+                                                        .changed();
+                                                    changed |= ui
+                                                        .add(
+                                                            egui::DragValue::new(&mut light.position.y)
+                                                                .speed(0.1),
+                                                        )
+                                                        .changed();
+                                                    changed |= ui
+                                                        .add(
+                                                            egui::DragValue::new(&mut light.position.z)
+                                                                .speed(0.1),
+                                                        )
+                                                        .changed();
+                                                    if changed {
+                                                        point_lights_dirty = true;
+                                                    }
                                                 });
                                                 ui.horizontal(|ui| {
                                                     ui.label("Color");
                                                     let mut color_arr = light.color.to_array();
                                                     if ui.color_edit_button_rgb(&mut color_arr).changed() {
                                                         light.color = Vec3::from_array(color_arr);
+                                                        point_lights_dirty = true;
                                                     }
                                                 });
-                                                ui.add(
-                                                    egui::Slider::new(&mut light.radius, 0.1..=100.0)
-                                                        .text("Radius")
-                                                        .logarithmic(true),
-                                                );
-                                                ui.add(
-                                                    egui::Slider::new(&mut light.intensity, 0.0..=20.0)
-                                                        .text("Intensity"),
-                                                );
+                                                if ui
+                                                    .add(
+                                                        egui::Slider::new(&mut light.radius, 0.1..=100.0)
+                                                            .text("Radius")
+                                                            .logarithmic(true),
+                                                    )
+                                                    .changed()
+                                                {
+                                                    point_lights_dirty = true;
+                                                }
+                                                if ui
+                                                    .add(
+                                                        egui::Slider::new(&mut light.intensity, 0.0..=20.0)
+                                                            .text("Intensity"),
+                                                    )
+                                                    .changed()
+                                                {
+                                                    point_lights_dirty = true;
+                                                }
                                                 if ui.button("Remove light").clicked() {
                                                     removal = Some(index);
                                                 }
@@ -2423,6 +2478,7 @@ impl App {
                                     }
                                     if let Some(idx) = removal {
                                         point_lights.remove(idx);
+                                        point_lights_dirty = true;
                                     }
                                     if ui.button("Add point light").clicked() {
                                         let default_position = Vec3::new(0.0, 2.0, 0.0);
@@ -2433,6 +2489,7 @@ impl App {
                                             5.0,
                                             1.0,
                                         ));
+                                        point_lights_dirty = true;
                                     }
                                 });
 
@@ -2487,24 +2544,12 @@ impl App {
                                 ui_shadow_split_lambda = default_shadow.split_lambda;
                                 ui_shadow_pcf_radius = default_shadow.pcf_radius;
                                 ui_environment_intensity = 1.0;
-                                self.renderer.lighting_mut().point_lights.clear();
                                 lighting_dirty = true;
+                                point_lights.clear();
+                                point_lights_dirty = true;
                             }
                             if lighting_dirty {
-                                let lighting = self.renderer.lighting_mut();
-                                lighting.direction = ui_light_direction;
-                                lighting.color = ui_light_color;
-                                lighting.ambient = ui_light_ambient;
-                                lighting.exposure = ui_light_exposure;
-                                lighting.shadow_distance = ui_shadow_distance.clamp(1.0, 500.0);
-                                lighting.shadow_bias = ui_shadow_bias.clamp(0.00005, 0.05);
-                                lighting.shadow_strength = ui_shadow_strength.clamp(0.0, 1.0);
-                                lighting.shadow_cascade_count =
-                                    ui_shadow_cascade_count.clamp(1, MAX_SHADOW_CASCADES as u32);
-                                lighting.shadow_resolution = ui_shadow_resolution.clamp(256, 8192);
-                                lighting.shadow_split_lambda = ui_shadow_split_lambda.clamp(0.0, 1.0);
-                                lighting.shadow_pcf_radius = ui_shadow_pcf_radius.clamp(0.0, 10.0);
-                                self.renderer.mark_shadow_settings_dirty();
+                                editor_settings_dirty = true;
                             }
                         },
                     );
@@ -2843,35 +2888,30 @@ impl App {
                     ui.heading("GPU Timings");
                     if !self.renderer.gpu_timing_supported() {
                         ui.small("Device does not support GPU timestamp queries.");
-                    } else if self.gpu_timing_history.is_empty() {
-                        ui.small("No GPU timing samples captured yet.");
                     } else {
-                        let mut averages: BTreeMap<&'static str, (f32, u32)> = BTreeMap::new();
-                        for frame in &self.gpu_timing_history {
-                            for timing in &frame.timings {
-                                let entry = averages.entry(timing.label).or_insert((0.0, 0));
-                                entry.0 += timing.duration_ms;
-                                entry.1 += 1;
+                        if gpu_history_empty {
+                            ui.small("No GPU timing samples captured yet.");
+                        } else {
+                            if !gpu_timing_snapshot.is_empty() {
+                                for timing in gpu_timing_snapshot.iter() {
+                                    let average = gpu_timing_averages
+                                        .get(&timing.label)
+                                        .map(|(sum, count)| sum / (*count as f32))
+                                        .unwrap_or(timing.duration_ms);
+                                    ui.label(format!(
+                                        "{:<20} {:>6.2} ms (avg {:>6.2} ms)",
+                                        timing.label, timing.duration_ms, average
+                                    ));
+                                }
+                            } else {
+                                ui.label("No GPU timing snapshot available.");
                             }
-                        }
-                        let latest_gpu_timings = self.gpu_timings.as_ref();
-                        if !latest_gpu_timings.is_empty() {
-                            for timing in latest_gpu_timings.iter() {
-                                let average = averages
-                                    .get(&timing.label)
-                                    .map(|(sum, count)| sum / (*count as f32))
-                                    .unwrap_or(timing.duration_ms);
-                                ui.label(format!(
-                                    "{:<20} {:>6.2} ms (avg {:>6.2} ms)",
-                                    timing.label, timing.duration_ms, average
-                                ));
+                            if ui.button("Export GPU CSV").clicked() {
+                                gpu_export_requested = true;
                             }
-                        }
-                        if ui.button("Export GPU CSV").clicked() {
-                            gpu_export_requested = true;
-                        }
-                        if let Some(status) = gpu_metrics_status.as_ref() {
-                            ui.small(status.as_str());
+                            if let Some(status) = gpu_metrics_status.as_ref() {
+                                ui.small(status.as_str());
+                            }
                         }
                     }
 
@@ -3160,13 +3200,12 @@ impl App {
                 .unwrap_or(false);
             if !cursor_in_new_viewport {
                 if selection_changed {
-                    self.selected_entity = prev_selected_entity;
-                    selection_details = self.selected_entity.and_then(|entity| self.ecs.entity_info(entity));
-                    selected_entity = self.selected_entity;
+                    selected_entity = prev_selected_entity;
+                    selection_details = selected_entity.and_then(|entity| self.ecs.entity_info(entity));
                     selection_changed = false;
                 }
                 if gizmo_changed {
-                    self.gizmo_interaction = prev_gizmo_interaction;
+                    gizmo_interaction = prev_gizmo_interaction;
                     gizmo_changed = false;
                 }
             }
@@ -3174,7 +3213,7 @@ impl App {
             let mut highlight_rect = None;
             let mut gizmo_center_px = None;
             let mut gizmo_center_world3d = None;
-            if let Some(entity) = self.selected_entity {
+            if let Some(entity) = selected_entity {
                 if self.viewport_camera_mode == ViewportCameraMode::Ortho2D {
                     if let Some((min, max)) = self.ecs.entity_bounds(entity) {
                         if let Some((min_px_view, max_px_view)) =
@@ -3299,8 +3338,7 @@ impl App {
                     draw_light_cluster_overlay(ctx, viewport_outline, metrics);
                 }
             }
-            let active_scale_handle_kind =
-                self.gizmo_interaction.as_ref().and_then(|interaction| match interaction {
+            let active_scale_handle_kind = gizmo_interaction.and_then(|interaction| match interaction {
                     GizmoInteraction::Scale { handle, .. } => Some(handle.kind()),
                     _ => None,
                 });
@@ -3308,7 +3346,7 @@ impl App {
             if let Some(center_px) = gizmo_center_px {
                 let center = egui::pos2(center_px.x / ui_pixels_per_point, center_px.y / ui_pixels_per_point);
                 let draw_translate_axes = self.viewport_camera_mode == ViewportCameraMode::Perspective3D
-                    && self.gizmo_mode == GizmoMode::Translate;
+                    && gizmo_mode_state == GizmoMode::Translate;
                 if draw_translate_axes {
                     if let Some(center_world) = gizmo_center_world3d {
                         let distance = (mesh_camera_for_ui.position - center_world).length().max(0.001);
@@ -3335,7 +3373,7 @@ impl App {
                         }
                     }
                 } else {
-                    match self.gizmo_mode {
+                    match gizmo_mode_state {
                         GizmoMode::Translate => {
                             let extent = 8.0 / ui_pixels_per_point;
                             painter.line_segment(
@@ -3470,6 +3508,9 @@ impl App {
                 );
             }
         });
+        if gizmo_mode_state != original_gizmo_mode {
+            self.set_gizmo_mode(gizmo_mode_state);
+        }
         if let Some(event) = keyframe_panel_toggle_event {
             self.log_keyframe_editor_event(event);
         }
@@ -3521,6 +3562,10 @@ impl App {
             }
         }
 
+        if point_lights_dirty {
+            actions.point_light_update = Some(point_lights);
+        }
+
         EditorUiOutput {
             full_output,
             actions,
@@ -3560,6 +3605,7 @@ impl App {
             ui_sprite_guard_pixels,
             ui_sprite_guard_mode,
             selection: SelectionResult { entity: selected_entity, details: selection_details },
+            gizmo_interaction,
             viewport_mode_request,
             camera_bookmark_select,
             camera_bookmark_save,

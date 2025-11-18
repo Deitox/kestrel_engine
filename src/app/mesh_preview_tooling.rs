@@ -61,7 +61,7 @@ impl App {
             }
         });
         if let Some(entity) = spawned {
-            self.selected_entity = Some(entity);
+            self.set_selected_entity(Some(entity));
         }
     }
 }

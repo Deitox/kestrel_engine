@@ -77,14 +77,14 @@ impl App {
     }
 
     pub(super) fn focus_selection(&mut self) -> bool {
-        let Some(entity) = self.selected_entity else {
+        let Some(entity) = self.selected_entity() else {
             return false;
         };
         let Some(info) = self.ecs.entity_info(entity) else {
             return false;
         };
         self.camera_follow_target = None;
-        self.active_camera_bookmark = None;
+        self.set_active_camera_bookmark(None);
         self.camera.position = info.translation;
         if let Some(plugin) = self.mesh_preview_plugin_mut() {
             plugin.focus_selection_with_info(&info)

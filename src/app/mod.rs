@@ -26,7 +26,7 @@ use self::plugin_host::{BuiltinPluginFactory, PluginHost};
 use self::plugin_runtime::{PluginContextInputs, PluginRuntime};
 use self::runtime_loop::{RuntimeLoop, RuntimeTick};
 pub(crate) use self::telemetry_tooling::FrameBudgetSnapshot;
-use self::telemetry_tooling::{FrameProfiler, GpuTimingFrame, TelemetryCache};
+use self::telemetry_tooling::GpuTimingFrame;
 #[cfg(feature = "alloc_profiler")]
 use crate::alloc_profiler;
 use crate::analytics::{
@@ -66,9 +66,9 @@ use crate::renderer::{
     GpuPassTiming, MeshDraw, RenderViewport, Renderer, ScenePointLight, SpriteBatch, MAX_SHADOW_CASCADES,
 };
 use crate::scene::{
-    EnvironmentDependency, Scene, SceneCamera2D, SceneCameraBookmark, SceneDependencies,
-    SceneDependencyFingerprints, SceneEntityId, SceneEnvironment, SceneLightingData, SceneMetadata,
-    ScenePointLightData, SceneShadowData, SceneViewportMode, Vec2Data,
+    EnvironmentDependency, Scene, SceneCamera2D, SceneCameraBookmark, SceneDependencies, SceneEntityId,
+    SceneEnvironment, SceneLightingData, SceneMetadata, ScenePointLightData, SceneShadowData, SceneViewportMode,
+    Vec2Data,
 };
 use crate::scripts::{ScriptCommand, ScriptHandle, ScriptPlugin};
 use crate::time::Time;
@@ -93,7 +93,6 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 
 // egui
-use egui_plot as eplot;
 use egui_wgpu::{Renderer as EguiRenderer, RendererOptions, ScreenDescriptor};
 use egui_winit::State as EguiWinit;
 
@@ -279,22 +278,13 @@ pub struct App {
     // egui
     editor_shell: EditorShell,
 
-    // UI State
-    scene_dependencies: Option<SceneDependencies>,
-    scene_dependency_fingerprints: Option<SceneDependencyFingerprints>,
-
     // Plugins
     plugin_runtime: PluginRuntime,
 
     // Camera / selection
     pub(crate) camera: Camera2D,
     pub(crate) viewport_camera_mode: ViewportCameraMode,
-    camera_bookmarks: Vec<CameraBookmark>,
-    active_camera_bookmark: Option<String>,
     camera_follow_target: Option<SceneEntityId>,
-    pub(crate) selected_entity: Option<Entity>,
-    gizmo_mode: GizmoMode,
-    gizmo_interaction: Option<GizmoInteraction>,
 
     // Configuration
     config: AppConfig,
@@ -309,18 +299,8 @@ pub struct App {
     pub(crate) mesh_registry: MeshRegistry,
 
     viewport: Viewport,
-    id_lookup_input: String,
-    id_lookup_active: bool,
-    frame_profiler: FrameProfiler,
     #[cfg(feature = "alloc_profiler")]
     last_alloc_snapshot: alloc_profiler::AllocationSnapshot,
-    telemetry_cache: TelemetryCache,
-    frame_plot_points: Arc<[eplot::PlotPoint]>,
-    frame_plot_revision: u64,
-    gpu_timings: Arc<[GpuPassTiming]>,
-    gpu_timing_history: VecDeque<GpuTimingFrame>,
-    gpu_timing_history_capacity: usize,
-    gpu_frame_counter: u64,
 
     // Particles
     emitter_entity: Option<Entity>,
@@ -344,11 +324,11 @@ pub struct App {
 
 impl App {
     fn editor_ui_state(&self) -> Ref<'_, EditorUiState> {
-        self.editor_shell.ui_state.as_ref().expect("editor UI state not initialized").borrow()
+        self.editor_shell.ui_state()
     }
 
     fn editor_ui_state_mut(&self) -> RefMut<'_, EditorUiState> {
-        self.editor_shell.ui_state.as_ref().expect("editor UI state not initialized").borrow_mut()
+        self.editor_shell.ui_state_mut()
     }
 
     fn with_editor_ui_state_mut<F, R>(&self, f: F) -> R
@@ -357,6 +337,77 @@ impl App {
     {
         let mut state = self.editor_ui_state_mut();
         f(&mut state)
+    }
+
+    fn selected_entity(&self) -> Option<Entity> {
+        self.editor_ui_state().selected_entity
+    }
+
+    fn set_selected_entity(&self, entity: Option<Entity>) {
+        self.editor_ui_state_mut().selected_entity = entity;
+    }
+
+    fn gizmo_mode(&self) -> GizmoMode {
+        self.editor_ui_state().gizmo_mode
+    }
+
+    fn set_gizmo_mode(&self, mode: GizmoMode) {
+        self.with_editor_ui_state_mut(|state| {
+            if state.gizmo_mode != mode {
+                state.gizmo_mode = mode;
+                state.gizmo_interaction = None;
+            }
+        });
+    }
+
+    fn gizmo_interaction(&self) -> Option<GizmoInteraction> {
+        self.editor_ui_state().gizmo_interaction
+    }
+
+    fn set_gizmo_interaction(&self, interaction: Option<GizmoInteraction>) {
+        self.editor_ui_state_mut().gizmo_interaction = interaction;
+    }
+
+    fn take_gizmo_interaction(&self) -> Option<GizmoInteraction> {
+        self.with_editor_ui_state_mut(|state| state.gizmo_interaction.take())
+    }
+
+    fn record_frame_timing_sample(&self, sample: FrameTimingSample) {
+        self.with_editor_ui_state_mut(|state| state.frame_profiler.push(sample));
+    }
+
+    fn latest_frame_timing(&self) -> Option<FrameTimingSample> {
+        self.editor_ui_state().frame_profiler.latest()
+    }
+
+    fn camera_bookmarks(&self) -> Vec<CameraBookmark> {
+        self.editor_ui_state().camera_bookmarks.clone()
+    }
+
+    fn active_camera_bookmark(&self) -> Option<String> {
+        self.editor_ui_state().active_camera_bookmark.clone()
+    }
+
+    fn set_active_camera_bookmark(&self, bookmark: Option<String>) {
+        self.editor_ui_state_mut().active_camera_bookmark = bookmark;
+    }
+
+    fn update_gpu_timing_snapshots(&self, timings: Vec<GpuPassTiming>) {
+        if timings.is_empty() {
+            return;
+        }
+        let arc_timings = Arc::from(timings.clone().into_boxed_slice());
+        self.with_editor_ui_state_mut(|state| {
+            state.gpu_timings = Arc::clone(&arc_timings);
+            state.gpu_frame_counter = state.gpu_frame_counter.saturating_add(1);
+            state.gpu_timing_history.push_back(GpuTimingFrame {
+                frame_index: state.gpu_frame_counter,
+                timings,
+            });
+            while state.gpu_timing_history.len() > state.gpu_timing_history_capacity {
+                state.gpu_timing_history.pop_front();
+            }
+        });
     }
 
     fn set_ui_scene_status(&self, message: impl Into<String>) {
@@ -713,10 +764,14 @@ impl App {
     }
 
     fn apply_camera_bookmark_by_name(&mut self, name: &str) -> bool {
-        if let Some(bookmark) = self.camera_bookmarks.iter().find(|b| b.name == name) {
+        let bookmark = {
+            let state = self.editor_ui_state();
+            state.camera_bookmarks.iter().find(|b| b.name == name).cloned()
+        };
+        if let Some(bookmark) = bookmark {
             self.camera.position = bookmark.position;
             self.camera.set_zoom(bookmark.zoom);
-            self.active_camera_bookmark = Some(bookmark.name.clone());
+            self.set_active_camera_bookmark(Some(bookmark.name.clone()));
             self.camera_follow_target = None;
             true
         } else {
@@ -729,18 +784,25 @@ impl App {
         if trimmed.is_empty() {
             return false;
         }
-        if let Some(existing) = self.camera_bookmarks.iter_mut().find(|b| b.name == trimmed) {
-            existing.position = self.camera.position;
-            existing.zoom = self.camera.zoom;
-        } else {
-            self.camera_bookmarks.push(CameraBookmark {
-                name: trimmed.to_string(),
-                position: self.camera.position,
-                zoom: self.camera.zoom,
-            });
-            self.camera_bookmarks.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-        }
-        self.active_camera_bookmark = Some(trimmed.to_string());
+        let bookmark_name = trimmed.to_string();
+        let position = self.camera.position;
+        let zoom = self.camera.zoom;
+        self.with_editor_ui_state_mut(|state| {
+            if let Some(existing) = state.camera_bookmarks.iter_mut().find(|b| b.name == trimmed) {
+                existing.position = position;
+                existing.zoom = zoom;
+            } else {
+                state.camera_bookmarks.push(CameraBookmark {
+                    name: bookmark_name.clone(),
+                    position,
+                    zoom,
+                });
+                state
+                    .camera_bookmarks
+                    .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            }
+            state.active_camera_bookmark = Some(bookmark_name);
+        });
         self.camera_follow_target = None;
         true
     }
@@ -750,22 +812,24 @@ impl App {
         if trimmed.is_empty() {
             return false;
         }
-        let before = self.camera_bookmarks.len();
-        self.camera_bookmarks.retain(|bookmark| bookmark.name != trimmed);
-        if self.camera_bookmarks.len() != before {
-            if self.active_camera_bookmark.as_deref() == Some(trimmed) {
-                self.active_camera_bookmark = None;
+        let mut removed = false;
+        self.with_editor_ui_state_mut(|state| {
+            let before = state.camera_bookmarks.len();
+            state.camera_bookmarks.retain(|bookmark| bookmark.name != trimmed);
+            if state.camera_bookmarks.len() != before {
+                if state.active_camera_bookmark.as_deref() == Some(trimmed) {
+                    state.active_camera_bookmark = None;
+                }
+                removed = true;
             }
-            true
-        } else {
-            false
-        }
+        });
+        removed
     }
 
     fn set_camera_follow_scene_id(&mut self, scene_id: SceneEntityId) -> bool {
         self.camera_follow_target = Some(scene_id);
         if self.refresh_camera_follow() {
-            self.active_camera_bookmark = None;
+            self.set_active_camera_bookmark(None);
             true
         } else {
             self.camera_follow_target = None;
@@ -960,6 +1024,18 @@ impl App {
         let mut mesh_registry = MeshRegistry::new(&mut material_registry);
         let scene_material_refs = HashSet::new();
         let scene_clip_refs = HashMap::new();
+        let ui_state = EditorUiState::new(EditorUiStateParams {
+            scene_path: scene_path_for_ui,
+            scene_history: scene_history_for_ui,
+            emitter_defaults,
+            particle_config: particle_config.clone(),
+            lighting_state: editor_lighting_state,
+            environment_intensity,
+            editor_config: editor_cfg.clone(),
+            camera_bookmarks: Vec::new(),
+            active_camera_bookmark: None,
+        });
+        let editor_shell = EditorShell::new(ui_state);
 
         let plugin_host = PluginHost::new(PLUGIN_MANIFEST_PATH);
         let plugin_manager = PluginManager::default();
@@ -1041,18 +1117,11 @@ impl App {
             active_environment_key: default_environment_key.clone(),
             environment_intensity,
             should_close: false,
-            editor_shell: EditorShell::new(),
-            scene_dependencies: None,
-            scene_dependency_fingerprints: None,
+            editor_shell,
             plugin_runtime,
             camera,
             viewport_camera_mode: ViewportCameraMode::default(),
-            camera_bookmarks: Vec::new(),
-            active_camera_bookmark: None,
             camera_follow_target: None,
-            selected_entity: None,
-            gizmo_mode: GizmoMode::default(),
-            gizmo_interaction: None,
             scene_atlas_refs: HashSet::new(),
             persistent_atlases: HashSet::new(),
             scene_clip_refs,
@@ -1065,8 +1134,6 @@ impl App {
                 Vec2::new(config.window.width as f32, config.window.height as f32),
             ),
             config,
-            id_lookup_input: String::new(),
-            id_lookup_active: false,
             emitter_entity: Some(emitter),
             sprite_atlas_views: HashMap::new(),
             atlas_hot_reload,
@@ -1080,30 +1147,12 @@ impl App {
             animation_validation_worker,
             sprite_guardrail_mode: editor_cfg.sprite_guardrail_mode,
             sprite_guardrail_max_pixels: editor_cfg.sprite_guard_max_pixels,
-            frame_profiler: FrameProfiler::new(240),
             #[cfg(feature = "alloc_profiler")]
             last_alloc_snapshot: alloc_profiler::allocation_snapshot(),
-            telemetry_cache: TelemetryCache::default(),
-            frame_plot_points: Arc::from(Vec::<eplot::PlotPoint>::new().into_boxed_slice()),
-            frame_plot_revision: 0,
-            gpu_timings: Arc::from(Vec::<GpuPassTiming>::new().into_boxed_slice()),
-            gpu_timing_history: VecDeque::with_capacity(240),
-            gpu_timing_history_capacity: 240,
-            gpu_frame_counter: 0,
             sprite_batch_map: HashMap::new(),
             sprite_batch_pool: Vec::new(),
             sprite_batch_order: Vec::new(),
         };
-        let ui_state = EditorUiState::new(EditorUiStateParams {
-            scene_path: scene_path_for_ui,
-            scene_history: scene_history_for_ui,
-            emitter_defaults,
-            particle_config: particle_config.clone(),
-            lighting_state: editor_lighting_state,
-            environment_intensity,
-            editor_config: editor_cfg.clone(),
-        });
-        app.editor_shell.install_ui_state(ui_state);
         app.seed_animation_watch_roots();
         app.sync_animation_asset_watch_roots();
         app.apply_particle_caps();
@@ -1170,7 +1219,7 @@ impl App {
                     if ratio < 0.999 {
                         let desired_zoom = prev_zoom * ratio;
                         self.camera.set_zoom(desired_zoom);
-                        self.active_camera_bookmark = None;
+                        self.set_active_camera_bookmark(None);
                         self.camera_follow_target = None;
                         Some(format!(
                             "Zoom guardrail clamped camera to {:.2} (sprite {:.0}px, limit {:.0}px).",
@@ -1234,10 +1283,61 @@ impl App {
         self.config.editor.sprite_guardrail_mode = guard_mode;
     }
 
-    fn export_gpu_timings_csv<P: AsRef<std::path::Path>>(&self, path: P) -> Result<PathBuf> {
-        if self.gpu_timing_history.is_empty() {
-            return Err(anyhow!("No GPU timing samples available to export."));
+    fn apply_editor_lighting_settings(&mut self) {
+        let (
+            ui_light_direction,
+            ui_light_color,
+            ui_light_ambient,
+            ui_light_exposure,
+            ui_shadow_distance,
+            ui_shadow_bias,
+            ui_shadow_strength,
+            ui_shadow_cascade_count,
+            ui_shadow_resolution,
+            ui_shadow_split_lambda,
+            ui_shadow_pcf_radius,
+        ) = {
+            let state = self.editor_ui_state();
+            (
+                state.ui_light_direction,
+                state.ui_light_color,
+                state.ui_light_ambient,
+                state.ui_light_exposure,
+                state.ui_shadow_distance,
+                state.ui_shadow_bias,
+                state.ui_shadow_strength,
+                state.ui_shadow_cascade_count,
+                state.ui_shadow_resolution,
+                state.ui_shadow_split_lambda,
+                state.ui_shadow_pcf_radius,
+            )
+        };
+        let default_dir = glam::Vec3::new(0.4, 0.8, 0.35).normalize();
+        let mut direction = ui_light_direction;
+        if !direction.is_finite() || direction.length_squared() < 1e-4 {
+            direction = default_dir;
+        } else {
+            direction = direction.normalize_or_zero();
+            if direction.length_squared() < 1e-4 {
+                direction = default_dir;
+            }
         }
+        let lighting = self.renderer.lighting_mut();
+        lighting.direction = direction;
+        lighting.color = ui_light_color;
+        lighting.ambient = ui_light_ambient;
+        lighting.exposure = ui_light_exposure;
+        lighting.shadow_distance = ui_shadow_distance.clamp(1.0, 500.0);
+        lighting.shadow_bias = ui_shadow_bias.clamp(0.00005, 0.05);
+        lighting.shadow_strength = ui_shadow_strength.clamp(0.0, 1.0);
+        lighting.shadow_cascade_count = ui_shadow_cascade_count.clamp(1, MAX_SHADOW_CASCADES as u32);
+        lighting.shadow_resolution = ui_shadow_resolution.clamp(256, 8192);
+        lighting.shadow_split_lambda = ui_shadow_split_lambda.clamp(0.0, 1.0);
+        lighting.shadow_pcf_radius = ui_shadow_pcf_radius.clamp(0.0, 10.0);
+        self.renderer.mark_shadow_settings_dirty();
+    }
+
+    fn export_gpu_timings_csv<P: AsRef<std::path::Path>>(&self, path: P) -> Result<PathBuf> {
         let path = path.as_ref();
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
@@ -1245,12 +1345,19 @@ impl App {
                     .with_context(|| format!("Creating GPU timing export directory {}", parent.display()))?;
             }
         }
-        let mut rows = String::from("frame,label,duration_ms\n");
-        for frame in &self.gpu_timing_history {
-            for timing in &frame.timings {
-                rows.push_str(&format!("{},{},{:.4}\n", frame.frame_index, timing.label, timing.duration_ms));
+        let rows = {
+            let state = self.editor_ui_state();
+            if state.gpu_timing_history.is_empty() {
+                return Err(anyhow!("No GPU timing samples available to export."));
             }
-        }
+            let mut rows = String::from("frame,label,duration_ms\n");
+            for frame in &state.gpu_timing_history {
+                for timing in &frame.timings {
+                    rows.push_str(&format!("{},{},{:.4}\n", frame.frame_index, timing.label, timing.duration_ms));
+                }
+            }
+            rows
+        };
         fs::write(path, rows.as_bytes())
             .with_context(|| format!("Writing GPU timing export {}", path.display()))?;
         Ok(path.to_path_buf())
@@ -1310,7 +1417,7 @@ impl App {
     where
         F: FnOnce(&mut PluginHost, &mut PluginManager, &mut PluginContext<'_>) -> R,
     {
-        let selected_entity = self.selected_entity;
+        let selected_entity = self.selected_entity();
         self.plugin_runtime.with_context(
             PluginContextInputs {
                 renderer: &mut self.renderer,
@@ -1586,19 +1693,26 @@ impl App {
 
     fn update_scene_dependencies(&mut self, deps: &SceneDependencies) -> Result<()> {
         let fingerprint = deps.fingerprints();
-        if self.scene_dependency_fingerprints == Some(fingerprint) {
-            self.scene_dependencies = Some(deps.clone());
+        let cached_fingerprint = {
+            let state = self.editor_ui_state();
+            state.scene_dependency_fingerprints.clone()
+        };
+        if cached_fingerprint.as_ref() == Some(&fingerprint) {
+            self.with_editor_ui_state_mut(|state| state.scene_dependencies = Some(deps.clone()));
             return Ok(());
         }
-        let atlas_dirty =
-            self.scene_dependency_fingerprints.map_or(true, |fp| fp.atlases != fingerprint.atlases);
-        let clip_dirty = self.scene_dependency_fingerprints.map_or(true, |fp| fp.clips != fingerprint.clips);
+        let atlas_dirty = cached_fingerprint
+            .as_ref()
+            .map_or(true, |fp| fp.atlases != fingerprint.atlases);
+        let clip_dirty =
+            cached_fingerprint.as_ref().map_or(true, |fp| fp.clips != fingerprint.clips);
         let mesh_dirty =
-            self.scene_dependency_fingerprints.map_or(true, |fp| fp.meshes != fingerprint.meshes);
+            cached_fingerprint.as_ref().map_or(true, |fp| fp.meshes != fingerprint.meshes);
         let material_dirty =
-            self.scene_dependency_fingerprints.map_or(true, |fp| fp.materials != fingerprint.materials);
-        let environment_dirty =
-            self.scene_dependency_fingerprints.map_or(true, |fp| fp.environments != fingerprint.environments);
+            cached_fingerprint.as_ref().map_or(true, |fp| fp.materials != fingerprint.materials);
+        let environment_dirty = cached_fingerprint
+            .as_ref()
+            .map_or(true, |fp| fp.environments != fingerprint.environments);
 
         if atlas_dirty {
             let previous = self.scene_atlas_refs.clone();
@@ -1734,8 +1848,12 @@ impl App {
             self.scene_environment_ref = next_environment;
         }
 
-        self.scene_dependencies = Some(deps.clone());
-        self.scene_dependency_fingerprints = Some(fingerprint);
+        let deps_clone = deps.clone();
+        let fingerprint_clone = fingerprint.clone();
+        self.with_editor_ui_state_mut(|state| {
+            state.scene_dependencies = Some(deps_clone);
+            state.scene_dependency_fingerprints = Some(fingerprint_clone);
+        });
         Ok(())
     }
 
@@ -1744,9 +1862,10 @@ impl App {
         metadata.viewport = SceneViewportMode::from(self.viewport_camera_mode);
         metadata.camera2d =
             Some(SceneCamera2D { position: Vec2Data::from(self.camera.position), zoom: self.camera.zoom });
-        metadata.camera_bookmarks = self.camera_bookmarks.iter().map(CameraBookmark::to_scene).collect();
+        let camera_bookmarks = self.camera_bookmarks();
+        metadata.camera_bookmarks = camera_bookmarks.iter().map(CameraBookmark::to_scene).collect();
         metadata.active_camera_bookmark =
-            if self.camera_follow_target.is_none() { self.active_camera_bookmark.clone() } else { None };
+            if self.camera_follow_target.is_none() { self.active_camera_bookmark() } else { None };
         metadata.camera_follow_entity = self.camera_follow_target.clone();
         if let Some(plugin) = self.mesh_preview_plugin() {
             metadata.preview_camera = Some(plugin.capture_preview_camera());
@@ -1788,8 +1907,10 @@ impl App {
             self.camera.position = Vec2::from(cam2d.position.clone());
             self.camera.set_zoom(cam2d.zoom);
         }
-        self.camera_bookmarks = metadata.camera_bookmarks.iter().map(CameraBookmark::from_scene).collect();
-        self.camera_bookmarks.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        self.with_editor_ui_state_mut(|state| {
+            state.camera_bookmarks = metadata.camera_bookmarks.iter().map(CameraBookmark::from_scene).collect();
+            state.camera_bookmarks.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        });
         self.camera_follow_target = metadata.camera_follow_entity.clone();
         if self.camera_follow_target.is_some() && !self.refresh_camera_follow() {
             self.camera_follow_target = None;
@@ -1797,13 +1918,13 @@ impl App {
         if self.camera_follow_target.is_none() {
             if let Some(active) = metadata.active_camera_bookmark.as_deref() {
                 if !self.apply_camera_bookmark_by_name(active) {
-                    self.active_camera_bookmark = None;
+                    self.set_active_camera_bookmark(None);
                 }
             } else {
-                self.active_camera_bookmark = None;
+                self.set_active_camera_bookmark(None);
             }
         } else {
-            self.active_camera_bookmark = None;
+            self.set_active_camera_bookmark(None);
         }
         if let Some(preview) = metadata.preview_camera.as_ref() {
             if let Some(plugin) = self.mesh_preview_plugin_mut() {
@@ -2154,9 +2275,9 @@ impl ApplicationHandler for App {
             self.last_alloc_snapshot = alloc_snapshot;
         }
 
-        if let Some(entity) = self.selected_entity {
+        if let Some(entity) = self.selected_entity() {
             if !self.ecs.entity_exists(entity) {
-                self.selected_entity = None;
+                self.set_selected_entity(None);
             }
         }
 
@@ -2232,7 +2353,7 @@ impl ApplicationHandler for App {
             None
         };
         let cursor_in_viewport = cursor_viewport.is_some();
-        let mut selected_info = self.selected_entity.and_then(|entity| self.ecs.entity_info(entity));
+        let mut selected_info = self.selected_entity().and_then(|entity| self.ecs.entity_info(entity));
         let mesh_center_world = selected_info.as_ref().and_then(|info| {
             info.mesh_transform
                 .as_ref()
@@ -2251,22 +2372,22 @@ impl ApplicationHandler for App {
                 }
             }
         };
-        let prev_selected_entity = self.selected_entity;
-        let prev_gizmo_interaction = self.gizmo_interaction;
+        let prev_selected_entity = self.selected_entity();
+        let prev_gizmo_interaction = self.gizmo_interaction();
 
         if self.viewport_camera_mode == ViewportCameraMode::Ortho2D
             && mesh_control_mode == MeshControlMode::Disabled
         {
             if let Some(delta) = self.input.consume_wheel_delta() {
                 self.camera.apply_scroll_zoom(delta);
-                self.active_camera_bookmark = None;
+                self.set_active_camera_bookmark(None);
             }
 
             if self.input.right_held() {
                 let (dx, dy) = self.input.mouse_delta;
                 if dx.abs() > f32::EPSILON || dy.abs() > f32::EPSILON {
                     self.camera.pan_screen_delta(Vec2::new(dx, dy), viewport_size);
-                    self.active_camera_bookmark = None;
+                    self.set_active_camera_bookmark(None);
                     self.camera_follow_target = None;
                 }
             }
@@ -2283,9 +2404,9 @@ impl ApplicationHandler for App {
             &selected_info,
         );
         let hovered_scale_kind = gizmo_update.hovered_scale_kind;
-        let selection_changed = self.selected_entity != prev_selected_entity;
-        let gizmo_changed = self.gizmo_interaction != prev_gizmo_interaction;
-        selected_info = self.selected_entity.and_then(|entity| self.ecs.entity_info(entity));
+        let selection_changed = self.selected_entity() != prev_selected_entity;
+        let gizmo_changed = self.gizmo_interaction() != prev_gizmo_interaction;
+        selected_info = self.selected_entity().and_then(|entity| self.ecs.entity_info(entity));
 
         let (cell_size, use_quadtree, density_threshold) = {
             let state = self.editor_ui_state();
@@ -2550,7 +2671,7 @@ impl ApplicationHandler for App {
         if self.editor_shell.egui_winit.is_none() {
             frame.present();
             let frame_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
-            self.frame_profiler.push(FrameTimingSample {
+            self.record_frame_timing_sample(FrameTimingSample {
                 frame_ms,
                 update_ms: update_time_ms,
                 fixed_ms: fixed_time_ms,
@@ -2586,11 +2707,14 @@ impl ApplicationHandler for App {
             .iter()
             .find(|timing| timing.name == "sys_apply_sprite_frame_states")
             .map(|timing| timing.last_ms);
-        let sprite_upload_ms = self
-            .gpu_timings
-            .iter()
-            .find(|timing| timing.label == "Sprite pass")
-            .map(|timing| timing.duration_ms);
+        let sprite_upload_ms = {
+            let state = self.editor_ui_state();
+            state
+                .gpu_timings
+                .iter()
+                .find(|timing| timing.label == "Sprite pass")
+                .map(|timing| timing.duration_ms)
+        };
         let entity_count = self.ecs.entity_count();
         let instances_drawn = instances.len();
         let orbit_target =
@@ -2623,12 +2747,17 @@ impl ApplicationHandler for App {
             } else {
                 (false, None, false, false, None)
             };
-        let mesh_keys = self.telemetry_cache.mesh_keys(&self.mesh_registry);
+        let (mesh_keys, environment_options, prefab_entries) =
+            self.with_editor_ui_state_mut(|state| {
+                let mesh = state.telemetry_cache.mesh_keys(&self.mesh_registry);
+                let env = state.telemetry_cache.environment_options(&self.environment_registry);
+                let prefabs = state.telemetry_cache.prefab_entries(&self.prefab_library);
+                (mesh, env, prefabs)
+            });
         let scene_history_list = self.scene_history_arc();
         let atlas_snapshot = self.scene_atlas_refs_arc();
         let mesh_snapshot = self.scene_mesh_refs_arc();
         let clip_snapshot = self.scene_clip_refs_arc();
-        let environment_options = self.telemetry_cache.environment_options(&self.environment_registry);
         let active_environment = self.active_environment_key.clone();
         let (debug_show_spatial_hash_state, debug_show_colliders_state) = {
             let state = self.editor_ui_state();
@@ -2684,8 +2813,7 @@ impl ApplicationHandler for App {
             });
         }
         self.refresh_editor_analytics_state();
-        let prefab_entries = self.telemetry_cache.prefab_entries(&self.prefab_library);
-        let latest_frame_timing = self.frame_profiler.latest();
+        let latest_frame_timing = self.latest_frame_timing();
         let (frame_budget_idle, frame_budget_panel, frame_budget_status) = {
             let state = self.editor_ui_state();
             (
@@ -2695,6 +2823,10 @@ impl ApplicationHandler for App {
             )
         };
 
+        let (id_lookup_input_state, id_lookup_active_state) = {
+            let state = self.editor_ui_state();
+            (state.id_lookup_input.clone(), state.id_lookup_active)
+        };
         let (script_debugger_open, script_repl_input, script_repl_history_index, script_focus_repl) = {
             let state = self.editor_ui_state();
             (
@@ -2852,6 +2984,8 @@ impl ApplicationHandler for App {
             animation_validation_log,
             animation_budget_sample,
             light_cluster_metrics_overlay,
+            light_cluster_metrics: light_cluster_snapshot,
+            point_lights: self.renderer.lighting().point_lights.clone(),
             keyframe_editor_usage,
             keyframe_event_log,
             system_timings,
@@ -2898,10 +3032,11 @@ impl ApplicationHandler for App {
             ui_camera_zoom_max: ui_camera_zoom_max_state,
             ui_sprite_guard_pixels: ui_sprite_guard_pixels_state,
             ui_sprite_guard_mode: ui_sprite_guard_mode_state,
-            selected_entity: self.selected_entity,
+            selected_entity: self.selected_entity(),
             selection_details: selected_info.clone(),
             prev_selected_entity,
             prev_gizmo_interaction,
+            gizmo_interaction: self.gizmo_interaction(),
             selection_changed,
             gizmo_changed,
             cursor_screen,
@@ -2912,8 +3047,8 @@ impl ApplicationHandler for App {
             mesh_camera_for_ui,
             camera_position,
             camera_zoom,
-            camera_bookmarks: self.camera_bookmarks.clone(),
-            active_camera_bookmark: self.active_camera_bookmark.clone(),
+            camera_bookmarks: self.camera_bookmarks(),
+            active_camera_bookmark: self.active_camera_bookmark(),
             camera_follow_target: self.camera_follow_target.as_ref().map(|id| id.as_str().to_string()),
             camera_bookmark_input: camera_bookmark_input_state,
             mesh_keys,
@@ -2958,8 +3093,8 @@ impl ApplicationHandler for App {
                 console_entries: script_console_entries,
                 focus_repl: script_focus_repl,
             },
-            id_lookup_input: self.id_lookup_input.clone(),
-            id_lookup_active: self.id_lookup_active,
+            id_lookup_input: id_lookup_input_state,
+            id_lookup_active: id_lookup_active_state,
         };
 
         let ui_build_start = Instant::now();
@@ -3004,6 +3139,7 @@ impl ApplicationHandler for App {
             ui_sprite_guard_pixels,
             ui_sprite_guard_mode,
             mut selection,
+            gizmo_interaction,
             viewport_mode_request,
             camera_bookmark_select,
             camera_bookmark_save,
@@ -3097,14 +3233,15 @@ impl ApplicationHandler for App {
                 state.scene_history.clear();
                 state.scene_history_snapshot = None;
             }
+            state.id_lookup_input = id_lookup_input;
+            state.id_lookup_active = id_lookup_active;
         }
         if editor_settings_dirty {
             self.apply_editor_camera_settings();
+            self.apply_editor_lighting_settings();
         }
         self.environment_intensity = ui_environment_intensity;
         self.renderer.set_environment_intensity(self.environment_intensity);
-        self.id_lookup_input = id_lookup_input;
-        self.id_lookup_active = id_lookup_active;
 
         if let Some(request) = id_lookup_request {
             let trimmed = request.trim();
@@ -3119,9 +3256,10 @@ impl ApplicationHandler for App {
             }
         }
 
-        self.selected_entity = selection.entity;
+        self.set_selected_entity(selection.entity);
+        self.set_gizmo_interaction(gizmo_interaction);
         if self.input.take_delete_selection() {
-            if let Some(entity) = self.selected_entity {
+            if let Some(entity) = self.selected_entity() {
                 if actions.delete_entity.is_none() {
                     actions.delete_entity = Some(entity);
                 }
@@ -3137,7 +3275,7 @@ impl ApplicationHandler for App {
                     }
                 }
                 None => {
-                    self.active_camera_bookmark = None;
+                    self.set_active_camera_bookmark(None);
                     self.camera_follow_target = None;
                     self.set_ui_scene_status("Camera set to free mode.".to_string());
                 }
@@ -3203,6 +3341,9 @@ impl ApplicationHandler for App {
                     self.set_ui_scene_status(format!("Environment '{}' unavailable: {err}", environment_key));
                 }
             }
+        }
+        if let Some(point_lights) = actions.point_light_update {
+            self.renderer.lighting_mut().point_lights = point_lights;
         }
 
         let egui::FullOutput { platform_output, textures_delta, shapes, .. } = full_output;
@@ -3429,8 +3570,8 @@ impl ApplicationHandler for App {
                             self.set_ui_scene_status(format!("Loaded {}", scene_path));
                             self.remember_scene_path(&scene_path);
                             self.apply_scene_metadata(&scene.metadata);
-                            self.selected_entity = None;
-                            self.gizmo_interaction = None;
+                            self.set_selected_entity(None);
+                            self.set_gizmo_interaction(None);
                             if let Some(plugin) = self.script_plugin_mut() {
                                 plugin.clear_handles();
                             }
@@ -3446,8 +3587,8 @@ impl ApplicationHandler for App {
                         self.ecs.clear_world();
                         self.clear_scene_atlases();
                         self.clear_scene_clips();
-                        self.selected_entity = None;
-                        self.gizmo_interaction = None;
+                        self.set_selected_entity(None);
+                        self.set_gizmo_interaction(None);
                         if let Some(plugin) = self.script_plugin_mut() {
                             plugin.clear_handles();
                         }
@@ -3479,8 +3620,8 @@ impl ApplicationHandler for App {
                     plugin.forget_entity(entity);
                 }
             }
-            self.selected_entity = None;
-            self.gizmo_interaction = None;
+            self.set_selected_entity(None);
+            self.set_gizmo_interaction(None);
         }
         if actions.clear_particles {
             self.ecs.clear_particles();
@@ -3498,7 +3639,7 @@ impl ApplicationHandler for App {
             if let Some(plugin) = self.script_plugin_mut() {
                 plugin.clear_handles();
             }
-            self.gizmo_interaction = None;
+            self.set_gizmo_interaction(None);
             if let Some(emitter) = self.emitter_entity {
                 let (
                     emitter_rate,
@@ -3538,8 +3679,8 @@ impl ApplicationHandler for App {
             self.ecs.clear_world();
             self.clear_scene_atlases();
             self.clear_scene_clips();
-            self.selected_entity = None;
-            self.gizmo_interaction = None;
+            self.set_selected_entity(None);
+            self.set_gizmo_interaction(None);
             if let Some(plugin) = self.script_plugin_mut() {
                 plugin.clear_handles();
             }
@@ -3571,33 +3712,19 @@ impl ApplicationHandler for App {
             }
             let timings = self.renderer.take_gpu_timings();
             if !timings.is_empty() {
-                self.gpu_frame_counter = self.gpu_frame_counter.saturating_add(1);
                 if let Some(analytics) = self.analytics_plugin_mut() {
                     analytics.record_gpu_timings(&timings);
                 }
-                let arc_timings = Arc::from(timings.clone().into_boxed_slice());
-                self.gpu_timings = Arc::clone(&arc_timings);
-                self.gpu_timing_history
-                    .push_back(GpuTimingFrame { frame_index: self.gpu_frame_counter, timings });
-                while self.gpu_timing_history.len() > self.gpu_timing_history_capacity {
-                    self.gpu_timing_history.pop_front();
-                }
+                self.update_gpu_timing_snapshots(timings);
             }
         } else {
             frame.present();
             let timings = self.renderer.take_gpu_timings();
             if !timings.is_empty() {
-                self.gpu_frame_counter = self.gpu_frame_counter.saturating_add(1);
                 if let Some(analytics) = self.analytics_plugin_mut() {
                     analytics.record_gpu_timings(&timings);
                 }
-                let arc_timings = Arc::from(timings.clone().into_boxed_slice());
-                self.gpu_timings = Arc::clone(&arc_timings);
-                self.gpu_timing_history
-                    .push_back(GpuTimingFrame { frame_index: self.gpu_frame_counter, timings });
-                while self.gpu_timing_history.len() > self.gpu_timing_history_capacity {
-                    self.gpu_timing_history.pop_front();
-                }
+                self.update_gpu_timing_snapshots(timings);
             }
         }
 
@@ -3613,7 +3740,7 @@ impl ApplicationHandler for App {
         }
         self.input.clear_frame();
         let frame_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
-        self.frame_profiler.push(FrameTimingSample {
+        self.record_frame_timing_sample(FrameTimingSample {
             frame_ms,
             update_ms: update_time_ms,
             fixed_ms: fixed_time_ms,

@@ -397,8 +397,8 @@ impl Renderer {
         Self {
             window_surface: WindowSurface::new(window_cfg),
             mesh_pass: MeshPass::new(),
-            shadow_pass: ShadowPass::default(),
-            light_clusters: LightClusterPass::default(),
+            shadow_pass: ShadowPass::new(),
+            light_clusters: LightClusterPass::new(),
             light_cluster_scratch: LightClusterScratch::default(),
             lighting: SceneLightingState::default(),
             environment_state: None,
@@ -780,7 +780,6 @@ impl Renderer {
             skinning_bgl: skinning_bgl.clone(),
             material_bgl: material_bgl.clone(),
             environment_bgl: environment_bgl.clone(),
-            light_cluster_bgl: light_cluster_bgl.clone(),
         });
         self.mesh_pass.frame_buffer = Some(frame_buf);
         self.mesh_pass.draw_buffer = Some(draw_buf);

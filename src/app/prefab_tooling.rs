@@ -141,9 +141,9 @@ impl App {
         }) {
             Ok(spawned) => {
                 if let Some(&root) = spawned.first() {
-                    self.selected_entity = Some(root);
+                    self.set_selected_entity(Some(root));
                 }
-                self.gizmo_interaction = None;
+                self.set_gizmo_interaction(None);
                 self.set_prefab_status(
                     PrefabStatusKind::Success,
                     format!("Instantiated prefab '{}' ({})", request.name, request.format.short_label()),

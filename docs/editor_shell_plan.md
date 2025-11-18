@@ -8,6 +8,12 @@
    - Define a struct in `app::editor_shell` that holds the `// UI State` fields currently on `App`, along with helper methods for default construction.
    - Keep the existing structs (`ClipEditRecord`, etc.) near their current definitions for now and reference them from the new state struct.
 
+## Step 2 Progress _(2025-11-17)_
+- `EditorUiState` now owns the selection stack (`selected_entity`, inspector details, `gizmo_mode`, and active `gizmo_interaction`) and exposes borrow helpers so gizmo tooling and plugin plumbing can read/update state without poking at `App` internals.
+- The frame profiler and GPU timing history moved into the shell as well: `App` records samples through `record_frame_timing_sample`/`update_gpu_timing_snapshots`, while egui panels consume immutable snapshots via the shell.
+- `EditorUiOutput` grew a `gizmo_interaction` field so the viewport logic can queue interaction resets without mutating `App` mid-frame, which keeps `egui_ctx.run` borrow-safe now that the data lives inside the shell.
+- Camera bookmark data (list, active selection, text input) now lives in `EditorUiState`, so bookmark apply/save/delete flows mutate the shell-owned list and `SceneMetadata` serialization pulls from there rather than `App`.
+
 3. **Refactor App Construction**
    - Update `App::new` to initialize `EditorUiState` through the shell and remove the duplicated fields from `App`.
    - Provide accessors on `EditorShell` (e.g., `ui_state_mut()`) so `App` can read/write state without exposing internals.
@@ -78,8 +84,9 @@ Next up for Step 3: update `App::new` to populate `EditorUiState` via these help
 
 ## App Wiring Progress _(Step 3 — 2025-11-16)_
 
+- `EditorShell::new` now requires an `EditorUiState` at construction, so `App::new` installs the UI data exactly once and the borrow helpers never juggle an `Option` or late `install_ui_state()` call again.
+- `App::editor_ui_state()` / `editor_ui_state_mut()` now simply delegate to the shell accessors, keeping all `RefCell` bookkeeping inside `EditorShell`.
 - `App::new` now constructs `EditorUiState` using `EditorUiStateParams`/`EmitterUiDefaults` and installs it on `EditorShell` right after the struct is created. This keeps the egui handles + UI state packaged together.
-- Introduced `App::editor_ui_state()` / `editor_ui_state_mut()` helpers so call sites can reach into the new state without touching the shell internals.
 - First migration batch: all script debugger / REPL data (`script_debugger_open`, focus flag, REPL input/history buffers, console logs, last reported error) now live exclusively inside `EditorUiState`. The associated helpers (`push_script_console`, `append_script_history`, `script_repl_history_arc`, `sync_script_error_state`, etc.) were updated to read/write the shell state, and the egui `EditorUiParams`/`EditorUiOutput` plumbing was rewired accordingly.
 - Second migration batch: scene/prefab/inspector fields (`ui_scene_path`, `ui_scene_status`, `prefab_*` inputs, animation group overrides, inspector status, scene history) moved into `EditorUiState`. `EditorUiParams`/`EditorUiOutput` were extended so the UI mutates local copies and App rehydrates state after each frame, avoiding borrow conflicts with `egui_ctx`. Actions such as clearing the scene history are now communicated via the output payload instead of mutating App fields directly during UI rendering.
 - Third migration batch: particle + emitter sliders (`ui_spawn_per_press`, `ui_auto_spawn_rate`, spatial cell/quadtree toggles, emitter knobs, particle caps, `ui_root_spin`, and the UI copy of the environment intensity) now live solely on `EditorUiState`. Auto-spawn loops, particle hotkeys, script commands, and ECS synchronization paths all route through the shell, and `App` dropped the corresponding struct fields entirely. `set_active_environment` now mirrors intensity edits into the shell so the UI reflects external environment switches.
@@ -93,6 +100,19 @@ Next up for Step 3: update `App::new` to populate `EditorUiState` via these help
 - Eleventh migration batch: file watcher plumbing moved into `app::asset_watch_tooling` (atlas hot-reload sync, animation watch roots, queue helpers) and the remaining telemetry caches + frame budget utilities live in `app::telemetry_tooling`. With `TelemetryCache`, `FrameProfiler`, and the frame-budget helpers centralized, `App` now just orchestrates state transitions while the tooling modules manage editor-only caching.
 
 Next slices for Step 3: run a round of exploratory/editor shake tests to confirm the modular shell behaves identically, then hand off to the renderer decomposition work (Step 4) now that the editor-only helpers are isolated.
+
+## Call-Site Porting Plan _(Step 4 — In Progress)_
+
+- **Analytics + stats panels**: Port `editor_ui::stats`/frame-budget widgets first so every telemetry panel reads immutable snapshots from `EditorUiState`. After each section compiles, run `cargo check` and flip the Stats, Frame Budget, and GPU Metrics panels in the editor build to verify no regressions.
+- **Prefab/inspector workflows**: Tackle the prefab shelf, scene picker, dependency reports, and inspector tooling next. These modules already expose helpers, so the migration is swapping raw `self.ui_*` fields for `EditorUiState` data plus extending `EditorUiOutput` when the UI needs to push mutations (e.g., clearing scene history). Smoke test by loading/saving prefabs and bouncing through the dependency dialogs.
+- **Viewport + gizmo plumbing**: Update viewport interaction handling so selection, gizmo state, guard-rail sliders, and bookmark inputs flow exclusively through the shell. Ensure the viewport only mutates state via `EditorUiOutput` so `egui` borrows remain short-lived, then validate by dragging gizmos, toggling guard-rails, and creating/editing bookmarks.
+- **Script console + debugger**: Once the UI widgets are shell-driven, migrate script console commands, REPL history, debugger toggles, and error mirroring to the new helpers. After each chunk, run the targeted scripting suites (`cargo test --locked --test sprite_animation -- --test-threads=1`) to guarantee runtime/editor messaging still works.
+- **Telemetry + plugin dashboards**: Finish by pointing analytics exports (plugin capability logs, mesh/atlas snapshots, animation validation queues) at the shell caches and deleting the legacy `App` storage. Re-run the headless renderer coverage (`present_mode_respects_vsync_flag`, `headless_render_collects_gpu_timings`, `headless_render_recovers_from_surface_loss`) so GPU timing and telemetry capture stay green.
+
+## Step 4 Progress _(2025-11-19)_
+
+- Stats/analytics panel now consumes a precomputed `light_cluster_metrics` snapshot via `EditorUiParams`, so the egui run no longer touches `self.renderer` for light-culling telemetry and the data flow matches the other shell-provided analytics snapshots.
+- The Lighting & Environment inspector now edits a local copy of the renderer lighting state (`ScenePointLight` list + directional params) and reports changes through `EditorUiParams`/`UiActions`. `App` reapplies the sanitized values after each frame (`apply_editor_lighting_settings` + `point_light_update`), so egui no longer mutates `Renderer::lighting` mid-run and point-light edits stay borrow-safe.
 
 2025-11-17 validation note: ran `cargo test --locked` after relocating the animation helper unit tests into `app::animation_tooling`, giving the shell wiring an automated smoke check before scheduling the interactive editor sweep.
 2025-11-18 validation note: re-ran the renderer headless coverage (`cargo test --locked present_mode_respects_vsync_flag`, `cargo test --locked headless_render_collects_gpu_timings`, `cargo test --locked headless_render_recovers_from_surface_loss`) plus the sprite animation integration suite (`cargo test --locked --test sprite_animation -- --test-threads=1`) to verify the editor-shell changes keep the runtime stable; all targeted tests now pass when the sprite harness is forced to run serially.

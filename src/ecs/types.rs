@@ -748,13 +748,15 @@ impl ClipInstance {
         if duration > 0.0 {
             if self.looped {
                 let step = duration.max(std::f32::EPSILON);
-                let mut wrapped = time.rem_euclid(step);
-                if (wrapped - duration).abs() <= CLIP_TIME_EPSILON
-                    || (duration - wrapped).abs() <= CLIP_TIME_EPSILON
-                {
-                    wrapped = duration;
+                if time.is_finite() && time >= 0.0 && (time - duration).abs() <= CLIP_TIME_EPSILON {
+                    self.time = duration;
+                } else {
+                    let mut wrapped = time.rem_euclid(step);
+                    if (duration - wrapped).abs() <= CLIP_TIME_EPSILON {
+                        wrapped = duration;
+                    }
+                    self.time = wrapped;
                 }
-                self.time = wrapped;
             } else {
                 let mut clamped = time.clamp(0.0, duration);
                 if clamped >= duration - CLIP_TIME_EPSILON {
