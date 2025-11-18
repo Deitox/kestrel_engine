@@ -21,7 +21,10 @@ use self::animation_keyframe_panel::{
 };
 use self::animation_watch::{AnimationAssetKind, AnimationAssetWatcher};
 use self::atlas_watch::AtlasHotReload;
-use self::editor_shell::{EditorShell, EditorUiState, EditorUiStateParams, EmitterUiDefaults};
+use self::editor_shell::{
+    EditorShell, EditorUiState, EditorUiStateParams, EmitterUiDefaults, ScriptDebuggerStatus,
+    ScriptHandleBinding,
+};
 use self::plugin_host::{BuiltinPluginFactory, PluginHost};
 use self::plugin_runtime::{PluginContextInputs, PluginRuntime};
 use self::runtime_loop::{RuntimeLoop, RuntimeTick};
@@ -78,7 +81,7 @@ use glam::{Mat4, Vec2, Vec3, Vec4};
 use anyhow::{anyhow, Context, Result};
 use std::cell::{Ref, RefMut};
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::mem;
 use std::path::{Path, PathBuf};
@@ -994,11 +997,6 @@ impl App {
             start_color: ui_emitter_start_color,
             end_color: ui_emitter_end_color,
         };
-        let scene_path = String::from("assets/scenes/quick_save.json");
-        let mut scene_history = VecDeque::with_capacity(8);
-        scene_history.push_back(scene_path.clone());
-        let scene_path_for_ui = scene_path.clone();
-        let scene_history_for_ui = scene_history.clone();
         let runtime_loop = RuntimeLoop::new(Time::new(), 1.0 / 60.0);
         let mut input = Input::from_config(INPUT_CONFIG_PATH);
         let mut assets = AssetManager::new();
@@ -1025,15 +1023,11 @@ impl App {
         let scene_material_refs = HashSet::new();
         let scene_clip_refs = HashMap::new();
         let ui_state = EditorUiState::new(EditorUiStateParams {
-            scene_path: scene_path_for_ui,
-            scene_history: scene_history_for_ui,
             emitter_defaults,
             particle_config: particle_config.clone(),
             lighting_state: editor_lighting_state,
             environment_intensity,
             editor_config: editor_cfg.clone(),
-            camera_bookmarks: Vec::new(),
-            active_camera_bookmark: None,
         });
         let editor_shell = EditorShell::new(ui_state);
 
@@ -1561,6 +1555,75 @@ impl App {
             state.light_cluster_metrics_overlay = light_cluster_metrics_overlay;
             state.keyframe_editor_usage = keyframe_editor_usage;
             state.keyframe_event_log = keyframe_event_log;
+        });
+    }
+
+    fn refresh_editor_plugin_state(&mut self) {
+        let plugin_manifest_error = self.plugin_host().manifest_error().map(|err| err.to_string());
+        let (plugin_manifest_entries, plugin_manifest_disabled_builtins, plugin_manifest_path) =
+            if let Some(manifest) = self.plugin_host().manifest() {
+                (
+                    Some(Arc::from(manifest.entries().to_vec().into_boxed_slice())),
+                    Some(manifest.disabled_builtins().map(|entry| entry.to_string()).collect::<HashSet<_>>()),
+                    manifest.path().map(|path| path.display().to_string()),
+                )
+            } else {
+                (None, None, None)
+            };
+
+        let (
+            plugin_statuses,
+            plugin_asset_metrics,
+            plugin_ecs_history,
+            plugin_watchdog_map,
+            plugin_asset_requestable,
+        ) = {
+            let manager = self.plugin_runtime.manager_mut();
+            (
+                manager.status_snapshot(),
+                manager.asset_readback_metrics(),
+                manager.ecs_query_history(),
+                manager.watchdog_events(),
+                manager.pending_asset_readback_plugins(),
+            )
+        };
+
+        self.with_editor_ui_state_mut(|state| {
+            state.plugin_manifest_error = plugin_manifest_error;
+            state.plugin_manifest_entries = plugin_manifest_entries;
+            state.plugin_manifest_disabled_builtins = plugin_manifest_disabled_builtins;
+            state.plugin_manifest_path = plugin_manifest_path;
+            state.plugin_statuses = plugin_statuses;
+            state.plugin_asset_metrics = plugin_asset_metrics;
+            state.plugin_ecs_history = plugin_ecs_history;
+            state.plugin_watchdog_map = plugin_watchdog_map;
+            state.plugin_asset_requestable = plugin_asset_requestable;
+        });
+    }
+
+    fn refresh_script_debugger_state(&mut self) {
+        let snapshot = if let Some(plugin) = self.script_plugin() {
+            let handles = plugin
+                .handles_snapshot()
+                .into_iter()
+                .map(|(handle, entity)| {
+                    let scene_id = self.ecs.entity_info(entity).map(|info| info.scene_id);
+                    ScriptHandleBinding { handle, scene_id }
+                })
+                .collect();
+            ScriptDebuggerStatus {
+                available: true,
+                script_path: Some(plugin.script_path().display().to_string()),
+                enabled: plugin.enabled(),
+                paused: plugin.paused(),
+                last_error: plugin.last_error().map(|err| err.to_string()),
+                handles,
+            }
+        } else {
+            ScriptDebuggerStatus::default()
+        };
+        self.with_editor_ui_state_mut(|state| {
+            state.script_debugger_status = snapshot;
         });
     }
 
@@ -2730,23 +2793,18 @@ impl ApplicationHandler for App {
         } else {
             Arc::<[GameEvent]>::from([])
         };
-        let (audio_triggers, audio_enabled, audio_health) = if let Some(audio) = self.audio_plugin() {
-            (audio.recent_triggers().cloned().collect(), audio.enabled(), audio.health_snapshot())
+        let (audio_triggers, audio_enabled, audio_health, audio_plugin_present) = if let Some(audio) =
+            self.audio_plugin()
+        {
+            (
+                audio.recent_triggers().cloned().collect(),
+                audio.enabled(),
+                audio.health_snapshot(),
+                true,
+            )
         } else {
-            (Vec::new(), false, AudioHealthSnapshot::default())
+            (Vec::new(), false, AudioHealthSnapshot::default(), false)
         };
-        let (script_plugin_available, script_path, scripts_enabled, scripts_paused, script_last_error) =
-            if let Some(plugin) = self.script_plugin() {
-                (
-                    true,
-                    Some(plugin.script_path().display().to_string()),
-                    plugin.enabled(),
-                    plugin.paused(),
-                    plugin.last_error().map(|err| err.to_string()),
-                )
-            } else {
-                (false, None, false, false, None)
-            };
         let (mesh_keys, environment_options, prefab_entries) =
             self.with_editor_ui_state_mut(|state| {
                 let mesh = state.telemetry_cache.mesh_keys(&self.mesh_registry);
@@ -2813,6 +2871,8 @@ impl ApplicationHandler for App {
             });
         }
         self.refresh_editor_analytics_state();
+        self.refresh_editor_plugin_state();
+        self.refresh_script_debugger_state();
         let latest_frame_timing = self.latest_frame_timing();
         let (frame_budget_idle, frame_budget_panel, frame_budget_status) = {
             let state = self.editor_ui_state();
@@ -2838,6 +2898,10 @@ impl ApplicationHandler for App {
         };
         let script_repl_history = self.script_repl_history_arc();
         let script_console_entries = self.script_console_entries();
+        let script_debugger_status = {
+            let state = self.editor_ui_state();
+            state.script_debugger_status.clone()
+        };
 
         let (
             shadow_pass_metric,
@@ -2846,6 +2910,15 @@ impl ApplicationHandler for App {
             plugin_capability_events,
             plugin_asset_readback_log,
             plugin_watchdog_log,
+            plugin_manifest_error,
+            plugin_manifest_entries,
+            plugin_manifest_disabled_builtins,
+            plugin_manifest_path,
+            plugin_statuses,
+            plugin_asset_metrics,
+            plugin_ecs_history,
+            plugin_watchdog_map,
+            plugin_asset_requestable,
             animation_validation_log,
             animation_budget_sample,
             light_cluster_metrics_overlay,
@@ -2860,6 +2933,15 @@ impl ApplicationHandler for App {
                 Arc::clone(&state.plugin_capability_events),
                 Arc::clone(&state.plugin_asset_readbacks),
                 Arc::clone(&state.plugin_watchdog_events),
+                state.plugin_manifest_error.clone(),
+                state.plugin_manifest_entries.as_ref().map(Arc::clone),
+                state.plugin_manifest_disabled_builtins.clone(),
+                state.plugin_manifest_path.clone(),
+                Arc::clone(&state.plugin_statuses),
+                Arc::clone(&state.plugin_asset_metrics),
+                Arc::clone(&state.plugin_ecs_history),
+                Arc::clone(&state.plugin_watchdog_map),
+                state.plugin_asset_requestable.clone(),
                 Arc::clone(&state.animation_validation_log),
                 state.animation_budget_sample,
                 state.light_cluster_metrics_overlay,
@@ -2965,6 +3047,64 @@ impl ApplicationHandler for App {
             )
         };
 
+        let (
+            scene_dependencies_snapshot,
+            gpu_timing_snapshot,
+            gpu_history_empty,
+            gpu_timing_averages,
+            gizmo_mode_state,
+        ) = {
+            let state = self.editor_ui_state();
+            let mut averages: BTreeMap<&'static str, (f32, usize)> = BTreeMap::new();
+            for frame in &state.gpu_timing_history {
+                for timing in &frame.timings {
+                    let entry = averages.entry(timing.label).or_insert((0.0, 0));
+                    entry.0 += timing.duration_ms;
+                    entry.1 += 1;
+                }
+            }
+            (
+                state.scene_dependencies.clone(),
+                Arc::clone(&state.gpu_timings),
+                state.gpu_timing_history.is_empty(),
+                averages,
+                state.gizmo_mode,
+            )
+        };
+
+        let (
+            preview_mesh_key,
+            mesh_control_mode_state,
+            mesh_frustum_lock_state,
+            mesh_orbit_radius,
+            mesh_freefly_speed_state,
+            mesh_status_message,
+            persistent_materials,
+            persistent_meshes,
+        ) = if let Some(plugin) = self.mesh_preview_plugin() {
+            (
+                plugin.preview_mesh_key().to_string(),
+                plugin.mesh_control_mode(),
+                plugin.mesh_frustum_lock(),
+                plugin.mesh_orbit().radius,
+                plugin.mesh_freefly_speed(),
+                plugin.mesh_status().map(|s| s.to_string()),
+                plugin.persistent_materials().iter().cloned().collect(),
+                plugin.persistent_meshes().iter().cloned().collect(),
+            )
+        } else {
+            (
+                String::new(),
+                MeshControlMode::Disabled,
+                false,
+                0.0,
+                0.0,
+                None,
+                HashSet::new(),
+                HashSet::new(),
+            )
+        };
+
         let editor_params = editor_ui::EditorUiParams {
             raw_input,
             base_pixels_per_point,
@@ -2981,6 +3121,15 @@ impl ApplicationHandler for App {
             plugin_capability_events,
             plugin_asset_readback_log,
             plugin_watchdog_log,
+            plugin_manifest_error,
+            plugin_manifest_entries,
+            plugin_manifest_disabled_builtins,
+            plugin_manifest_path,
+            plugin_statuses,
+            plugin_asset_metrics,
+            plugin_ecs_history,
+            plugin_watchdog_map,
+            plugin_asset_requestable,
             animation_validation_log,
             animation_budget_sample,
             light_cluster_metrics_overlay,
@@ -3043,17 +3192,30 @@ impl ApplicationHandler for App {
             cursor_world_2d,
             cursor_ray,
             hovered_scale_kind,
+            viewport_camera_mode: self.viewport_camera_mode,
+            camera_2d: self.camera.clone(),
             window_size,
+            window_config_width: self.config.window.width,
+            window_config_height: self.config.window.height,
+            window_fullscreen: self.config.window.fullscreen,
             mesh_camera_for_ui,
             camera_position,
             camera_zoom,
             camera_bookmarks: self.camera_bookmarks(),
             active_camera_bookmark: self.active_camera_bookmark(),
             camera_follow_target: self.camera_follow_target.as_ref().map(|id| id.as_str().to_string()),
+            preview_mesh_key,
+            mesh_control_mode: mesh_control_mode_state,
+            mesh_frustum_lock: mesh_frustum_lock_state,
+            mesh_orbit_radius,
+            mesh_freefly_speed: mesh_freefly_speed_state,
+            mesh_status_message,
             camera_bookmark_input: camera_bookmark_input_state,
             mesh_keys,
             environment_options,
             active_environment,
+            persistent_materials,
+            persistent_meshes,
             debug_show_spatial_hash: debug_show_spatial_hash_state,
             debug_show_colliders: debug_show_colliders_state,
             spatial_hash_rects,
@@ -3067,6 +3229,7 @@ impl ApplicationHandler for App {
             audio_triggers,
             audio_enabled,
             audio_health,
+            audio_plugin_present,
             binary_prefabs_enabled: BINARY_PREFABS_ENABLED,
             prefab_entries,
             prefab_name_input: prefab_name_input_state,
@@ -3082,11 +3245,12 @@ impl ApplicationHandler for App {
             keyframe_panel_open: keyframe_panel_open_state,
             script_debugger: editor_ui::ScriptDebuggerParams {
                 open: script_debugger_open,
-                available: script_plugin_available,
-                script_path,
-                enabled: scripts_enabled,
-                paused: scripts_paused,
-                last_error: script_last_error,
+                available: script_debugger_status.available,
+                script_path: script_debugger_status.script_path.clone(),
+                enabled: script_debugger_status.enabled,
+                paused: script_debugger_status.paused,
+                last_error: script_debugger_status.last_error.clone(),
+                handles: script_debugger_status.handles.clone(),
                 repl_input: script_repl_input,
                 repl_history_index: script_repl_history_index,
                 repl_history: script_repl_history,
@@ -3095,6 +3259,11 @@ impl ApplicationHandler for App {
             },
             id_lookup_input: id_lookup_input_state,
             id_lookup_active: id_lookup_active_state,
+            scene_dependencies: scene_dependencies_snapshot,
+            gpu_timing_snapshot,
+            gpu_history_empty,
+            gpu_timing_averages,
+            gizmo_mode: gizmo_mode_state,
         };
 
         let ui_build_start = Instant::now();
@@ -3139,6 +3308,7 @@ impl ApplicationHandler for App {
             ui_sprite_guard_pixels,
             ui_sprite_guard_mode,
             mut selection,
+            gizmo_mode,
             gizmo_interaction,
             viewport_mode_request,
             camera_bookmark_select,
@@ -3257,6 +3427,7 @@ impl ApplicationHandler for App {
         }
 
         self.set_selected_entity(selection.entity);
+        self.set_gizmo_mode(gizmo_mode);
         self.set_gizmo_interaction(gizmo_interaction);
         if self.input.take_delete_selection() {
             if let Some(entity) = self.selected_entity() {
@@ -3686,6 +3857,53 @@ impl ApplicationHandler for App {
             }
             self.sync_emitter_ui();
             self.set_inspector_status(None);
+        }
+        if !actions.plugin_watchdog_clear.is_empty() {
+            let manager = self.plugin_runtime.manager_mut();
+            for plugin in actions.plugin_watchdog_clear.drain(..) {
+                manager.clear_watchdog_events(&plugin);
+            }
+        }
+        if !actions.plugin_retry_asset_readback.is_empty() {
+            let mut retry_results = Vec::new();
+            {
+                let manager = self.plugin_runtime.manager_mut();
+                for plugin in actions.plugin_retry_asset_readback.drain(..) {
+                    let result = manager.retry_last_asset_readback(&plugin);
+                    retry_results.push((plugin, result));
+                }
+            }
+            for (plugin, result) in retry_results {
+                match result {
+                    Ok(Some(response)) => {
+                        let bytes = response.byte_length;
+                        let content_type = response.content_type.clone();
+                        self.set_ui_scene_status(format!(
+                            "Retried asset readback for {plugin}: {bytes} bytes ({content_type})"
+                        ));
+                    }
+                    Ok(None) => {
+                        self.set_ui_scene_status(format!("No asset readbacks recorded for {plugin}"));
+                    }
+                    Err(err) => {
+                        self.set_ui_scene_status(format!("Asset readback retry failed for {plugin}: {err}"));
+                    }
+                }
+            }
+        }
+        if let Some(enabled) = actions.audio_set_enabled {
+            match self.plugin_runtime.manager_mut().get_mut::<AudioPlugin>() {
+                Some(audio) => audio.set_enabled(enabled),
+                None => self.set_ui_scene_status("Audio plugin unavailable; cannot update audio state."),
+            }
+        }
+        if actions.audio_clear_log {
+            match self.plugin_runtime.manager_mut().get_mut::<AudioPlugin>() {
+                Some(audio) => audio.clear(),
+                None => {
+                    self.set_ui_scene_status("Audio plugin unavailable; cannot clear audio log.");
+                }
+            }
         }
         if !actions.plugin_toggles.is_empty() {
             self.apply_plugin_toggles(&actions.plugin_toggles);

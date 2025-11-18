@@ -965,6 +965,10 @@ impl PluginManager {
         }
     }
 
+    pub fn pending_asset_readback_plugins(&self) -> HashSet<String> {
+        self.last_asset_payload.keys().cloned().collect()
+    }
+
     pub fn query_isolated_entity_info(
         &mut self,
         plugin_name: &str,

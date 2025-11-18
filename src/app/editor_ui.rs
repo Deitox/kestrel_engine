@@ -1,6 +1,6 @@
 use super::{
-    App, CameraBookmark, FrameTimingSample, MeshControlMode, ScriptConsoleEntry, ScriptConsoleKind,
-    ViewportCameraMode,
+    editor_shell::ScriptHandleBinding, App, CameraBookmark, FrameTimingSample, MeshControlMode, ScriptConsoleEntry,
+    ScriptConsoleKind, ViewportCameraMode,
 };
 #[cfg(feature = "alloc_profiler")]
 use crate::alloc_profiler::AllocationDelta;
@@ -9,7 +9,8 @@ use crate::analytics::{
     KeyframeEditorUsageSnapshot,
 };
 use crate::animation_validation::{AnimationValidationEvent, AnimationValidationSeverity};
-use crate::audio::{AudioHealthSnapshot, AudioPlugin};
+use crate::audio::AudioHealthSnapshot;
+use crate::camera::Camera2D;
 use crate::camera3d::Camera3D;
 use crate::ecs::{
     AnimationTime, EntityInfo, ParticleBudgetMetrics, SpatialMetrics, SpatialMode, SpriteAnimPerfSample,
@@ -24,11 +25,11 @@ use crate::gizmo::{
 use crate::mesh_preview::{GIZMO_3D_AXIS_LENGTH_SCALE, GIZMO_3D_AXIS_MAX, GIZMO_3D_AXIS_MIN};
 use crate::plugins::{
     AssetReadbackStats, CapabilityViolationLog, PluginAssetReadbackEvent, PluginCapability, PluginCapabilityEvent,
-    PluginManager, PluginState, PluginStatus, PluginTrust, PluginWatchdogEvent,
+    PluginManifestEntry, PluginState, PluginStatus, PluginTrust, PluginWatchdogEvent,
 };
 use crate::prefab::{PrefabFormat, PrefabStatusKind, PrefabStatusMessage};
-use crate::renderer::{LightClusterMetrics, ScenePointLight, LIGHT_CLUSTER_MAX_LIGHTS, MAX_SHADOW_CASCADES};
-use crate::scene::SceneShadowData;
+use crate::renderer::{GpuPassTiming, LightClusterMetrics, ScenePointLight, LIGHT_CLUSTER_MAX_LIGHTS, MAX_SHADOW_CASCADES};
+use crate::scene::{SceneDependencies, SceneShadowData};
 
 use crate::config::SpriteGuardrailMode;
 use bevy_ecs::prelude::Entity;
@@ -404,8 +405,8 @@ fn plugin_debug_ui(
     asset_metrics: &HashMap<String, AssetReadbackStats>,
     ecs_history: &HashMap<String, Vec<u64>>,
     watchdog_events: &HashMap<String, Vec<PluginWatchdogEvent>>,
-    plugin_manager: &mut PluginManager,
-    scene_status: &mut Option<String>,
+    pending_asset_requests: &HashSet<String>,
+    actions: &mut UiActions,
 ) {
     if let Some(events) = watchdog_events.get(plugin_name).filter(|entries| !entries.is_empty()) {
         ui.horizontal(|ui| {
@@ -414,7 +415,7 @@ fn plugin_debug_ui(
                 format!("Watchdog events: {}", events.len()),
             );
             if ui.button("Clear").clicked() {
-                plugin_manager.clear_watchdog_events(plugin_name);
+                actions.plugin_watchdog_clear.push(plugin_name.to_string());
             }
         });
         egui::CollapsingHeader::new("Watchdog history").default_open(false).show(ui, |ui| {
@@ -451,25 +452,10 @@ fn plugin_debug_ui(
             format_data_size(stats.bytes),
         ));
     }
-    let retry_enabled = plugin_manager.has_asset_readback_request(plugin_name);
+    let retry_enabled = pending_asset_requests.contains(plugin_name);
     let retry_button = ui.add_enabled(retry_enabled, egui::Button::new("Retry asset readback"));
     if retry_button.clicked() {
-        match plugin_manager.retry_last_asset_readback(plugin_name) {
-            Ok(Some(response)) => {
-                let bytes = response.byte_length;
-                let content_type = response.content_type.clone();
-                *scene_status = Some(format!(
-                    "Retried asset readback for {plugin_name}: {} ({content_type})",
-                    format_data_size(bytes)
-                ));
-            }
-            Ok(None) => {
-                *scene_status = Some(format!("No asset readbacks recorded for {plugin_name}"));
-            }
-            Err(err) => {
-                *scene_status = Some(format!("Asset readback retry failed for {plugin_name}: {err}"));
-            }
-        }
+        actions.plugin_retry_asset_readback.push(plugin_name.to_string());
     } else if !retry_enabled {
         ui.small("No asset readbacks recorded yet.");
     }
@@ -584,6 +570,10 @@ pub(super) struct UiActions {
     pub sprite_atlas_requests: Vec<SpriteAtlasRequest>,
     pub plugin_toggles: Vec<PluginToggleRequest>,
     pub reload_plugins: bool,
+    pub plugin_watchdog_clear: Vec<String>,
+    pub plugin_retry_asset_readback: Vec<String>,
+    pub audio_set_enabled: Option<bool>,
+    pub audio_clear_log: bool,
     pub frame_budget_action: Option<FrameBudgetAction>,
     pub save_prefab: Option<PrefabSaveRequest>,
     pub instantiate_prefab: Option<PrefabInstantiateRequest>,
@@ -608,6 +598,7 @@ pub(super) struct ScriptDebuggerParams {
     pub enabled: bool,
     pub paused: bool,
     pub last_error: Option<String>,
+    pub handles: Vec<ScriptHandleBinding>,
     pub repl_input: String,
     pub repl_history_index: Option<usize>,
     pub repl_history: Arc<[String]>,
@@ -644,6 +635,15 @@ pub(super) struct EditorUiParams {
     pub plugin_capability_events: Arc<[PluginCapabilityEvent]>,
     pub plugin_asset_readback_log: Arc<[PluginAssetReadbackEvent]>,
     pub plugin_watchdog_log: Arc<[PluginWatchdogEvent]>,
+    pub plugin_manifest_error: Option<String>,
+    pub plugin_manifest_entries: Option<Arc<[PluginManifestEntry]>>,
+    pub plugin_manifest_disabled_builtins: Option<HashSet<String>>,
+    pub plugin_manifest_path: Option<String>,
+    pub plugin_statuses: Arc<[PluginStatus]>,
+    pub plugin_asset_metrics: Arc<HashMap<String, AssetReadbackStats>>,
+    pub plugin_ecs_history: Arc<HashMap<String, Vec<u64>>>,
+    pub plugin_watchdog_map: Arc<HashMap<String, Vec<PluginWatchdogEvent>>>,
+    pub plugin_asset_requestable: HashSet<String>,
     pub animation_validation_log: Arc<[AnimationValidationEvent]>,
     pub animation_budget_sample: Option<AnimationBudgetSample>,
     pub light_cluster_metrics_overlay: Option<LightClusterMetrics>,
@@ -706,17 +706,30 @@ pub(super) struct EditorUiParams {
     pub cursor_world_2d: Option<Vec2>,
     pub cursor_ray: Option<(Vec3, Vec3)>,
     pub hovered_scale_kind: Option<ScaleHandleKind>,
+    pub viewport_camera_mode: ViewportCameraMode,
+    pub camera_2d: Camera2D,
     pub window_size: PhysicalSize<u32>,
+    pub window_config_width: u32,
+    pub window_config_height: u32,
+    pub window_fullscreen: bool,
     pub mesh_camera_for_ui: Camera3D,
     pub camera_position: Vec2,
     pub camera_zoom: f32,
     pub camera_bookmarks: Vec<CameraBookmark>,
     pub active_camera_bookmark: Option<String>,
     pub camera_follow_target: Option<String>,
+    pub preview_mesh_key: String,
+    pub mesh_control_mode: MeshControlMode,
+    pub mesh_frustum_lock: bool,
+    pub mesh_orbit_radius: f32,
+    pub mesh_freefly_speed: f32,
+    pub mesh_status_message: Option<String>,
     pub camera_bookmark_input: String,
     pub mesh_keys: Arc<[String]>,
     pub environment_options: Arc<[(String, String)]>,
     pub active_environment: String,
+    pub persistent_materials: HashSet<String>,
+    pub persistent_meshes: HashSet<String>,
     pub debug_show_spatial_hash: bool,
     pub debug_show_colliders: bool,
     pub spatial_hash_rects: Vec<(Vec2, Vec2)>,
@@ -729,6 +742,7 @@ pub(super) struct EditorUiParams {
     pub audio_triggers: Vec<String>,
     pub audio_enabled: bool,
     pub audio_health: AudioHealthSnapshot,
+    pub audio_plugin_present: bool,
     pub binary_prefabs_enabled: bool,
     pub prefab_entries: Arc<[PrefabShelfEntry]>,
     pub prefab_name_input: String,
@@ -745,6 +759,11 @@ pub(super) struct EditorUiParams {
     pub script_debugger: ScriptDebuggerParams,
     pub id_lookup_input: String,
     pub id_lookup_active: bool,
+    pub scene_dependencies: Option<SceneDependencies>,
+    pub gpu_timing_snapshot: Arc<[GpuPassTiming]>,
+    pub gpu_history_empty: bool,
+    pub gpu_timing_averages: BTreeMap<&'static str, (f32, usize)>,
+    pub gizmo_mode: GizmoMode,
 }
 
 pub(super) struct EditorUiOutput {
@@ -785,6 +804,7 @@ pub(super) struct EditorUiOutput {
     pub ui_camera_zoom_max: f32,
     pub ui_sprite_guard_pixels: f32,
     pub ui_sprite_guard_mode: SpriteGuardrailMode,
+    pub gizmo_mode: GizmoMode,
     pub selection: SelectionResult,
     pub gizmo_interaction: Option<GizmoInteraction>,
     pub viewport_mode_request: Option<ViewportCameraMode>,
@@ -840,6 +860,15 @@ impl App {
             plugin_capability_events,
             plugin_asset_readback_log,
             plugin_watchdog_log,
+            plugin_manifest_error,
+            plugin_manifest_entries,
+            plugin_manifest_disabled_builtins,
+            plugin_manifest_path,
+            plugin_statuses,
+            plugin_asset_metrics,
+            plugin_ecs_history,
+            plugin_watchdog_map,
+            plugin_asset_requestable,
             animation_validation_log,
             animation_budget_sample,
             light_cluster_metrics_overlay,
@@ -896,17 +925,30 @@ impl App {
             cursor_world_2d,
             cursor_ray,
             hovered_scale_kind,
+            viewport_camera_mode,
+            camera_2d,
             window_size,
+            window_config_width,
+            window_config_height,
+            window_fullscreen,
             mesh_camera_for_ui,
             camera_position,
             camera_zoom,
             camera_bookmarks,
             active_camera_bookmark,
             camera_follow_target,
+            preview_mesh_key,
+            mesh_control_mode: mesh_control_mode_state,
+            mesh_frustum_lock: mesh_frustum_lock_state,
+            mesh_orbit_radius,
+            mesh_freefly_speed: mesh_freefly_speed_state,
+            mesh_status_message,
             mut camera_bookmark_input,
             mesh_keys,
             environment_options,
             active_environment,
+            persistent_materials,
+            persistent_meshes,
             mut debug_show_spatial_hash,
             mut debug_show_colliders,
             spatial_hash_rects,
@@ -919,6 +961,7 @@ impl App {
             audio_triggers,
             mut audio_enabled,
             audio_health,
+            audio_plugin_present,
             particle_budget,
             spatial_metrics,
             sprite_perf_sample,
@@ -933,7 +976,7 @@ impl App {
             mut prefab_format,
             prefab_status,
             mut ui_scene_path,
-            mut ui_scene_status,
+            ui_scene_status,
             mut animation_group_input,
             mut animation_group_scale_input,
             mut inspector_status,
@@ -941,7 +984,35 @@ impl App {
             mut gpu_metrics_status,
             mut keyframe_panel_open,
             mut script_debugger,
+            scene_dependencies: scene_dependencies_snapshot,
+            gpu_timing_snapshot,
+            gpu_history_empty,
+            gpu_timing_averages,
+            gizmo_mode: mut gizmo_mode_state,
         } = params;
+
+        fn show_script_handle_table(ui: &mut egui::Ui, handles: &[ScriptHandleBinding], id_suffix: &str) {
+            if handles.is_empty() {
+                ui.small("No active handles.");
+                return;
+            }
+            egui::ScrollArea::vertical().max_height(150.0).show(ui, |ui| {
+                egui::Grid::new(format!("script_handle_grid_{id_suffix}")).striped(true).show(ui, |ui| {
+                    ui.label("Handle");
+                    ui.label("Entity");
+                    ui.end_row();
+                    for entry in handles {
+                        ui.monospace(entry.handle.to_string());
+                        if let Some(scene_id) = entry.scene_id.as_ref() {
+                            ui.label(scene_id.as_str());
+                        } else {
+                            ui.weak("None");
+                        }
+                        ui.end_row();
+                    }
+                });
+            });
+        }
 
         let mut camera_bookmark_select: Option<Option<String>> = None;
         let mut camera_bookmark_save: Option<String> = None;
@@ -949,37 +1020,10 @@ impl App {
         let mut camera_follow_selection = false;
         let mut camera_follow_clear = false;
         let mut clear_scene_history = false;
-        let (
-            preview_mesh_key,
-            mesh_control_mode_state,
-            mesh_frustum_lock_state,
-            mesh_orbit_radius,
-            mesh_freefly_speed_state,
-            mesh_status_message,
-        ) = if let Some(plugin) = self.mesh_preview_plugin() {
-            (
-                plugin.preview_mesh_key().to_string(),
-                plugin.mesh_control_mode(),
-                plugin.mesh_frustum_lock(),
-                plugin.mesh_orbit().radius,
-                plugin.mesh_freefly_speed(),
-                plugin.mesh_status().map(|s| s.to_string()),
-            )
-        } else {
-            (String::new(), MeshControlMode::Disabled, false, 0.0, 0.0, None)
-        };
         let mut actions = UiActions::default();
         let mut viewport_mode_request: Option<ViewportCameraMode> = None;
         let mut mesh_control_request: Option<MeshControlMode> = None;
         let mut gpu_export_requested = false;
-        let persistent_materials: HashSet<String> = self
-            .mesh_preview_plugin()
-            .map(|plugin| plugin.persistent_materials().iter().cloned().collect())
-            .unwrap_or_default();
-        let persistent_meshes: HashSet<String> = self
-            .mesh_preview_plugin()
-            .map(|plugin| plugin.persistent_meshes().iter().cloned().collect())
-            .unwrap_or_default();
         let mut mesh_frustum_request: Option<bool> = None;
         let mut mesh_frustum_snap = false;
         let mut mesh_reset_request = false;
@@ -1021,49 +1065,12 @@ impl App {
             reload: false,
         };
 
-        let plugin_manifest_error = self.plugin_host().manifest_error().map(|err| err.to_string());
-        let (plugin_manifest_entries, plugin_manifest_disabled_builtins, plugin_manifest_path) =
-            if let Some(manifest) = self.plugin_host().manifest() {
-                (
-                    Some(manifest.entries().to_vec()),
-                    Some(manifest.disabled_builtins().map(|entry| entry.to_string()).collect::<HashSet<_>>()),
-                    manifest.path().map(|path| path.display().to_string()),
-                )
-            } else {
-                (None, None, None)
-            };
         let plugin_manifest_loaded = plugin_manifest_entries.is_some();
 
         let mut keyframe_panel_toggle_event: Option<KeyframeEditorEventKind> = None;
         let mut editor_settings_dirty = false;
         let mut point_lights_dirty = false;
         let keyframe_panel_ctx = self.editor_shell.egui_ctx.clone();
-        let scene_dependencies_snapshot = {
-            let state = self.editor_ui_state();
-            state.scene_dependencies.clone()
-        };
-        let gpu_timing_snapshot = {
-            let state = self.editor_ui_state();
-            Arc::clone(&state.gpu_timings)
-        };
-        let (gpu_history_empty, gpu_timing_averages) = {
-            let state = self.editor_ui_state();
-            if state.gpu_timing_history.is_empty() {
-                (true, BTreeMap::new())
-            } else {
-                let mut averages = BTreeMap::new();
-                for frame in &state.gpu_timing_history {
-                    for timing in &frame.timings {
-                        let entry = averages.entry(timing.label).or_insert((0.0, 0));
-                        entry.0 += timing.duration_ms;
-                        entry.1 += 1;
-                    }
-                }
-                (false, averages)
-            }
-        };
-        let mut gizmo_mode_state = self.gizmo_mode();
-        let original_gizmo_mode = gizmo_mode_state;
         let full_output = self.editor_shell.egui_ctx.run(raw_input, |ctx| {
             let left_panel =
                 egui::SidePanel::left("kestrel_left_panel").default_width(340.0).show(ctx, |ui| {
@@ -1504,7 +1511,7 @@ impl App {
                     });
 
                     egui::CollapsingHeader::new("Debug Overlays").default_open(false).show(ui, |ui| {
-                        if self.viewport_camera_mode != ViewportCameraMode::Ortho2D {
+                        if viewport_camera_mode != ViewportCameraMode::Ortho2D {
                             ui.label("Overlays render in the 2D viewport.");
                         }
                         ui.checkbox(&mut debug_show_spatial_hash, "Spatial hash cells");
@@ -1520,7 +1527,7 @@ impl App {
                             }
                             ui_pixels_per_point = self.editor_shell.egui_ctx.pixels_per_point();
                         }
-                        let mut viewport_mode = self.viewport_camera_mode;
+                        let mut viewport_mode = viewport_camera_mode;
                         egui::ComboBox::from_id_salt("viewport_mode")
                             .selected_text(viewport_mode.label())
                             .show_ui(ui, |ui| {
@@ -1530,24 +1537,23 @@ impl App {
                                     }
                                 }
                             });
-                        if viewport_mode != self.viewport_camera_mode {
+                        if viewport_mode != viewport_camera_mode {
                             viewport_mode_request = Some(viewport_mode);
                         }
                         ui.label(format!(
                             "Camera: pos({:.2}, {:.2}) zoom {:.2}",
                             camera_position.x, camera_position.y, camera_zoom
                         ));
-                        if self.viewport_camera_mode == ViewportCameraMode::Perspective3D {
+                        if viewport_camera_mode == ViewportCameraMode::Perspective3D {
                             let pos = mesh_camera_for_ui.position;
                             ui.label(format!("3D camera pos: ({:.2}, {:.2}, {:.2})", pos.x, pos.y, pos.z));
                         }
-                        let display_mode =
-                            if self.config.window.fullscreen { "Fullscreen" } else { "Windowed" };
+                        let display_mode = if window_fullscreen { "Fullscreen" } else { "Windowed" };
                         ui.label(format!(
                             "Display: {}x{} {}",
-                            self.config.window.width, self.config.window.height, display_mode
+                            window_config_width, window_config_height, display_mode
                         ));
-                        ui.label(format!("VSync: {}", if self.config.window.vsync { "On" } else { "Off" }));
+                        ui.label(format!("VSync: {}", if vsync_enabled { "On" } else { "Off" }));
                         if let Some(cursor) = cursor_world_2d {
                             ui.label(format!("Cursor world: ({:.2}, {:.2})", cursor.x, cursor.y));
                         } else {
@@ -1725,6 +1731,9 @@ impl App {
                             } else {
                                 ui.label("Scripts disabled");
                             }
+                            ui.separator();
+                            ui.label("Active handles");
+                            show_script_handle_table(ui, &script_debugger.handles, "sidebar");
                         } else {
                             ui.label("Script plugin unavailable");
                         }
@@ -1837,6 +1846,9 @@ impl App {
                         if let Some(err) = script_debugger.last_error.as_ref() {
                             ui.colored_label(egui::Color32::RED, format!("Error: {err}"));
                         }
+                        ui.separator();
+                        ui.label("Active handles");
+                        show_script_handle_table(ui, &script_debugger.handles, "window");
                         ui.separator();
                         ui.label("Console");
                         egui::ScrollArea::vertical().stick_to_bottom(true).max_height(220.0).show(ui, |ui| {
@@ -2665,24 +2677,11 @@ impl App {
                     ui.small(
                         "Toggle entries below to update config/plugins.json without leaving the editor.",
                     );
-                    let status_snapshot = {
-                        let manager = self.plugin_runtime.manager_mut();
-                        manager.status_snapshot()
-                    };
-                    let status_slice: &[PluginStatus] = status_snapshot.as_ref();
-                    let capability_metrics = self.plugin_runtime.manager().capability_metrics();
-                    let asset_metrics = {
-                        let manager = self.plugin_runtime.manager_mut();
-                        manager.asset_readback_metrics()
-                    };
-                    let ecs_history = {
-                        let manager = self.plugin_runtime.manager_mut();
-                        manager.ecs_query_history()
-                    };
-                    let watchdog_events = {
-                        let manager = self.plugin_runtime.manager_mut();
-                        manager.watchdog_events()
-                    };
+                    let status_slice: &[PluginStatus] = plugin_statuses.as_ref();
+                    let capability_metrics = plugin_capability_metrics.as_ref();
+                    let asset_metrics = plugin_asset_metrics.as_ref();
+                    let ecs_history = plugin_ecs_history.as_ref();
+                    let watchdog_events = plugin_watchdog_map.as_ref();
                     let mut dynamic_statuses: BTreeMap<String, &PluginStatus> = BTreeMap::new();
                     let mut builtin_statuses: Vec<&PluginStatus> = Vec::new();
                     for status in status_slice {
@@ -2700,7 +2699,7 @@ impl App {
                         if entries.is_empty() {
                             ui.label("No dynamic plugins listed in manifest.");
                         } else {
-                            for entry in entries {
+                            for entry in entries.iter() {
                                 let plugin_name = entry.name.clone();
                                 let mut enabled_flag = entry.enabled;
                                 let mut toggled = false;
@@ -2763,15 +2762,14 @@ impl App {
                                             capability_metrics.get(&plugin_name),
                                         );
                                     }
-                                    let plugin_manager = self.plugin_runtime.manager_mut();
                                     plugin_debug_ui(
                                         ui,
                                         &plugin_name,
-                                        asset_metrics.as_ref(),
-                                        ecs_history.as_ref(),
-                                        watchdog_events.as_ref(),
-                                        plugin_manager,
-                                        &mut ui_scene_status,
+                                        asset_metrics,
+                                        ecs_history,
+                                        watchdog_events,
+                                        &plugin_asset_requestable,
+                                        &mut actions,
                                     );
                                 });
                                 if toggled {
@@ -2806,15 +2804,14 @@ impl App {
                                 status.trust,
                                 capability_metrics.get(&status.name),
                             );
-                            let plugin_manager = self.plugin_runtime.manager_mut();
                             plugin_debug_ui(
                                 ui,
                                 &status.name,
-                                asset_metrics.as_ref(),
-                                ecs_history.as_ref(),
-                                watchdog_events.as_ref(),
-                                plugin_manager,
-                                &mut ui_scene_status,
+                                asset_metrics,
+                                ecs_history,
+                                watchdog_events,
+                                &plugin_asset_requestable,
+                                &mut actions,
                             );
                         }
                     }
@@ -2857,16 +2854,15 @@ impl App {
                                     status.trust,
                                     capability_metrics.get(&status.name),
                                 );
-                                let plugin_manager = self.plugin_runtime.manager_mut();
-                                plugin_debug_ui(
-                                    ui,
-                                    &status.name,
-                                    asset_metrics.as_ref(),
-                                    ecs_history.as_ref(),
-                                    watchdog_events.as_ref(),
-                                    plugin_manager,
-                                    &mut ui_scene_status,
-                                );
+                            plugin_debug_ui(
+                                ui,
+                                &status.name,
+                                asset_metrics,
+                                ecs_history,
+                                watchdog_events,
+                                &plugin_asset_requestable,
+                                &mut actions,
+                            );
                             });
                             if toggled {
                                 actions.plugin_toggles.push(PluginToggleRequest {
@@ -3035,7 +3031,6 @@ impl App {
                     });
 
                     ui.separator();
-                    let plugin_present = self.plugin_runtime.manager().get::<AudioPlugin>().is_some();
                     let parsed_triggers: Vec<ParsedAudioTrigger> =
                         audio_triggers.iter().map(|label| parse_audio_trigger(label)).collect();
                     let mut trigger_counts: BTreeMap<AudioTriggerKind, usize> = BTreeMap::new();
@@ -3063,7 +3058,7 @@ impl App {
                         .last()
                         .map(|parsed| ellipsize(&parsed.summary, 48))
                         .unwrap_or_else(|| "no recent triggers".to_string());
-                    let audio_status = if !plugin_present {
+                    let audio_status = if !audio_plugin_present {
                         "plugin missing"
                     } else if !audio_health.playback_available {
                         "device unavailable"
@@ -3089,11 +3084,9 @@ impl App {
                             ui.small(format!("Sample rate: {rate} Hz"));
                         }
                         if ui.checkbox(&mut audio_enabled, "Enable audio triggers").changed() {
-                            if let Some(audio) = self.plugin_runtime.manager_mut().get_mut::<AudioPlugin>() {
-                                audio.set_enabled(audio_enabled);
-                            }
+                            actions.audio_set_enabled = Some(audio_enabled);
                         }
-                        if !plugin_present {
+                        if !audio_plugin_present {
                             ui.colored_label(
                                 egui::Color32::from_rgb(200, 80, 80),
                                 "Audio plugin unavailable; triggers will be silent.",
@@ -3125,9 +3118,7 @@ impl App {
                             ui.small(force_text);
                         }
                         if ui.button("Clear audio log").clicked() {
-                            if let Some(audio) = self.plugin_runtime.manager_mut().get_mut::<AudioPlugin>() {
-                                audio.clear();
-                            }
+                            actions.audio_clear_log = true;
                         }
                         if parsed_triggers.is_empty() {
                             ui.label("No audio triggers");
@@ -3172,7 +3163,7 @@ impl App {
                         if let Some(payload) = DragAndDrop::take_payload::<PrefabSpawnPayload>(&self.editor_shell.egui_ctx)
                         {
                             let payload = (*payload).clone();
-                            let drop_target = match self.viewport_camera_mode {
+                            let drop_target = match viewport_camera_mode {
                                 ViewportCameraMode::Ortho2D => cursor_world_2d.map(PrefabDropTarget::World2D),
                                 ViewportCameraMode::Perspective3D => cursor_ray
                                     .and_then(|(origin, dir)| {
@@ -3214,10 +3205,10 @@ impl App {
             let mut gizmo_center_px = None;
             let mut gizmo_center_world3d = None;
             if let Some(entity) = selected_entity {
-                if self.viewport_camera_mode == ViewportCameraMode::Ortho2D {
+                if viewport_camera_mode == ViewportCameraMode::Ortho2D {
                     if let Some((min, max)) = self.ecs.entity_bounds(entity) {
                         if let Some((min_px_view, max_px_view)) =
-                            self.camera.world_rect_to_screen_bounds(min, max, viewport_size_physical)
+                            camera_2d.world_rect_to_screen_bounds(min, max, viewport_size_physical)
                         {
                             let min_screen = min_px_view + viewport_origin_vec2;
                             let max_screen = max_px_view + viewport_origin_vec2;
@@ -3272,11 +3263,11 @@ impl App {
                     egui::StrokeKind::Inside,
                 );
             }
-            if self.viewport_camera_mode == ViewportCameraMode::Ortho2D {
+            if viewport_camera_mode == ViewportCameraMode::Ortho2D {
                 if debug_show_spatial_hash {
                     for (min, max) in &spatial_hash_rects {
                         if let Some((min_px_view, max_px_view)) =
-                            self.camera.world_rect_to_screen_bounds(*min, *max, viewport_size_physical)
+                            camera_2d.world_rect_to_screen_bounds(*min, *max, viewport_size_physical)
                         {
                             let min_screen = min_px_view + viewport_origin_vec2;
                             let max_screen = max_px_view + viewport_origin_vec2;
@@ -3305,7 +3296,7 @@ impl App {
                 if debug_show_colliders {
                     for (min, max) in &collider_rects {
                         if let Some((min_px_view, max_px_view)) =
-                            self.camera.world_rect_to_screen_bounds(*min, *max, viewport_size_physical)
+                            camera_2d.world_rect_to_screen_bounds(*min, *max, viewport_size_physical)
                         {
                             let min_screen = min_px_view + viewport_origin_vec2;
                             let max_screen = max_px_view + viewport_origin_vec2;
@@ -3345,7 +3336,7 @@ impl App {
             let scale_highlight_kind = active_scale_handle_kind.or(hovered_scale_kind);
             if let Some(center_px) = gizmo_center_px {
                 let center = egui::pos2(center_px.x / ui_pixels_per_point, center_px.y / ui_pixels_per_point);
-                let draw_translate_axes = self.viewport_camera_mode == ViewportCameraMode::Perspective3D
+                let draw_translate_axes = viewport_camera_mode == ViewportCameraMode::Perspective3D
                     && gizmo_mode_state == GizmoMode::Translate;
                 if draw_translate_axes {
                     if let Some(center_world) = gizmo_center_world3d {
@@ -3508,9 +3499,6 @@ impl App {
                 );
             }
         });
-        if gizmo_mode_state != original_gizmo_mode {
-            self.set_gizmo_mode(gizmo_mode_state);
-        }
         if let Some(event) = keyframe_panel_toggle_event {
             self.log_keyframe_editor_event(event);
         }
@@ -3604,6 +3592,7 @@ impl App {
             ui_camera_zoom_max,
             ui_sprite_guard_pixels,
             ui_sprite_guard_mode,
+            gizmo_mode: gizmo_mode_state,
             selection: SelectionResult { entity: selected_entity, details: selection_details },
             gizmo_interaction,
             viewport_mode_request,

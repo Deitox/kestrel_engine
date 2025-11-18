@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use super::App;
+use super::{editor_shell::SCENE_HISTORY_CAPACITY, App};
 
 impl App {
     pub(super) fn set_inspector_status(&self, status: Option<String>) {
@@ -17,7 +17,7 @@ impl App {
             state.scene_history.remove(pos);
         }
         state.scene_history.push_front(trimmed.to_string());
-        while state.scene_history.len() > 8 {
+        while state.scene_history.len() > SCENE_HISTORY_CAPACITY {
             state.scene_history.pop_back();
         }
         state.scene_history_snapshot = None;

@@ -5,11 +5,16 @@ use crate::analytics::{AnimationBudgetSample, GpuPassMetric, KeyframeEditorEvent
 use crate::animation_validation::AnimationValidationEvent;
 use crate::assets::AnimationClip;
 use crate::config::{EditorConfig, ParticleConfig, SpriteGuardrailMode};
+use crate::ecs::EntityInfo;
 use crate::gizmo::{GizmoInteraction, GizmoMode};
-use crate::plugins::{CapabilityViolationLog, PluginAssetReadbackEvent, PluginCapabilityEvent, PluginWatchdogEvent};
+use crate::plugins::{
+    AssetReadbackStats, CapabilityViolationLog, PluginAssetReadbackEvent, PluginCapabilityEvent,
+    PluginManifestEntry, PluginStatus, PluginWatchdogEvent,
+};
 use crate::prefab::{PrefabFormat, PrefabStatusMessage};
 use crate::renderer::{GpuPassTiming, LightClusterMetrics, SceneLightingState};
-use crate::scene::{SceneDependencies, SceneDependencyFingerprints};
+use crate::scene::{SceneDependencies, SceneDependencyFingerprints, SceneEntityId};
+use crate::scripts::ScriptHandle;
 use bevy_ecs::prelude::Entity;
 use egui::Context as EguiCtx;
 use egui_plot as eplot;
@@ -21,6 +26,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::SCRIPT_CONSOLE_CAPACITY;
+
+pub(crate) const DEFAULT_SCENE_PATH: &str = "assets/scenes/quick_save.json";
+pub(crate) const SCENE_HISTORY_CAPACITY: usize = 8;
 
 pub(crate) struct EditorShell {
     pub egui_ctx: EguiCtx,
@@ -48,6 +56,22 @@ impl EditorShell {
     pub fn ui_state_mut(&self) -> RefMut<'_, EditorUiState> {
         self.ui_state.borrow_mut()
     }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ScriptDebuggerStatus {
+    pub available: bool,
+    pub script_path: Option<String>,
+    pub enabled: bool,
+    pub paused: bool,
+    pub last_error: Option<String>,
+    pub handles: Vec<ScriptHandleBinding>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ScriptHandleBinding {
+    pub handle: ScriptHandle,
+    pub scene_id: Option<SceneEntityId>,
 }
 
 pub(crate) struct EditorUiState {
@@ -86,6 +110,10 @@ pub(crate) struct EditorUiState {
     pub ui_sprite_guard_mode: SpriteGuardrailMode,
     pub ui_scale: f32,
     pub selected_entity: Option<Entity>,
+    pub selection_details: Option<EntityInfo>,
+    pub prev_selection_details: Option<EntityInfo>,
+    pub selection_bounds: Option<(glam::Vec2, glam::Vec2)>,
+    pub prev_selection_bounds: Option<(glam::Vec2, glam::Vec2)>,
     pub gizmo_mode: GizmoMode,
     pub gizmo_interaction: Option<GizmoInteraction>,
     pub ui_scene_path: String,
@@ -121,6 +149,15 @@ pub(crate) struct EditorUiState {
     pub plugin_capability_events: Arc<[PluginCapabilityEvent]>,
     pub plugin_asset_readbacks: Arc<[PluginAssetReadbackEvent]>,
     pub plugin_watchdog_events: Arc<[PluginWatchdogEvent]>,
+    pub plugin_manifest_error: Option<String>,
+    pub plugin_manifest_entries: Option<Arc<[PluginManifestEntry]>>,
+    pub plugin_manifest_disabled_builtins: Option<HashSet<String>>,
+    pub plugin_manifest_path: Option<String>,
+    pub plugin_statuses: Arc<[PluginStatus]>,
+    pub plugin_asset_metrics: Arc<HashMap<String, AssetReadbackStats>>,
+    pub plugin_ecs_history: Arc<HashMap<String, Vec<u64>>>,
+    pub plugin_watchdog_map: Arc<HashMap<String, Vec<PluginWatchdogEvent>>>,
+    pub plugin_asset_requestable: HashSet<String>,
     pub animation_validation_log: Arc<[AnimationValidationEvent]>,
     pub animation_budget_sample: Option<AnimationBudgetSample>,
     pub light_cluster_metrics_overlay: Option<LightClusterMetrics>,
@@ -135,6 +172,7 @@ pub(crate) struct EditorUiState {
     pub script_console: VecDeque<ScriptConsoleEntry>,
     pub script_console_snapshot: Option<Arc<[ScriptConsoleEntry]>>,
     pub last_reported_script_error: Option<String>,
+    pub script_debugger_status: ScriptDebuggerStatus,
     pub animation_keyframe_panel: AnimationKeyframePanel,
     pub clip_dirty: HashSet<String>,
     pub clip_edit_history: Vec<ClipEditRecord>,
@@ -154,15 +192,11 @@ pub(crate) struct EditorUiState {
 }
 
 pub(crate) struct EditorUiStateParams {
-    pub scene_path: String,
-    pub scene_history: VecDeque<String>,
     pub emitter_defaults: EmitterUiDefaults,
     pub particle_config: ParticleConfig,
     pub lighting_state: SceneLightingState,
     pub environment_intensity: f32,
     pub editor_config: EditorConfig,
-    pub camera_bookmarks: Vec<CameraBookmark>,
-    pub active_camera_bookmark: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -179,6 +213,9 @@ pub(crate) struct EmitterUiDefaults {
 
 impl EditorUiState {
     pub fn new(params: EditorUiStateParams) -> Self {
+        let mut scene_history = VecDeque::with_capacity(SCENE_HISTORY_CAPACITY);
+        let default_scene_path = DEFAULT_SCENE_PATH.to_string();
+        scene_history.push_back(default_scene_path.clone());
         Self {
             ui_spawn_per_press: 200,
             ui_auto_spawn_rate: 0.0,
@@ -215,9 +252,13 @@ impl EditorUiState {
             ui_sprite_guard_mode: params.editor_config.sprite_guardrail_mode,
             ui_scale: 1.0,
             selected_entity: None,
+            selection_details: None,
+            prev_selection_details: None,
+            selection_bounds: None,
+            prev_selection_bounds: None,
             gizmo_mode: GizmoMode::default(),
             gizmo_interaction: None,
-            ui_scene_path: params.scene_path,
+            ui_scene_path: default_scene_path,
             ui_scene_status: None,
             prefab_name_input: String::new(),
             prefab_format: PrefabFormat::Json,
@@ -225,11 +266,11 @@ impl EditorUiState {
             animation_group_input: String::new(),
             animation_group_scale_input: 1.0,
             camera_bookmark_input: String::new(),
-            camera_bookmarks: params.camera_bookmarks,
-            active_camera_bookmark: params.active_camera_bookmark,
+            camera_bookmarks: Vec::new(),
+            active_camera_bookmark: None,
             scene_dependencies: None,
             scene_dependency_fingerprints: None,
-            scene_history: params.scene_history,
+            scene_history,
             scene_history_snapshot: None,
             scene_atlas_snapshot: None,
             scene_mesh_snapshot: None,
@@ -250,6 +291,15 @@ impl EditorUiState {
             plugin_capability_events: Arc::from(Vec::<PluginCapabilityEvent>::new().into_boxed_slice()),
             plugin_asset_readbacks: Arc::from(Vec::<PluginAssetReadbackEvent>::new().into_boxed_slice()),
             plugin_watchdog_events: Arc::from(Vec::<PluginWatchdogEvent>::new().into_boxed_slice()),
+            plugin_manifest_error: None,
+            plugin_manifest_entries: None,
+            plugin_manifest_disabled_builtins: None,
+            plugin_manifest_path: None,
+            plugin_statuses: Arc::from(Vec::<PluginStatus>::new().into_boxed_slice()),
+            plugin_asset_metrics: Arc::new(HashMap::new()),
+            plugin_ecs_history: Arc::new(HashMap::new()),
+            plugin_watchdog_map: Arc::new(HashMap::new()),
+            plugin_asset_requestable: HashSet::new(),
             animation_validation_log: Arc::from(Vec::<AnimationValidationEvent>::new().into_boxed_slice()),
             animation_budget_sample: None,
             light_cluster_metrics_overlay: None,
@@ -264,6 +314,7 @@ impl EditorUiState {
             script_console: VecDeque::with_capacity(SCRIPT_CONSOLE_CAPACITY),
             script_console_snapshot: None,
             last_reported_script_error: None,
+            script_debugger_status: ScriptDebuggerStatus::default(),
             animation_keyframe_panel: AnimationKeyframePanel::default(),
             clip_dirty: HashSet::new(),
             clip_edit_history: Vec::new(),

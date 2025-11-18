@@ -402,6 +402,10 @@ impl ScriptHost {
         self.handle_map.clear();
     }
 
+    pub fn handles_snapshot(&self) -> Vec<(ScriptHandle, Entity)> {
+        self.handle_map.iter().map(|(handle, entity)| (*handle, *entity)).collect()
+    }
+
     fn reload_if_needed(&mut self) -> Result<()> {
         let metadata = match fs::metadata(&self.script_path) {
             Ok(meta) => meta,
@@ -477,6 +481,10 @@ impl ScriptPlugin {
 
     pub fn clear_handles(&mut self) {
         self.host.clear_handles();
+    }
+
+    pub fn handles_snapshot(&self) -> Vec<(ScriptHandle, Entity)> {
+        self.host.handles_snapshot()
     }
 
     pub fn script_path(&self) -> &Path {
