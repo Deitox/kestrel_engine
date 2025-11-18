@@ -417,6 +417,30 @@ impl App {
         self.editor_ui_state_mut().ui_scene_status = Some(message.into());
     }
 
+    fn preview_sprite_events(&mut self, atlas: &str, timeline: &str, frame_index: usize) {
+        if let Some(timeline_data) = self.assets.atlas_timeline(atlas, timeline) {
+            if let Some(frame) = timeline_data.frames.get(frame_index) {
+                if frame.events.is_empty() {
+                    self.set_inspector_status(Some(format!("Preview events: none (frame {})", frame_index + 1)));
+                } else {
+                    let joined = frame.events.join(", ");
+                    println!(
+                        "[animation] Preview events for {}::{} frame {} => {}",
+                        atlas,
+                        timeline,
+                        frame_index + 1,
+                        joined
+                    );
+                    self.set_inspector_status(Some(format!("Preview events: {}", joined)));
+                }
+            } else {
+                self.set_inspector_status(Some("Preview events unavailable for frame.".to_string()));
+            }
+        } else {
+            self.set_inspector_status(Some("Timeline unavailable for preview.".to_string()));
+        }
+    }
+
     fn set_sprite_guardrail_status(&self, status: Option<String>) {
         self.with_editor_ui_state_mut(|state| state.sprite_guardrail_status = status);
     }
@@ -2812,6 +2836,127 @@ impl ApplicationHandler for App {
                 let prefabs = state.telemetry_cache.prefab_entries(&self.prefab_library);
                 (mesh, env, prefabs)
             });
+        let clip_keys_list = self.assets.clip_keys();
+        let clip_assets_map: HashMap<String, editor_ui::ClipAssetSummary> = clip_keys_list
+            .iter()
+            .map(|key| {
+                let source = self.assets.clip_source(key).map(|s| s.to_string());
+                let markers = self
+                    .assets
+                    .clip(key)
+                    .map(|clip| {
+                        let mut markers = Vec::new();
+                        if let Some(track) = clip.translation.as_ref() {
+                            markers.extend(track.keyframes.iter().map(|kf| kf.time));
+                        }
+                        if let Some(track) = clip.rotation.as_ref() {
+                            markers.extend(track.keyframes.iter().map(|kf| kf.time));
+                        }
+                        if let Some(track) = clip.scale.as_ref() {
+                            markers.extend(track.keyframes.iter().map(|kf| kf.time));
+                        }
+                        if let Some(track) = clip.tint.as_ref() {
+                            markers.extend(track.keyframes.iter().map(|kf| kf.time));
+                        }
+                        markers.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+                        markers.dedup_by(|a, b| (*a - *b).abs() <= 1e-4);
+                        Arc::from(markers.into_boxed_slice())
+                    })
+                    .unwrap_or_else(|| Arc::from(Vec::<f32>::new().into_boxed_slice()));
+                (
+                    key.clone(),
+                    editor_ui::ClipAssetSummary { source, keyframe_markers: markers },
+                )
+            })
+            .collect();
+        let clip_keys: Arc<[String]> = Arc::from(clip_keys_list.clone().into_boxed_slice());
+        let clip_assets = Arc::new(clip_assets_map);
+        let skeleton_keys_list = self.assets.skeleton_keys();
+        let skeleton_assets_map: HashMap<String, editor_ui::SkeletonAssetSummary> = skeleton_keys_list
+            .iter()
+            .map(|key| {
+                let clip_keys = self
+                    .assets
+                    .skeletal_clip_keys_for(key)
+                    .map(|keys| keys.to_vec())
+                    .unwrap_or_default();
+                let source = self.assets.skeleton_source(key).map(|s| s.to_string());
+                (
+                    key.clone(),
+                    editor_ui::SkeletonAssetSummary {
+                        source,
+                        clip_keys: Arc::from(clip_keys.into_boxed_slice()),
+                    },
+                )
+            })
+            .collect();
+        let skeleton_keys: Arc<[String]> = Arc::from(skeleton_keys_list.clone().into_boxed_slice());
+        let skeleton_assets = Arc::new(skeleton_assets_map);
+        let atlas_keys_list = self.assets.atlas_keys();
+        let atlas_assets_map: HashMap<String, editor_ui::AtlasAssetSummary> = atlas_keys_list
+            .iter()
+            .map(|key| {
+                let mut timelines = self.assets.atlas_timeline_names(key);
+                timelines.sort();
+                timelines.dedup();
+                let source = self.assets.atlas_source(key).map(|s| s.to_string());
+                (
+                    key.clone(),
+                    editor_ui::AtlasAssetSummary {
+                        source,
+                        timeline_names: Arc::from(timelines.into_boxed_slice()),
+                    },
+                )
+            })
+            .collect();
+        let atlas_keys: Arc<[String]> = Arc::from(atlas_keys_list.clone().into_boxed_slice());
+        let atlas_assets = Arc::new(atlas_assets_map);
+        let skeleton_entities: Arc<[editor_ui::SkeletonEntityBinding]> = Arc::from(
+            self.ecs
+                .skeleton_entities()
+                .into_iter()
+                .map(|(entity, scene_id)| editor_ui::SkeletonEntityBinding { entity, scene_id })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        );
+        let mut material_options: Vec<editor_ui::MaterialOption> = self
+            .material_registry
+            .keys()
+            .map(|key| {
+                let label = self
+                    .material_registry
+                    .definition(key)
+                    .map(|def| def.label.clone())
+                    .unwrap_or_else(|| key.to_string());
+                editor_ui::MaterialOption { key: key.to_string(), label }
+            })
+            .collect();
+        material_options.sort_by(|a, b| a.label.cmp(&b.label).then_with(|| a.key.cmp(&b.key)));
+        let material_options: Arc<[editor_ui::MaterialOption]> =
+            Arc::from(material_options.into_boxed_slice());
+        let mesh_subset_map: HashMap<String, Arc<[editor_ui::MeshSubsetEntry]>> = self
+            .mesh_registry
+            .keys()
+            .filter_map(|key| {
+                self.mesh_registry.mesh_subsets(key).map(|subsets| {
+                    let entries: Vec<editor_ui::MeshSubsetEntry> = subsets
+                        .iter()
+                        .map(|subset| editor_ui::MeshSubsetEntry {
+                            name: subset.name.clone(),
+                            index_offset: subset.index_offset,
+                            index_count: subset.index_count,
+                            material: subset.material.clone(),
+                        })
+                        .collect();
+                    (key.to_string(), Arc::from(entries.into_boxed_slice()))
+                })
+            })
+            .collect();
+        let mesh_subsets = Arc::new(mesh_subset_map);
+        let input_modifiers = editor_ui::InputModifierState {
+            ctrl: self.input.ctrl_held(),
+            shift: self.input.shift_held(),
+        };
         let scene_history_list = self.scene_history_arc();
         let atlas_snapshot = self.scene_atlas_refs_arc();
         let mesh_snapshot = self.scene_mesh_refs_arc();
@@ -3105,6 +3250,68 @@ impl ApplicationHandler for App {
             )
         };
 
+        let scene_dependency_data_available = scene_dependencies_snapshot.is_some();
+        let atlas_dependencies_view = {
+            let mut entries = Vec::with_capacity(atlas_snapshot.len());
+            for atlas in atlas_snapshot.iter() {
+                let path = scene_dependencies_snapshot.as_ref().and_then(|deps| {
+                    deps.atlas_dependencies()
+                        .find(|dep| dep.key() == atlas.as_str())
+                        .and_then(|dep| dep.path().map(|p| p.to_string()))
+                });
+                entries.push(editor_ui::AtlasDependencyStatus {
+                    key: atlas.clone(),
+                    persistent: self.persistent_atlases.contains(atlas),
+                    loaded: self.assets.has_atlas(atlas),
+                    path,
+                });
+            }
+            Arc::from(entries.into_boxed_slice())
+        };
+        let mesh_dependencies_view = {
+            let mut entries = Vec::with_capacity(mesh_snapshot.len());
+            for mesh_key in mesh_snapshot.iter() {
+                let path = scene_dependencies_snapshot.as_ref().and_then(|deps| {
+                    deps.mesh_dependencies()
+                        .find(|dep| dep.key() == mesh_key.as_str())
+                        .and_then(|dep| dep.path().map(|p| p.to_string()))
+                });
+                let ref_count = self.mesh_registry.mesh_ref_count(mesh_key).unwrap_or(0);
+                entries.push(editor_ui::MeshDependencyStatus {
+                    key: mesh_key.clone(),
+                    persistent: persistent_meshes.contains(mesh_key),
+                    loaded: self.mesh_registry.has(mesh_key),
+                    ref_count,
+                    path,
+                });
+            }
+            Arc::from(entries.into_boxed_slice())
+        };
+        let clip_dependencies_view = {
+            let mut entries = Vec::with_capacity(clip_snapshot.len());
+            for clip_key in clip_snapshot.iter() {
+                let path = scene_dependencies_snapshot.as_ref().and_then(|deps| {
+                    deps.clip_dependencies()
+                        .find(|dep| dep.key() == clip_key.as_str())
+                        .and_then(|dep| dep.path().map(|p| p.to_string()))
+                });
+                entries.push(editor_ui::ClipDependencyStatus {
+                    key: clip_key.clone(),
+                    loaded: self.assets.clip(clip_key).is_some(),
+                    path,
+                });
+            }
+            Arc::from(entries.into_boxed_slice())
+        };
+        let environment_dependency_status = scene_dependencies_snapshot.as_ref().and_then(|deps| {
+            deps.environment_dependency().map(|dep| editor_ui::EnvironmentDependencyStatus {
+                key: dep.key().to_string(),
+                persistent: self.persistent_environments.contains(dep.key()),
+                loaded: self.environment_registry.definition(dep.key()).is_some(),
+                path: dep.path().map(|p| p.to_string()),
+            })
+        });
+
         let editor_params = editor_ui::EditorUiParams {
             raw_input,
             base_pixels_per_point,
@@ -3215,16 +3422,19 @@ impl ApplicationHandler for App {
             environment_options,
             active_environment,
             persistent_materials,
-            persistent_meshes,
             debug_show_spatial_hash: debug_show_spatial_hash_state,
             debug_show_colliders: debug_show_colliders_state,
             spatial_hash_rects,
             collider_rects,
 
             scene_history_list,
-            atlas_snapshot,
-            mesh_snapshot,
-            clip_snapshot,
+            atlas_dependencies: atlas_dependencies_view,
+            mesh_dependencies: mesh_dependencies_view,
+            clip_dependencies: clip_dependencies_view,
+            environment_dependency: environment_dependency_status,
+            atlas_persistent_count: self.persistent_atlases.len(),
+            mesh_persistent_count: persistent_meshes.len(),
+            scene_dependency_data_available,
             recent_events,
             audio_triggers,
             audio_enabled,
@@ -3235,6 +3445,16 @@ impl ApplicationHandler for App {
             prefab_name_input: prefab_name_input_state,
             prefab_format: prefab_format_state,
             prefab_status: prefab_status_state,
+            clip_keys,
+            clip_assets,
+            skeleton_keys,
+            skeleton_assets,
+            atlas_keys,
+            atlas_assets,
+            skeleton_entities,
+            material_options,
+            mesh_subsets,
+            input_modifiers,
             ui_scene_path: ui_scene_path_state,
             ui_scene_status: ui_scene_status_state,
             animation_group_input: animation_group_input_state,
@@ -3259,7 +3479,6 @@ impl ApplicationHandler for App {
             },
             id_lookup_input: id_lookup_input_state,
             id_lookup_active: id_lookup_active_state,
-            scene_dependencies: scene_dependencies_snapshot,
             gpu_timing_snapshot,
             gpu_history_empty,
             gpu_timing_averages,
@@ -3412,6 +3631,431 @@ impl ApplicationHandler for App {
         }
         self.environment_intensity = ui_environment_intensity;
         self.renderer.set_environment_intensity(self.environment_intensity);
+
+        for op in actions.inspector_actions.drain(..) {
+            match op {
+                editor_ui::InspectorAction::SetTranslation { entity, translation } => {
+                    if self.ecs.set_translation(entity, translation) {
+                        self.set_inspector_status(None);
+                    } else {
+                        self.set_inspector_status(Some("Failed to update position.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetRotation { entity, rotation } => {
+                    if self.ecs.set_rotation(entity, rotation) {
+                        self.set_inspector_status(None);
+                    } else {
+                        self.set_inspector_status(Some("Failed to update rotation.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetScale { entity, scale } => {
+                    if self.ecs.set_scale(entity, scale) {
+                        self.set_inspector_status(None);
+                    } else {
+                        self.set_inspector_status(Some("Failed to update scale.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetVelocity { entity, velocity } => {
+                    if self.ecs.set_velocity(entity, velocity) {
+                        self.set_inspector_status(None);
+                    } else {
+                        self.set_inspector_status(Some("Failed to update velocity.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::ClearTransformClip { entity } => {
+                    if self.ecs.clear_transform_clip(entity) {
+                        self.set_inspector_status(Some("Transform clip cleared.".to_string()));
+                    } else {
+                        self.set_inspector_status(Some("Failed to clear transform clip.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetTransformClip { entity, clip_key } => {
+                    if self.ecs.set_transform_clip(entity, &self.assets, &clip_key) {
+                        self.set_inspector_status(Some(format!("Transform clip set to {}", clip_key)));
+                    } else {
+                        self.set_inspector_status(Some(format!(
+                            "Transform clip '{}' not available",
+                            clip_key
+                        )));
+                    }
+                }
+                editor_ui::InspectorAction::SetTransformClipPlaying { entity, playing } => {
+                    if self.ecs.set_transform_clip_playing(entity, playing) {
+                        self.set_inspector_status(None);
+                    } else {
+                        self.set_inspector_status(Some("Failed to update clip playback.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::ResetTransformClip { entity } => {
+                    if self.ecs.reset_transform_clip(entity) {
+                        self.set_inspector_status(Some("Transform clip reset.".to_string()));
+                    } else {
+                        self.set_inspector_status(Some("Failed to reset transform clip.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetTransformClipSpeed { entity, speed } => {
+                    if self.ecs.set_transform_clip_speed(entity, speed) {
+                        self.set_inspector_status(None);
+                    } else {
+                        self.set_inspector_status(Some("Failed to update clip speed.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetTransformClipGroup { entity, group } => {
+                    if self.ecs.set_transform_clip_group(entity, group.as_deref()) {
+                        self.set_inspector_status(None);
+                    } else {
+                        self.set_inspector_status(Some("Failed to update clip group.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetTransformClipTime { entity, time } => {
+                    if self.ecs.set_transform_clip_time(entity, time) {
+                        self.set_inspector_status(None);
+                    } else {
+                        self.set_inspector_status(Some("Failed to scrub clip time.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetTransformTrackMask { entity, mask } => {
+                    if self.ecs.set_transform_track_mask(entity, mask) {
+                        self.set_inspector_status(None);
+                    } else {
+                        self.set_inspector_status(Some("Failed to update transform track mask.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetPropertyTrackMask { entity, mask } => {
+                    if self.ecs.set_property_track_mask(entity, mask) {
+                        self.set_inspector_status(None);
+                    } else {
+                        self.set_inspector_status(Some("Failed to update property track mask.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::ClearSkeleton { entity } => {
+                    if self.ecs.clear_skeleton(entity) {
+                        self.set_inspector_status(Some("Skeleton detached.".to_string()));
+                    } else {
+                        self.set_inspector_status(Some("Failed to detach skeleton.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetSkeleton { entity, skeleton_key } => {
+                    if self.ecs.set_skeleton(entity, &self.assets, &skeleton_key) {
+                        self.set_inspector_status(Some(format!("Skeleton set to {}", skeleton_key)));
+                    } else {
+                        self.set_inspector_status(Some(format!("Skeleton '{}' unavailable", skeleton_key)));
+                    }
+                }
+                editor_ui::InspectorAction::ClearSkeletonClip { entity } => {
+                    if self.ecs.clear_skeleton_clip(entity) {
+                        self.set_inspector_status(Some("Skeletal clip cleared.".to_string()));
+                    } else {
+                        self.set_inspector_status(Some("Failed to clear skeletal clip.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetSkeletonClip { entity, clip_key } => {
+                    if self.ecs.set_skeleton_clip(entity, &self.assets, &clip_key) {
+                        self.set_inspector_status(Some(format!("Skeletal clip set to {}", clip_key)));
+                    } else {
+                        self.set_inspector_status(Some(format!("Skeletal clip '{}' unavailable", clip_key)));
+                    }
+                }
+                editor_ui::InspectorAction::SetSkeletonClipPlaying { entity, playing } => {
+                    if self.ecs.set_skeleton_clip_playing(entity, playing) {
+                        self.set_inspector_status(None);
+                    } else {
+                        self.set_inspector_status(Some("Failed to update skeletal clip playback.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::ResetSkeletonPose { entity } => {
+                    if self.ecs.reset_skeleton_pose(entity) {
+                        self.set_inspector_status(Some("Skeletal pose reset.".to_string()));
+                    } else {
+                        self.set_inspector_status(Some("Failed to reset skeletal pose.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetSkeletonClipSpeed { entity, speed } => {
+                    if self.ecs.set_skeleton_clip_speed(entity, speed) {
+                        self.set_inspector_status(None);
+                    } else {
+                        self.set_inspector_status(Some("Failed to update skeletal clip speed.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetSkeletonClipGroup { entity, group } => {
+                    if self.ecs.set_skeleton_clip_group(entity, group.as_deref()) {
+                        self.set_inspector_status(None);
+                    } else {
+                        self.set_inspector_status(Some("Failed to update skeletal clip group.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetSkeletonClipTime { entity, time } => {
+                    if self.ecs.set_skeleton_clip_time(entity, time) {
+                        self.set_inspector_status(None);
+                    } else {
+                        self.set_inspector_status(Some("Failed to scrub skeletal clip.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetSpriteAtlas { entity, atlas, cleared_timeline } => {
+                    if self.ecs.set_sprite_atlas(entity, &self.assets, &atlas) {
+                        if cleared_timeline {
+                            self.set_inspector_status(Some(format!(
+                                "Sprite atlas set to {} (timeline cleared)",
+                                atlas
+                            )));
+                        } else {
+                            self.set_inspector_status(Some(format!("Sprite atlas set to {}", atlas)));
+                        }
+                    } else {
+                        self.set_inspector_status(Some(format!("Atlas '{}' unavailable", atlas)));
+                    }
+                }
+                editor_ui::InspectorAction::SetSpriteRegion { entity, atlas, region } => {
+                    if self.ecs.set_sprite_region(entity, &self.assets, &region) {
+                        self.set_inspector_status(Some(format!("Sprite region set to {}", region)));
+                    } else {
+                        self.set_inspector_status(Some(format!(
+                            "Region '{}' not found in atlas {}",
+                            region, atlas
+                        )));
+                    }
+                }
+                editor_ui::InspectorAction::SetSpriteTimeline { entity, timeline } => {
+                    if self.ecs.set_sprite_timeline(entity, &self.assets, timeline.as_deref()) {
+                        self.set_inspector_status(timeline
+                            .as_ref()
+                            .map(|name| format!("Sprite timeline set to {name}"))
+                            .or_else(|| Some("Sprite timeline cleared".to_string())));
+                    } else if let Some(name) = timeline {
+                        self.set_inspector_status(Some(format!("Timeline '{name}' unavailable")));
+                    } else {
+                        self.set_inspector_status(Some("Failed to change sprite timeline.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetSpriteAnimationPlaying { entity, playing } => {
+                    if self.ecs.set_sprite_animation_playing(entity, playing) {
+                        self.set_inspector_status(None);
+                    } else {
+                        self.set_inspector_status(Some("Failed to update animation playback.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::ResetSpriteAnimation { entity } => {
+                    if self.ecs.reset_sprite_animation(entity) {
+                        self.set_inspector_status(Some("Sprite animation reset.".to_string()));
+                    } else {
+                        self.set_inspector_status(Some("Failed to reset sprite animation.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetSpriteAnimationLooped { entity, looped } => {
+                    if self.ecs.set_sprite_animation_looped(entity, looped) {
+                        self.set_inspector_status(None);
+                    } else {
+                        self.set_inspector_status(Some("Failed to update loop flag.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetSpriteAnimationSpeed { entity, speed } => {
+                    if self.ecs.set_sprite_animation_speed(entity, speed) {
+                        self.set_inspector_status(None);
+                    } else {
+                        self.set_inspector_status(Some("Failed to update animation speed.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetSpriteAnimationStartOffset { entity, start_offset } => {
+                    if self.ecs.set_sprite_animation_start_offset(entity, start_offset) {
+                        self.set_inspector_status(None);
+                    } else {
+                        self.set_inspector_status(Some("Failed to update start offset.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetSpriteAnimationRandomStart { entity, random_start } => {
+                    if self.ecs.set_sprite_animation_random_start(entity, random_start) {
+                        self.set_inspector_status(None);
+                    } else {
+                        self.set_inspector_status(Some("Failed to update random start.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetSpriteAnimationGroup { entity, group } => {
+                    if self.ecs.set_sprite_animation_group(entity, group.as_deref()) {
+                        self.set_inspector_status(None);
+                    } else {
+                        self.set_inspector_status(Some("Failed to update animation group.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SeekSpriteAnimationFrame {
+                    entity,
+                    frame,
+                    preview_events,
+                    atlas,
+                    timeline,
+                } => {
+                    if self.ecs.seek_sprite_animation_frame(entity, frame) {
+                        if preview_events {
+                            self.preview_sprite_events(&atlas, &timeline, frame);
+                        } else {
+                            self.set_inspector_status(None);
+                        }
+                    } else {
+                        self.set_inspector_status(Some("Failed to seek animation frame.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetMeshMaterial { entity, material } => {
+                    let previous = self
+                        .ecs
+                        .entity_info(entity)
+                        .and_then(|info| info.mesh.as_ref().and_then(|mesh| mesh.material.clone()));
+                    let mut apply_change = true;
+                    if let Some(ref key) = material {
+                        if !self.material_registry.has(key) {
+                            self.set_inspector_status(Some(format!("Material '{}' not registered", key)));
+                            apply_change = false;
+                        } else if let Err(err) = self.material_registry.retain(key) {
+                            self.set_inspector_status(Some(format!("Failed to retain material '{}': {err}", key)));
+                            apply_change = false;
+                        }
+                    }
+                    if apply_change {
+                        if self.ecs.set_mesh_material(entity, material.clone()) {
+                            if let Some(prev) = previous {
+                                if material.as_ref() != Some(&prev) {
+                                    self.material_registry.release(&prev);
+                                }
+                            }
+                            let persistent_materials: HashSet<String> = self
+                                .mesh_preview_plugin()
+                                .map(|plugin| plugin.persistent_materials().iter().cloned().collect())
+                                .unwrap_or_default();
+                            let mut refs = persistent_materials.clone();
+                            for instance in self.ecs.collect_mesh_instances() {
+                                if let Some(mat) = instance.material {
+                                    refs.insert(mat);
+                                }
+                            }
+                            self.scene_material_refs = refs;
+                            self.set_inspector_status(None);
+                        } else {
+                            if let Some(ref key) = material {
+                                self.material_registry.release(key);
+                            }
+                            self.set_inspector_status(Some("Failed to update mesh material.".to_string()));
+                        }
+                    } else if let Some(ref key) = material {
+                        if material.as_ref() != previous.as_ref() {
+                            self.material_registry.release(key);
+                        }
+                    }
+                }
+                editor_ui::InspectorAction::SetMeshShadowFlags { entity, cast, receive } => {
+                    if self.ecs.set_mesh_shadow_flags(entity, cast, receive) {
+                        self.set_inspector_status(None);
+                    } else {
+                        self.set_inspector_status(Some("Failed to update mesh shadow flags.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetMeshMaterialParams {
+                    entity,
+                    base_color,
+                    metallic,
+                    roughness,
+                    emissive,
+                } => {
+                    if self
+                        .ecs
+                        .set_mesh_material_params(entity, base_color, metallic, roughness, emissive)
+                    {
+                        self.set_inspector_status(None);
+                    } else {
+                        self.set_inspector_status(Some("Failed to update mesh material parameters.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetMeshTranslation { entity, translation } => {
+                    if self.ecs.set_mesh_translation(entity, translation) {
+                        self.set_inspector_status(None);
+                    } else {
+                        self.set_inspector_status(Some("Failed to update mesh translation.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetMeshRotationEuler { entity, rotation } => {
+                    if self.ecs.set_mesh_rotation_euler(entity, rotation) {
+                        self.set_inspector_status(None);
+                    } else {
+                        self.set_inspector_status(Some("Failed to update mesh rotation.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetMeshScale3D { entity, scale } => {
+                    if self.ecs.set_mesh_scale(entity, scale) {
+                        self.set_inspector_status(None);
+                    } else {
+                        self.set_inspector_status(Some("Failed to update mesh scale.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetMeshTint { entity, tint } => {
+                    if self.ecs.set_tint(entity, tint) {
+                        self.set_inspector_status(None);
+                    } else {
+                        self.set_inspector_status(Some("Failed to update tint.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetSkinMeshJointCount { entity, joint_count } => {
+                    if self.ecs.set_skin_mesh_joint_count(entity, joint_count) {
+                        self.set_inspector_status(None);
+                    } else {
+                        self.set_inspector_status(Some("Failed to update skin mesh joint count.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SetSkinMeshSkeleton { entity, skeleton } => {
+                    if self.ecs.set_skin_mesh_skeleton(entity, skeleton) {
+                        let status = skeleton
+                            .map(|skel| format!("Skin mesh bound to skeleton #{:04}", skel.index()))
+                            .unwrap_or_else(|| "Skin mesh skeleton cleared.".to_string());
+                        self.set_inspector_status(Some(status));
+                    } else {
+                        self.set_inspector_status(Some("Failed to update skin mesh skeleton.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::SyncSkinMeshJointCount { entity } => {
+                    let skeleton = self
+                        .ecs
+                        .entity_info(entity)
+                        .and_then(|info| info.skin_mesh.as_ref().and_then(|sm| sm.skeleton_entity));
+                    match skeleton {
+                        Some(skel_entity) => {
+                            if let Some(skeleton_info) =
+                                self.ecs.entity_info(skel_entity).and_then(|info| info.skeleton)
+                            {
+                                if self.ecs.set_skin_mesh_joint_count(entity, skeleton_info.joint_count) {
+                                    self.set_inspector_status(Some(format!(
+                                        "Skin mesh joints set to {}",
+                                        skeleton_info.joint_count
+                                    )));
+                                } else {
+                                    self.set_inspector_status(Some(
+                                        "Failed to sync joint count from skeleton.".to_string(),
+                                    ));
+                                }
+                            } else {
+                                self.set_inspector_status(Some(
+                                    "Selected skeleton is missing SkeletonInstance.".to_string(),
+                                ));
+                            }
+                        }
+                        None => {
+                            self.set_inspector_status(Some(
+                                "Assign a skeleton before syncing joints.".to_string(),
+                            ));
+                        }
+                    }
+                }
+                editor_ui::InspectorAction::DetachSkinMesh { entity } => {
+                    if self.ecs.detach_skin_mesh(entity) {
+                        self.set_inspector_status(Some("Skin mesh component removed.".to_string()));
+                    } else {
+                        self.set_inspector_status(Some("Failed to remove skin mesh.".to_string()));
+                    }
+                }
+                editor_ui::InspectorAction::AttachSkinMesh { entity } => {
+                    if self.ecs.attach_skin_mesh(entity, 0) {
+                        self.set_inspector_status(Some("Skin mesh component added.".to_string()));
+                    } else {
+                        self.set_inspector_status(Some("Failed to add skin mesh component.".to_string()));
+                    }
+                }
+            }
+        }
 
         if let Some(request) = id_lookup_request {
             let trimmed = request.trim();

@@ -1,39 +1,39 @@
-use super::{PrefabDragPayload, SpriteAtlasRequest, UiActions};
-use crate::assets::AssetManager;
-use crate::ecs::{
-    EcsWorld, EntityInfo, PropertyTrackPlayer, SkeletonInfo, SpriteInfo, TransformClipInfo,
-    TransformTrackPlayer,
+use super::{
+    AtlasAssetSummary, ClipAssetSummary, InputModifierState, InspectorAction, MaterialOption, MeshSubsetEntry,
+    PrefabDragPayload, SkeletonAssetSummary, SkeletonEntityBinding, SpriteAtlasRequest, UiActions,
 };
+use crate::ecs::{EntityInfo, PropertyTrackPlayer, SkeletonInfo, TransformClipInfo, TransformTrackPlayer};
 use crate::gizmo::{GizmoInteraction, GizmoMode, ScaleHandle};
-use crate::input::Input;
-use crate::material_registry::MaterialRegistry;
-use crate::mesh_registry::MeshRegistry;
 use bevy_ecs::prelude::Entity;
 use egui::Ui;
 use glam::{EulerRot, Quat, Vec2, Vec3, Vec4};
-use std::{cmp::Ordering, collections::HashSet};
+use std::collections::HashMap;
+use std::sync::Arc;
 
-pub(super) struct InspectorAppContext<'a> {
-    pub ecs: &'a mut EcsWorld,
+pub(super) struct InspectorContext<'a> {
     pub gizmo_mode: &'a mut GizmoMode,
     pub gizmo_interaction: &'a mut Option<GizmoInteraction>,
-    pub input: &'a Input,
     pub inspector_status: &'a mut Option<String>,
-    pub material_registry: &'a mut MaterialRegistry,
-    pub mesh_registry: &'a mut MeshRegistry,
-    pub scene_material_refs: &'a mut HashSet<String>,
-    pub assets: &'a AssetManager,
+    pub input: InputModifierState,
+    pub clip_keys: &'a [String],
+    pub clip_assets: &'a HashMap<String, ClipAssetSummary>,
+    pub skeleton_keys: &'a [String],
+    pub skeleton_assets: &'a HashMap<String, SkeletonAssetSummary>,
+    pub atlas_keys: &'a [String],
+    pub atlas_assets: &'a HashMap<String, AtlasAssetSummary>,
+    pub skeleton_entities: &'a [SkeletonEntityBinding],
+    pub material_options: &'a [MaterialOption],
+    pub mesh_subsets: &'a HashMap<String, Arc<[MeshSubsetEntry]>>,
 }
 
 pub(super) fn show_entity_inspector(
-    app: InspectorAppContext<'_>,
+    ctx: InspectorContext<'_>,
     ui: &mut Ui,
     selected_entity: &mut Option<Entity>,
     selection_details: &mut Option<EntityInfo>,
     id_lookup_input: &mut String,
     id_lookup_active: &mut bool,
     frame_selection_request: &mut bool,
-    persistent_materials: &HashSet<String>,
     actions: &mut UiActions,
 ) {
     let mut selected_entity_value = *selected_entity;
@@ -44,11 +44,11 @@ pub(super) fn show_entity_inspector(
         ui.label(format!("Entity: {:?}", entity));
         ui.horizontal(|ui| {
             ui.label("Gizmo");
-            ui.selectable_value(app.gizmo_mode, GizmoMode::Translate, "Translate");
-            ui.selectable_value(app.gizmo_mode, GizmoMode::Rotate, "Rotate");
-            ui.selectable_value(app.gizmo_mode, GizmoMode::Scale, "Scale");
+            ui.selectable_value(ctx.gizmo_mode, GizmoMode::Translate, "Translate");
+            ui.selectable_value(ctx.gizmo_mode, GizmoMode::Rotate, "Rotate");
+            ui.selectable_value(ctx.gizmo_mode, GizmoMode::Scale, "Scale");
         });
-        match *app.gizmo_mode {
+        match *ctx.gizmo_mode {
             GizmoMode::Scale => {
                 ui.small("Shift = uniform scale, Ctrl = snap steps");
             }
@@ -59,20 +59,20 @@ pub(super) fn show_entity_inspector(
                 ui.small("Ctrl = snap to 15 deg increments");
             }
         }
-        if let Some(interaction) = app.gizmo_interaction.as_ref() {
+        if let Some(interaction) = ctx.gizmo_interaction.as_ref() {
             match interaction {
                 GizmoInteraction::Translate { axis_lock, .. } => {
                     let mut msg = String::from("Translate gizmo active");
                     if let Some(axis) = axis_lock {
                         msg.push_str(&format!(" ({} axis)", axis.label()));
                     }
-                    if app.input.ctrl_held() {
+                    if ctx.input.ctrl {
                         msg.push_str(" [snap]");
                     }
                     ui.colored_label(egui::Color32::LIGHT_GREEN, msg);
                 }
                 GizmoInteraction::Translate3D { .. } => {
-                    let msg = if app.input.ctrl_held() {
+                    let msg = if ctx.input.ctrl {
                         "3D translate gizmo active [snap]"
                     } else {
                         "3D translate gizmo active"
@@ -80,7 +80,7 @@ pub(super) fn show_entity_inspector(
                     ui.colored_label(egui::Color32::LIGHT_GREEN, msg);
                 }
                 GizmoInteraction::Rotate { .. } => {
-                    let msg = if app.input.ctrl_held() {
+                    let msg = if ctx.input.ctrl {
                         "Rotate gizmo active [snap]"
                     } else {
                         "Rotate gizmo active"
@@ -91,7 +91,7 @@ pub(super) fn show_entity_inspector(
                     match handle {
                         ScaleHandle::Uniform { .. } => ui.colored_label(
                             egui::Color32::LIGHT_GREEN,
-                            if app.input.ctrl_held() {
+                            if ctx.input.ctrl {
                                 "Scale gizmo active (uniform) [snap]"
                             } else {
                                 "Scale gizmo active (uniform)"
@@ -99,7 +99,7 @@ pub(super) fn show_entity_inspector(
                         ),
                         ScaleHandle::Axis { axis, .. } => ui.colored_label(
                             egui::Color32::LIGHT_GREEN,
-                            if app.input.ctrl_held() {
+                            if ctx.input.ctrl {
                                 format!("Scale gizmo active ({}) [snap]", axis.label())
                             } else {
                                 format!("Scale gizmo active ({})", axis.label())
@@ -108,7 +108,7 @@ pub(super) fn show_entity_inspector(
                     };
                 }
                 GizmoInteraction::Rotate3D { .. } => {
-                    let msg = if app.input.ctrl_held() {
+                    let msg = if ctx.input.ctrl {
                         "3D rotate gizmo active [snap]"
                     } else {
                         "3D rotate gizmo active"
@@ -117,17 +117,17 @@ pub(super) fn show_entity_inspector(
                 }
                 GizmoInteraction::Scale3D { .. } => {
                     let mut msg = String::from("3D scale gizmo active");
-                    if app.input.shift_held() {
+                    if ctx.input.shift {
                         msg.push_str(" (uniform)");
                     }
-                    if app.input.ctrl_held() {
+                    if ctx.input.ctrl {
                         msg.push_str(" [snap]");
                     }
                     ui.colored_label(egui::Color32::LIGHT_GREEN, msg);
                 }
             }
         }
-        let mut inspector_refresh = false;
+        let mut _inspector_refresh = false;
         let mut inspector_info = selection_details_value.clone();
         if let Some(mut info) = inspector_info {
             ui.horizontal(|ui| {
@@ -148,22 +148,22 @@ pub(super) fn show_entity_inspector(
                 if ui.add(egui::DragValue::new(&mut translation.x).speed(0.01)).changed()
                     | ui.add(egui::DragValue::new(&mut translation.y).speed(0.01)).changed()
                 {
-                    if app.ecs.set_translation(entity, translation) {
-                        info.translation = translation;
-                        inspector_refresh = true;
-                        *app.inspector_status = None;
-                    }
+                    actions
+                        .inspector_actions
+                        .push(InspectorAction::SetTranslation { entity, translation });
+                    info.translation = translation;
+                    _inspector_refresh = true;
                 }
             });
 
             let mut rotation_deg = info.rotation.to_degrees();
             if ui.add(egui::DragValue::new(&mut rotation_deg).speed(1.0).suffix(" deg")).changed() {
                 let rotation_rad = rotation_deg.to_radians();
-                if app.ecs.set_rotation(entity, rotation_rad) {
-                    info.rotation = rotation_rad;
-                    inspector_refresh = true;
-                    *app.inspector_status = None;
-                }
+                actions
+                    .inspector_actions
+                    .push(InspectorAction::SetRotation { entity, rotation: rotation_rad });
+                info.rotation = rotation_rad;
+                _inspector_refresh = true;
             }
 
             let mut scale = info.scale;
@@ -173,11 +173,11 @@ pub(super) fn show_entity_inspector(
                     | ui.add(egui::DragValue::new(&mut scale.y).speed(0.01)).changed()
                 {
                     let clamped = Vec2::new(scale.x.max(0.01), scale.y.max(0.01));
-                    if app.ecs.set_scale(entity, clamped) {
-                        info.scale = clamped;
-                        inspector_refresh = true;
-                        *app.inspector_status = None;
-                    }
+                    actions
+                        .inspector_actions
+                        .push(InspectorAction::SetScale { entity, scale: clamped });
+                    info.scale = clamped;
+                    _inspector_refresh = true;
                 }
             });
 
@@ -187,13 +187,13 @@ pub(super) fn show_entity_inspector(
                     if ui.add(egui::DragValue::new(&mut velocity.x).speed(0.01)).changed()
                         | ui.add(egui::DragValue::new(&mut velocity.y).speed(0.01)).changed()
                     {
-                        if app.ecs.set_velocity(entity, velocity) {
-                            info.velocity = Some(velocity);
-                            inspector_refresh = true;
-                            *app.inspector_status = None;
-                        }
-                    }
-                });
+                    actions
+                        .inspector_actions
+                        .push(InspectorAction::SetVelocity { entity, velocity });
+                    info.velocity = Some(velocity);
+                    _inspector_refresh = true;
+                }
+            });
             } else {
                 ui.label("Velocity: n/a");
             }
@@ -202,8 +202,7 @@ pub(super) fn show_entity_inspector(
             let mut clip_info_opt: Option<TransformClipInfo> = info.transform_clip.clone();
             let mut transform_mask_opt: Option<TransformTrackPlayer> = info.transform_tracks;
             let mut property_mask_opt: Option<PropertyTrackPlayer> = info.property_tracks;
-            let mut clip_keys = app.assets.clip_keys();
-            clip_keys.sort();
+            let mut clip_keys: Vec<String> = ctx.clip_keys.iter().cloned().collect();
             if let Some(ref clip_info) = clip_info_opt {
                 if !clip_keys.iter().any(|key| key == &clip_info.clip_key) {
                     clip_keys.push(clip_info.clip_key.clone());
@@ -228,49 +227,42 @@ pub(super) fn show_entity_inspector(
             });
             if clip_combo == "<None>" {
                 if clip_info_opt.is_some() {
-                    if app.ecs.clear_transform_clip(entity) {
-                        clip_info_opt = None;
-                        inspector_refresh = true;
-                        *app.inspector_status = Some("Transform clip cleared".to_string());
-                    } else {
-                        *app.inspector_status = Some("Failed to clear transform clip".to_string());
-                    }
+                    actions.inspector_actions.push(InspectorAction::ClearTransformClip { entity });
+                    clip_info_opt = None;
+                    _inspector_refresh = true;
                 }
             } else if clip_info_opt
                 .as_ref()
                 .map(|clip| clip.clip_key.as_str() != clip_combo.as_str())
                 .unwrap_or(true)
             {
-                if app.ecs.set_transform_clip(entity, &app.assets, &clip_combo) {
-                    inspector_refresh = true;
-                    *app.inspector_status = Some(format!("Transform clip set to {}", clip_combo));
-                } else {
-                    *app.inspector_status = Some(format!("Transform clip '{}' not available", clip_combo));
-                }
+                actions.inspector_actions.push(InspectorAction::SetTransformClip {
+                    entity,
+                    clip_key: clip_combo.clone(),
+                });
+                _inspector_refresh = true;
             }
 
             if let Some(mut clip_info) = clip_info_opt.clone() {
-                if let Some(source) = app.assets.clip_source(&clip_info.clip_key) {
-                    ui.small(format!("Source: {}", source));
+                if let Some(summary) = ctx.clip_assets.get(&clip_info.clip_key) {
+                    if let Some(source) = summary.source.as_deref() {
+                        ui.small(format!("Source: {}", source));
+                    } else {
+                        ui.small("Source: n/a");
+                    }
                 } else {
                     ui.small("Source: n/a");
                 }
                 ui.horizontal(|ui| {
                     let mut playing = clip_info.playing;
                     if ui.checkbox(&mut playing, "Playing").changed() {
-                        if app.ecs.set_transform_clip_playing(entity, playing) {
-                            clip_info.playing = playing;
-                            inspector_refresh = true;
-                            *app.inspector_status = None;
-                        }
+                        actions.inspector_actions.push(InspectorAction::SetTransformClipPlaying { entity, playing });
+                        clip_info.playing = playing;
+                        _inspector_refresh = true;
                     }
                     if ui.button("Reset").clicked() {
-                        if app.ecs.reset_transform_clip(entity) {
-                            inspector_refresh = true;
-                            *app.inspector_status = Some("Transform clip reset".to_string());
-                        } else {
-                            *app.inspector_status = Some("Failed to reset transform clip".to_string());
-                        }
+                        actions.inspector_actions.push(InspectorAction::ResetTransformClip { entity });
+                        _inspector_refresh = true;
                     }
                 });
                 ui.horizontal(|ui| {
@@ -280,11 +272,11 @@ pub(super) fn show_entity_inspector(
                         .add(egui::DragValue::new(&mut speed).speed(0.05).range(0.0..=8.0).suffix("x"))
                         .changed()
                     {
-                        if app.ecs.set_transform_clip_speed(entity, speed) {
-                            clip_info.speed = speed;
-                            inspector_refresh = true;
-                            *app.inspector_status = None;
-                        }
+                        actions
+                            .inspector_actions
+                            .push(InspectorAction::SetTransformClipSpeed { entity, speed });
+                        clip_info.speed = speed;
+                        _inspector_refresh = true;
                     }
                 });
                 ui.horizontal(|ui| {
@@ -294,16 +286,12 @@ pub(super) fn show_entity_inspector(
                         ui.add(egui::TextEdit::singleline(&mut group_value).hint_text("optional group id"));
                     if response.changed() {
                         let trimmed = group_value.trim();
-                        let result = if trimmed.is_empty() {
-                            app.ecs.set_transform_clip_group(entity, None)
-                        } else {
-                            app.ecs.set_transform_clip_group(entity, Some(trimmed))
-                        };
-                        if result {
-                            clip_info.group =
-                                if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
-                            inspector_refresh = true;
-                        }
+                        let group = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
+                        actions
+                            .inspector_actions
+                            .push(InspectorAction::SetTransformClipGroup { entity, group: group.clone() });
+                        clip_info.group = group;
+                        _inspector_refresh = true;
                     }
                 });
                 let duration = clip_info.duration.max(0.0);
@@ -313,32 +301,19 @@ pub(super) fn show_entity_inspector(
                     egui::Slider::new(&mut clip_time, 0.0..=duration).text("Time (s)").smart_aim(false),
                 );
                 if slider_response.changed() {
-                    if app.ecs.set_transform_clip_time(entity, clip_time) {
-                        clip_info.time = clip_time;
-                        inspector_refresh = true;
-                    }
+                    actions
+                        .inspector_actions
+                        .push(InspectorAction::SetTransformClipTime { entity, time: clip_time });
+                    clip_info.time = clip_time;
+                    _inspector_refresh = true;
                 }
                 if duration <= 0.0 {
                     ui.label("Duration: 0 (static clip)");
                 } else {
                     ui.label(format!("Duration: {:.3} s", duration));
                 }
-                if let Some(asset_clip) = app.assets.clip(&clip_info.clip_key) {
-                    let mut markers: Vec<f32> = Vec::new();
-                    if let Some(track) = asset_clip.translation.as_ref() {
-                        markers.extend(track.keyframes.iter().map(|kf| kf.time));
-                    }
-                    if let Some(track) = asset_clip.rotation.as_ref() {
-                        markers.extend(track.keyframes.iter().map(|kf| kf.time));
-                    }
-                    if let Some(track) = asset_clip.scale.as_ref() {
-                        markers.extend(track.keyframes.iter().map(|kf| kf.time));
-                    }
-                    if let Some(track) = asset_clip.tint.as_ref() {
-                        markers.extend(track.keyframes.iter().map(|kf| kf.time));
-                    }
-                    markers.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
-                    markers.dedup_by(|a, b| (*a - *b).abs() <= 1e-4);
+                if let Some(summary) = ctx.clip_assets.get(&clip_info.clip_key) {
+                    let markers: Vec<f32> = summary.keyframe_markers.iter().copied().collect();
                     if !markers.is_empty() {
                         let formatted =
                             markers.iter().map(|t| format!("{:.3}", t)).collect::<Vec<_>>().join(", ");
@@ -352,26 +327,29 @@ pub(super) fn show_entity_inspector(
                     let mut apply_translation = transform_mask.apply_translation;
                     if ui.checkbox(&mut apply_translation, "Translation").changed() {
                         transform_mask.apply_translation = apply_translation;
-                        if app.ecs.set_transform_track_mask(entity, transform_mask) {
-                            transform_mask_opt = Some(transform_mask);
-                            inspector_refresh = true;
-                        }
+                        actions
+                            .inspector_actions
+                            .push(InspectorAction::SetTransformTrackMask { entity, mask: transform_mask });
+                        transform_mask_opt = Some(transform_mask);
+                        _inspector_refresh = true;
                     }
                     let mut apply_rotation = transform_mask.apply_rotation;
                     if ui.checkbox(&mut apply_rotation, "Rotation").changed() {
                         transform_mask.apply_rotation = apply_rotation;
-                        if app.ecs.set_transform_track_mask(entity, transform_mask) {
-                            transform_mask_opt = Some(transform_mask);
-                            inspector_refresh = true;
-                        }
+                        actions
+                            .inspector_actions
+                            .push(InspectorAction::SetTransformTrackMask { entity, mask: transform_mask });
+                        transform_mask_opt = Some(transform_mask);
+                        _inspector_refresh = true;
                     }
                     let mut apply_scale = transform_mask.apply_scale;
                     if ui.checkbox(&mut apply_scale, "Scale").changed() {
                         transform_mask.apply_scale = apply_scale;
-                        if app.ecs.set_transform_track_mask(entity, transform_mask) {
-                            transform_mask_opt = Some(transform_mask);
-                            inspector_refresh = true;
-                        }
+                        actions
+                            .inspector_actions
+                            .push(InspectorAction::SetTransformTrackMask { entity, mask: transform_mask });
+                        transform_mask_opt = Some(transform_mask);
+                        _inspector_refresh = true;
                     }
                 });
 
@@ -381,10 +359,11 @@ pub(super) fn show_entity_inspector(
                     let mut apply_tint = property_mask.apply_tint;
                     if ui.checkbox(&mut apply_tint, "Tint").changed() {
                         property_mask.apply_tint = apply_tint;
-                        if app.ecs.set_property_track_mask(entity, property_mask) {
-                            property_mask_opt = Some(property_mask);
-                            inspector_refresh = true;
-                        }
+                        actions
+                            .inspector_actions
+                            .push(InspectorAction::SetPropertyTrackMask { entity, mask: property_mask });
+                        property_mask_opt = Some(property_mask);
+                        _inspector_refresh = true;
                     }
                 });
 
@@ -440,8 +419,7 @@ pub(super) fn show_entity_inspector(
 
             ui.separator();
             let mut skeleton_info_opt: Option<SkeletonInfo> = info.skeleton.clone();
-            let mut skeleton_keys = app.assets.skeleton_keys();
-            skeleton_keys.sort();
+            let mut skeleton_keys: Vec<String> = ctx.skeleton_keys.iter().cloned().collect();
             if let Some(ref skeleton_info) = skeleton_info_opt {
                 if !skeleton_keys.contains(&skeleton_info.skeleton_key) {
                     skeleton_keys.push(skeleton_info.skeleton_key.clone());
@@ -466,31 +444,29 @@ pub(super) fn show_entity_inspector(
             });
             if skeleton_combo == "<None>" {
                 if skeleton_info_opt.is_some() {
-                    if app.ecs.clear_skeleton(entity) {
-                        skeleton_info_opt = None;
-                        inspector_refresh = true;
-                        *app.inspector_status = Some("Skeleton detached".to_string());
-                    } else {
-                        *app.inspector_status = Some("Failed to detach skeleton".to_string());
-                    }
+                    actions.inspector_actions.push(InspectorAction::ClearSkeleton { entity });
+                    skeleton_info_opt = None;
+                    _inspector_refresh = true;
                 }
             } else if skeleton_info_opt
                 .as_ref()
                 .map(|info| info.skeleton_key.as_str() != skeleton_combo.as_str())
                 .unwrap_or(true)
             {
-                if app.ecs.set_skeleton(entity, &app.assets, &skeleton_combo) {
-                    inspector_refresh = true;
-                    *app.inspector_status = Some(format!("Skeleton set to {}", skeleton_combo));
-                    skeleton_info_opt = app.ecs.entity_info(entity).and_then(|data| data.skeleton);
-                } else {
-                    *app.inspector_status = Some(format!("Skeleton '{}' not available", skeleton_combo));
-                }
+                actions.inspector_actions.push(InspectorAction::SetSkeleton {
+                    entity,
+                    skeleton_key: skeleton_combo.clone(),
+                });
+                _inspector_refresh = true;
             }
 
             if let Some(mut skeleton_info) = skeleton_info_opt.clone() {
-                if let Some(source) = app.assets.skeleton_source(&skeleton_info.skeleton_key) {
-                    ui.small(format!("Source: {}", source));
+                if let Some(summary) = ctx.skeleton_assets.get(&skeleton_info.skeleton_key) {
+                    if let Some(source) = summary.source.as_deref() {
+                        ui.small(format!("Source: {}", source));
+                    } else {
+                        ui.small("Source: n/a");
+                    }
                 } else {
                     ui.small("Source: n/a");
                 }
@@ -508,10 +484,10 @@ pub(super) fn show_entity_inspector(
                         ui.colored_label(egui::Color32::YELLOW, palette_text);
                     }
                 });
-                let mut clip_keys = app
-                    .assets
-                    .skeletal_clip_keys_for(&skeleton_info.skeleton_key)
-                    .map(|keys| keys.to_vec())
+                let mut clip_keys = ctx
+                    .skeleton_assets
+                    .get(&skeleton_info.skeleton_key)
+                    .map(|summary| summary.clip_keys.iter().cloned().collect::<Vec<_>>())
                     .unwrap_or_default();
                 if let Some(ref clip) = skeleton_info.clip {
                     if !clip_keys.contains(&clip.clip_key) {
@@ -537,13 +513,9 @@ pub(super) fn show_entity_inspector(
                 });
                 if clip_combo == "<None>" {
                     if skeleton_info.clip.is_some() {
-                        if app.ecs.clear_skeleton_clip(entity) {
-                            skeleton_info.clip = None;
-                            inspector_refresh = true;
-                            *app.inspector_status = Some("Skeletal clip cleared".to_string());
-                        } else {
-                            *app.inspector_status = Some("Failed to clear skeletal clip".to_string());
-                        }
+                        actions.inspector_actions.push(InspectorAction::ClearSkeletonClip { entity });
+                        skeleton_info.clip = None;
+                        _inspector_refresh = true;
                     }
                 } else if skeleton_info
                     .clip
@@ -551,31 +523,26 @@ pub(super) fn show_entity_inspector(
                     .map(|clip| clip.clip_key.as_str() != clip_combo.as_str())
                     .unwrap_or(true)
                 {
-                    if app.ecs.set_skeleton_clip(entity, &app.assets, &clip_combo) {
-                        inspector_refresh = true;
-                        *app.inspector_status = Some(format!("Skeletal clip set to {}", clip_combo));
-                        skeleton_info_opt = app.ecs.entity_info(entity).and_then(|data| data.skeleton);
-                    } else {
-                        *app.inspector_status = Some(format!("Skeletal clip '{}' not available", clip_combo));
-                    }
+                    actions.inspector_actions.push(InspectorAction::SetSkeletonClip {
+                        entity,
+                        clip_key: clip_combo.clone(),
+                    });
+                    skeleton_info.clip = None;
+                    _inspector_refresh = true;
                 }
-                if let Some(mut clip_info) = skeleton_info_opt.as_ref().and_then(|info| info.clip.clone()) {
+                if let Some(mut clip_info) = skeleton_info.clip.clone() {
                     ui.horizontal(|ui| {
                         let mut playing = clip_info.playing;
                         if ui.checkbox(&mut playing, "Playing").changed() {
-                            if app.ecs.set_skeleton_clip_playing(entity, playing) {
-                                clip_info.playing = playing;
-                                inspector_refresh = true;
-                                *app.inspector_status = None;
-                            }
+                            actions
+                                .inspector_actions
+                                .push(InspectorAction::SetSkeletonClipPlaying { entity, playing });
+                            clip_info.playing = playing;
+                            _inspector_refresh = true;
                         }
                         if ui.button("Reset Pose").clicked() {
-                            if app.ecs.reset_skeleton_pose(entity) {
-                                inspector_refresh = true;
-                                *app.inspector_status = Some("Skeletal pose reset".to_string());
-                            } else {
-                                *app.inspector_status = Some("Failed to reset skeletal pose".to_string());
-                            }
+                            actions.inspector_actions.push(InspectorAction::ResetSkeletonPose { entity });
+                            _inspector_refresh = true;
                         }
                     });
                     ui.horizontal(|ui| {
@@ -585,11 +552,11 @@ pub(super) fn show_entity_inspector(
                             .add(egui::DragValue::new(&mut speed).speed(0.05).range(0.0..=4.0).suffix("x"))
                             .changed()
                         {
-                            if app.ecs.set_skeleton_clip_speed(entity, speed) {
-                                clip_info.speed = speed;
-                                inspector_refresh = true;
-                                *app.inspector_status = None;
-                            }
+                            actions
+                                .inspector_actions
+                                .push(InspectorAction::SetSkeletonClipSpeed { entity, speed });
+                            clip_info.speed = speed;
+                            _inspector_refresh = true;
                         }
                     });
                     ui.horizontal(|ui| {
@@ -599,16 +566,13 @@ pub(super) fn show_entity_inspector(
                             .add(egui::TextEdit::singleline(&mut group_value).hint_text("optional group id"));
                         if response.changed() {
                             let trimmed = group_value.trim();
-                            let result = if trimmed.is_empty() {
-                                app.ecs.set_skeleton_clip_group(entity, None)
-                            } else {
-                                app.ecs.set_skeleton_clip_group(entity, Some(trimmed))
-                            };
-                            if result {
-                                clip_info.group =
-                                    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
-                                inspector_refresh = true;
-                            }
+                            let group = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
+                            actions.inspector_actions.push(InspectorAction::SetSkeletonClipGroup {
+                                entity,
+                                group: group.clone(),
+                            });
+                            clip_info.group = group;
+                            _inspector_refresh = true;
                         }
                     });
                     let duration = clip_info.duration.max(0.0);
@@ -618,20 +582,22 @@ pub(super) fn show_entity_inspector(
                         egui::Slider::new(&mut clip_time, 0.0..=duration).text("Time (s)").smart_aim(false),
                     );
                     if slider_response.changed() {
-                        if app.ecs.set_skeleton_clip_time(entity, clip_time) {
-                            clip_info.time = clip_time;
-                            inspector_refresh = true;
-                        }
+                        actions
+                            .inspector_actions
+                            .push(InspectorAction::SetSkeletonClipTime { entity, time: clip_time });
+                        clip_info.time = clip_time;
+                        _inspector_refresh = true;
                     }
                     if duration <= 0.0 {
                         ui.label("Duration: 0 (static pose)");
                     } else {
                         ui.label(format!("Duration: {:.3} s", duration));
                     }
+                    skeleton_info.clip = Some(clip_info);
                 } else {
                     ui.label("Skeletal clip: n/a");
                 }
-                skeleton_info_opt = app.ecs.entity_info(entity).and_then(|data| data.skeleton);
+                skeleton_info_opt = Some(skeleton_info);
             } else if skeleton_items.len() <= 1 {
                 ui.label("Skeleton: n/a");
             }
@@ -641,7 +607,7 @@ pub(super) fn show_entity_inspector(
                 ui.separator();
                 let mut skip_sprite_controls = false;
                 let mut atlas_selection = sprite.atlas.clone();
-                let mut atlas_keys = app.assets.atlas_keys();
+                let mut atlas_keys: Vec<String> = ctx.atlas_keys.iter().cloned().collect();
                 if !atlas_keys.contains(&atlas_selection) {
                     atlas_keys.push(atlas_selection.clone());
                     atlas_keys.sort();
@@ -658,27 +624,23 @@ pub(super) fn show_entity_inspector(
                 });
                 if atlas_selection != sprite.atlas {
                     let had_animation = sprite.animation.is_some();
-                    if app.ecs.set_sprite_atlas(entity, &app.assets, &atlas_selection) {
-                        if let Some(updated) = app.ecs.entity_info(entity).and_then(|data| data.sprite) {
-                            sprite = updated.clone();
-                            info.sprite = Some(updated);
-                        } else {
-                            info.sprite = None;
-                        }
-                        inspector_refresh = true;
-                        let status = if had_animation {
-                            format!("Sprite atlas set to {} (timeline cleared)", atlas_selection)
-                        } else {
-                            format!("Sprite atlas set to {}", atlas_selection)
-                        };
-                        *app.inspector_status = Some(status);
-                        skip_sprite_controls = true;
-                    } else {
-                        *app.inspector_status = Some(format!("Atlas '{}' not available", atlas_selection));
-                    }
+                    actions.inspector_actions.push(InspectorAction::SetSpriteAtlas {
+                        entity,
+                        atlas: atlas_selection.clone(),
+                        cleared_timeline: had_animation,
+                    });
+                    sprite.atlas = atlas_selection.clone();
+                    sprite.animation = None;
+                    info.sprite = Some(sprite.clone());
+                    _inspector_refresh = true;
+                    skip_sprite_controls = true;
                 }
-                if let Some(source) = app.assets.atlas_source(&sprite.atlas) {
-                    ui.small(format!("Source: {}", source));
+                if let Some(summary) = ctx.atlas_assets.get(&sprite.atlas) {
+                    if let Some(source) = summary.source.as_deref() {
+                        ui.small(format!("Source: {}", source));
+                    } else {
+                        ui.small("Source: n/a");
+                    }
                 } else {
                     ui.small("Source: n/a");
                 }
@@ -688,7 +650,11 @@ pub(super) fn show_entity_inspector(
                     .data_mut(|d| d.get_persisted::<String>(key_buffer_id))
                     .unwrap_or_else(|| sprite.atlas.clone());
                 let path_buffer_id = egui::Id::new(("sprite_atlas_path", entity.index()));
-                let default_source = app.assets.atlas_source(&sprite.atlas).unwrap_or_default().to_string();
+                let default_source = ctx
+                    .atlas_assets
+                    .get(&sprite.atlas)
+                    .and_then(|summary| summary.source.clone())
+                    .unwrap_or_default();
                 let mut atlas_path_input = ui
                     .ctx()
                     .data_mut(|d| d.get_persisted::<String>(path_buffer_id))
@@ -725,7 +691,7 @@ pub(super) fn show_entity_inspector(
                         let key_trimmed = atlas_key_input.trim();
                         let path_trimmed = atlas_path_input.trim();
                         if key_trimmed.is_empty() || path_trimmed.is_empty() {
-                            *app.inspector_status = Some("Atlas key and path required".to_string());
+                            *ctx.inspector_status = Some("Atlas key and path required".to_string());
                         } else {
                             actions.sprite_atlas_requests.push(SpriteAtlasRequest {
                                 entity,
@@ -736,7 +702,7 @@ pub(super) fn show_entity_inspector(
                                 d.insert_persisted(key_buffer_id, key_trimmed.to_string());
                                 d.insert_persisted(path_buffer_id, path_trimmed.to_string());
                             });
-                            *app.inspector_status =
+                            *ctx.inspector_status =
                                 Some(format!("Loading atlas '{}' from {}", key_trimmed, path_trimmed));
                             skip_sprite_controls = true;
                         }
@@ -745,24 +711,21 @@ pub(super) fn show_entity_inspector(
                 if !skip_sprite_controls {
                     let mut region = sprite.region.clone();
                     if ui.text_edit_singleline(&mut region).changed() {
-                        if app.ecs.set_sprite_region(entity, &app.assets, &region) {
-                            let updated_sprite = SpriteInfo {
-                                atlas: sprite.atlas.clone(),
-                                region: region.clone(),
-                                animation: None,
-                            };
-                            info.sprite = Some(updated_sprite.clone());
-                            sprite = updated_sprite;
-                            inspector_refresh = true;
-                            *app.inspector_status = Some(format!("Sprite region set to {}", region));
-                        } else {
-                            *app.inspector_status =
-                                Some(format!("Region '{}' not found in atlas {}", region, sprite.atlas));
-                        }
+                        actions.inspector_actions.push(InspectorAction::SetSpriteRegion {
+                            entity,
+                            atlas: sprite.atlas.clone(),
+                            region: region.clone(),
+                        });
+                        sprite.region = region.clone();
+                        sprite.animation = None;
+                        info.sprite = Some(sprite.clone());
+                        _inspector_refresh = true;
                     }
-                    let mut timeline_names = app.assets.atlas_timeline_names(&sprite.atlas);
-                    timeline_names.sort();
-                    timeline_names.dedup();
+                    let timeline_names = ctx
+                        .atlas_assets
+                        .get(&sprite.atlas)
+                        .map(|summary| summary.timeline_names.iter().cloned().collect::<Vec<_>>())
+                        .unwrap_or_default();
                     if timeline_names.is_empty() {
                         ui.label("Timelines: none defined for atlas");
                     } else {
@@ -782,52 +745,42 @@ pub(super) fn show_entity_inspector(
                                 });
                         });
                         if desired_timeline != original_timeline {
-                            let success =
-                                app.ecs.set_sprite_timeline(entity, &app.assets, desired_timeline.as_deref());
-                            if success {
-                                inspector_refresh = true;
-                                *app.inspector_status = desired_timeline
-                                    .as_ref()
-                                    .map(|name| format!("Sprite timeline set to {name}"))
-                                    .or_else(|| Some("Sprite timeline disabled".to_string()));
-                                if let Some(updated) =
-                                    app.ecs.entity_info(entity).and_then(|data| data.sprite)
-                                {
-                                    sprite = updated.clone();
-                                    info.sprite = Some(updated);
-                                }
-                            } else if let Some(name) = desired_timeline {
-                                *app.inspector_status = Some(format!("Timeline '{name}' unavailable"));
-                            } else {
-                                *app.inspector_status = Some("Failed to change sprite timeline".to_string());
-                            }
+                            actions
+                                .inspector_actions
+                                .push(InspectorAction::SetSpriteTimeline { entity, timeline: desired_timeline.clone() });
+                            _inspector_refresh = true;
+                            sprite.animation = None;
+                            info.sprite = Some(sprite.clone());
                         }
                         if let Some(anim) = sprite.animation.as_ref() {
                             ui.label(format!("Loop Mode: {}", anim.loop_mode));
                             ui.horizontal(|ui| {
                                 let play_label = if anim.playing { "Pause" } else { "Play" };
                                 if ui.button(play_label).clicked() {
-                                    if app.ecs.set_sprite_animation_playing(entity, !anim.playing) {
-                                        inspector_refresh = true;
-                                    }
+                                    actions.inspector_actions.push(InspectorAction::SetSpriteAnimationPlaying {
+                                        entity,
+                                        playing: !anim.playing,
+                                    });
+                                    _inspector_refresh = true;
                                 }
                                 if ui.button("Reset").clicked() {
-                                    if app.ecs.reset_sprite_animation(entity) {
-                                        inspector_refresh = true;
-                                    }
+                                    actions.inspector_actions.push(InspectorAction::ResetSpriteAnimation { entity });
+                                    _inspector_refresh = true;
                                 }
                                 let mut looped = anim.looped;
                                 if ui.checkbox(&mut looped, "Loop").changed() {
-                                    if app.ecs.set_sprite_animation_looped(entity, looped) {
-                                        inspector_refresh = true;
-                                    }
+                                    actions
+                                        .inspector_actions
+                                        .push(InspectorAction::SetSpriteAnimationLooped { entity, looped });
+                                    _inspector_refresh = true;
                                 }
                             });
                             let mut speed = anim.speed;
                             if ui.add(egui::Slider::new(&mut speed, 0.0..=5.0).text("Speed")).changed() {
-                                if app.ecs.set_sprite_animation_speed(entity, speed) {
-                                    inspector_refresh = true;
-                                }
+                                actions
+                                    .inspector_actions
+                                    .push(InspectorAction::SetSpriteAnimationSpeed { entity, speed });
+                                _inspector_refresh = true;
                             }
                             let mut start_offset = anim.start_offset;
                             ui.horizontal(|ui| {
@@ -841,30 +794,35 @@ pub(super) fn show_entity_inspector(
                                     )
                                     .changed()
                                 {
-                                    if app.ecs.set_sprite_animation_start_offset(entity, start_offset) {
-                                        inspector_refresh = true;
-                                    }
+                                    actions.inspector_actions.push(
+                                        InspectorAction::SetSpriteAnimationStartOffset {
+                                            entity,
+                                            start_offset,
+                                        },
+                                    );
+                                    _inspector_refresh = true;
                                 }
                             });
                             let mut random_start = anim.random_start;
                             if ui.checkbox(&mut random_start, "Randomize Start").changed() {
-                                if app.ecs.set_sprite_animation_random_start(entity, random_start) {
-                                    inspector_refresh = true;
-                                }
+                                actions
+                                    .inspector_actions
+                                    .push(InspectorAction::SetSpriteAnimationRandomStart {
+                                        entity,
+                                        random_start,
+                                    });
+                                _inspector_refresh = true;
                             }
                             let mut group_label = anim.group.clone().unwrap_or_default();
                             ui.horizontal(|ui| {
                                 ui.label("Group");
                                 if ui.text_edit_singleline(&mut group_label).changed() {
                                     let trimmed = group_label.trim();
-                                    let success = if trimmed.is_empty() {
-                                        app.ecs.set_sprite_animation_group(entity, None)
-                                    } else {
-                                        app.ecs.set_sprite_animation_group(entity, Some(trimmed))
-                                    };
-                                    if success {
-                                        inspector_refresh = true;
-                                    }
+                                    let group = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
+                                    actions
+                                        .inspector_actions
+                                        .push(InspectorAction::SetSpriteAnimationGroup { entity, group });
+                                    _inspector_refresh = true;
                                 }
                             });
                             if anim.frame_count > 0 {
@@ -919,57 +877,45 @@ pub(super) fn show_entity_inspector(
                                     egui::Slider::new(&mut preview_frame, 0..=max_index).text("Scrub");
                                 if ui.add(slider).changed() {
                                     let target = preview_frame.clamp(0, max_index) as usize;
-                                    if app.ecs.seek_sprite_animation_frame(entity, target) {
-                                        inspector_refresh = true;
-                                        if preview_events_enabled {
-                                            preview_sprite_events(
-                                                app.assets,
-                                                app.inspector_status,
-                                                &sprite.atlas,
-                                                &anim.timeline,
-                                                target,
-                                            );
-                                        } else {
-                                            *app.inspector_status = None;
-                                        }
-                                    }
+                                    actions.inspector_actions.push(
+                                        InspectorAction::SeekSpriteAnimationFrame {
+                                            entity,
+                                            frame: target,
+                                            preview_events: preview_events_enabled,
+                                            atlas: sprite.atlas.clone(),
+                                            timeline: anim.timeline.clone(),
+                                        },
+                                    );
+                                    _inspector_refresh = true;
                                 }
                                 ui.horizontal(|ui| {
                                     let has_prev = frame_index > 0;
                                     let has_next = frame_index + 1 < frame_count;
                                     if ui.add_enabled(has_prev, egui::Button::new("<")).clicked() {
                                         let target = frame_index.saturating_sub(1);
-                                        if app.ecs.seek_sprite_animation_frame(entity, target) {
-                                            inspector_refresh = true;
-                                            if preview_events_enabled {
-                                                preview_sprite_events(
-                                                    app.assets,
-                                                    app.inspector_status,
-                                                    &sprite.atlas,
-                                                    &anim.timeline,
-                                                    target,
-                                                );
-                                            } else {
-                                                *app.inspector_status = None;
-                                            }
-                                        }
+                                        actions.inspector_actions.push(
+                                            InspectorAction::SeekSpriteAnimationFrame {
+                                                entity,
+                                                frame: target,
+                                                preview_events: preview_events_enabled,
+                                                atlas: sprite.atlas.clone(),
+                                                timeline: anim.timeline.clone(),
+                                            },
+                                        );
+                                        _inspector_refresh = true;
                                     }
                                     if ui.add_enabled(has_next, egui::Button::new(">")).clicked() {
                                         let target = (frame_index + 1).min(frame_count - 1);
-                                        if app.ecs.seek_sprite_animation_frame(entity, target) {
-                                            inspector_refresh = true;
-                                            if preview_events_enabled {
-                                                preview_sprite_events(
-                                                    app.assets,
-                                                    app.inspector_status,
-                                                    &sprite.atlas,
-                                                    &anim.timeline,
-                                                    target,
-                                                );
-                                            } else {
-                                                *app.inspector_status = None;
-                                            }
-                                        }
+                                        actions.inspector_actions.push(
+                                            InspectorAction::SeekSpriteAnimationFrame {
+                                                entity,
+                                                frame: target,
+                                                preview_events: preview_events_enabled,
+                                                atlas: sprite.atlas.clone(),
+                                                timeline: anim.timeline.clone(),
+                                            },
+                                        );
+                                        _inspector_refresh = true;
                                     }
                                 });
                             } else {
@@ -982,30 +928,17 @@ pub(super) fn show_entity_inspector(
                 ui.label("Sprite: n/a");
             }
 
-            if let Some(mesh) = info.mesh.clone() {
+            if let Some(mut mesh) = info.mesh.clone() {
                 ui.separator();
                 ui.label(format!("Mesh: {}", mesh.key));
-                let mut material_options: Vec<(String, String)> = app
-                    .material_registry
-                    .keys()
-                    .map(|key| {
-                        let label = app
-                            .material_registry
-                            .definition(key)
-                            .map(|def| def.label.clone())
-                            .unwrap_or_else(|| key.to_string());
-                        (key.to_string(), label)
-                    })
-                    .collect();
-                material_options.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
                 let mut desired_material = mesh.material.clone();
                 let selected_text = match mesh.material.as_ref() {
                     Some(key) => {
-                        let label = material_options
+                        let label = ctx
+                            .material_options
                             .iter()
-                            .find(|(candidate, _)| candidate == key)
-                            .map(|(_, label)| label.clone())
-                            .or_else(|| app.material_registry.definition(key).map(|def| def.label.clone()))
+                            .find(|option| option.key == *key)
+                            .map(|option| option.label.clone())
                             .unwrap_or_else(|| key.clone());
                         format!("{label} ({key})")
                     }
@@ -1015,57 +948,23 @@ pub(super) fn show_entity_inspector(
                     ui,
                     |ui| {
                         ui.selectable_value(&mut desired_material, None, "Use mesh material (asset default)");
-                        for (key, label) in &material_options {
-                            let entry_label = format!("{label} ({key})");
-                            ui.selectable_value(&mut desired_material, Some(key.clone()), entry_label);
+                        for option in ctx.material_options {
+                            let entry_label = format!("{} ({})", option.label, option.key);
+                            ui.selectable_value(
+                                &mut desired_material,
+                                Some(option.key.clone()),
+                                entry_label,
+                            );
                         }
                     },
                 );
                 if desired_material != mesh.material {
-                    let previous_material = mesh.material.clone();
-                    let mut retained_new = false;
-                    let mut apply_change = true;
-                    if let Some(ref key) = desired_material {
-                        if !app.material_registry.has(key.as_str()) {
-                            *app.inspector_status = Some(format!("Material '{}' not registered", key));
-                            apply_change = false;
-                        } else if let Err(err) = app.material_registry.retain(key) {
-                            *app.inspector_status =
-                                Some(format!("Failed to retain material '{}': {err}", key));
-                            apply_change = false;
-                        } else {
-                            retained_new = true;
-                        }
-                    }
-                    if apply_change {
-                        if app.ecs.set_mesh_material(entity, desired_material.clone()) {
-                            inspector_refresh = true;
-                            *app.inspector_status = None;
-                            if let Some(prev) = previous_material {
-                                if desired_material.as_ref() != Some(&prev) {
-                                    app.material_registry.release(&prev);
-                                }
-                            }
-                            let mut refs = persistent_materials.clone();
-                            for instance in app.ecs.collect_mesh_instances() {
-                                if let Some(material) = instance.material {
-                                    refs.insert(material);
-                                }
-                            }
-                            *app.scene_material_refs = refs;
-                        } else {
-                            *app.inspector_status = Some("Failed to update mesh material".to_string());
-                            if retained_new {
-                                if let Some(ref key) = desired_material {
-                                    app.material_registry.release(key);
-                                }
-                            }
-                        }
-                    } else if retained_new {
-                        if let Some(ref key) = desired_material {
-                            app.material_registry.release(key);
-                        }
-                    }
+                    actions
+                        .inspector_actions
+                        .push(InspectorAction::SetMeshMaterial { entity, material: desired_material.clone() });
+                    mesh.material = desired_material.clone();
+                    info.mesh = Some(mesh.clone());
+                    _inspector_refresh = true;
                 }
                 let mut cast_shadows = mesh.lighting.cast_shadows;
                 let mut receive_shadows = mesh.lighting.receive_shadows;
@@ -1080,14 +979,17 @@ pub(super) fn show_entity_inspector(
                     }
                 });
                 if shadow_flags_changed {
-                    if app.ecs.set_mesh_shadow_flags(entity, cast_shadows, receive_shadows) {
-                        inspector_refresh = true;
-                        *app.inspector_status = None;
-                    } else {
-                        *app.inspector_status = Some("Failed to update mesh shadow flags".to_string());
-                    }
+                    actions.inspector_actions.push(InspectorAction::SetMeshShadowFlags {
+                        entity,
+                        cast: cast_shadows,
+                        receive: receive_shadows,
+                    });
+                    mesh.lighting.cast_shadows = cast_shadows;
+                    mesh.lighting.receive_shadows = receive_shadows;
+                    info.mesh = Some(mesh.clone());
+                    _inspector_refresh = true;
                 }
-                if let Some(subsets) = app.mesh_registry.mesh_subsets(&mesh.key) {
+                if let Some(subsets) = ctx.mesh_subsets.get(&mesh.key).map(|arc| arc.as_ref()) {
                     ui.collapsing("Submeshes", |ui| {
                         for (index, subset) in subsets.iter().enumerate() {
                             let subset_name = subset.name.as_deref().unwrap_or("unnamed");
@@ -1136,18 +1038,19 @@ pub(super) fn show_entity_inspector(
                     let base_color_vec = Vec3::from_array(base_color_arr);
                     let emissive_opt =
                         if emissive_enabled { Some(Vec3::from_array(emissive_arr)) } else { None };
-                    if app.ecs.set_mesh_material_params(
+                    actions.inspector_actions.push(InspectorAction::SetMeshMaterialParams {
                         entity,
-                        base_color_vec,
+                        base_color: base_color_vec,
                         metallic,
                         roughness,
-                        emissive_opt,
-                    ) {
-                        inspector_refresh = true;
-                        *app.inspector_status = None;
-                    } else {
-                        *app.inspector_status = Some("Failed to update mesh material".to_string());
-                    }
+                        emissive: emissive_opt,
+                    });
+                    mesh.lighting.base_color = base_color_vec;
+                    mesh.lighting.metallic = metallic;
+                    mesh.lighting.roughness = roughness;
+                    mesh.lighting.emissive = emissive_opt;
+                    info.mesh = Some(mesh.clone());
+                    _inspector_refresh = true;
                 }
                 if let Some(mut mesh_tx) = info.mesh_transform.clone() {
                     let mut translation3 = mesh_tx.translation;
@@ -1158,11 +1061,11 @@ pub(super) fn show_entity_inspector(
                         changed |= ui.add(egui::DragValue::new(&mut translation3.y).speed(0.01)).changed();
                         changed |= ui.add(egui::DragValue::new(&mut translation3.z).speed(0.01)).changed();
                         if changed {
-                            if app.ecs.set_mesh_translation(entity, translation3) {
-                                mesh_tx.translation = translation3;
-                                inspector_refresh = true;
-                                *app.inspector_status = None;
-                            }
+                            actions
+                                .inspector_actions
+                                .push(InspectorAction::SetMeshTranslation { entity, translation: translation3 });
+                            mesh_tx.translation = translation3;
+                            _inspector_refresh = true;
                         }
                     });
 
@@ -1184,12 +1087,11 @@ pub(super) fn show_entity_inspector(
                                 rotation_deg.y.to_radians(),
                                 rotation_deg.z.to_radians(),
                             );
-                            if app.ecs.set_mesh_rotation_euler(entity, radians) {
-                                mesh_tx.rotation =
-                                    Quat::from_euler(EulerRot::XYZ, radians.x, radians.y, radians.z);
-                                inspector_refresh = true;
-                                *app.inspector_status = None;
-                            }
+                            actions
+                                .inspector_actions
+                                .push(InspectorAction::SetMeshRotationEuler { entity, rotation: radians });
+                            mesh_tx.rotation = Quat::from_euler(EulerRot::XYZ, radians.x, radians.y, radians.z);
+                            _inspector_refresh = true;
                         }
                     });
 
@@ -1203,11 +1105,11 @@ pub(super) fn show_entity_inspector(
                         if changed {
                             let clamped =
                                 Vec3::new(scale3.x.max(0.01), scale3.y.max(0.01), scale3.z.max(0.01));
-                            if app.ecs.set_mesh_scale(entity, clamped) {
-                                mesh_tx.scale = clamped;
-                                inspector_refresh = true;
-                                *app.inspector_status = None;
-                            }
+                            actions
+                                .inspector_actions
+                                .push(InspectorAction::SetMeshScale3D { entity, scale: clamped });
+                            mesh_tx.scale = clamped;
+                            _inspector_refresh = true;
                         }
                     });
 
@@ -1217,7 +1119,7 @@ pub(super) fn show_entity_inspector(
                 }
             }
 
-            let skeleton_entities = app.ecs.skeleton_entities();
+            let skeleton_entities = ctx.skeleton_entities;
             if let Some(mut skin_mesh) = info.skin_mesh.clone() {
                 ui.separator();
                 ui.label("Skinning");
@@ -1228,22 +1130,21 @@ pub(super) fn show_entity_inspector(
                 ui.horizontal(|ui| {
                     ui.label("Joint Count");
                     if ui.add(egui::DragValue::new(&mut joint_count).speed(1.0).range(0..=4096)).changed() {
-                        if app.ecs.set_skin_mesh_joint_count(entity, joint_count as usize) {
-                            skin_mesh.joint_count = joint_count as usize;
-                            inspector_refresh = true;
-                            *app.inspector_status = None;
-                        } else {
-                            *app.inspector_status = Some("Failed to update joint count".to_string());
-                        }
+                        actions.inspector_actions.push(InspectorAction::SetSkinMeshJointCount {
+                            entity,
+                            joint_count: joint_count as usize,
+                        });
+                        skin_mesh.joint_count = joint_count as usize;
+                        _inspector_refresh = true;
                     }
                 });
                 let mut desired_skeleton = skin_mesh.skeleton_entity;
                 let mut options: Vec<(Option<Entity>, String)> =
                     Vec::with_capacity(skeleton_entities.len() + 1);
                 options.push((None, "<None>".to_string()));
-                for (skel_entity, scene_id) in &skeleton_entities {
-                    let label = format!("{} (#{} )", scene_id.as_str(), skel_entity.index());
-                    options.push((Some(*skel_entity), label));
+                for binding in skeleton_entities {
+                    let label = format!("{} (#{} )", binding.scene_id.as_str(), binding.entity.index());
+                    options.push((Some(binding.entity), label));
                 }
                 if let Some(current) = skin_mesh.skeleton_entity {
                     if !options.iter().any(|(entity_opt, _)| *entity_opt == Some(current)) {
@@ -1273,55 +1174,33 @@ pub(super) fn show_entity_inspector(
                         });
                 });
                 if desired_skeleton != skin_mesh.skeleton_entity {
-                    if app.ecs.set_skin_mesh_skeleton(entity, desired_skeleton) {
-                        inspector_refresh = true;
-                        *app.inspector_status = match desired_skeleton {
-                            Some(skel) => Some(format!("Skin mesh bound to skeleton #{:04}", skel.index())),
-                            None => Some("Skin mesh skeleton cleared".to_string()),
-                        };
-                        skin_mesh.skeleton_entity = desired_skeleton;
-                        skin_mesh.skeleton_scene_id = desired_skeleton
-                            .and_then(|skel| app.ecs.entity_info(skel).map(|info| info.scene_id));
-                    } else {
-                        *app.inspector_status = Some("Failed to update skin mesh skeleton".to_string());
-                    }
+                    actions.inspector_actions.push(InspectorAction::SetSkinMeshSkeleton {
+                        entity,
+                        skeleton: desired_skeleton,
+                    });
+                    skin_mesh.skeleton_entity = desired_skeleton;
+                    skin_mesh.skeleton_scene_id = desired_skeleton
+                        .and_then(|skel| {
+                            skeleton_entities
+                                .iter()
+                                .find(|binding| binding.entity == skel)
+                                .map(|binding| binding.scene_id.clone())
+                        });
+                    _inspector_refresh = true;
                 }
                 let mut skin_mesh_removed = false;
                 ui.horizontal(|ui| {
                     if ui.button("Reset Joint Count from Skeleton").clicked() {
-                        if let Some(skel) = skin_mesh.skeleton_entity {
-                            if let Some(skeleton_info) =
-                                app.ecs.entity_info(skel).and_then(|info| info.skeleton)
-                            {
-                                if app.ecs.set_skin_mesh_joint_count(entity, skeleton_info.joint_count) {
-                                    skin_mesh.joint_count = skeleton_info.joint_count;
-                                    inspector_refresh = true;
-                                    *app.inspector_status = Some(format!(
-                                        "Skin mesh joints set to {}",
-                                        skeleton_info.joint_count
-                                    ));
-                                } else {
-                                    *app.inspector_status =
-                                        Some("Failed to sync joint count from skeleton".to_string());
-                                }
-                            } else {
-                                *app.inspector_status =
-                                    Some("Selected skeleton is missing SkeletonInstance".to_string());
-                            }
-                        } else {
-                            *app.inspector_status =
-                                Some("Assign a skeleton before syncing joints".to_string());
-                        }
+                        actions
+                            .inspector_actions
+                            .push(InspectorAction::SyncSkinMeshJointCount { entity });
+                        _inspector_refresh = true;
                     }
                     if ui.button("Remove Skin Mesh").clicked() {
-                        if app.ecs.detach_skin_mesh(entity) {
-                            inspector_refresh = true;
-                            info.skin_mesh = None;
-                            skin_mesh_removed = true;
-                            *app.inspector_status = Some("Skin mesh component removed".to_string());
-                        } else {
-                            *app.inspector_status = Some("Failed to remove skin mesh".to_string());
-                        }
+                        actions.inspector_actions.push(InspectorAction::DetachSkinMesh { entity });
+                        _inspector_refresh = true;
+                        info.skin_mesh = None;
+                        skin_mesh_removed = true;
                     }
                 });
                 if !skin_mesh_removed {
@@ -1332,13 +1211,8 @@ pub(super) fn show_entity_inspector(
                 ui.horizontal(|ui| {
                     ui.label("Skinning: n/a");
                     if ui.button("Add Skin Mesh").clicked() {
-                        if app.ecs.attach_skin_mesh(entity, 0) {
-                            inspector_refresh = true;
-                            info.skin_mesh = app.ecs.entity_info(entity).and_then(|data| data.skin_mesh);
-                            *app.inspector_status = Some("Skin mesh component added".to_string());
-                        } else {
-                            *app.inspector_status = Some("Failed to add skin mesh component".to_string());
-                        }
+                        actions.inspector_actions.push(InspectorAction::AttachSkinMesh { entity });
+                        _inspector_refresh = true;
                     }
                 });
             }
@@ -1348,26 +1222,27 @@ pub(super) fn show_entity_inspector(
             if ui.checkbox(&mut tinted, "Tint override").changed() {
                 if tinted {
                     let color = Vec4::splat(1.0);
-                    if app.ecs.set_tint(entity, Some(color)) {
-                        info.tint = Some(color);
-                        inspector_refresh = true;
-                        *app.inspector_status = None;
-                    }
-                } else if app.ecs.set_tint(entity, None) {
+                    actions
+                        .inspector_actions
+                        .push(InspectorAction::SetMeshTint { entity, tint: Some(color) });
+                    info.tint = Some(color);
+                } else {
+                    actions
+                        .inspector_actions
+                        .push(InspectorAction::SetMeshTint { entity, tint: None });
                     info.tint = None;
-                    inspector_refresh = true;
-                    *app.inspector_status = None;
                 }
+                _inspector_refresh = true;
             }
             if let Some(color) = info.tint {
                 let mut color_arr = color.to_array();
                 if ui.color_edit_button_rgba_unmultiplied(&mut color_arr).changed() {
                     let vec = Vec4::from_array(color_arr);
-                    if app.ecs.set_tint(entity, Some(vec)) {
-                        info.tint = Some(vec);
-                        inspector_refresh = true;
-                        *app.inspector_status = None;
-                    }
+                    actions
+                        .inspector_actions
+                        .push(InspectorAction::SetMeshTint { entity, tint: Some(vec) });
+                    info.tint = Some(vec);
+                    _inspector_refresh = true;
                 }
             }
 
@@ -1391,19 +1266,15 @@ pub(super) fn show_entity_inspector(
         drag_response
             .on_hover_text("Drop onto the Prefab Shelf to save this entity (and children) as a prefab.");
 
-        if inspector_refresh {
-            selection_details_value = selected_entity_value.and_then(|entity| app.ecs.entity_info(entity));
-        } else {
-            selection_details_value = inspector_info;
-        }
-        if let Some(status) = app.inspector_status.as_ref() {
+        selection_details_value = inspector_info;
+        if let Some(status) = ctx.inspector_status.as_ref() {
             ui.colored_label(egui::Color32::YELLOW, status);
         }
         if ui.button("Delete selected").clicked() {
             actions.delete_entity = Some(entity);
             selected_entity_value = None;
             selection_details_value = None;
-            *app.inspector_status = None;
+            *ctx.inspector_status = None;
         }
     } else {
         ui.label("No entity selected");
@@ -1432,31 +1303,4 @@ fn format_vec4(value: Vec4) -> String {
     format!("({:.3}, {:.3}, {:.3}, {:.3})", value.x, value.y, value.z, value.w)
 }
 
-fn preview_sprite_events(
-    assets: &AssetManager,
-    inspector_status: &mut Option<String>,
-    atlas: &str,
-    timeline: &str,
-    frame_index: usize,
-) {
-    if let Some(timeline_data) = assets.atlas_timeline(atlas, timeline) {
-        if let Some(frame) = timeline_data.frames.get(frame_index) {
-            if frame.events.is_empty() {
-                *inspector_status = Some(format!("Preview events: none (frame {})", frame_index + 1));
-            } else {
-                let joined = frame.events.join(", ");
-                println!(
-                    "[animation] Preview events for {}::{} frame {} => {}",
-                    atlas, timeline, frame_index, joined
-                );
-                *inspector_status = Some(format!("Preview events: {}", joined));
-            }
-        } else {
-            *inspector_status =
-                Some(format!("Preview events unavailable: frame {} out of range", frame_index + 1));
-        }
-    } else {
-        *inspector_status =
-            Some(format!("Preview events unavailable: timeline '{}' not found in atlas {}", timeline, atlas));
-    }
-}
+

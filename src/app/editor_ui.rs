@@ -13,8 +13,8 @@ use crate::audio::AudioHealthSnapshot;
 use crate::camera::Camera2D;
 use crate::camera3d::Camera3D;
 use crate::ecs::{
-    AnimationTime, EntityInfo, ParticleBudgetMetrics, SpatialMetrics, SpatialMode, SpriteAnimPerfSample,
-    SystemTimingSummary,
+    AnimationTime, EntityInfo, ParticleBudgetMetrics, PropertyTrackPlayer, SpatialMetrics, SpatialMode,
+    SpriteAnimPerfSample, SystemTimingSummary, TransformTrackPlayer,
 };
 use crate::events::GameEvent;
 use crate::gizmo::{
@@ -29,13 +29,13 @@ use crate::plugins::{
 };
 use crate::prefab::{PrefabFormat, PrefabStatusKind, PrefabStatusMessage};
 use crate::renderer::{GpuPassTiming, LightClusterMetrics, ScenePointLight, LIGHT_CLUSTER_MAX_LIGHTS, MAX_SHADOW_CASCADES};
-use crate::scene::{SceneDependencies, SceneShadowData};
+use crate::scene::SceneShadowData;
 
 use crate::config::SpriteGuardrailMode;
 use bevy_ecs::prelude::Entity;
 use egui::{Checkbox, DragAndDrop, Key, SliderClamping};
 use egui_plot as eplot;
-use glam::{Vec2, Vec3};
+use glam::{Vec2, Vec3, Vec4};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use winit::dpi::PhysicalSize;
@@ -83,6 +83,143 @@ pub(super) struct PrefabInstantiateRequest {
     pub name: String,
     pub format: PrefabFormat,
     pub drop_target: Option<PrefabDropTarget>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct ClipAssetSummary {
+    pub source: Option<String>,
+    pub keyframe_markers: Arc<[f32]>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct SkeletonAssetSummary {
+    pub source: Option<String>,
+    pub clip_keys: Arc<[String]>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct AtlasAssetSummary {
+    pub source: Option<String>,
+    pub timeline_names: Arc<[String]>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct MaterialOption {
+    pub key: String,
+    pub label: String,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct MeshSubsetEntry {
+    pub name: Option<String>,
+    pub index_offset: u32,
+    pub index_count: u32,
+    pub material: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct SkeletonEntityBinding {
+    pub entity: Entity,
+    pub scene_id: crate::scene::SceneEntityId,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct InputModifierState {
+    pub ctrl: bool,
+    pub shift: bool,
+}
+
+#[derive(Clone)]
+pub(super) enum InspectorAction {
+    SetTranslation { entity: Entity, translation: Vec2 },
+    SetRotation { entity: Entity, rotation: f32 },
+    SetScale { entity: Entity, scale: Vec2 },
+    SetVelocity { entity: Entity, velocity: Vec2 },
+    ClearTransformClip { entity: Entity },
+    SetTransformClip { entity: Entity, clip_key: String },
+    SetTransformClipPlaying { entity: Entity, playing: bool },
+    ResetTransformClip { entity: Entity },
+    SetTransformClipSpeed { entity: Entity, speed: f32 },
+    SetTransformClipGroup { entity: Entity, group: Option<String> },
+    SetTransformClipTime { entity: Entity, time: f32 },
+    SetTransformTrackMask { entity: Entity, mask: TransformTrackPlayer },
+    SetPropertyTrackMask { entity: Entity, mask: PropertyTrackPlayer },
+    ClearSkeleton { entity: Entity },
+    SetSkeleton { entity: Entity, skeleton_key: String },
+    ClearSkeletonClip { entity: Entity },
+    SetSkeletonClip { entity: Entity, clip_key: String },
+    SetSkeletonClipPlaying { entity: Entity, playing: bool },
+    ResetSkeletonPose { entity: Entity },
+    SetSkeletonClipSpeed { entity: Entity, speed: f32 },
+    SetSkeletonClipGroup { entity: Entity, group: Option<String> },
+    SetSkeletonClipTime { entity: Entity, time: f32 },
+    SetSpriteAtlas { entity: Entity, atlas: String, cleared_timeline: bool },
+    SetSpriteRegion { entity: Entity, atlas: String, region: String },
+    SetSpriteTimeline { entity: Entity, timeline: Option<String> },
+    SetSpriteAnimationPlaying { entity: Entity, playing: bool },
+    ResetSpriteAnimation { entity: Entity },
+    SetSpriteAnimationLooped { entity: Entity, looped: bool },
+    SetSpriteAnimationSpeed { entity: Entity, speed: f32 },
+    SetSpriteAnimationStartOffset { entity: Entity, start_offset: f32 },
+    SetSpriteAnimationRandomStart { entity: Entity, random_start: bool },
+    SetSpriteAnimationGroup { entity: Entity, group: Option<String> },
+    SeekSpriteAnimationFrame {
+        entity: Entity,
+        frame: usize,
+        preview_events: bool,
+        atlas: String,
+        timeline: String,
+    },
+    SetMeshMaterial { entity: Entity, material: Option<String> },
+    SetMeshShadowFlags { entity: Entity, cast: bool, receive: bool },
+    SetMeshMaterialParams {
+        entity: Entity,
+        base_color: Vec3,
+        metallic: f32,
+        roughness: f32,
+        emissive: Option<Vec3>,
+    },
+    SetMeshTranslation { entity: Entity, translation: Vec3 },
+    SetMeshRotationEuler { entity: Entity, rotation: Vec3 },
+    SetMeshScale3D { entity: Entity, scale: Vec3 },
+    SetMeshTint { entity: Entity, tint: Option<Vec4> },
+    SetSkinMeshJointCount { entity: Entity, joint_count: usize },
+    SetSkinMeshSkeleton { entity: Entity, skeleton: Option<Entity> },
+    SyncSkinMeshJointCount { entity: Entity },
+    DetachSkinMesh { entity: Entity },
+    AttachSkinMesh { entity: Entity },
+}
+
+#[derive(Clone)]
+pub(super) struct AtlasDependencyStatus {
+    pub key: String,
+    pub persistent: bool,
+    pub loaded: bool,
+    pub path: Option<String>,
+}
+
+#[derive(Clone)]
+pub(super) struct MeshDependencyStatus {
+    pub key: String,
+    pub persistent: bool,
+    pub loaded: bool,
+    pub ref_count: usize,
+    pub path: Option<String>,
+}
+
+#[derive(Clone)]
+pub(super) struct ClipDependencyStatus {
+    pub key: String,
+    pub loaded: bool,
+    pub path: Option<String>,
+}
+
+#[derive(Clone)]
+pub(super) struct EnvironmentDependencyStatus {
+    pub key: String,
+    pub persistent: bool,
+    pub loaded: bool,
+    pub path: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -578,6 +715,7 @@ pub(super) struct UiActions {
     pub save_prefab: Option<PrefabSaveRequest>,
     pub instantiate_prefab: Option<PrefabInstantiateRequest>,
     pub point_light_update: Option<Vec<ScenePointLight>>,
+    pub inspector_actions: Vec<InspectorAction>,
 }
 
 pub(super) struct SpriteAtlasRequest {
@@ -729,15 +867,18 @@ pub(super) struct EditorUiParams {
     pub environment_options: Arc<[(String, String)]>,
     pub active_environment: String,
     pub persistent_materials: HashSet<String>,
-    pub persistent_meshes: HashSet<String>,
     pub debug_show_spatial_hash: bool,
     pub debug_show_colliders: bool,
     pub spatial_hash_rects: Vec<(Vec2, Vec2)>,
     pub collider_rects: Vec<(Vec2, Vec2)>,
     pub scene_history_list: Arc<[String]>,
-    pub atlas_snapshot: Arc<[String]>,
-    pub mesh_snapshot: Arc<[String]>,
-    pub clip_snapshot: Arc<[String]>,
+    pub atlas_dependencies: Arc<[AtlasDependencyStatus]>,
+    pub mesh_dependencies: Arc<[MeshDependencyStatus]>,
+    pub clip_dependencies: Arc<[ClipDependencyStatus]>,
+    pub environment_dependency: Option<EnvironmentDependencyStatus>,
+    pub atlas_persistent_count: usize,
+    pub mesh_persistent_count: usize,
+    pub scene_dependency_data_available: bool,
     pub recent_events: Arc<[GameEvent]>,
     pub audio_triggers: Vec<String>,
     pub audio_enabled: bool,
@@ -748,6 +889,16 @@ pub(super) struct EditorUiParams {
     pub prefab_name_input: String,
     pub prefab_format: PrefabFormat,
     pub prefab_status: Option<PrefabStatusMessage>,
+    pub clip_keys: Arc<[String]>,
+    pub clip_assets: Arc<HashMap<String, ClipAssetSummary>>,
+    pub skeleton_keys: Arc<[String]>,
+    pub skeleton_assets: Arc<HashMap<String, SkeletonAssetSummary>>,
+    pub atlas_keys: Arc<[String]>,
+    pub atlas_assets: Arc<HashMap<String, AtlasAssetSummary>>,
+    pub skeleton_entities: Arc<[SkeletonEntityBinding]>,
+    pub material_options: Arc<[MaterialOption]>,
+    pub mesh_subsets: Arc<HashMap<String, Arc<[MeshSubsetEntry]>>>,
+    pub input_modifiers: InputModifierState,
     pub ui_scene_path: String,
     pub ui_scene_status: Option<String>,
     pub animation_group_input: String,
@@ -759,7 +910,6 @@ pub(super) struct EditorUiParams {
     pub script_debugger: ScriptDebuggerParams,
     pub id_lookup_input: String,
     pub id_lookup_active: bool,
-    pub scene_dependencies: Option<SceneDependencies>,
     pub gpu_timing_snapshot: Arc<[GpuPassTiming]>,
     pub gpu_history_empty: bool,
     pub gpu_timing_averages: BTreeMap<&'static str, (f32, usize)>,
@@ -947,16 +1097,19 @@ impl App {
             mesh_keys,
             environment_options,
             active_environment,
-            persistent_materials,
-            persistent_meshes,
+            persistent_materials: _persistent_materials,
             mut debug_show_spatial_hash,
             mut debug_show_colliders,
             spatial_hash_rects,
             collider_rects,
             scene_history_list,
-            atlas_snapshot,
-            mesh_snapshot,
-            clip_snapshot,
+            atlas_dependencies,
+            mesh_dependencies,
+            clip_dependencies,
+            environment_dependency,
+            atlas_persistent_count,
+            mesh_persistent_count,
+            scene_dependency_data_available,
             recent_events,
             audio_triggers,
             mut audio_enabled,
@@ -975,6 +1128,16 @@ impl App {
             mut prefab_name_input,
             mut prefab_format,
             prefab_status,
+            clip_keys,
+            clip_assets,
+            skeleton_keys,
+            skeleton_assets,
+            atlas_keys,
+            atlas_assets,
+            skeleton_entities,
+            material_options,
+            mesh_subsets,
+            input_modifiers,
             mut ui_scene_path,
             ui_scene_status,
             mut animation_group_input,
@@ -984,7 +1147,6 @@ impl App {
             mut gpu_metrics_status,
             mut keyframe_panel_open,
             mut script_debugger,
-            scene_dependencies: scene_dependencies_snapshot,
             gpu_timing_snapshot,
             gpu_history_empty,
             gpu_timing_averages,
@@ -1739,16 +1901,20 @@ impl App {
                         }
                     });
                     ui.separator();
-                    let inspector_ctx = entity_inspector::InspectorAppContext {
-                        ecs: &mut self.ecs,
+                    let inspector_ctx = entity_inspector::InspectorContext {
                         gizmo_mode: &mut gizmo_mode_state,
                         gizmo_interaction: &mut gizmo_interaction,
-                        input: &self.input,
                         inspector_status: &mut inspector_status,
-                        material_registry: &mut self.material_registry,
-                        mesh_registry: &mut self.mesh_registry,
-                        scene_material_refs: &mut self.scene_material_refs,
-                        assets: &self.assets,
+                        input: input_modifiers,
+                        clip_keys: clip_keys.as_ref(),
+                        clip_assets: clip_assets.as_ref(),
+                        skeleton_keys: skeleton_keys.as_ref(),
+                        skeleton_assets: skeleton_assets.as_ref(),
+                        atlas_keys: atlas_keys.as_ref(),
+                        atlas_assets: atlas_assets.as_ref(),
+                        skeleton_entities: skeleton_entities.as_ref(),
+                        material_options: material_options.as_ref(),
+                        mesh_subsets: mesh_subsets.as_ref(),
                     };
                     entity_inspector::show_entity_inspector(
                         inspector_ctx,
@@ -1758,7 +1924,6 @@ impl App {
                         &mut id_lookup_input,
                         &mut id_lookup_active,
                         &mut frame_selection_request,
-                        &persistent_materials,
                         &mut actions,
                     );
                 });
@@ -2065,175 +2230,150 @@ impl App {
                         ui.label(status);
                     }
                     ui.collapsing("Dependency Summary", |ui| {
-                        if atlas_snapshot.is_empty() {
+                        if atlas_dependencies.is_empty() {
                             ui.small("Atlases: none retained");
                         } else {
                             ui.label(format!(
                                 "Atlases retained: {} (persistent: {})",
-                                atlas_snapshot.len(),
-                                self.persistent_atlases.len()
+                                atlas_dependencies.len(),
+                                atlas_persistent_count
                             ));
-                            for atlas in atlas_snapshot.iter() {
-                                let scope = if self.persistent_atlases.contains(atlas) {
-                                    "persistent"
-                                } else {
-                                    "scene"
-                                };
-                                let loaded = self.assets.has_atlas(atlas);
-                                let color = if loaded {
+                            for entry in atlas_dependencies.iter() {
+                                let scope = if entry.persistent { "persistent" } else { "scene" };
+                                let color = if entry.loaded {
                                     egui::Color32::LIGHT_GREEN
                                 } else {
                                     egui::Color32::from_rgb(220, 120, 120)
                                 };
-                                let status_label = if loaded { "loaded" } else { "missing" };
-                                let path_opt = scene_dependencies_snapshot.as_ref().and_then(|deps| {
-                                    deps.atlas_dependencies()
-                                        .find(|dep| dep.key() == atlas.as_str())
-                                        .and_then(|dep| dep.path().map(|p| p.to_string()))
-                                });
-                                let path_display = path_opt.as_deref().unwrap_or("n/a");
+                                let status_label = if entry.loaded { "loaded" } else { "missing" };
+                                let path_display = entry.path.as_deref().unwrap_or("n/a");
                                 ui.horizontal(|ui| {
                                     ui.colored_label(
                                         color,
                                         format!(
                                             "- {} ({}, {}, path={})",
-                                            atlas, scope, status_label, path_display
+                                            entry.key, scope, status_label, path_display
                                         ),
                                     );
-                                    if !loaded {
+                                    if !entry.loaded {
                                         if ui.button("Retain").clicked() {
-                                            actions.retain_atlases.push((atlas.clone(), path_opt.clone()));
+                                            actions
+                                                .retain_atlases
+                                                .push((entry.key.clone(), entry.path.clone()));
                                         }
-                                        if path_opt.is_none() {
+                                        if entry.path.is_none() {
                                             ui.small("no recorded path");
                                         }
                                     }
                                 });
                             }
                         }
-                        if mesh_snapshot.is_empty() {
+                        if mesh_dependencies.is_empty() {
                             ui.small("Meshes: none retained");
                         } else {
                             ui.separator();
                             ui.label(format!(
                                 "Meshes retained: {} (persistent: {})",
-                                mesh_snapshot.len(),
-                                persistent_meshes.len()
+                                mesh_dependencies.len(),
+                                mesh_persistent_count
                             ));
-                            for mesh_key in mesh_snapshot.iter() {
-                                let scope =
-                                    if persistent_meshes.contains(mesh_key) { "persistent" } else { "scene" };
-                                let ref_count = self.mesh_registry.mesh_ref_count(mesh_key).unwrap_or(0);
-                                let loaded = self.mesh_registry.has(mesh_key);
-                                let color = if loaded {
+                            for entry in mesh_dependencies.iter() {
+                                let scope = if entry.persistent { "persistent" } else { "scene" };
+                                let color = if entry.loaded {
                                     egui::Color32::LIGHT_GREEN
                                 } else {
                                     egui::Color32::from_rgb(220, 120, 120)
                                 };
-                                let status_label = if loaded { "loaded" } else { "missing" };
-                                let path_opt = scene_dependencies_snapshot.as_ref().and_then(|deps| {
-                                    deps.mesh_dependencies()
-                                        .find(|dep| dep.key() == mesh_key.as_str())
-                                        .and_then(|dep| dep.path().map(|p| p.to_string()))
-                                });
-                                let path_display = path_opt.as_deref().unwrap_or("n/a");
+                                let status_label = if entry.loaded { "loaded" } else { "missing" };
+                                let path_display = entry.path.as_deref().unwrap_or("n/a");
                                 ui.horizontal(|ui| {
                                     ui.colored_label(
                                         color,
                                         format!(
                                             "- {} ({}, refs={}, {}, path={})",
-                                            mesh_key, scope, ref_count, status_label, path_display
+                                            entry.key, scope, entry.ref_count, status_label, path_display
                                         ),
                                     );
-                                    if !loaded {
+                                    if !entry.loaded {
                                         if ui.button("Retain").clicked() {
-                                            actions.retain_meshes.push((mesh_key.clone(), path_opt.clone()));
+                                            actions
+                                                .retain_meshes
+                                                .push((entry.key.clone(), entry.path.clone()));
                                         }
-                                        if path_opt.is_none() {
+                                        if entry.path.is_none() {
                                             ui.small("no recorded path");
                                         }
                                     }
                                 });
                             }
                         }
-                        if clip_snapshot.is_empty() {
+                        if clip_dependencies.is_empty() {
                             ui.small("Clips: none retained");
                         } else {
                             ui.separator();
-                            ui.label(format!("Clips retained: {}", clip_snapshot.len()));
-                            for clip_key in clip_snapshot.iter() {
-                                let loaded = self.assets.clip(clip_key).is_some();
-                                let color = if loaded {
+                            ui.label(format!("Clips retained: {}", clip_dependencies.len()));
+                            for entry in clip_dependencies.iter() {
+                                let color = if entry.loaded {
                                     egui::Color32::LIGHT_GREEN
                                 } else {
                                     egui::Color32::from_rgb(220, 120, 120)
                                 };
-                                let status_label = if loaded { "loaded" } else { "missing" };
-                                let path_opt = scene_dependencies_snapshot.as_ref().and_then(|deps| {
-                                    deps.clip_dependencies()
-                                        .find(|dep| dep.key() == clip_key.as_str())
-                                        .and_then(|dep| dep.path().map(|p| p.to_string()))
-                                });
-                                let path_display = path_opt.as_deref().unwrap_or("n/a");
+                                let status_label = if entry.loaded { "loaded" } else { "missing" };
+                                let path_display = entry.path.as_deref().unwrap_or("n/a");
                                 ui.horizontal(|ui| {
                                     ui.colored_label(
                                         color,
-                                        format!("- {} ({}, path={})", clip_key, status_label, path_display),
+                                        format!("- {} ({}, path={})", entry.key, status_label, path_display),
                                     );
-                                    if !loaded {
+                                    if !entry.loaded {
                                         if ui.button("Retain").clicked() {
-                                            actions.retain_clips.push((clip_key.clone(), path_opt.clone()));
+                                            actions.retain_clips.push((entry.key.clone(), entry.path.clone()));
                                         }
-                                        if path_opt.is_none() {
+                                        if entry.path.is_none() {
                                             ui.small("no recorded path");
                                         }
                                     }
                                 });
                             }
                         }
-                        if let Some(deps) = scene_dependencies_snapshot.as_ref() {
-                            if let Some(environment_dep) = deps.environment_dependency() {
-                                let key = environment_dep.key();
-                                let loaded = self.environment_registry.definition(key).is_some();
-                                let scope = if self.persistent_environments.contains(key) {
-                                    "persistent"
-                                } else {
-                                    "scene"
-                                };
-                                let color = if loaded {
+                        match (scene_dependency_data_available, environment_dependency.as_ref()) {
+                            (true, Some(env_entry)) => {
+                                let scope = if env_entry.persistent { "persistent" } else { "scene" };
+                                let color = if env_entry.loaded {
                                     egui::Color32::LIGHT_GREEN
                                 } else {
                                     egui::Color32::from_rgb(220, 120, 120)
                                 };
-                                let status_label = if loaded { "loaded" } else { "missing" };
-                                let path_opt = environment_dep.path().map(|p| p.to_string());
-                                let path_display = path_opt.as_deref().unwrap_or("n/a");
+                                let status_label = if env_entry.loaded { "loaded" } else { "missing" };
+                                let path_display = env_entry.path.as_deref().unwrap_or("n/a");
                                 ui.horizontal(|ui| {
                                     ui.colored_label(
                                         color,
                                         format!(
                                             "- Environment {} ({}, {}, path={})",
-                                            key, scope, status_label, path_display
+                                            env_entry.key, scope, status_label, path_display
                                         ),
                                     );
-                                    if !loaded {
+                                    if !env_entry.loaded {
                                         if ui.button("Retain").clicked() {
                                             actions
                                                 .retain_environments
-                                                .push((key.to_string(), path_opt.clone()));
+                                                .push((env_entry.key.clone(), env_entry.path.clone()));
                                         }
-                                        if path_opt.is_none() {
+                                        if env_entry.path.is_none() {
                                             ui.small("no recorded path");
                                         }
                                     }
                                 });
-                            } else {
+                            }
+                            (true, None) => {
                                 ui.small("Environment: none recorded");
                             }
-                        } else {
-                            ui.small("Load or save a scene to populate environment dependencies.");
+                            (false, _) => {
+                                ui.small("Load or save a scene to populate environment dependencies.");
+                            }
                         }
-                        if scene_dependencies_snapshot.is_none() {
+                        if !scene_dependency_data_available {
                             ui.small("Load or save a scene to populate dependency details.");
                         }
                     });
