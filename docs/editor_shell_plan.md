@@ -17,11 +17,11 @@
 - Prefab shelf helpers and the skin-mesh inspector now consume `EditorUiParams` snapshots (clip/atlas/skeleton catalogs, material+mesh subset lists, and skeleton-entity bindings), so the entire inspector panel renders from shell-owned copies while all prefab/skin toggles emit deferred `InspectorAction`s. This eliminates the last `App::ecs`/`AssetManager` borrows during `egui_ctx.run` and keeps the inspector borrow-safe.
 - Script debugger availability/path/enabled/paused/error snapshots now live in `EditorUiState`, and `EditorUiParams` consumes that immutable snapshot so egui never touches `self.script_plugin()` directly. The snapshot also carries the active script handle list, so both the sidebar panel and the debugger window render a stable mapping of handles to scene entities without borrowing the plugin mid-egui.
 
-3. **Refactor App Construction** _(Complete — 2025-11-18)_
+3. **Refactor App Construction** _(Complete - 2025-11-18)_
    - Update `App::new` to initialize `EditorUiState` through the shell and remove the duplicated fields from `App`.
    - Provide accessors on `EditorShell` (e.g., `ui_state_mut()`) so `App` can read/write state without exposing internals.
 
-4. **Port Call Sites Incrementally**
+4. **Port Call Sites Incrementally** _(Complete - 2025-11-19)_
    - Replace direct `self.ui_*` and related references with `self.editor_shell.ui.*` in small sections (e.g., Stats panel data, prefab workflows, script console) and run `cargo check` after each batch.
 
 5. **Document & Test**
@@ -103,9 +103,9 @@ Step 3 is now complete: App::new hands the emitter/lighting/editor config into E
 - Eleventh migration batch: file watcher plumbing moved into `app::asset_watch_tooling` (atlas hot-reload sync, animation watch roots, queue helpers) and the remaining telemetry caches + frame budget utilities live in `app::telemetry_tooling`. With `TelemetryCache`, `FrameProfiler`, and the frame-budget helpers centralized, `App` now just orchestrates state transitions while the tooling modules manage editor-only caching.
 - Final constructor cleanup (2025-11-18): `EditorUiStateParams` now carries only renderer/editor config data, while `EditorUiState::new` seeds the default scene path/history (shared through `SCENE_HISTORY_CAPACITY`) plus the inspector/script defaults. `App::new` only passes the runtime dependencies, so new UI knobs automatically originate in the shell.
 
-Step 3 is wrapped, so the remaining work shifts entirely to Step 4’s call-site ports and validation passes.
+Step 3 is wrapped and Step 4 landed on 2025-11-19, so the remaining work now focuses on Step 5’s documentation pass and follow-up validation runs.
 
-## Call-Site Porting Plan _(Step 4 — In Progress)_
+## Call-Site Porting Plan _(Step 4 - Complete)_
 
 - **Analytics + stats panels**: Port `editor_ui::stats`/frame-budget widgets first so every telemetry panel reads immutable snapshots from `EditorUiState`. After each section compiles, run `cargo check` and flip the Stats, Frame Budget, and GPU Metrics panels in the editor build to verify no regressions.
 - **Prefab/inspector workflows**: Tackle the prefab shelf, scene picker, dependency reports, and inspector tooling next. These modules already expose helpers, so the migration is swapping raw `self.ui_*` fields for `EditorUiState` data plus extending `EditorUiOutput` when the UI needs to push mutations (e.g., clearing scene history). Smoke test by loading/saving prefabs and bouncing through the dependency dialogs.
@@ -137,3 +137,10 @@ Step 3 is wrapped, so the remaining work shifts entirely to Step 4’s call-site
 
 2025-11-17 validation note: ran `cargo test --locked` after relocating the animation helper unit tests into `app::animation_tooling`, giving the shell wiring an automated smoke check before scheduling the interactive editor sweep.
 2025-11-18 validation note: re-ran the renderer headless coverage (`cargo test --locked present_mode_respects_vsync_flag`, `cargo test --locked headless_render_collects_gpu_timings`, `cargo test --locked headless_render_recovers_from_surface_loss`) plus the sprite animation integration suite (`cargo test --locked --test sprite_animation -- --test-threads=1`) to verify the editor-shell changes keep the runtime stable; all targeted tests now pass when the sprite harness is forced to run serially.
+2025-11-19 validation note: repeated the sprite animation suite and the headless renderer tests after the viewport + animation snapshot work; `cargo test --locked --test sprite_animation -- --test-threads=1`, `cargo test --locked present_mode_respects_vsync_flag`, `cargo test --locked headless_render_collects_gpu_timings`, and `cargo test --locked headless_render_recovers_from_surface_loss` all pass.
+
+## Step 5 Progress _(2025-11-20)_
+
+- `docs/remediation_plan.md` now lists the EditorShell/App decomposition milestone as complete so stakeholders can track that the shell owns all editor-only state and call sites.
+- Validation sweep reran `cargo check`, `cargo test --locked present_mode_respects_vsync_flag`, `cargo test --locked headless_render_collects_gpu_timings`, `cargo test --locked headless_render_recovers_from_surface_loss`, and `cargo test --locked --test sprite_animation -- --test-threads=1`. All of them now pass after chaining the variable-rate schedule (`sys_apply_spin` -> ... -> `sys_apply_sprite_frame_states`) so the sprite frame queue drains after each drive pass; the previous failures were caused by the scheduler occasionally running `sys_apply_sprite_frame_states` before `sys_drive_sprite_animations`, which left `Sprite` components stuck on `redorb`.
+edorb.

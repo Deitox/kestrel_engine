@@ -17,6 +17,7 @@ use crate::scene::{
 };
 use anyhow::{anyhow, Result};
 use bevy_ecs::prelude::{Entity, Schedule, With, World};
+use bevy_ecs::schedule::IntoSystemConfigs;
 use glam::{EulerRot, Mat4, Quat, Vec2, Vec3, Vec4};
 use rand::Rng;
 use rapier2d::prelude::{Rotation, Vector};
@@ -101,7 +102,7 @@ impl EcsWorld {
             sys_flag_fast_sprite_animators,
             sys_drive_sprite_animations,
             sys_apply_sprite_frame_states,
-        ));
+        ).chain());
         #[cfg(feature = "sprite_anim_soa")]
         schedule_var.add_systems((sys_cleanup_sprite_animator_soa,));
 

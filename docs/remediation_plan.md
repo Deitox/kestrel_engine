@@ -33,7 +33,7 @@ This document tracks the staged remediation work. Each section calls out the goa
 
 **Goal:** Separate responsibilities so runtime, editor UI, and plugin orchestration can evolve and be tested independently.
 
-**Status:** **In Progress** - Plugin plumbing now lives in `app::plugin_runtime`, `app::runtime_loop` owns timing/fixed-step bookkeeping, the animation/keyframe tooling resides in `app::animation_tooling`, prefab workflows in `app::prefab_tooling`, mesh-preview helpers in `app::mesh_preview_tooling`, and analytics/plugin telemetry snapshots flow through `EditorUiState`. The script console helpers and inspector utilities were carved into `app::script_console` / `app::inspector_tooling`, file watcher glue now lives in `app::asset_watch_tooling`, and the telemetry caches/frame budget helpers sit in `app::telemetry_tooling`. Selection + gizmo state, the frame profiler, and the GPU timing history now ride inside the editor shell (with `EditorUiOutput` returning the pending gizmo state) so App no longer owns UI-bound state, `docs/ARCHITECTURE.md` reflects the new module boundaries, and `cargo test --locked` now passes after shifting the animation helper unit tests into `app::animation_tooling`, so the last pre-renderer work item is exploratory testing before Step 4 kicks off. Inspector/selection tooling now consumes the shell snapshots and defers mutations through queued actions, eliminating the final direct ECS borrows during egui, and the script debugger panels render from cached availability/state/handle snapshots so `App` never pokes the script plugin mid-egui.
+**Status:** **Complete** - EditorShell now owns the egui context, telemetry caches, inspector/prefab tooling, and script console/debugger buffers, so `App` only interacts with editor state through `EditorUiState` snapshots plus deferred `EditorUiOutput` actions. Prefab shelf, inspector panels (including mesh/skin tooling), viewport/gizmo plumbing, analytics dashboards, plugin manifest/readback views, and the script debugger all run exclusively on shell-provided data and queue `InspectorAction`/`UiActions` for `App` to apply after `egui_ctx.run`, while `docs/ARCHITECTURE.md` documents the finalized module boundaries.
 
 **Tasks**
 - [x] Extract a `RuntimeLoop` module that owns the tick/fixed-step bookkeeping so `App` depends on a single loop abstraction instead of raw `Time`/accumulator fields.
@@ -43,6 +43,8 @@ This document tracks the staged remediation work. Each section calls out the goa
 - [x] Extract the remaining editor-only helpers (file watcher glue, lingering telemetry caches) into focused modules.
 - [x] Update `docs/ARCHITECTURE.md` after each milestone to capture the new ownership diagram.
 - [x] Route selection/gizmo UI state, camera bookmarks, and frame-profiling/GPU snapshot caches through `EditorUiState`/`EditorUiOutput` so App no longer owns UI-only fields.
+
+**Validation:** `cargo check`, `cargo test --locked present_mode_respects_vsync_flag`, `cargo test --locked headless_render_collects_gpu_timings`, `cargo test --locked headless_render_recovers_from_surface_loss`, and `cargo test --locked --test sprite_animation -- --test-threads=1` all pass. The sprite suite was flaking because `sys_apply_sprite_frame_states` sometimes ran before `sys_drive_sprite_animations`; chaining the variable-rate schedule (`sys_apply_spin` -> ... -> `sys_apply_sprite_frame_states`) guarantees the frame queue drains after each drive pass.
 
 ## 4. Renderer Pass Decomposition & Upload Efficiency (Weeks 5-6)
 
