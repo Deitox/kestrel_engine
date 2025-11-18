@@ -5,7 +5,6 @@ use crate::analytics::{AnimationBudgetSample, GpuPassMetric, KeyframeEditorEvent
 use crate::animation_validation::AnimationValidationEvent;
 use crate::assets::AnimationClip;
 use crate::config::{EditorConfig, ParticleConfig, SpriteGuardrailMode};
-use crate::ecs::EntityInfo;
 use crate::gizmo::{GizmoInteraction, GizmoMode};
 use crate::plugins::{
     AssetReadbackStats, CapabilityViolationLog, PluginAssetReadbackEvent, PluginCapabilityEvent,
@@ -110,10 +109,6 @@ pub(crate) struct EditorUiState {
     pub ui_sprite_guard_mode: SpriteGuardrailMode,
     pub ui_scale: f32,
     pub selected_entity: Option<Entity>,
-    pub selection_details: Option<EntityInfo>,
-    pub prev_selection_details: Option<EntityInfo>,
-    pub selection_bounds: Option<(glam::Vec2, glam::Vec2)>,
-    pub prev_selection_bounds: Option<(glam::Vec2, glam::Vec2)>,
     pub gizmo_mode: GizmoMode,
     pub gizmo_interaction: Option<GizmoInteraction>,
     pub ui_scene_path: String,
@@ -252,10 +247,6 @@ impl EditorUiState {
             ui_sprite_guard_mode: params.editor_config.sprite_guardrail_mode,
             ui_scale: 1.0,
             selected_entity: None,
-            selection_details: None,
-            prev_selection_details: None,
-            selection_bounds: None,
-            prev_selection_bounds: None,
             gizmo_mode: GizmoMode::default(),
             gizmo_interaction: None,
             ui_scene_path: default_scene_path,
