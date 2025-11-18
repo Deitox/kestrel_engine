@@ -784,6 +784,7 @@ pub(super) struct EditorUiParams {
     pub plugin_asset_requestable: HashSet<String>,
     pub animation_validation_log: Arc<[AnimationValidationEvent]>,
     pub animation_budget_sample: Option<AnimationBudgetSample>,
+    pub animation_time: AnimationTime,
     pub light_cluster_metrics_overlay: Option<LightClusterMetrics>,
     pub light_cluster_metrics: LightClusterMetrics,
     pub point_lights: Vec<ScenePointLight>,
@@ -916,6 +917,7 @@ pub(super) struct EditorUiParams {
     pub gpu_timing_snapshot: Arc<[GpuPassTiming]>,
     pub gpu_history_empty: bool,
     pub gpu_timing_averages: BTreeMap<&'static str, (f32, usize)>,
+    pub gpu_timing_supported: bool,
     pub gizmo_mode: GizmoMode,
 }
 
@@ -1024,6 +1026,7 @@ impl App {
             plugin_asset_requestable,
             animation_validation_log,
             animation_budget_sample,
+            animation_time: animation_snapshot,
             light_cluster_metrics_overlay,
             light_cluster_metrics,
             mut point_lights,
@@ -1156,6 +1159,7 @@ impl App {
             gpu_timing_snapshot,
             gpu_history_empty,
             gpu_timing_averages,
+            gpu_timing_supported,
             gizmo_mode: mut gizmo_mode_state,
         } = params;
 
@@ -1203,7 +1207,6 @@ impl App {
         let mut left_panel_width_px = 0.0;
         let mut right_panel_width_px = 0.0;
 
-        let animation_snapshot = self.ecs.world.resource::<AnimationTime>().clone();
         let mut animation_scale = animation_snapshot.scale;
         let mut animation_paused = animation_snapshot.paused;
         let mut animation_fixed_enabled = animation_snapshot.fixed_step.is_some();
@@ -3028,7 +3031,7 @@ impl App {
 
                     ui.separator();
                     ui.heading("GPU Timings");
-                    if !self.renderer.gpu_timing_supported() {
+                    if !gpu_timing_supported {
                         ui.small("Device does not support GPU timestamp queries.");
                     } else {
                         if gpu_history_empty {

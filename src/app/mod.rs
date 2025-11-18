@@ -3343,6 +3343,7 @@ impl ApplicationHandler for App {
             plugin_asset_requestable,
             animation_validation_log,
             animation_budget_sample,
+            animation_time: self.ecs.world.resource::<AnimationTime>().clone(),
             light_cluster_metrics_overlay,
             light_cluster_metrics: light_cluster_snapshot,
             point_lights: self.renderer.lighting().point_lights.clone(),
@@ -3489,6 +3490,7 @@ impl ApplicationHandler for App {
             gpu_timing_snapshot,
             gpu_history_empty,
             gpu_timing_averages,
+            gpu_timing_supported: self.renderer.gpu_timing_supported(),
             gizmo_mode: gizmo_mode_state,
         };
 
