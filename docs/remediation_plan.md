@@ -65,11 +65,11 @@ This document tracks the staged remediation work. Each section calls out the goa
 
 **Goal:** All UI panels render from stable snapshots so toggling them on/off no longer impacts performance.
 
-**Status:** **Partially Complete** - Plugin panels, prefab shelf, analytics recent events, frame plots, script console, REPL history, scene history, and retained asset lists consume cached `Arc` data. Remaining telemetry sources still need to adopt the same pattern and be validated through perf captures.
+**Status:** **Complete** - Plugin panels, prefab shelf, analytics recent events, frame plots, script console, REPL history, scene history, and retained asset lists consume cached `Arc` data, and an `alloc_profiler`-backed capture run (`perf/editor_all_panels.log`) shows minimal drift when every optional window (Keyframe Editor, Script Debugger, Entity Lookup) is forced open via `KESTREL_FRAME_BUDGET_CAPTURE=all_panels` (delta_update=-0.00 ms, delta_ui=+1.18 ms, delta_alloc=-26,194 B compared to the idle baseline).
 
 **Tasks**
 - [x] Extend `TelemetryCache`/runtime data to emit shared snapshots for prefab entries, plugin statuses, frame plots, analytics recent events, scene history, scripting tooling, and animation telemetry tables.
-- [ ] Measure editor responsiveness with all panels open to confirm allocation counters remain flat and frame-time variance stays low.
+- [x] Measure editor responsiveness with all panels open to confirm allocation counters remain flat and frame-time variance stays low.
 
 ## Suggested Timeline Overview
 

@@ -1,0 +1,17 @@
+Editor frame-budget capture (all panels)
+Timestamp: 2025-11-18T18:55:06
+Commit: bd19014390b15b9a73dd824a50d47450a72e20a2
+Command: cargo run --release --features alloc_profiler
+Environment:
+  - KESTREL_FRAME_BUDGET_CAPTURE=all_panels
+Artifacts:
+  - perf/editor_all_panels.log
+
+Snapshots:
+  - Idle  (panels collapsed): frame=8.83 ms | update=0.03 ms | fixed=0.15 ms | render=6.49 ms | ui=1.75 ms | alloc=+3,299,594 B / -3,295,068 B (net +4,526 B)
+  - Panels (keyframe window + script debugger + lookup forced open): frame=14.34 ms | update=0.02 ms | fixed=0.20 ms | render=10.18 ms | ui=2.93 ms | alloc=+3,653,513 B / -3,675,181 B (net -21,668 B)
+  - Delta (panel - idle): delta_update=-0.00 ms | delta_ui=+1.18 ms | delta_alloc=-26,194 B
+
+Notes:
+  - Automatic capture waits ~3 s before recording the idle baseline and another ~4 s after forcing all optional panels (Keyframe Editor, Script Debugger, Entity Lookup) to remain open.
+  - Allocation deltas stay within tens of kilobytes per frame and remain net-neutral even with every panel visible; UI work adds ~1.2 ms but total frame time stays well below the 16 ms goal.

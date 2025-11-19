@@ -89,6 +89,8 @@ use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Instant;
+#[cfg(feature = "alloc_profiler")]
+use std::env;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{DeviceEvent, ElementState, KeyEvent, WindowEvent};
@@ -304,6 +306,8 @@ pub struct App {
     viewport: Viewport,
     #[cfg(feature = "alloc_profiler")]
     last_alloc_snapshot: alloc_profiler::AllocationSnapshot,
+    #[cfg(feature = "alloc_profiler")]
+    frame_budget_capture: Option<FrameBudgetCaptureScript>,
 
     // Particles
     emitter_entity: Option<Entity>,
@@ -1122,6 +1126,9 @@ impl App {
         let mut camera = Camera2D::new(CAMERA_BASE_HALF_HEIGHT);
         camera.set_zoom_limits(editor_cfg.camera_zoom_min, editor_cfg.camera_zoom_max);
 
+        #[cfg(feature = "alloc_profiler")]
+        let frame_budget_capture = FrameBudgetCaptureScript::from_env();
+
         let mut app = Self {
             renderer,
             ecs,
@@ -1167,6 +1174,8 @@ impl App {
             sprite_guardrail_max_pixels: editor_cfg.sprite_guard_max_pixels,
             #[cfg(feature = "alloc_profiler")]
             last_alloc_snapshot: alloc_profiler::allocation_snapshot(),
+            #[cfg(feature = "alloc_profiler")]
+            frame_budget_capture,
             sprite_batch_map: HashMap::new(),
             sprite_batch_pool: Vec::new(),
             sprite_batch_order: Vec::new(),
@@ -4618,6 +4627,125 @@ impl ApplicationHandler for App {
             render_ms: render_time_ms,
             ui_ms: ui_time_ms,
         });
+        #[cfg(feature = "alloc_profiler")]
+        if let Some(mut capture) = self.frame_budget_capture.take() {
+            capture.update(self);
+            if capture.is_complete() {
+                self.frame_budget_capture = None;
+            } else {
+                self.frame_budget_capture = Some(capture);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "alloc_profiler")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FrameBudgetCaptureStage {
+    IdleWarmup,
+    PanelWarmup,
+    Done,
+}
+
+#[cfg(feature = "alloc_profiler")]
+struct FrameBudgetCaptureScript {
+    stage: FrameBudgetCaptureStage,
+    idle_wait_frames: u32,
+    panel_wait_frames: u32,
+    panels_opened: bool,
+}
+
+#[cfg(feature = "alloc_profiler")]
+impl FrameBudgetCaptureScript {
+    fn from_env() -> Option<Self> {
+        let value = env::var("KESTREL_FRAME_BUDGET_CAPTURE").ok()?;
+        if value.eq_ignore_ascii_case("all_panels") {
+            eprintln!("[frame_budget] auto-capture enabled (mode={value})");
+            Some(Self {
+                stage: FrameBudgetCaptureStage::IdleWarmup,
+                idle_wait_frames: 180,
+                panel_wait_frames: 240,
+                panels_opened: false,
+            })
+        } else {
+            eprintln!(
+                "[frame_budget] unknown capture mode '{value}'; expected 'all_panels'. Ignoring request."
+            );
+            None
+        }
+    }
+
+    fn update(&mut self, app: &mut App) {
+        match self.stage {
+            FrameBudgetCaptureStage::IdleWarmup => {
+                if self.idle_wait_frames > 0 {
+                    self.idle_wait_frames -= 1;
+                    return;
+                }
+                eprintln!("[frame_budget] capturing idle baseline snapshot...");
+                app.handle_frame_budget_action(Some(editor_ui::FrameBudgetAction::CaptureIdle));
+                if let Some(snapshot) = app.editor_ui_state().frame_budget_idle_snapshot {
+                    Self::log_snapshot("idle", snapshot);
+                } else {
+                    eprintln!("[frame_budget] idle snapshot unavailable after capture.");
+                }
+                self.stage = FrameBudgetCaptureStage::PanelWarmup;
+            }
+            FrameBudgetCaptureStage::PanelWarmup => {
+                if !self.panels_opened {
+                    eprintln!("[frame_budget] enabling optional editor panels for capture...");
+                    app.with_editor_ui_state_mut(|state| {
+                        if !state.animation_keyframe_panel.is_open() {
+                            state.animation_keyframe_panel.toggle();
+                        }
+                        state.script_debugger_open = true;
+                        state.id_lookup_active = true;
+                    });
+                    self.panels_opened = true;
+                }
+                if self.panel_wait_frames > 0 {
+                    self.panel_wait_frames -= 1;
+                    return;
+                }
+                eprintln!("[frame_budget] capturing all-panels snapshot...");
+                app.handle_frame_budget_action(Some(editor_ui::FrameBudgetAction::CapturePanel));
+                if let Some(snapshot) = app.editor_ui_state().frame_budget_panel_snapshot {
+                    Self::log_snapshot("panels", snapshot);
+                } else {
+                    eprintln!("[frame_budget] panel snapshot unavailable after capture.");
+                }
+                if let Some(delta) = app.frame_budget_delta_message() {
+                    eprintln!("[frame_budget] {delta}");
+                }
+                self.stage = FrameBudgetCaptureStage::Done;
+                app.should_close = true;
+            }
+            FrameBudgetCaptureStage::Done => {}
+        }
+    }
+
+    fn is_complete(&self) -> bool {
+        matches!(self.stage, FrameBudgetCaptureStage::Done)
+    }
+
+    fn log_snapshot(label: &str, snapshot: FrameBudgetSnapshot) {
+        if let Some(timing) = snapshot.timing {
+            let mut message = format!(
+                "[frame_budget] {label} snapshot: frame={:.2} ms update={:.2} ms fixed={:.2} ms render={:.2} ms ui={:.2} ms",
+                timing.frame_ms, timing.update_ms, timing.fixed_ms, timing.render_ms, timing.ui_ms
+            );
+            if let Some(delta) = snapshot.alloc_delta {
+                message.push_str(&format!(
+                    " alloc=+{} B/-{} B net={:+} B",
+                    delta.allocated_bytes,
+                    delta.deallocated_bytes,
+                    delta.net_bytes()
+                ));
+            }
+            eprintln!("{message}");
+        } else {
+            eprintln!("[frame_budget] {label} snapshot missing timing data.");
+        }
     }
 }
 
