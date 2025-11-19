@@ -7,14 +7,20 @@
         |                                   |                                |
         | window/device events              | entity data                    | render data
         v                                   v                                v
-+-------+-------+    timing info    +------+------+    egui I/O         +-----------+
++-------+-------+    timing info    +------+------+    render commands   +-----------+
 |      Time     | -----------------> |     App      | -----------------> | Renderer  |
-+---------------+                    +-------------+                    +-----------+
++---------------+                    +------+------+                    +-----------+
+                                             |
+                                             | editor snapshots/actions
+                                             v
+                                      +--------------+
+                                      | EditorShell  |
+                                      +------+-------+
                                              |
                                              v
-                                       +-----------+
-                                       |    egui   |
-                                       +-----------+
+                                        +-----------+
+                                        |    egui   |
+                                        +-----------+
 ```
 
 - `src/lib.rs` drives Winit's `EventLoop`, advances the simulation, runs scripts, renders, and feeds egui.
@@ -33,10 +39,11 @@
 - `src/events.rs` defines `GameEvent` plus the `EventBus` resource that records gameplay signals for tooling and audio.
 - `src/scene.rs` describes the JSON scene format, tracks atlas/mesh dependencies, and handles serialization/deserialization of entity hierarchies for save/load operations.
 - `src/audio.rs` exposes `AudioManager` plus an `AudioPlugin` wrapper so rodio-backed cues react to `GameEvent`s through the shared plugin system.
-- `src/app/script_console.rs` owns the editor REPL plumbing (history snapshots, console log buffering, and command evaluation) so `App` can simply route egui requests to the `ScriptPlugin`.
-- `src/app/inspector_tooling.rs` maintains inspector-specific status messaging plus the cached scene/atlas/mesh/clip lists that populate the inspector panels, and exposes helpers (e.g., focus selection) so gizmo workflows live outside the core loop.
+- `src/app/editor_shell.rs` defines `EditorShell`, which owns `EditorUiState`, wraps the egui context/renderer handles, and exposes `EditorUiParams`/`EditorUiOutput` so UI panels consume snapshot data while `App` applies queued actions after each frame.
+- `src/app/script_console.rs` owns the editor REPL plumbing (history snapshots, console log buffering, and command evaluation) so `EditorShell` feeds stable data to egui while `App` only applies emitted script commands.
+- `src/app/inspector_tooling.rs` maintains inspector-specific status messaging plus the cached scene/atlas/mesh/clip lists that populate the inspector panels, and exposes helpers (e.g., focus selection) so gizmo workflows live outside the core loop and flow through `EditorUiOutput`.
 - `src/app/asset_watch_tooling.rs` centralizes atlas/animation file-watcher glue, syncing hot-reload watchers and queueing new roots so `App` only forwards reload requests.
-- `src/app/telemetry_tooling.rs` keeps the editor telemetry caches, frame profiler, and frame-budget helpers bundled together so UI panels consume snapshot data without bloating `App`.
+- `src/app/telemetry_tooling.rs` keeps the editor telemetry caches, frame profiler, and frame-budget helpers bundled together so `EditorShell` can emit immutable snapshots to the UI without bloating `App`.
 - `src/renderer/sprite_pass.rs` encapsulates the sprite pipeline setup, globals buffer, instancing buffer management (including the persistent staging belt used for uploads), and atlas bind-group cache so the main renderer only orchestrates pass sequencing.
 - `src/renderer/mesh_pass.rs` holds the mesh pass state (pipeline resources, uniform buffers, skinning palette cache, and palette upload stats) so the renderer can manage mesh/shadow coordination without a monolithic struct.
 - `src/renderer/shadow_pass.rs` manages the cascaded shadow map (uniform buffers, depth atlas, palette uploads, and render pass encoding) so the main renderer only forwards mesh draw calls and lighting settings.
@@ -50,10 +57,11 @@
 4. **Physics and simulation** - Rapier advances rigid bodies at the fixed timestep. A hybrid transform system mirrors both 2D (`Transform`) and 3D (`Transform3D`) components into a shared `WorldTransform`, keeping sprites and meshes aligned when they share parents. Particle integration runs alongside and gameplay systems emit `GameEvent` entries (including collision hits and script messages).
 5. **Rendering prep** - ECS collects sprite instances and mesh instances; the mesh registry ensures required GPU buffers exist, and both 2D and 3D cameras produce view-projection matrices.
 6. **Rendering** - `Renderer::render_frame` first encodes the mesh pass (with depth buffering) and then draws batched sprites into the same frame before egui overlays are composited. Mesh instances carry material/shadowing metadata forward to the renderer, ready for future lighting passes.
-7. **UI feedback** - egui surfaces frame time, spawn controls, emitter tuning, camera details, the entity inspector (with sprite and mesh metadata), mesh selection/orbit controls, and script toggles.
+7. **EditorShell + UI feedback** - Before `egui_ctx.run`, `App` snapshots inspector/prefab/scripting/telemetry data into `EditorUiParams` and hands it to `EditorShell`, which runs egui and records any `EditorUiOutput` actions (selection changes, prefab mutations, script commands). Once egui finishes, `App` drains those actions and applies them to the ECS/renderer.
 
 ### Module Relationships
-- `App` owns `Renderer`, `EcsWorld`, `Input`, `Camera2D`, `AssetManager`, and `Time`, while plugins (scripts, audio, analytics) handle their respective subsystems.
+- `App` owns `Renderer`, `EditorShell`, `EcsWorld`, `Input`, `Camera2D`, `AssetManager`, and `Time`, while plugins (scripts, audio, analytics) handle their respective subsystems.
+- `EditorShell` holds `EditorUiState`, drives egui using `EditorUiParams` snapshots, and reports interactions through `EditorUiOutput`; this keeps UI-only data (gizmo modes, inspector selections, telemetry caches, script consoles) out of `App` while still letting the runtime apply edits after the UI pass.
 - `Renderer` consults `WindowConfig` (from `config.rs`) for swapchain setup.
 - `EcsWorld` uses `AssetManager` to resolve atlas regions when building instance buffers.
 - `Camera2D` depends on window size data supplied by `Renderer`.
@@ -67,7 +75,7 @@
 - The scene toolbar presents dependency health along with retain buttons so missing atlases or meshes can be rehydrated before applying a scene.
 - `Scene` helpers let the app export/import entity graphs. The scene format captures mesh materials, lighting flags, and emissive colors alongside atlas dependencies, and the debug UI exposes quick-save/quick-load controls that hand JSON files to these helpers.
 
-The data always flows in the same order - Input -> ECS -> Renderer -> UI - keeping subsystems decoupled and deterministic.
+The data always flows in the same order - Input -> ECS -> Renderer -> EditorShell/egui - keeping subsystems decoupled and deterministic.
 
 ### Scripting Guidelines
 - Declare `global name;` inside functions before mutating module-level state so Rhai updates the shared variable rather than shadowing it.

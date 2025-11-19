@@ -41,8 +41,16 @@ This plan captures the remediation work for the three most pressing issues surfa
 4. Add lightweight instrumentation (e.g., `tracing` span with `allocator_api2::Global::stats()` or a custom counter behind a dev feature) to log per-frame allocation deltas during profiling sessions.
 
 **Validation**
-- Compare `update_ms`/`ui_ms` and allocation counters before/after via the analytics plots.
-- Run a release build with the new allocation instrumentation to confirm idle frames remain flat while toggling editor panels.
+- Compare `update_ms`/`ui_ms` and allocation deltas before/after via the analytics plots.
+- Run a release build with the new allocation instrumentation to confirm idle frames remain flat while toggling editor panels (see `perf/editor_all_panels.txt` for the latest capture: idle frame≈8.83 ms vs. panels-open frame≈14.34 ms with Δupdate≈0 ms, Δui≈+1.18 ms, Δalloc≈−26 KB using `cargo run --release --features alloc_profiler` and `KESTREL_FRAME_BUDGET_CAPTURE=all_panels`).
+
+### Frame-Budget Capture Workflow
+1. Build the editor with the allocation instrumentation enabled:
+   ```sh
+   KESTREL_FRAME_BUDGET_CAPTURE=all_panels cargo run --release --features alloc_profiler
+   ```
+2. The harness automatically waits ~3 seconds with panels hidden, captures the idle snapshot, opens the Keyframe Editor, Script Debugger, and Entity Lookup windows, waits another ~4 seconds, captures the “all panels” snapshot, writes logs to `perf/editor_all_panels.log`, and exits.
+3. Review the summarized metrics in `perf/editor_all_panels.txt` (frame/update/UI times plus allocation deltas for both snapshots and their delta). Re-run the workflow any time a telemetry change needs validation.
 
 ## 3. App Decomposition & Ownership Boundaries (Medium)
 

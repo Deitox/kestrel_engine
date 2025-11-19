@@ -24,7 +24,7 @@
 4. **Port Call Sites Incrementally** _(Complete - 2025-11-19)_
    - Replace direct `self.ui_*` and related references with `self.editor_shell.ui.*` in small sections (e.g., Stats panel data, prefab workflows, script console) and run `cargo check` after each batch.
 
-5. **Document & Test**
+5. **Document & Test** _(Complete - 2025-11-20)_
    - Once the migration is stable, update `docs/remediation_plan.md` to note progress on the EditorShell milestone.
    - Run `cargo check`/targeted tests to ensure the UI behaviour remains unchanged.
 
@@ -143,4 +143,4 @@ Step 3 is wrapped and Step 4 landed on 2025-11-19, so the remaining work now foc
 
 - `docs/remediation_plan.md` now lists the EditorShell/App decomposition milestone as complete so stakeholders can track that the shell owns all editor-only state and call sites.
 - Validation sweep reran `cargo check`, `cargo test --locked present_mode_respects_vsync_flag`, `cargo test --locked headless_render_collects_gpu_timings`, `cargo test --locked headless_render_recovers_from_surface_loss`, and `cargo test --locked --test sprite_animation -- --test-threads=1`. All of them now pass after chaining the variable-rate schedule (`sys_apply_spin` -> ... -> `sys_apply_sprite_frame_states`) so the sprite frame queue drains after each drive pass; the previous failures were caused by the scheduler occasionally running `sys_apply_sprite_frame_states` before `sys_drive_sprite_animations`, which left `Sprite` components stuck on `redorb`.
-- Added an opt-in frame-budget capture helper wired to `KESTREL_FRAME_BUDGET_CAPTURE=all_panels`, so running `cargo run --release --features alloc_profiler` auto-captures idle vs. “all panels” snapshots and logs the results to `perf/editor_all_panels.log`; the latest run recorded delta_update=-0.00 ms, delta_ui=+1.18 ms, and delta_alloc=-26,194 B even with the Keyframe Editor, Script Debugger, and Entity Lookup windows pinned open.
+- Added an opt-in frame-budget capture helper wired to `KESTREL_FRAME_BUDGET_CAPTURE=all_panels`: run `cargo run --release --features alloc_profiler` and the harness will (a) wait ~3 s with panels hidden, capture the idle baseline, (b) open the Keyframe Editor, Script Debugger, and Entity Lookup windows, wait ~4 s, capture the “all panels” snapshot, and (c) log both samples (plus the delta) to `perf/editor_all_panels.log` and the summary in `perf/editor_all_panels.txt`. Latest run recorded idle frame≈8.83 ms vs. panels-open frame≈14.34 ms (delta_update≈0 ms, delta_ui≈+1.18 ms, delta_alloc≈−26 KB).
