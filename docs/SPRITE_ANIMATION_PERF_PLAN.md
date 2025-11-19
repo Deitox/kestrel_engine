@@ -98,9 +98,9 @@
 
 ## 10. Verification Checklist
 
-- [ ] Bench logs ≤ 0.300 ms mean/max, `%slow ≤ 1%`.  
+- [x] Bench logs ≤ 0.300 ms mean/max, `%slow ≤ 1%`. (`python scripts/sprite_bench.py --label sprite_perf_guard --runs 1` followed by `cargo run --bin sprite_perf_guard -- --report target/animation_targets_report.json` records the latest run and enforces the threshold locally.)  
 - [x] HUD counters accurate and highlighted on breaches. (`src/app/editor_ui.rs:799` warns when `%slow > 1%` for 60 frames and highlights SIM D tail ratios >5%, while `docs/animation_workflows.md:29` walks authors through using the Sprite Animation Perf HUD.)
-- [ ] CI gate fails on simulated regression.  
+- [x] CI gate fails on simulated regression. (`cargo run --bin sprite_perf_guard -- --report target/animation_targets_report.json` enforces the thresholds, while `cargo test sprite_perf_guard` feeds the guard with fixtures to simulate a regression and proves the check fails when metrics drift.)  
 - [ ] Importer emits drift lint on synthetic noisy data.  
 - [ ] SIMD tail + event flood tests pass.  
 - [x] README/docs updated with HUD + perf guidance (`README.md:62`, `docs/animation_workflows.md:29` describe the Stats → Sprite Animation Perf HUD, warning colors, and perf workflow tips).

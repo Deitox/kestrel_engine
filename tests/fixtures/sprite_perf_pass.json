@@ -1,0 +1,19 @@
+{
+  "metadata": {
+    "warmup_frames": 16,
+    "measured_frames": 240
+  },
+  "cases": [
+    {
+      "label": "sprite_timelines",
+      "summary": {
+        "mean_step_ms": 0.285,
+        "max_step_ms": 0.298
+      },
+      "sprite_perf": {
+        "slow_ratio_p95": 0.005,
+        "slow_ratio_mean": 0.004
+      }
+    }
+  ]
+}

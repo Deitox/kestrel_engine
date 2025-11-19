@@ -1,12 +1,12 @@
 use super::{
-    editor_shell::ScriptHandleBinding, App, CameraBookmark, FrameTimingSample, MeshControlMode, ScriptConsoleEntry,
-    ScriptConsoleKind, ViewportCameraMode,
+    editor_shell::ScriptHandleBinding, App, CameraBookmark, FrameTimingSample, MeshControlMode,
+    ScriptConsoleEntry, ScriptConsoleKind, ViewportCameraMode,
 };
 #[cfg(feature = "alloc_profiler")]
 use crate::alloc_profiler::AllocationDelta;
 use crate::analytics::{
-    AnimationBudgetSample, GpuPassMetric, KeyframeEditorEvent, KeyframeEditorEventKind, KeyframeEditorTrackKind,
-    KeyframeEditorUsageSnapshot,
+    AnimationBudgetSample, GpuPassMetric, KeyframeEditorEvent, KeyframeEditorEventKind,
+    KeyframeEditorTrackKind, KeyframeEditorUsageSnapshot,
 };
 use crate::animation_validation::{AnimationValidationEvent, AnimationValidationSeverity};
 use crate::audio::AudioHealthSnapshot;
@@ -24,11 +24,13 @@ use crate::gizmo::{
 };
 use crate::mesh_preview::{GIZMO_3D_AXIS_LENGTH_SCALE, GIZMO_3D_AXIS_MAX, GIZMO_3D_AXIS_MIN};
 use crate::plugins::{
-    AssetReadbackStats, CapabilityViolationLog, PluginAssetReadbackEvent, PluginCapability, PluginCapabilityEvent,
-    PluginManifestEntry, PluginState, PluginStatus, PluginTrust, PluginWatchdogEvent,
+    AssetReadbackStats, CapabilityViolationLog, PluginAssetReadbackEvent, PluginCapability,
+    PluginCapabilityEvent, PluginManifestEntry, PluginState, PluginStatus, PluginTrust, PluginWatchdogEvent,
 };
 use crate::prefab::{PrefabFormat, PrefabStatusKind, PrefabStatusMessage};
-use crate::renderer::{GpuPassTiming, LightClusterMetrics, ScenePointLight, LIGHT_CLUSTER_MAX_LIGHTS, MAX_SHADOW_CASCADES};
+use crate::renderer::{
+    GpuPassTiming, LightClusterMetrics, ScenePointLight, LIGHT_CLUSTER_MAX_LIGHTS, MAX_SHADOW_CASCADES,
+};
 use crate::scene::SceneShadowData;
 
 use crate::config::SpriteGuardrailMode;
@@ -131,38 +133,130 @@ pub(super) struct InputModifierState {
 
 #[derive(Clone)]
 pub(super) enum InspectorAction {
-    SetTranslation { entity: Entity, translation: Vec2 },
-    SetRotation { entity: Entity, rotation: f32 },
-    SetScale { entity: Entity, scale: Vec2 },
-    SetVelocity { entity: Entity, velocity: Vec2 },
-    ClearTransformClip { entity: Entity },
-    SetTransformClip { entity: Entity, clip_key: String },
-    SetTransformClipPlaying { entity: Entity, playing: bool },
-    ResetTransformClip { entity: Entity },
-    SetTransformClipSpeed { entity: Entity, speed: f32 },
-    SetTransformClipGroup { entity: Entity, group: Option<String> },
-    SetTransformClipTime { entity: Entity, time: f32 },
-    SetTransformTrackMask { entity: Entity, mask: TransformTrackPlayer },
-    SetPropertyTrackMask { entity: Entity, mask: PropertyTrackPlayer },
-    ClearSkeleton { entity: Entity },
-    SetSkeleton { entity: Entity, skeleton_key: String },
-    ClearSkeletonClip { entity: Entity },
-    SetSkeletonClip { entity: Entity, clip_key: String },
-    SetSkeletonClipPlaying { entity: Entity, playing: bool },
-    ResetSkeletonPose { entity: Entity },
-    SetSkeletonClipSpeed { entity: Entity, speed: f32 },
-    SetSkeletonClipGroup { entity: Entity, group: Option<String> },
-    SetSkeletonClipTime { entity: Entity, time: f32 },
-    SetSpriteAtlas { entity: Entity, atlas: String, cleared_timeline: bool },
-    SetSpriteRegion { entity: Entity, atlas: String, region: String },
-    SetSpriteTimeline { entity: Entity, timeline: Option<String> },
-    SetSpriteAnimationPlaying { entity: Entity, playing: bool },
-    ResetSpriteAnimation { entity: Entity },
-    SetSpriteAnimationLooped { entity: Entity, looped: bool },
-    SetSpriteAnimationSpeed { entity: Entity, speed: f32 },
-    SetSpriteAnimationStartOffset { entity: Entity, start_offset: f32 },
-    SetSpriteAnimationRandomStart { entity: Entity, random_start: bool },
-    SetSpriteAnimationGroup { entity: Entity, group: Option<String> },
+    SetTranslation {
+        entity: Entity,
+        translation: Vec2,
+    },
+    SetRotation {
+        entity: Entity,
+        rotation: f32,
+    },
+    SetScale {
+        entity: Entity,
+        scale: Vec2,
+    },
+    SetVelocity {
+        entity: Entity,
+        velocity: Vec2,
+    },
+    ClearTransformClip {
+        entity: Entity,
+    },
+    SetTransformClip {
+        entity: Entity,
+        clip_key: String,
+    },
+    SetTransformClipPlaying {
+        entity: Entity,
+        playing: bool,
+    },
+    ResetTransformClip {
+        entity: Entity,
+    },
+    SetTransformClipSpeed {
+        entity: Entity,
+        speed: f32,
+    },
+    SetTransformClipGroup {
+        entity: Entity,
+        group: Option<String>,
+    },
+    SetTransformClipTime {
+        entity: Entity,
+        time: f32,
+    },
+    SetTransformTrackMask {
+        entity: Entity,
+        mask: TransformTrackPlayer,
+    },
+    SetPropertyTrackMask {
+        entity: Entity,
+        mask: PropertyTrackPlayer,
+    },
+    ClearSkeleton {
+        entity: Entity,
+    },
+    SetSkeleton {
+        entity: Entity,
+        skeleton_key: String,
+    },
+    ClearSkeletonClip {
+        entity: Entity,
+    },
+    SetSkeletonClip {
+        entity: Entity,
+        clip_key: String,
+    },
+    SetSkeletonClipPlaying {
+        entity: Entity,
+        playing: bool,
+    },
+    ResetSkeletonPose {
+        entity: Entity,
+    },
+    SetSkeletonClipSpeed {
+        entity: Entity,
+        speed: f32,
+    },
+    SetSkeletonClipGroup {
+        entity: Entity,
+        group: Option<String>,
+    },
+    SetSkeletonClipTime {
+        entity: Entity,
+        time: f32,
+    },
+    SetSpriteAtlas {
+        entity: Entity,
+        atlas: String,
+        cleared_timeline: bool,
+    },
+    SetSpriteRegion {
+        entity: Entity,
+        atlas: String,
+        region: String,
+    },
+    SetSpriteTimeline {
+        entity: Entity,
+        timeline: Option<String>,
+    },
+    SetSpriteAnimationPlaying {
+        entity: Entity,
+        playing: bool,
+    },
+    ResetSpriteAnimation {
+        entity: Entity,
+    },
+    SetSpriteAnimationLooped {
+        entity: Entity,
+        looped: bool,
+    },
+    SetSpriteAnimationSpeed {
+        entity: Entity,
+        speed: f32,
+    },
+    SetSpriteAnimationStartOffset {
+        entity: Entity,
+        start_offset: f32,
+    },
+    SetSpriteAnimationRandomStart {
+        entity: Entity,
+        random_start: bool,
+    },
+    SetSpriteAnimationGroup {
+        entity: Entity,
+        group: Option<String>,
+    },
     SeekSpriteAnimationFrame {
         entity: Entity,
         frame: usize,
@@ -170,8 +264,15 @@ pub(super) enum InspectorAction {
         atlas: String,
         timeline: String,
     },
-    SetMeshMaterial { entity: Entity, material: Option<String> },
-    SetMeshShadowFlags { entity: Entity, cast: bool, receive: bool },
+    SetMeshMaterial {
+        entity: Entity,
+        material: Option<String>,
+    },
+    SetMeshShadowFlags {
+        entity: Entity,
+        cast: bool,
+        receive: bool,
+    },
     SetMeshMaterialParams {
         entity: Entity,
         base_color: Vec3,
@@ -179,15 +280,39 @@ pub(super) enum InspectorAction {
         roughness: f32,
         emissive: Option<Vec3>,
     },
-    SetMeshTranslation { entity: Entity, translation: Vec3 },
-    SetMeshRotationEuler { entity: Entity, rotation: Vec3 },
-    SetMeshScale3D { entity: Entity, scale: Vec3 },
-    SetMeshTint { entity: Entity, tint: Option<Vec4> },
-    SetSkinMeshJointCount { entity: Entity, joint_count: usize },
-    SetSkinMeshSkeleton { entity: Entity, skeleton: Option<Entity> },
-    SyncSkinMeshJointCount { entity: Entity },
-    DetachSkinMesh { entity: Entity },
-    AttachSkinMesh { entity: Entity },
+    SetMeshTranslation {
+        entity: Entity,
+        translation: Vec3,
+    },
+    SetMeshRotationEuler {
+        entity: Entity,
+        rotation: Vec3,
+    },
+    SetMeshScale3D {
+        entity: Entity,
+        scale: Vec3,
+    },
+    SetMeshTint {
+        entity: Entity,
+        tint: Option<Vec4>,
+    },
+    SetSkinMeshJointCount {
+        entity: Entity,
+        joint_count: usize,
+    },
+    SetSkinMeshSkeleton {
+        entity: Entity,
+        skeleton: Option<Entity>,
+    },
+    SyncSkinMeshJointCount {
+        entity: Entity,
+    },
+    DetachSkinMesh {
+        entity: Entity,
+    },
+    AttachSkinMesh {
+        entity: Entity,
+    },
 }
 
 #[derive(Clone)]

@@ -90,19 +90,22 @@ impl EcsWorld {
         world.insert_resource(SpriteAnimatorSoa::default());
 
         let mut schedule_var = Schedule::default();
-        schedule_var.add_systems((
-            sys_apply_spin,
-            sys_propagate_scene_transforms,
-            sys_sync_world3d,
-            sys_update_emitters,
-            sys_update_particles,
-            sys_drive_transform_clips,
-            sys_drive_skeletal_clips,
-            sys_init_sprite_frame_state,
-            sys_flag_fast_sprite_animators,
-            sys_drive_sprite_animations,
-            sys_apply_sprite_frame_states,
-        ).chain());
+        schedule_var.add_systems(
+            (
+                sys_apply_spin,
+                sys_propagate_scene_transforms,
+                sys_sync_world3d,
+                sys_update_emitters,
+                sys_update_particles,
+                sys_drive_transform_clips,
+                sys_drive_skeletal_clips,
+                sys_init_sprite_frame_state,
+                sys_flag_fast_sprite_animators,
+                sys_drive_sprite_animations,
+                sys_apply_sprite_frame_states,
+            )
+                .chain(),
+        );
         #[cfg(feature = "sprite_anim_soa")]
         schedule_var.add_systems((sys_cleanup_sprite_animator_soa,));
 

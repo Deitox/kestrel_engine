@@ -8,7 +8,11 @@ enum TrackEditOperation {
 }
 
 impl App {
-    pub(super) fn show_animation_keyframe_panel(&mut self, ctx: &egui::Context, animation_time: &AnimationTime) {
+    pub(super) fn show_animation_keyframe_panel(
+        &mut self,
+        ctx: &egui::Context,
+        animation_time: &AnimationTime,
+    ) {
         let panel_open = {
             let state = self.editor_ui_state();
             state.animation_keyframe_panel.is_open()
@@ -1154,8 +1158,6 @@ impl App {
         clip.duration = duration;
         clip.duration_inv = if duration > 0.0 { 1.0 / duration } else { 0.0 };
     }
-
-
 }
 #[cfg(test)]
 mod tests {

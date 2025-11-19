@@ -26,6 +26,7 @@ pub mod renderer;
 pub mod scene;
 pub mod scene_capture;
 pub mod scripts;
+pub mod sprite_perf_guard;
 pub mod time;
 
 #[cfg(feature = "alloc_profiler")]

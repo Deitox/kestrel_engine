@@ -87,12 +87,14 @@ impl App {
                                                 plane_normal,
                                             ) {
                                                 let offset = center_world - hit;
-                                                self.set_gizmo_interaction(Some(GizmoInteraction::Translate3D {
-                                                    entity,
-                                                    offset,
-                                                    plane_origin: center_world,
-                                                    plane_normal,
-                                                }));
+                                                self.set_gizmo_interaction(Some(
+                                                    GizmoInteraction::Translate3D {
+                                                        entity,
+                                                        offset,
+                                                        plane_origin: center_world,
+                                                        plane_normal,
+                                                    },
+                                                ));
                                                 gizmo_click_consumed = true;
                                                 self.set_inspector_status(None);
                                             }
@@ -124,12 +126,14 @@ impl App {
                                                             info.mesh_transform.as_ref().map(|tx| tx.scale)
                                                         })
                                                         .unwrap_or(Vec3::splat(1.0));
-                                                    self.set_gizmo_interaction(Some(GizmoInteraction::Scale3D {
-                                                        entity,
-                                                        start_scale,
-                                                        start_distance,
-                                                        plane_normal,
-                                                    }));
+                                                    self.set_gizmo_interaction(Some(
+                                                        GizmoInteraction::Scale3D {
+                                                            entity,
+                                                            start_scale,
+                                                            start_distance,
+                                                            plane_normal,
+                                                        },
+                                                    ));
                                                     gizmo_click_consumed = true;
                                                     self.set_inspector_status(None);
                                                 }
@@ -163,12 +167,14 @@ impl App {
                                                             info.mesh_transform.as_ref().map(|tx| tx.rotation)
                                                         })
                                                         .unwrap_or(Quat::IDENTITY);
-                                                    self.set_gizmo_interaction(Some(GizmoInteraction::Rotate3D {
-                                                        entity,
-                                                        axis: plane_normal.normalize_or_zero(),
-                                                        start_rotation,
-                                                        start_vector: start_vec,
-                                                    }));
+                                                    self.set_gizmo_interaction(Some(
+                                                        GizmoInteraction::Rotate3D {
+                                                            entity,
+                                                            axis: plane_normal.normalize_or_zero(),
+                                                            start_rotation,
+                                                            start_vector: start_vec,
+                                                        },
+                                                    ));
                                                     gizmo_click_consumed = true;
                                                     self.set_inspector_status(None);
                                                 }

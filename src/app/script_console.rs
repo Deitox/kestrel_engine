@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
-use super::{
-    App, ScriptConsoleEntry, ScriptConsoleKind, SCRIPT_CONSOLE_CAPACITY, SCRIPT_HISTORY_CAPACITY,
-};
+use super::{App, ScriptConsoleEntry, ScriptConsoleKind, SCRIPT_CONSOLE_CAPACITY, SCRIPT_HISTORY_CAPACITY};
 
 impl App {
     pub(super) fn push_script_console(&mut self, kind: ScriptConsoleKind, text: impl Into<String>) {

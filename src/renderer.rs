@@ -23,14 +23,14 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
 // egui
-use egui_wgpu::{Renderer as EguiRenderer, ScreenDescriptor};
 pub use self::light_clusters::LightClusterMetrics;
-pub use self::window_surface::SurfaceFrame;
 use self::light_clusters::{LightClusterParams, LightClusterPass, LightClusterScratch};
 use self::mesh_pass::{MeshDrawData, MeshFrameData, MeshPass, MeshPipelineResources, PaletteUploadStats};
 use self::shadow_pass::{ShadowPass, ShadowPassParams};
 use self::sprite_pass::SpritePass;
+pub use self::window_surface::SurfaceFrame;
 use self::window_surface::WindowSurface;
+use egui_wgpu::{Renderer as EguiRenderer, ScreenDescriptor};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const MAX_SKIN_JOINTS: usize = 256;
@@ -486,7 +486,6 @@ impl Renderer {
     pub fn lighting_mut(&mut self) -> &mut SceneLightingState {
         &mut self.lighting
     }
-
 
     pub fn init_sprite_pipeline_with_atlas(
         &mut self,
@@ -1157,7 +1156,6 @@ impl Renderer {
         self.window_surface.window()
     }
 
-
     #[cfg(test)]
     pub fn resize_invocations_for_test(&self) -> usize {
         self.window_surface.resize_invocations_for_test()
@@ -1301,10 +1299,7 @@ impl Renderer {
 
         self.sprite_bind_groups.clear();
         for batch in sprite_batches {
-            match self
-                .sprite_pass
-                .sprite_bind_group(&device, batch.atlas.as_ref(), &batch.view, sampler)
-            {
+            match self.sprite_pass.sprite_bind_group(&device, batch.atlas.as_ref(), &batch.view, sampler) {
                 Ok(bind_group) => self.sprite_bind_groups.push((batch.range.clone(), bind_group)),
                 Err(err) => {
                     eprintln!(
@@ -1349,8 +1344,13 @@ impl Renderer {
                 occlusion_query_set: None,
                 timestamp_writes: None,
             });
-            self.sprite_pass
-                .encode_pass(&mut pass, viewport, self.window_surface.size(), instances, &self.sprite_bind_groups)?;
+            self.sprite_pass.encode_pass(
+                &mut pass,
+                viewport,
+                self.window_surface.size(),
+                instances,
+                &self.sprite_bind_groups,
+            )?;
         }
         self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::SpriteEnd);
         self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::FrameEnd);
@@ -1454,9 +1454,9 @@ mod surface_tests {
 #[cfg(test)]
 mod pass_tests {
     use super::*;
+    use crate::ecs::MeshLightingInfo;
     use crate::material_registry::MaterialRegistry;
     use crate::mesh::Mesh;
-    use crate::ecs::MeshLightingInfo;
     use egui_wgpu::RendererOptions;
     use glam::Vec3;
     use pollster::block_on;
@@ -1510,9 +1510,7 @@ mod pass_tests {
         let gpu_mesh = renderer.create_gpu_mesh(&mesh).expect("gpu mesh");
         let mut registry = MaterialRegistry::new();
         let default_key = registry.default_key().to_string();
-        let material = registry
-            .prepare_material_gpu(&default_key, &mut renderer)
-            .expect("material gpu");
+        let material = registry.prepare_material_gpu(&default_key, &mut renderer).expect("material gpu");
         let lighting = MeshLightingInfo::default();
         let visible_draw = MeshDraw {
             mesh: &gpu_mesh,
@@ -1547,8 +1545,7 @@ mod pass_tests {
         let (atlas_view, pipeline_sampler, draw_sampler) = create_test_atlas(&device, &queue);
         renderer.init_sprite_pipeline_with_atlas(atlas_view, pipeline_sampler).expect("sprite pipeline");
         let cfg = test_window_config();
-        let viewport =
-            RenderViewport { origin: (0.0, 0.0), size: (cfg.width as f32, cfg.height as f32) };
+        let viewport = RenderViewport { origin: (0.0, 0.0), size: (cfg.width as f32, cfg.height as f32) };
         let frame = renderer
             .render_frame(&[], &[], &draw_sampler, Mat4::IDENTITY, viewport, &[], None)
             .expect("render frame");
@@ -1558,9 +1555,7 @@ mod pass_tests {
             size_in_pixels: [cfg.width, cfg.height],
             pixels_per_point: renderer.pixels_per_point(),
         };
-        renderer
-            .render_egui(&mut egui_renderer, &[], &screen, frame)
-            .expect("render egui");
+        renderer.render_egui(&mut egui_renderer, &[], &screen, frame).expect("render egui");
         let timings = renderer.take_gpu_timings();
         if renderer.gpu_timing_supported() {
             assert!(!timings.is_empty());

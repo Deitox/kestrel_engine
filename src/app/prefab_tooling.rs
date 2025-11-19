@@ -67,10 +67,7 @@ impl App {
                     self.set_prefab_status(
                         if existed { PrefabStatusKind::Info } else { PrefabStatusKind::Success },
                         if existed {
-                            format!(
-                                "Overwrote prefab '{sanitized_name}' ({})",
-                                request.format.short_label()
-                            )
+                            format!("Overwrote prefab '{sanitized_name}' ({})", request.format.short_label())
                         } else {
                             format!("Saved prefab '{sanitized_name}' ({})", request.format.short_label())
                         },

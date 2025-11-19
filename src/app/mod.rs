@@ -1,23 +1,23 @@
 mod animation_keyframe_panel;
 mod animation_tooling;
-mod mesh_preview_tooling;
-mod prefab_tooling;
-mod script_console;
-mod inspector_tooling;
-mod asset_watch_tooling;
-mod telemetry_tooling;
 mod animation_watch;
+mod asset_watch_tooling;
 mod atlas_watch;
 mod editor_shell;
 mod editor_ui;
 mod gizmo_interaction;
+mod inspector_tooling;
+mod mesh_preview_tooling;
 mod plugin_host;
 mod plugin_runtime;
+mod prefab_tooling;
 mod runtime_loop;
+mod script_console;
+mod telemetry_tooling;
 
 use self::animation_keyframe_panel::{
-    AnimationKeyframePanelState, AnimationPanelCommand, AnimationTrackBinding, AnimationTrackId, AnimationTrackKind,
-    AnimationTrackSummary, KeyframeDetail, KeyframeId, KeyframeValue,
+    AnimationKeyframePanelState, AnimationPanelCommand, AnimationTrackBinding, AnimationTrackId,
+    AnimationTrackKind, AnimationTrackSummary, KeyframeDetail, KeyframeId, KeyframeValue,
 };
 use self::animation_watch::{AnimationAssetKind, AnimationAssetWatcher};
 use self::atlas_watch::AtlasHotReload;
@@ -61,8 +61,8 @@ use crate::material_registry::{MaterialGpu, MaterialRegistry};
 use crate::mesh_preview::{MeshControlMode, MeshPreviewPlugin};
 use crate::mesh_registry::MeshRegistry;
 use crate::plugins::{
-    ManifestBuiltinToggle, ManifestDynamicToggle, PluginAssetReadbackEvent, PluginCapabilityEvent, PluginContext,
-    PluginManager, PluginWatchdogEvent,
+    ManifestBuiltinToggle, ManifestDynamicToggle, PluginAssetReadbackEvent, PluginCapabilityEvent,
+    PluginContext, PluginManager, PluginWatchdogEvent,
 };
 use crate::prefab::{PrefabFormat, PrefabLibrary};
 use crate::renderer::{
@@ -70,8 +70,8 @@ use crate::renderer::{
 };
 use crate::scene::{
     EnvironmentDependency, Scene, SceneCamera2D, SceneCameraBookmark, SceneDependencies, SceneEntityId,
-    SceneEnvironment, SceneLightingData, SceneMetadata, ScenePointLightData, SceneShadowData, SceneViewportMode,
-    Vec2Data,
+    SceneEnvironment, SceneLightingData, SceneMetadata, ScenePointLightData, SceneShadowData,
+    SceneViewportMode, Vec2Data,
 };
 use crate::scripts::{ScriptCommand, ScriptHandle, ScriptPlugin};
 use crate::time::Time;
@@ -82,6 +82,8 @@ use anyhow::{anyhow, Context, Result};
 use std::cell::{Ref, RefMut};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+#[cfg(feature = "alloc_profiler")]
+use std::env;
 use std::fs;
 use std::mem;
 use std::path::{Path, PathBuf};
@@ -89,8 +91,6 @@ use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Instant;
-#[cfg(feature = "alloc_profiler")]
-use std::env;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{DeviceEvent, ElementState, KeyEvent, WindowEvent};
@@ -407,10 +407,9 @@ impl App {
         self.with_editor_ui_state_mut(|state| {
             state.gpu_timings = Arc::clone(&arc_timings);
             state.gpu_frame_counter = state.gpu_frame_counter.saturating_add(1);
-            state.gpu_timing_history.push_back(GpuTimingFrame {
-                frame_index: state.gpu_frame_counter,
-                timings,
-            });
+            state
+                .gpu_timing_history
+                .push_back(GpuTimingFrame { frame_index: state.gpu_frame_counter, timings });
             while state.gpu_timing_history.len() > state.gpu_timing_history_capacity {
                 state.gpu_timing_history.pop_front();
             }
@@ -425,7 +424,10 @@ impl App {
         if let Some(timeline_data) = self.assets.atlas_timeline(atlas, timeline) {
             if let Some(frame) = timeline_data.frames.get(frame_index) {
                 if frame.events.is_empty() {
-                    self.set_inspector_status(Some(format!("Preview events: none (frame {})", frame_index + 1)));
+                    self.set_inspector_status(Some(format!(
+                        "Preview events: none (frame {})",
+                        frame_index + 1
+                    )));
                 } else {
                     let joined = frame.events.join(", ");
                     println!(
@@ -675,7 +677,9 @@ impl App {
             return;
         }
         for event in events {
-            self.with_editor_ui_state_mut(|state| state.pending_animation_validation_events.push(event.clone()));
+            self.with_editor_ui_state_mut(|state| {
+                state.pending_animation_validation_events.push(event.clone())
+            });
             self.log_animation_validation_event(event);
         }
     }
@@ -715,7 +719,9 @@ impl App {
             });
         }
         for event in events {
-            self.with_editor_ui_state_mut(|state| state.pending_animation_validation_events.push(event.clone()));
+            self.with_editor_ui_state_mut(|state| {
+                state.pending_animation_validation_events.push(event.clone())
+            });
             self.log_animation_validation_event(event);
         }
     }
@@ -823,14 +829,8 @@ impl App {
                 existing.position = position;
                 existing.zoom = zoom;
             } else {
-                state.camera_bookmarks.push(CameraBookmark {
-                    name: bookmark_name.clone(),
-                    position,
-                    zoom,
-                });
-                state
-                    .camera_bookmarks
-                    .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                state.camera_bookmarks.push(CameraBookmark { name: bookmark_name.clone(), position, zoom });
+                state.camera_bookmarks.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
             }
             state.active_camera_bookmark = Some(bookmark_name);
         });
@@ -1380,7 +1380,10 @@ impl App {
             let mut rows = String::from("frame,label,duration_ms\n");
             for frame in &state.gpu_timing_history {
                 for timing in &frame.timings {
-                    rows.push_str(&format!("{},{},{:.4}\n", frame.frame_index, timing.label, timing.duration_ms));
+                    rows.push_str(&format!(
+                        "{},{},{:.4}\n",
+                        frame.frame_index, timing.label, timing.duration_ms
+                    ));
                 }
             }
             rows
@@ -1545,19 +1548,15 @@ impl App {
         let mut shadow_pass_metric = None;
         let mut mesh_pass_metric = None;
         let mut plugin_capability_metrics = Arc::new(HashMap::new());
-        let mut plugin_capability_events =
-            Arc::from(Vec::<PluginCapabilityEvent>::new().into_boxed_slice());
-        let mut plugin_asset_readbacks =
-            Arc::from(Vec::<PluginAssetReadbackEvent>::new().into_boxed_slice());
-        let mut plugin_watchdog_events =
-            Arc::from(Vec::<PluginWatchdogEvent>::new().into_boxed_slice());
+        let mut plugin_capability_events = Arc::from(Vec::<PluginCapabilityEvent>::new().into_boxed_slice());
+        let mut plugin_asset_readbacks = Arc::from(Vec::<PluginAssetReadbackEvent>::new().into_boxed_slice());
+        let mut plugin_watchdog_events = Arc::from(Vec::<PluginWatchdogEvent>::new().into_boxed_slice());
         let mut animation_validation_log =
             Arc::from(Vec::<AnimationValidationEvent>::new().into_boxed_slice());
         let mut animation_budget_sample = None;
         let mut light_cluster_metrics_overlay = None;
         let mut keyframe_editor_usage: Option<KeyframeEditorUsageSnapshot> = None;
-        let mut keyframe_event_log =
-            Arc::from(Vec::<KeyframeEditorEvent>::new().into_boxed_slice());
+        let mut keyframe_event_log = Arc::from(Vec::<KeyframeEditorEvent>::new().into_boxed_slice());
 
         if let Some(analytics) = self.analytics_plugin_mut() {
             shadow_pass_metric = analytics.gpu_pass_metric("Shadow pass");
@@ -1720,15 +1719,15 @@ impl App {
         }
         self.viewport_camera_mode = mode;
         if mode == ViewportCameraMode::Perspective3D {
-        self.with_plugins(|plugins, ctx| {
-            if let Some(plugin) = plugins.get_mut::<MeshPreviewPlugin>() {
-                if plugin.mesh_control_mode() == MeshControlMode::Disabled {
-                    if let Err(err) = plugin.set_mesh_control_mode(ctx, MeshControlMode::Orbit) {
-                        eprintln!("[mesh_preview] set_mesh_control_mode failed: {err:?}");
+            self.with_plugins(|plugins, ctx| {
+                if let Some(plugin) = plugins.get_mut::<MeshPreviewPlugin>() {
+                    if plugin.mesh_control_mode() == MeshControlMode::Disabled {
+                        if let Err(err) = plugin.set_mesh_control_mode(ctx, MeshControlMode::Orbit) {
+                            eprintln!("[mesh_preview] set_mesh_control_mode failed: {err:?}");
+                        }
                     }
                 }
-            }
-        });
+            });
         }
     }
 
@@ -1794,18 +1793,13 @@ impl App {
             self.with_editor_ui_state_mut(|state| state.scene_dependencies = Some(deps.clone()));
             return Ok(());
         }
-        let atlas_dirty = cached_fingerprint
-            .as_ref()
-            .map_or(true, |fp| fp.atlases != fingerprint.atlases);
-        let clip_dirty =
-            cached_fingerprint.as_ref().map_or(true, |fp| fp.clips != fingerprint.clips);
-        let mesh_dirty =
-            cached_fingerprint.as_ref().map_or(true, |fp| fp.meshes != fingerprint.meshes);
+        let atlas_dirty = cached_fingerprint.as_ref().map_or(true, |fp| fp.atlases != fingerprint.atlases);
+        let clip_dirty = cached_fingerprint.as_ref().map_or(true, |fp| fp.clips != fingerprint.clips);
+        let mesh_dirty = cached_fingerprint.as_ref().map_or(true, |fp| fp.meshes != fingerprint.meshes);
         let material_dirty =
             cached_fingerprint.as_ref().map_or(true, |fp| fp.materials != fingerprint.materials);
-        let environment_dirty = cached_fingerprint
-            .as_ref()
-            .map_or(true, |fp| fp.environments != fingerprint.environments);
+        let environment_dirty =
+            cached_fingerprint.as_ref().map_or(true, |fp| fp.environments != fingerprint.environments);
 
         if atlas_dirty {
             let previous = self.scene_atlas_refs.clone();
@@ -2001,7 +1995,8 @@ impl App {
             self.camera.set_zoom(cam2d.zoom);
         }
         self.with_editor_ui_state_mut(|state| {
-            state.camera_bookmarks = metadata.camera_bookmarks.iter().map(CameraBookmark::from_scene).collect();
+            state.camera_bookmarks =
+                metadata.camera_bookmarks.iter().map(CameraBookmark::from_scene).collect();
             state.camera_bookmarks.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
         });
         self.camera_follow_target = metadata.camera_follow_entity.clone();
@@ -2389,8 +2384,7 @@ impl ApplicationHandler for App {
             self.ecs.spawn_burst(&self.assets, ui_spawn_per_press as usize);
         }
         if self.input.take_b_pressed() {
-            self.ecs
-                .spawn_burst(&self.assets, (ui_spawn_per_press * 5).max(1000) as usize);
+            self.ecs.spawn_burst(&self.assets, (ui_spawn_per_press * 5).max(1000) as usize);
         }
 
         self.with_plugins(|plugins, ctx| plugins.update(ctx, dt));
@@ -2448,7 +2442,8 @@ impl ApplicationHandler for App {
         };
         let cursor_in_viewport = cursor_viewport.is_some();
         let mut selected_info = self.selected_entity().and_then(|entity| self.ecs.entity_info(entity));
-        let mut selection_bounds_2d = self.selected_entity().and_then(|entity| self.ecs.entity_bounds(entity));
+        let mut selection_bounds_2d =
+            self.selected_entity().and_then(|entity| self.ecs.entity_bounds(entity));
         let mesh_center_world = selected_info.as_ref().and_then(|info| {
             info.mesh_transform
                 .as_ref()
@@ -2508,11 +2503,7 @@ impl ApplicationHandler for App {
 
         let (cell_size, use_quadtree, density_threshold) = {
             let state = self.editor_ui_state();
-            (
-                state.ui_cell_size.max(0.05),
-                state.ui_spatial_use_quadtree,
-                state.ui_spatial_density_threshold,
-            )
+            (state.ui_cell_size.max(0.05), state.ui_spatial_use_quadtree, state.ui_spatial_density_threshold)
         };
         self.ecs.set_spatial_cell(cell_size);
         self.ecs.set_spatial_quadtree_enabled(use_quadtree);
@@ -2828,25 +2819,18 @@ impl ApplicationHandler for App {
         } else {
             Arc::<[GameEvent]>::from([])
         };
-        let (audio_triggers, audio_enabled, audio_health, audio_plugin_present) = if let Some(audio) =
-            self.audio_plugin()
-        {
-            (
-                audio.recent_triggers().cloned().collect(),
-                audio.enabled(),
-                audio.health_snapshot(),
-                true,
-            )
-        } else {
-            (Vec::new(), false, AudioHealthSnapshot::default(), false)
-        };
-        let (mesh_keys, environment_options, prefab_entries) =
-            self.with_editor_ui_state_mut(|state| {
-                let mesh = state.telemetry_cache.mesh_keys(&self.mesh_registry);
-                let env = state.telemetry_cache.environment_options(&self.environment_registry);
-                let prefabs = state.telemetry_cache.prefab_entries(&self.prefab_library);
-                (mesh, env, prefabs)
-            });
+        let (audio_triggers, audio_enabled, audio_health, audio_plugin_present) =
+            if let Some(audio) = self.audio_plugin() {
+                (audio.recent_triggers().cloned().collect(), audio.enabled(), audio.health_snapshot(), true)
+            } else {
+                (Vec::new(), false, AudioHealthSnapshot::default(), false)
+            };
+        let (mesh_keys, environment_options, prefab_entries) = self.with_editor_ui_state_mut(|state| {
+            let mesh = state.telemetry_cache.mesh_keys(&self.mesh_registry);
+            let env = state.telemetry_cache.environment_options(&self.environment_registry);
+            let prefabs = state.telemetry_cache.prefab_entries(&self.prefab_library);
+            (mesh, env, prefabs)
+        });
         let clip_keys_list = self.assets.clip_keys();
         let clip_assets_map: HashMap<String, editor_ui::ClipAssetSummary> = clip_keys_list
             .iter()
@@ -2874,10 +2858,7 @@ impl ApplicationHandler for App {
                         Arc::from(markers.into_boxed_slice())
                     })
                     .unwrap_or_else(|| Arc::from(Vec::<f32>::new().into_boxed_slice()));
-                (
-                    key.clone(),
-                    editor_ui::ClipAssetSummary { source, keyframe_markers: markers },
-                )
+                (key.clone(), editor_ui::ClipAssetSummary { source, keyframe_markers: markers })
             })
             .collect();
         let clip_keys: Arc<[String]> = Arc::from(clip_keys_list.clone().into_boxed_slice());
@@ -2886,11 +2867,8 @@ impl ApplicationHandler for App {
         let skeleton_assets_map: HashMap<String, editor_ui::SkeletonAssetSummary> = skeleton_keys_list
             .iter()
             .map(|key| {
-                let clip_keys = self
-                    .assets
-                    .skeletal_clip_keys_for(key)
-                    .map(|keys| keys.to_vec())
-                    .unwrap_or_default();
+                let clip_keys =
+                    self.assets.skeletal_clip_keys_for(key).map(|keys| keys.to_vec()).unwrap_or_default();
                 let source = self.assets.skeleton_source(key).map(|s| s.to_string());
                 (
                     key.clone(),
@@ -2964,10 +2942,8 @@ impl ApplicationHandler for App {
             })
             .collect();
         let mesh_subsets = Arc::new(mesh_subset_map);
-        let input_modifiers = editor_ui::InputModifierState {
-            ctrl: self.input.ctrl_held(),
-            shift: self.input.shift_held(),
-        };
+        let input_modifiers =
+            editor_ui::InputModifierState { ctrl: self.input.ctrl_held(), shift: self.input.shift_held() };
         let scene_history_list = self.scene_history_arc();
         let atlas_snapshot = self.scene_atlas_refs_arc();
         let mesh_snapshot = self.scene_mesh_refs_arc();
@@ -3249,16 +3225,7 @@ impl ApplicationHandler for App {
                 plugin.persistent_meshes().iter().cloned().collect(),
             )
         } else {
-            (
-                String::new(),
-                MeshControlMode::Disabled,
-                false,
-                0.0,
-                0.0,
-                None,
-                HashSet::new(),
-                HashSet::new(),
-            )
+            (String::new(), MeshControlMode::Disabled, false, 0.0, 0.0, None, HashSet::new(), HashSet::new())
         };
 
         let scene_dependency_data_available = scene_dependencies_snapshot.is_some();
@@ -3776,7 +3743,9 @@ impl ApplicationHandler for App {
                     if self.ecs.set_skeleton_clip_playing(entity, playing) {
                         self.set_inspector_status(None);
                     } else {
-                        self.set_inspector_status(Some("Failed to update skeletal clip playback.".to_string()));
+                        self.set_inspector_status(Some(
+                            "Failed to update skeletal clip playback.".to_string(),
+                        ));
                     }
                 }
                 editor_ui::InspectorAction::ResetSkeletonPose { entity } => {
@@ -3833,10 +3802,12 @@ impl ApplicationHandler for App {
                 }
                 editor_ui::InspectorAction::SetSpriteTimeline { entity, timeline } => {
                     if self.ecs.set_sprite_timeline(entity, &self.assets, timeline.as_deref()) {
-                        self.set_inspector_status(timeline
-                            .as_ref()
-                            .map(|name| format!("Sprite timeline set to {name}"))
-                            .or_else(|| Some("Sprite timeline cleared".to_string())));
+                        self.set_inspector_status(
+                            timeline
+                                .as_ref()
+                                .map(|name| format!("Sprite timeline set to {name}"))
+                                .or_else(|| Some("Sprite timeline cleared".to_string())),
+                        );
                     } else if let Some(name) = timeline {
                         self.set_inspector_status(Some(format!("Timeline '{name}' unavailable")));
                     } else {
@@ -3920,7 +3891,10 @@ impl ApplicationHandler for App {
                             self.set_inspector_status(Some(format!("Material '{}' not registered", key)));
                             apply_change = false;
                         } else if let Err(err) = self.material_registry.retain(key) {
-                            self.set_inspector_status(Some(format!("Failed to retain material '{}': {err}", key)));
+                            self.set_inspector_status(Some(format!(
+                                "Failed to retain material '{}': {err}",
+                                key
+                            )));
                             apply_change = false;
                         }
                     }
@@ -3969,13 +3943,12 @@ impl ApplicationHandler for App {
                     roughness,
                     emissive,
                 } => {
-                    if self
-                        .ecs
-                        .set_mesh_material_params(entity, base_color, metallic, roughness, emissive)
-                    {
+                    if self.ecs.set_mesh_material_params(entity, base_color, metallic, roughness, emissive) {
                         self.set_inspector_status(None);
                     } else {
-                        self.set_inspector_status(Some("Failed to update mesh material parameters.".to_string()));
+                        self.set_inspector_status(Some(
+                            "Failed to update mesh material parameters.".to_string(),
+                        ));
                     }
                 }
                 editor_ui::InspectorAction::SetMeshTranslation { entity, translation } => {
@@ -4010,7 +3983,9 @@ impl ApplicationHandler for App {
                     if self.ecs.set_skin_mesh_joint_count(entity, joint_count) {
                         self.set_inspector_status(None);
                     } else {
-                        self.set_inspector_status(Some("Failed to update skin mesh joint count.".to_string()));
+                        self.set_inspector_status(Some(
+                            "Failed to update skin mesh joint count.".to_string(),
+                        ));
                     }
                 }
                 editor_ui::InspectorAction::SetSkinMeshSkeleton { entity, skeleton } => {
@@ -4901,22 +4876,14 @@ impl App {
                     self.editor_ui_state_mut().ui_emitter_start_color = color.to_array();
                     if let Some(emitter) = self.emitter_entity {
                         let end_color = self.editor_ui_state().ui_emitter_end_color;
-                        self.ecs.set_emitter_colors(
-                            emitter,
-                            color,
-                            Vec4::from_array(end_color),
-                        );
+                        self.ecs.set_emitter_colors(emitter, color, Vec4::from_array(end_color));
                     }
                 }
                 ScriptCommand::SetEmitterEndColor { color } => {
                     self.editor_ui_state_mut().ui_emitter_end_color = color.to_array();
                     if let Some(emitter) = self.emitter_entity {
                         let start_color = self.editor_ui_state().ui_emitter_start_color;
-                        self.ecs.set_emitter_colors(
-                            emitter,
-                            Vec4::from_array(start_color),
-                            color,
-                        );
+                        self.ecs.set_emitter_colors(emitter, Vec4::from_array(start_color), color);
                     }
                 }
                 ScriptCommand::SetEmitterStartSize { size } => {
@@ -4924,11 +4891,7 @@ impl App {
                     self.editor_ui_state_mut().ui_emitter_start_size = clamped;
                     if let Some(emitter) = self.emitter_entity {
                         let end_size = self.editor_ui_state().ui_emitter_end_size;
-                        self.ecs.set_emitter_sizes(
-                            emitter,
-                            clamped,
-                            end_size,
-                        );
+                        self.ecs.set_emitter_sizes(emitter, clamped, end_size);
                     }
                 }
                 ScriptCommand::SetEmitterEndSize { size } => {
@@ -4936,11 +4899,7 @@ impl App {
                     self.editor_ui_state_mut().ui_emitter_end_size = clamped;
                     if let Some(emitter) = self.emitter_entity {
                         let start_size = self.editor_ui_state().ui_emitter_start_size;
-                        self.ecs.set_emitter_sizes(
-                            emitter,
-                            start_size,
-                            clamped,
-                        );
+                        self.ecs.set_emitter_sizes(emitter, start_size, clamped);
                     }
                 }
             }

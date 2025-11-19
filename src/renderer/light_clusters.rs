@@ -1,14 +1,15 @@
 use anyhow::{Context, Result};
-use glam::{Mat4, Vec4};
 #[cfg(test)]
 use glam::Vec3;
+use glam::{Mat4, Vec4};
 use std::sync::Arc;
 use winit::dpi::PhysicalSize;
 
 use super::{
     Camera3D, ClusterConfigUniform, ClusterLightUniform, ClusterRecordGpu, PointLightGpu, SceneLightingState,
-    ScenePointLight, LIGHT_CLUSTER_CACHE_QUANTIZE, LIGHT_CLUSTER_MAX_LIGHTS, LIGHT_CLUSTER_MAX_LIGHTS_PER_CLUSTER,
-    LIGHT_CLUSTER_RECORD_STRIDE_WORDS, LIGHT_CLUSTER_TILE_SIZE, LIGHT_CLUSTER_Z_SLICES,
+    ScenePointLight, LIGHT_CLUSTER_CACHE_QUANTIZE, LIGHT_CLUSTER_MAX_LIGHTS,
+    LIGHT_CLUSTER_MAX_LIGHTS_PER_CLUSTER, LIGHT_CLUSTER_RECORD_STRIDE_WORDS, LIGHT_CLUSTER_TILE_SIZE,
+    LIGHT_CLUSTER_Z_SLICES,
 };
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -151,8 +152,11 @@ impl LightClusterPass {
     pub fn prepare(&mut self, params: LightClusterParams<'_>) -> Result<()> {
         let layout = self.layout.as_ref().context("Light cluster layout missing")?.clone();
         let view = params.camera.view_matrix();
-        let aspect =
-            if params.viewport.height > 0 { params.viewport.width as f32 / params.viewport.height as f32 } else { 1.0 };
+        let aspect = if params.viewport.height > 0 {
+            params.viewport.width as f32 / params.viewport.height as f32
+        } else {
+            1.0
+        };
         let proj = params.camera.projection_matrix(aspect);
         let light_hash = hash_point_lights(&params.lighting.point_lights);
         if self.cache.matches(params.viewport, view, proj, light_hash) && self.bind_group.is_some() {
@@ -411,7 +415,8 @@ fn build_light_cluster_data<'a>(
 
     scratch.cluster_data_words.clear();
     scratch.cluster_data_words.reserve(
-        scratch.cluster_records.len() * LIGHT_CLUSTER_RECORD_STRIDE_WORDS as usize + scratch.cluster_indices.len(),
+        scratch.cluster_records.len() * LIGHT_CLUSTER_RECORD_STRIDE_WORDS as usize
+            + scratch.cluster_indices.len(),
     );
     for record in &scratch.cluster_records {
         scratch.cluster_data_words.push(record.offset);

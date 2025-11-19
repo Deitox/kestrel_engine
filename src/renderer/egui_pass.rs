@@ -31,7 +31,9 @@ pub fn render(
             occlusion_query_set: None,
             timestamp_writes: None,
         });
-        let pass = unsafe { std::mem::transmute::<&mut wgpu::RenderPass<'_>, &mut wgpu::RenderPass<'static>>(&mut pass) };
+        let pass = unsafe {
+            std::mem::transmute::<&mut wgpu::RenderPass<'_>, &mut wgpu::RenderPass<'static>>(&mut pass)
+        };
         painter.render(pass, paint_jobs, screen);
     }
     timer.write_timestamp(&mut encoder, super::GpuTimestampLabel::EguiEnd);

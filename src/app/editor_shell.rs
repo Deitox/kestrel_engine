@@ -1,7 +1,9 @@
 use super::animation_keyframe_panel::AnimationKeyframePanel;
 use super::telemetry_tooling::{FrameProfiler, GpuTimingFrame, TelemetryCache};
 use super::{CameraBookmark, ClipEditRecord, FrameBudgetSnapshot, ScriptConsoleEntry};
-use crate::analytics::{AnimationBudgetSample, GpuPassMetric, KeyframeEditorEvent, KeyframeEditorUsageSnapshot};
+use crate::analytics::{
+    AnimationBudgetSample, GpuPassMetric, KeyframeEditorEvent, KeyframeEditorUsageSnapshot,
+};
 use crate::animation_validation::AnimationValidationEvent;
 use crate::assets::AnimationClip;
 use crate::config::{EditorConfig, ParticleConfig, SpriteGuardrailMode};
@@ -104,8 +106,8 @@ pub(crate) struct EditorUiState {
     pub ui_shadow_split_lambda: f32,
     pub ui_shadow_pcf_radius: f32,
     pub ui_camera_zoom_min: f32,
-   pub ui_camera_zoom_max: f32,
-   pub ui_sprite_guard_pixels: f32,
+    pub ui_camera_zoom_max: f32,
+    pub ui_sprite_guard_pixels: f32,
     pub ui_sprite_guard_mode: SpriteGuardrailMode,
     pub ui_scale: f32,
     pub selected_entity: Option<Entity>,

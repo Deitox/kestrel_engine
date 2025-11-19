@@ -486,7 +486,9 @@ pub struct GpuPassMetric {
 mod tests {
     use super::*;
     use crate::animation_validation::{AnimationValidationEvent, AnimationValidationSeverity};
-    use crate::plugins::{PluginAssetReadbackEvent, PluginCapability, PluginCapabilityEvent, PluginWatchdogEvent};
+    use crate::plugins::{
+        PluginAssetReadbackEvent, PluginCapability, PluginCapabilityEvent, PluginWatchdogEvent,
+    };
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::SystemTime;

@@ -1,0 +1,14 @@
+{
+  "cases": [
+    {
+      "label": "sprite_timelines",
+      "summary": {
+        "mean_step_ms": 0.318,
+        "max_step_ms": 0.331
+      },
+      "sprite_perf": {
+        "slow_ratio_p95": 0.015
+      }
+    }
+  ]
+}

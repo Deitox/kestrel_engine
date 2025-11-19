@@ -2,13 +2,13 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use super::{editor_ui, App, FrameTimingSample};
+#[cfg(feature = "alloc_profiler")]
+use crate::alloc_profiler;
 use crate::environment::EnvironmentRegistry;
 use crate::mesh_registry::MeshRegistry;
 use crate::prefab::PrefabLibrary;
 use crate::renderer::GpuPassTiming;
 use egui_plot as eplot;
-#[cfg(feature = "alloc_profiler")]
-use crate::alloc_profiler;
 
 #[derive(Default)]
 pub(super) struct TelemetryCache {
@@ -183,14 +183,13 @@ impl App {
         let update_delta = panel.update_ms - idle.update_ms;
         let ui_delta = panel.ui_ms - idle.ui_ms;
         #[cfg(feature = "alloc_profiler")]
-        let alloc_note = if let (Some(idle_alloc), Some(panel_alloc)) =
-            (baseline.alloc_delta, comparison.alloc_delta)
-        {
-            let diff = panel_alloc.net_bytes() - idle_alloc.net_bytes();
-            format!(", delta_alloc={:+} B", diff)
-        } else {
-            String::new()
-        };
+        let alloc_note =
+            if let (Some(idle_alloc), Some(panel_alloc)) = (baseline.alloc_delta, comparison.alloc_delta) {
+                let diff = panel_alloc.net_bytes() - idle_alloc.net_bytes();
+                format!(", delta_alloc={:+} B", diff)
+            } else {
+                String::new()
+            };
         #[cfg(not(feature = "alloc_profiler"))]
         let alloc_note = String::new();
         Some(format!(

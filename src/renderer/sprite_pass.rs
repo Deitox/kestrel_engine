@@ -255,7 +255,11 @@ impl SpritePass {
 
     pub fn write_globals(&self, queue: &wgpu::Queue, sprite_view_proj: Mat4) -> Result<()> {
         let globals = self.globals_buf.as_ref().context("Sprite globals buffer missing")?;
-        queue.write_buffer(globals, 0, bytemuck::bytes_of(&Globals { proj: sprite_view_proj.to_cols_array_2d() }));
+        queue.write_buffer(
+            globals,
+            0,
+            bytemuck::bytes_of(&Globals { proj: sprite_view_proj.to_cols_array_2d() }),
+        );
         Ok(())
     }
 
@@ -282,11 +286,7 @@ impl SpritePass {
         let cursor_advance = align_to(byte_len, alignment);
         self.instance_cursor = span_end + (cursor_advance - byte_len);
         self.instance_span = write_offset..span_end;
-        queue.write_buffer(
-            instance_buffer,
-            write_offset,
-            bytemuck::cast_slice(instances),
-        );
+        queue.write_buffer(instance_buffer, write_offset, bytemuck::cast_slice(instances));
         Ok(())
     }
 

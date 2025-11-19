@@ -40,6 +40,18 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
 
 ## P0 â€” Stability & Determinism
 
+8. **[PerfGoal] Sprite timeline â‰¤0.300Â ms guardrail** â€” *Open.*
+
+   - *Why:* The latest dev-profile bench run sits around 0.43Â ms for 10k animators. We already proved the release build can hit 0.288Â ms, but we need a concrete plan (bench procedure + kernel wins + CI guard) to stay under budget any time new sprite features land.
+
+   - *Plan & acceptance:*
+     1. **Release-profile baseline** â€” Add a `--profile bench-release` preset to `scripts/sprite_bench.py`, capture a fresh run (`perf/sprite_perf_guard_release.{txt,json}`) that demonstrates â‰¤0.300Â ms, and document the exact command in `docs/SPRITE_ANIMATION_PERF_PLAN.md`.
+     2. **Guarded automation** â€” Wire the new `sprite_perf_guard` binary into CI so every PR runs `python scripts/sprite_bench.py --profile bench-release --runs 1` followed by `cargo run --bin sprite_perf_guard -- --report target/animation_targets_report.json`. The pipeline must fail if mean/max >0.300Â ms or `%slow > 1%`.
+     3. **Const-dt SIMD bucket** â€” Implement the 8-lane SIMD kernel described in `docs/Sprite_Benchmark_Plan.md Â§2.2`, keep scalar fallbacks for tails, and add parity tests feeding randomized const-dt clips (including ping-pong flips). Acceptance: `cargo test --features sprite_anim_simd sprite_animation::simd_parity` passes and the release bench drops â‰¥10Â % in `sprite_timelines`.
+     4. **Var-dt next-dt cache** â€” Introduce a `next_dt[]` cache/prefetch for var-dt animators and extend `tests/sprite_animation.rs` with a mixed-bucket regression that randomizes const/var clips. Acceptance: telemetry shows reduced `var_dt` cost, and the mixed-bucket test runs under `cargo test`.
+     5. **Importer drift lint** â€” Finish the lint in `docs/SPRITE_ANIMATION_PERF_PLAN.md Â§4.1`: flag noisy â€œuniformâ€� timelines on import, persist severity, and add fixtures that assert lint output. Update `docs/animation_workflows.md` with a perf-capture checklist referencing the guard and lint expectations.
+     6. **Final publication** â€” Re-run the release capture with SIMD + cache enabled, attach artifacts (or publish via CI), and update `README.md`/`docs/SPRITE_ANIMATION_PERF_PLAN.md` with the new figures plus the CI job link. Acceptance: `sprite_timelines` mean/max â‰¤0.300Â ms in the committed release run and the CI guard is green.
+
 
 
 

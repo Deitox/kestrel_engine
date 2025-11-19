@@ -7,8 +7,8 @@ use wgpu::util::DeviceExt;
 use winit::dpi::PhysicalSize;
 
 use super::{
-    mesh_pass::PaletteUploadStats, Camera3D, MeshDraw, RenderViewport, SceneLightingState, MAX_SHADOW_CASCADES,
-    MAX_SKIN_JOINTS, SKINNING_CACHE_HEADROOM, DEPTH_FORMAT,
+    mesh_pass::PaletteUploadStats, Camera3D, MeshDraw, RenderViewport, SceneLightingState, DEPTH_FORMAT,
+    MAX_SHADOW_CASCADES, MAX_SKIN_JOINTS, SKINNING_CACHE_HEADROOM,
 };
 
 struct ShadowPipelineResources {
@@ -124,8 +124,14 @@ impl ShadowPass {
         let mut prev_split = params.camera.near;
         for (idx, split) in splits.iter().enumerate().take(self.cascade_count) {
             let cascade_far = split.max(prev_split + 0.01);
-            self.cascade_matrices[idx] =
-                build_cascade_matrix(params.camera, aspect, prev_split, cascade_far, light_dir, params.lighting);
+            self.cascade_matrices[idx] = build_cascade_matrix(
+                params.camera,
+                aspect,
+                prev_split,
+                cascade_far,
+                light_dir,
+                params.lighting,
+            );
             prev_split = cascade_far;
         }
         for idx in self.cascade_count..MAX_SHADOW_CASCADES {
@@ -137,8 +143,7 @@ impl ShadowPass {
             let resources = self.resources.as_ref().context("Shadow pipeline resources missing")?;
             (resources.pipeline.clone(), resources.skinning_bgl.clone())
         };
-        let frame_bg =
-            self.frame_bind_group.as_ref().context("Shadow frame bind group missing")?.clone();
+        let frame_bg = self.frame_bind_group.as_ref().context("Shadow frame bind group missing")?.clone();
         let draw_bg = self.draw_bind_group.as_ref().context("Shadow draw bind group missing")?.clone();
         let draw_buffer = self.draw_buffer.as_ref().context("Shadow draw buffer missing")?.clone();
 
@@ -154,10 +159,8 @@ impl ShadowPass {
             self.skinning_identity_bind_group = None;
         }
         if self.skinning_identity_bind_group.is_none() {
-            let buffer = self
-                .skinning_identity_buffer
-                .as_ref()
-                .context("Shadow skinning identity buffer missing")?;
+            let buffer =
+                self.skinning_identity_buffer.as_ref().context("Shadow skinning identity buffer missing")?;
             let bind_group = params.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Shadow Skinning Identity BG"),
                 layout: skinning_bgl.as_ref(),
@@ -180,11 +183,8 @@ impl ShadowPass {
         }
 
         for cascade_index in 0..self.cascade_count {
-            let layer_view = self
-                .cascade_views
-                .get(cascade_index)
-                .cloned()
-                .context("Shadow cascade view missing")?;
+            let layer_view =
+                self.cascade_views.get(cascade_index).cloned().context("Shadow cascade view missing")?;
             let matrices = self.cascade_matrices;
             let cascade_count = self.cascade_count;
             self.write_shadow_uniform(
@@ -236,7 +236,9 @@ impl ShadowPass {
                         *slot = identity_cols;
                     }
                     if let Some(palette) = draw.skin_palette.as_ref() {
-                        for (dst, mat) in self.palette_staging.iter_mut().zip(palette.iter()).take(joint_count) {
+                        for (dst, mat) in
+                            self.palette_staging.iter_mut().zip(palette.iter()).take(joint_count)
+                        {
                             *dst = mat.to_cols_array();
                         }
                     }
@@ -252,7 +254,10 @@ impl ShadowPass {
                         let bind_group = params.device.create_bind_group(&wgpu::BindGroupDescriptor {
                             label: Some("Shadow Skinning Palette BG"),
                             layout: skinning_bgl.as_ref(),
-                            entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
+                            entries: &[wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: buffer.as_entire_binding(),
+                            }],
                         });
                         self.skinning_palette_buffers.push(buffer);
                         self.skinning_palette_bind_groups.push(bind_group);
@@ -286,7 +291,9 @@ impl ShadowPass {
         if self.resources.is_none() {
             let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("Shadow Shader"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("../../assets/shaders/mesh_shadow.wgsl").into()),
+                source: wgpu::ShaderSource::Wgsl(
+                    include_str!("../../assets/shaders/mesh_shadow.wgsl").into(),
+                ),
             });
 
             let frame_bgl = Arc::new(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -450,8 +457,14 @@ impl ShadowPass {
                     layout: layout.as_ref(),
                     entries: &[
                         wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(view) },
-                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::Sampler(sampler),
+                        },
                     ],
                 });
                 self.sample_bind_group = Some(bind_group);
