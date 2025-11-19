@@ -131,6 +131,9 @@ pub struct AnalyticsPlugin {
     plugin_capability_events: VecDeque<PluginCapabilityEvent>,
     plugin_asset_readbacks: VecDeque<PluginAssetReadbackEvent>,
     plugin_watchdog_events: VecDeque<PluginWatchdogEvent>,
+    plugin_capability_snapshot: Option<Arc<[PluginCapabilityEvent]>>,
+    plugin_asset_readback_snapshot: Option<Arc<[PluginAssetReadbackEvent]>>,
+    plugin_watchdog_snapshot: Option<Arc<[PluginWatchdogEvent]>>,
     animation_validation_events: VecDeque<AnimationValidationEvent>,
     animation_validation_snapshot: Option<Arc<[AnimationValidationEvent]>>,
     animation_budget_sample: Option<AnimationBudgetSample>,
@@ -162,6 +165,9 @@ impl AnalyticsPlugin {
             plugin_capability_events: VecDeque::with_capacity(SECURITY_EVENT_CAPACITY),
             plugin_asset_readbacks: VecDeque::with_capacity(32),
             plugin_watchdog_events: VecDeque::with_capacity(32),
+            plugin_capability_snapshot: None,
+            plugin_asset_readback_snapshot: None,
+            plugin_watchdog_snapshot: None,
             animation_validation_events: VecDeque::with_capacity(SECURITY_EVENT_CAPACITY),
             animation_validation_snapshot: None,
             animation_budget_sample: None,
@@ -282,10 +288,17 @@ impl AnalyticsPlugin {
                 self.plugin_capability_events.pop_back();
             }
         }
+        self.plugin_capability_snapshot = None;
     }
 
-    pub fn plugin_capability_events(&self) -> Vec<PluginCapabilityEvent> {
-        self.plugin_capability_events.iter().cloned().collect()
+    pub fn plugin_capability_events_arc(&mut self) -> Arc<[PluginCapabilityEvent]> {
+        if let Some(cache) = &self.plugin_capability_snapshot {
+            return Arc::clone(cache);
+        }
+        let data = self.plugin_capability_events.iter().cloned().collect::<Vec<_>>();
+        let arc = Arc::from(data.into_boxed_slice());
+        self.plugin_capability_snapshot = Some(Arc::clone(&arc));
+        arc
     }
 
     pub fn record_plugin_asset_readbacks(
@@ -298,6 +311,17 @@ impl AnalyticsPlugin {
                 self.plugin_asset_readbacks.pop_back();
             }
         }
+        self.plugin_asset_readback_snapshot = None;
+    }
+
+    pub fn plugin_asset_readbacks_arc(&mut self) -> Arc<[PluginAssetReadbackEvent]> {
+        if let Some(cache) = &self.plugin_asset_readback_snapshot {
+            return Arc::clone(cache);
+        }
+        let data = self.plugin_asset_readbacks.iter().cloned().collect::<Vec<_>>();
+        let arc = Arc::from(data.into_boxed_slice());
+        self.plugin_asset_readback_snapshot = Some(Arc::clone(&arc));
+        arc
     }
 
     pub fn record_plugin_watchdog_events(&mut self, events: impl IntoIterator<Item = PluginWatchdogEvent>) {
@@ -307,14 +331,17 @@ impl AnalyticsPlugin {
                 self.plugin_watchdog_events.pop_back();
             }
         }
+        self.plugin_watchdog_snapshot = None;
     }
 
-    pub fn plugin_asset_readbacks(&self) -> Vec<PluginAssetReadbackEvent> {
-        self.plugin_asset_readbacks.iter().cloned().collect()
-    }
-
-    pub fn plugin_watchdog_events(&self) -> Vec<PluginWatchdogEvent> {
-        self.plugin_watchdog_events.iter().cloned().collect()
+    pub fn plugin_watchdog_events_arc(&mut self) -> Arc<[PluginWatchdogEvent]> {
+        if let Some(cache) = &self.plugin_watchdog_snapshot {
+            return Arc::clone(cache);
+        }
+        let data = self.plugin_watchdog_events.iter().cloned().collect::<Vec<_>>();
+        let arc = Arc::from(data.into_boxed_slice());
+        self.plugin_watchdog_snapshot = Some(Arc::clone(&arc));
+        arc
     }
 
     pub fn record_animation_validation_events(
@@ -423,6 +450,9 @@ impl EnginePlugin for AnalyticsPlugin {
         self.plugin_capability_events.clear();
         self.plugin_asset_readbacks.clear();
         self.plugin_watchdog_events.clear();
+        self.plugin_capability_snapshot = None;
+        self.plugin_asset_readback_snapshot = None;
+        self.plugin_watchdog_snapshot = None;
         self.animation_validation_events.clear();
         self.animation_budget_sample = None;
         self.plugin_capability_metrics = Arc::new(HashMap::new());
@@ -456,7 +486,10 @@ pub struct GpuPassMetric {
 mod tests {
     use super::*;
     use crate::animation_validation::{AnimationValidationEvent, AnimationValidationSeverity};
+    use crate::plugins::{PluginAssetReadbackEvent, PluginCapability, PluginCapabilityEvent, PluginWatchdogEvent};
     use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::SystemTime;
 
     #[test]
     fn animation_validation_events_recorded() {
@@ -491,5 +524,65 @@ mod tests {
         let events = analytics.keyframe_editor_events_arc();
         assert_eq!(events.len(), 3);
         assert!(matches!(events[0].kind, KeyframeEditorEventKind::UpdateKey { changed_time: true, .. }));
+    }
+
+    #[test]
+    fn plugin_event_snapshots_cache_until_mutated() {
+        let mut analytics = AnalyticsPlugin::default();
+        analytics.record_plugin_capability_events(vec![PluginCapabilityEvent {
+            plugin: "example".to_string(),
+            capability: PluginCapability::Assets,
+            timestamp: SystemTime::now(),
+        }]);
+        let capability_first = analytics.plugin_capability_events_arc();
+        let capability_second = analytics.plugin_capability_events_arc();
+        assert!(Arc::ptr_eq(&capability_first, &capability_second));
+        analytics.record_plugin_capability_events(vec![PluginCapabilityEvent {
+            plugin: "example".to_string(),
+            capability: PluginCapability::Ecs,
+            timestamp: SystemTime::now(),
+        }]);
+        let capability_third = analytics.plugin_capability_events_arc();
+        assert!(!Arc::ptr_eq(&capability_first, &capability_third));
+
+        analytics.record_plugin_asset_readbacks(vec![PluginAssetReadbackEvent {
+            plugin: "example".to_string(),
+            kind: "blob_range".to_string(),
+            target: "assets/blob.bin".to_string(),
+            bytes: 128,
+            duration_ms: 0.25,
+            cache_hit: false,
+            timestamp: SystemTime::now(),
+        }]);
+        let asset_first = analytics.plugin_asset_readbacks_arc();
+        assert!(Arc::ptr_eq(&asset_first, &analytics.plugin_asset_readbacks_arc()));
+        analytics.record_plugin_asset_readbacks(vec![PluginAssetReadbackEvent {
+            plugin: "example".to_string(),
+            kind: "blob_range".to_string(),
+            target: "assets/blob.bin".to_string(),
+            bytes: 64,
+            duration_ms: 0.1,
+            cache_hit: true,
+            timestamp: SystemTime::now(),
+        }]);
+        assert!(!Arc::ptr_eq(&asset_first, &analytics.plugin_asset_readbacks_arc()));
+
+        analytics.record_plugin_watchdog_events(vec![PluginWatchdogEvent {
+            plugin: "example".to_string(),
+            timestamp: SystemTime::now(),
+            elapsed_ms: 12.0,
+            reason: "timeout".to_string(),
+            last_request: "asset_readback".to_string(),
+        }]);
+        let watchdog_first = analytics.plugin_watchdog_events_arc();
+        assert!(Arc::ptr_eq(&watchdog_first, &analytics.plugin_watchdog_events_arc()));
+        analytics.record_plugin_watchdog_events(vec![PluginWatchdogEvent {
+            plugin: "example".to_string(),
+            timestamp: SystemTime::now(),
+            elapsed_ms: 1.0,
+            reason: "panic".to_string(),
+            last_request: "update".to_string(),
+        }]);
+        assert!(!Arc::ptr_eq(&watchdog_first, &analytics.plugin_watchdog_events_arc()));
     }
 }

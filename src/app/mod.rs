@@ -1563,12 +1563,9 @@ impl App {
             shadow_pass_metric = analytics.gpu_pass_metric("Shadow pass");
             mesh_pass_metric = analytics.gpu_pass_metric("Mesh pass");
             plugin_capability_metrics = analytics.plugin_capability_metrics();
-            plugin_capability_events =
-                Arc::from(analytics.plugin_capability_events().into_boxed_slice());
-            plugin_asset_readbacks =
-                Arc::from(analytics.plugin_asset_readbacks().into_boxed_slice());
-            plugin_watchdog_events =
-                Arc::from(analytics.plugin_watchdog_events().into_boxed_slice());
+            plugin_capability_events = analytics.plugin_capability_events_arc();
+            plugin_asset_readbacks = analytics.plugin_asset_readbacks_arc();
+            plugin_watchdog_events = analytics.plugin_watchdog_events_arc();
             animation_validation_log = analytics.animation_validation_events_arc();
             animation_budget_sample = analytics.animation_budget_sample();
             light_cluster_metrics_overlay = analytics.light_cluster_metrics();
@@ -2406,7 +2403,6 @@ impl ApplicationHandler for App {
             #[cfg(feature = "alloc_profiler")]
             {
                 analytics.record_allocation_delta(alloc_delta);
-                Self::log_allocation_delta(alloc_delta);
             }
             analytics.record_plugin_capability_metrics(capability_metrics);
             if !capability_events.is_empty() {
@@ -2422,6 +2418,8 @@ impl ApplicationHandler for App {
                 analytics.record_animation_validation_events(animation_validation_alerts);
             }
         }
+        #[cfg(feature = "alloc_profiler")]
+        Self::log_allocation_delta(alloc_delta);
 
         if self.camera_follow_target.is_some() && !self.refresh_camera_follow() {
             self.camera_follow_target = None;

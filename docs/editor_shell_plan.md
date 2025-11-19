@@ -4,11 +4,11 @@
    - Enumerate the existing `App` fields that only serve the editor UI (prefab inputs, script console, animation keyframe panel, telemetry caches, egui handles).
    - Note the types they depend on (`ClipEditRecord`, `AnimationValidationEvent`, `ScriptConsoleEntry`, etc.) so the new module exposes them via re-exports or wrapper APIs.
 
-2. **Introduce `EditorUiState`**
+2. **Introduce `EditorUiState`** _(Complete - 2025-11-17)_
    - Define a struct in `app::editor_shell` that holds the `// UI State` fields currently on `App`, along with helper methods for default construction.
    - Keep the existing structs (`ClipEditRecord`, etc.) near their current definitions for now and reference them from the new state struct.
 
-## Step 2 Progress _(2025-11-17)_
+## Step 2 Progress _(Complete - 2025-11-17)_
 - `EditorUiState` now owns the selection stack (`selected_entity`, inspector details, `gizmo_mode`, and active `gizmo_interaction`) and exposes borrow helpers so gizmo tooling and plugin plumbing can read/update state without poking at `App` internals.
 - The frame profiler and GPU timing history moved into the shell as well: `App` records samples through `record_frame_timing_sample`/`update_gpu_timing_snapshots`, while egui panels consume immutable snapshots via the shell.
 - `EditorUiOutput` grew a `gizmo_interaction` field so the viewport logic can queue interaction resets without mutating `App` mid-frame, which keeps `egui_ctx.run` borrow-safe now that the data lives inside the shell.

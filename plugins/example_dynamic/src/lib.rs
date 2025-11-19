@@ -11,6 +11,8 @@ struct ExampleDynamicPlugin {
     watchdog_sleep_ms: Option<u64>,
     watchdog_armed: bool,
     force_renderer_violation: bool,
+    force_panic: bool,
+    panic_triggered: bool,
 }
 
 impl EnginePlugin for ExampleDynamicPlugin {
@@ -33,10 +35,18 @@ impl EnginePlugin for ExampleDynamicPlugin {
             self.force_renderer_violation =
                 value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes");
         }
+        if let Ok(value) = std::env::var("EXAMPLE_DYNAMIC_FORCE_PANIC") {
+            self.force_panic =
+                value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes");
+        }
         Ok(())
     }
 
     fn update(&mut self, ctx: &mut PluginContext<'_>, dt: f32) -> Result<()> {
+        if self.force_panic && !self.panic_triggered {
+            self.panic_triggered = true;
+            panic!("example_dynamic forced panic via EXAMPLE_DYNAMIC_FORCE_PANIC");
+        }
         if !self.watchdog_armed {
             if let Some(ms) = self.watchdog_sleep_ms.take() {
                 self.watchdog_armed = true;

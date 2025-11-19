@@ -6,7 +6,7 @@ This document tracks the staged remediation work. Each section calls out the goa
 
 **Goal:** Plugin panics or reloads never destabilize the editor, watchdog metrics remain accurate, and isolated plugin metadata no longer leaks.
 
-**Status:** **Mostly Complete** - `app::plugin_runtime` now owns the host/manager pair, regression tests validate panic isolation and watchdog surfacing, and isolated proxies own their metadata. A manual soak confirmation remains.
+**Status:** **Complete** - `app::plugin_runtime` now owns the host/manager pair, regression tests validate panic isolation and watchdog surfacing, isolated proxies own their metadata, and a manual soak run on 2025-11-20 (`EXAMPLE_DYNAMIC_FORCE_PANIC=1 cargo run --bin isolated_plugin_cli -- --manifest perf/plugin_panic_manifest.json --plugin example_dynamic --steps 6`) confirmed that the isolated host crashes cleanly while the editor/runtime keep running. The soak output is archived in `perf/plugin_panic_soak.log` so future runs can be compared or repeated.
 
 **Tasks**
 - [x] Replace the swap/restore pattern in `PluginRuntimeScope` with direct borrowing (manager now lives on `App`, so no guard is required).
@@ -20,7 +20,7 @@ This document tracks the staged remediation work. Each section calls out the goa
 
 **Goal:** Idle frames allocate essentially zero bytes so frame-time plots reflect actual work, even when analytics panels are open.
 
-**Status:** **Complete** - Frame profiler samples, frame-time plots, plugin status data, prefab shelf entries, analytics recent events, scene dependency lists, GPU timings, and scripting tooling reuse cached `Arc` snapshots, per-frame allocation deltas are logged behind the `alloc_profiler` feature, and the editor now captures idle vs. panel-open frame budgets directly from the Stats panel.
+**Status:** **Complete** - Frame profiler samples, frame-time plots, plugin status data, prefab shelf entries, analytics recent events, scene dependency lists, GPU timings, and scripting tooling reuse cached `Arc` snapshots, per-frame allocation deltas are logged behind the `alloc_profiler` feature, and the editor now captures idle vs. panel-open frame budgets directly from the Stats panel. The most recent capture on 2025-11-18 (`perf/editor_all_panels.txt`) held idle frames at 8.83 ms, panels-open frames at 14.34 ms, and kept net allocations within +/-26 KB per frame.
 
 **Tasks**
 - [x] Rework `FrameProfiler`/analytics history so the editor consumes cached `Arc<[PlotPoint]>` data instead of cloning each frame.
@@ -65,7 +65,7 @@ This document tracks the staged remediation work. Each section calls out the goa
 
 **Goal:** All UI panels render from stable snapshots so toggling them on/off no longer impacts performance.
 
-**Status:** **Complete** - Plugin panels, prefab shelf, analytics recent events, frame plots, script console, REPL history, scene history, and retained asset lists consume cached `Arc` data, and an `alloc_profiler`-backed capture run (`perf/editor_all_panels.*`) shows minimal drift when every optional window (Keyframe Editor, Script Debugger, Entity Lookup) is forced open via `KESTREL_FRAME_BUDGET_CAPTURE=all_panels` (idle frame≈8.83 ms → panels-open frame≈14.34 ms with delta_update≈0 ms, delta_ui≈+1.18 ms, delta_alloc≈−26 KB).
+**Status:** **Complete** - Plugin panels, prefab shelf, analytics recent events, frame plots, script console, REPL history, scene history, and retained asset lists consume cached `Arc` data, and an `alloc_profiler`-backed capture run (`perf/editor_all_panels.*`) shows minimal drift when every optional window (Keyframe Editor, Script Debugger, Entity Lookup) is forced open via `KESTREL_FRAME_BUDGET_CAPTURE=all_panels` (idle frame≈8.83 ms → panels-open frame≈14.34 ms with delta_update≈0 ms, delta_ui≈+1.18 ms, delta_alloc≈−26 KB).
 
 **Tasks**
 - [x] Extend `TelemetryCache`/runtime data to emit shared snapshots for prefab entries, plugin statuses, frame plots, analytics recent events, scene history, scripting tooling, and animation telemetry tables.

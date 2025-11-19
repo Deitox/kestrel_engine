@@ -22,7 +22,7 @@ This plan captures the remediation work for the three most pressing issues surfa
 
 **Validation**
 - `cargo test app::plugin_host` and `cargo test plugins::isolated_proxy`.
-- Manual soak test: trigger a deliberate plugin panic from the editor, verify the plugin is disabled, and confirm the rest of the UI remains responsive.
+- Manual soak test: run `EXAMPLE_DYNAMIC_FORCE_PANIC=1 cargo run --bin isolated_plugin_cli -- --manifest perf/plugin_panic_manifest.json --plugin example_dynamic --steps 6` to force the isolated dynamic plugin to panic; the host disables it while the rest of the runtime keeps running (see `perf/plugin_panic_soak.log` for the latest capture).
 
 ## 2. Frame-Time Allocation Budget (Medium-High)
 
@@ -42,7 +42,7 @@ This plan captures the remediation work for the three most pressing issues surfa
 
 **Validation**
 - Compare `update_ms`/`ui_ms` and allocation deltas before/after via the analytics plots.
-- Run a release build with the new allocation instrumentation to confirm idle frames remain flat while toggling editor panels (see `perf/editor_all_panels.txt` for the latest capture: idle frame≈8.83 ms vs. panels-open frame≈14.34 ms with Δupdate≈0 ms, Δui≈+1.18 ms, Δalloc≈−26 KB using `cargo run --release --features alloc_profiler` and `KESTREL_FRAME_BUDGET_CAPTURE=all_panels`).
+- Run a release build with the new allocation instrumentation to confirm idle frames remain flat while toggling editor panels. The latest capture (2025-11-18, see perf/editor_all_panels.txt) recorded idle frames at 8.83 ms and panels-open frames at 14.34 ms, with UI cost +1.18 ms and allocation delta -26 KB using cargo run --release --features alloc_profiler plus KESTREL_FRAME_BUDGET_CAPTURE=all_panels.
 
 ### Frame-Budget Capture Workflow
 1. Build the editor with the allocation instrumentation enabled:

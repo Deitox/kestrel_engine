@@ -836,14 +836,14 @@ fn isolated_plugin_telemetry_pipeline() {
     analytics.record_plugin_capability_events(capability_events.clone());
     analytics.record_plugin_asset_readbacks(asset_events.clone());
 
-    let recorded = analytics.plugin_capability_events();
+    let recorded = analytics.plugin_capability_events_arc();
     assert_eq!(recorded.len(), capability_events.len());
     assert!(
         recorded.iter().any(|event| event.plugin == "unauthorized_renderer"),
         "analytics stored capability violation events"
     );
 
-    let recent_readbacks = analytics.plugin_asset_readbacks();
+    let recent_readbacks = analytics.plugin_asset_readbacks_arc();
     assert!(!recent_readbacks.is_empty(), "analytics stored recent asset readback events");
 
     manager.shutdown(&mut ctx);
@@ -1116,7 +1116,7 @@ fn plugin_panic_emits_watchdog_event() {
     let mut analytics = AnalyticsPlugin::default();
     analytics.record_plugin_watchdog_events(events.clone());
     assert!(
-        analytics.plugin_watchdog_events().iter().any(|event| event.plugin == "panicker"),
+        analytics.plugin_watchdog_events_arc().iter().any(|event| event.plugin == "panicker"),
         "analytics should surface panic watchdog events"
     );
 
