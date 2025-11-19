@@ -270,7 +270,8 @@ idx.as_array().iter().enumerate().for_each(|(k,&v)| frame_idx[i+k]=v);
    - `perf/final.{txt,json}` + `perf/final_profile.{log,json}`
 4. **Graph (optional):** simple CSV and plot of ms vs animators (can be derived from the JSON summaries if needed).
 5. **Phase‑2 feature flags:** capture SoA/fixed-point/SIMD numbers with `python scripts/sprite_bench.py --features "sprite_anim_fixed_point,sprite_anim_simd"` (or pass the same list to `cargo test`). Always note the feature set in the perf artifact label.
-6. After each sweep, run `cargo run --bin sprite_perf_guard -- --report target/animation_targets_report.json` to enforce the sprite budget thresholds (`mean/max ≤ 0.300 ms`, `%slow ≤ 1%`). The guard reuses the report emitted by the harness, so CI can invoke it without rerunning the bench.
+6. Use the new release bench preset when chasing sign-off numbers: `python scripts/sprite_bench.py --bench-release --label bench_release --runs 1` (the flag simply targets Cargo’s `bench-release` profile so the harness uses the same opts we ship). Commit or upload the resulting `perf/bench_release.{txt,json}` plus `target/animation_targets_report.json`.
+7. After each sweep, run `cargo run --bin sprite_perf_guard -- --report target/animation_targets_report.json` to enforce the sprite budget thresholds (`mean/max ≤ 0.300 ms`, `%slow ≤ 1%`). The guard reuses the report emitted by the harness, so CI can invoke it without rerunning the bench.
 
 ---
 

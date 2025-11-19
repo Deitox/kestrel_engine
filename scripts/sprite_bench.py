@@ -2,8 +2,9 @@
 """
 Utility for collecting sprite benchmark baselines without piling up heavy artefacts.
 
-Example:
+Examples:
     python scripts/sprite_bench.py --label before_phase0 --runs 3
+    python scripts/sprite_bench.py --bench-release --label bench_release --runs 1
 """
 
 from __future__ import annotations
@@ -85,6 +86,11 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     parser.add_argument("--label", default="latest_sprite_bench", help="Base filename for perf artefacts")
     parser.add_argument("--runs", type=int, default=3, help="Number of harness invocations")
     parser.add_argument("--profile", default="release", help="Cargo profile (default: release)")
+    parser.add_argument(
+        "--bench-release",
+        action="store_true",
+        help="Shortcut for --profile bench-release (optimized release bench)",
+    )
     parser.add_argument("--features", default="", help="Optional cargo features")
     parser.add_argument("--test", default="animation_targets_measure", help="Test target to invoke")
     parser.add_argument(
@@ -117,6 +123,8 @@ def format_table(rows: List[List[str]]) -> str:
 
 def main(argv: List[str]) -> int:
     args = parse_args(argv)
+    if args.bench_release:
+        args.profile = "bench-release"
     PERF_DIR.mkdir(exist_ok=True)
 
     env = os.environ.copy()
