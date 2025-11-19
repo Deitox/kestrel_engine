@@ -1,0 +1,31 @@
+{
+  "disable_builtins": [],
+  "plugins": [
+    {
+      "name": "example_dynamic",
+      "path": "../plugins/example_dynamic/target/release/example_dynamic.dll",
+      "enabled": true,
+      "version": "0.1.0",
+      "min_engine_api": 1,
+      "requires_features": [
+        "scripts.rhai"
+      ],
+      "provides_features": [
+        "examples.dynamic_overlay"
+      ],
+      "capabilities": [
+        "renderer",
+        "ecs",
+        "assets",
+        "input",
+        "events",
+        "time"
+      ],
+      "trust": "isolated",
+      "asset_filters": {
+        "atlases": [],
+        "blobs": []
+      }
+    }
+  ]
+}
