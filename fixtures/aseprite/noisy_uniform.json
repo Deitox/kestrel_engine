@@ -1,0 +1,35 @@
+{
+  "frames": [
+    {
+      "filename": "frame0",
+      "frame": { "x": 0, "y": 0, "w": 16, "h": 16 },
+      "duration": 100
+    },
+    {
+      "filename": "frame1",
+      "frame": { "x": 16, "y": 0, "w": 16, "h": 16 },
+      "duration": 101
+    },
+    {
+      "filename": "frame2",
+      "frame": { "x": 32, "y": 0, "w": 16, "h": 16 },
+      "duration": 104
+    },
+    {
+      "filename": "frame3",
+      "frame": { "x": 48, "y": 0, "w": 16, "h": 16 },
+      "duration": 100
+    },
+    {
+      "filename": "frame4",
+      "frame": { "x": 64, "y": 0, "w": 16, "h": 16 },
+      "duration": 100
+    }
+  ],
+  "meta": {
+    "image": "noisy_uniform.png",
+    "frameTags": [
+      { "name": "idle", "from": 0, "to": 4, "direction": "forward" }
+    ]
+  }
+}

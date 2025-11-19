@@ -159,6 +159,42 @@ fn aseprite_to_atlas_processes_fixture_exports() {
     );
 }
 
+#[test]
+fn aseprite_to_atlas_emits_uniform_lint() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let output_path = temp_dir.path().join("lint_output.json");
+
+    let exe = locate_binary("aseprite_to_atlas");
+    let status = Command::new(exe)
+        .arg(Path::new("fixtures/aseprite/noisy_uniform.json"))
+        .arg(&output_path)
+        .status()
+        .expect("run aseprite_to_atlas with lint fixture");
+
+    assert!(status.success(), "aseprite_to_atlas did not exit successfully for lint fixture");
+
+    let generated = fs::read_to_string(&output_path).expect("read generated atlas json");
+    let atlas: serde_json::Value = serde_json::from_str(&generated).expect("parse atlas output");
+    let lint_entries = atlas
+        .get("lint")
+        .and_then(|value| value.as_array())
+        .expect("atlas output should include lint array");
+    let lint = lint_entries
+        .iter()
+        .find(|entry| entry.get("code").and_then(|code| code.as_str()) == Some("uniform_dt_drift"))
+        .expect("lint output should include uniform drift entry");
+    assert_eq!(
+        lint.get("severity").and_then(|value| value.as_str()),
+        Some("warn"),
+        "drift > 1ms should emit a warn lint"
+    );
+    let frames = lint
+        .get("frames")
+        .and_then(|value| value.as_array())
+        .expect("lint entry should include frames");
+    assert_eq!(frames.len(), 2, "only the drifting frames should be reported");
+}
+
 fn locate_binary(name: &str) -> PathBuf {
     if let Ok(path) = std::env::var(format!("CARGO_BIN_EXE_{name}")) {
         return PathBuf::from(path);

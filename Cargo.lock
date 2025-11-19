@@ -1697,6 +1697,7 @@ dependencies = [
  "tempfile",
  "uuid",
  "wgpu",
+ "wide",
  "winit",
 ]
 

@@ -668,3 +668,163 @@ fn animation_time_scales_and_gates_playback() {
         anim_time.set_fixed_step(None);
     }
 }
+
+#[cfg(feature = "sprite_anim_simd")]
+fn expected_const_bucket_state(
+    index: usize,
+    elapsed: f32,
+    frame_dt: f32,
+    frame_count: usize,
+    delta: f32,
+) -> (usize, f32) {
+    if frame_count == 0 || frame_dt <= 0.0 {
+        return (index, 0.0);
+    }
+    let dt = frame_dt.max(f32::EPSILON);
+    let mut idx = index % frame_count;
+    let mut time = elapsed + delta;
+    if time >= 0.0 {
+        let frames = (time / dt).floor() as i64;
+        let wrapped = ((idx as i64 + frames) % frame_count as i64 + frame_count as i64) % frame_count as i64;
+        idx = wrapped as usize;
+        let new_elapsed = time - (frames as f32) * dt;
+        (idx, new_elapsed.clamp(0.0, dt))
+    } else {
+        let mut current = idx as i64;
+        while time < 0.0 {
+            time += dt;
+            current -= 1;
+            if current < 0 {
+                current = frame_count as i64 - 1;
+            }
+        }
+        (current as usize, time.clamp(0.0, dt))
+    }
+}
+
+#[cfg(feature = "sprite_anim_simd")]
+fn simulate_var_dt(animation: &SpriteAnimation, delta: f32) -> (usize, f32) {
+    let durations = animation.frame_durations.as_ref();
+    let len = durations.len();
+    if len == 0 {
+        return (0, 0.0);
+    }
+    let mut index = animation.frame_index.min(len - 1);
+    let mut remaining = animation.elapsed_in_frame + delta;
+    if remaining >= 0.0 {
+        loop {
+            let threshold = durations[index].max(1e-6);
+            if remaining <= threshold {
+                return (index, remaining.min(threshold));
+            }
+            remaining -= threshold;
+            index = if index + 1 == len { 0 } else { index + 1 };
+        }
+    } else {
+        while remaining < 0.0 {
+            index = if index == 0 { len - 1 } else { index - 1 };
+            remaining += durations[index].max(1e-6);
+        }
+        (index, remaining.max(0.0))
+    }
+}
+
+#[cfg(feature = "sprite_anim_simd")]
+#[test]
+fn simd_parity() {
+    let mut assets = AssetManager::new();
+    assets.retain_atlas("main", Some("assets/images/atlas.json")).expect("load main atlas");
+    let mut ecs = EcsWorld::new();
+    let mut entities = Vec::new();
+    for i in 0..12 {
+        let entity = ecs
+            .world
+            .spawn((
+                Transform::default(),
+                WorldTransform::default(),
+                Sprite::uninitialized(Arc::from("main"), Arc::from("redorb")),
+            ))
+            .id();
+        assert!(ecs.set_sprite_timeline(entity, &assets, Some("demo_cycle")));
+        let speed = 0.6 + (i as f32 * 0.1);
+        ecs.set_sprite_animation_speed(entity, speed);
+        let offset = (i as f32 * 0.015) % 0.12;
+        assert!(ecs.set_sprite_animation_start_offset(entity, offset));
+        entities.push((entity, speed));
+    }
+    let dt = 0.21;
+    let mut expected = Vec::new();
+    for (entity, speed) in &entities {
+        let animation = ecs.world.get::<SpriteAnimation>(*entity).expect("animation component");
+        let (next_index, next_elapsed) = expected_const_bucket_state(
+            animation.frame_index,
+            animation.elapsed_in_frame,
+            animation.current_duration,
+            animation.frames.len(),
+            dt * *speed,
+        );
+        expected.push((next_index, next_elapsed));
+    }
+    ecs.update(dt);
+    for ((entity, _speed), (expected_index, expected_elapsed)) in entities.iter().zip(expected.into_iter()) {
+        let animation = ecs.world.get::<SpriteAnimation>(*entity).expect("animation component");
+        assert_eq!(
+            animation.frame_index, expected_index,
+            "simd bucket should advance the same number of frames as the scalar path"
+        );
+        assert!(
+            (animation.elapsed_in_frame - expected_elapsed).abs() <= 1e-4,
+            "elapsed mismatch for entity {:?}: expected {:.6}, got {:.6}",
+            entity,
+            expected_elapsed,
+            animation.elapsed_in_frame
+        );
+    }
+}
+
+#[cfg(feature = "sprite_anim_simd")]
+#[test]
+fn simd_mixed_bucket_regression() {
+    let mut assets = AssetManager::new();
+    assets.retain_atlas("main", Some("assets/images/atlas.json")).expect("load main atlas");
+    let mut ecs = EcsWorld::new();
+    let mut entities = Vec::new();
+    for i in 0..16 {
+        let entity = ecs
+            .world
+            .spawn((
+                Transform::default(),
+                WorldTransform::default(),
+                Sprite::uninitialized(Arc::from("main"), Arc::from("redorb")),
+            ))
+            .id();
+        let timeline = if i % 2 == 0 { "demo_cycle" } else { "checker_pulse" };
+        assert!(ecs.set_sprite_timeline(entity, &assets, Some(timeline)));
+        let speed = if i % 3 == 0 { -0.4 - (i as f32 * 0.03) } else { 0.9 + (i as f32 * 0.05) };
+        ecs.set_sprite_animation_speed(entity, speed);
+        let offset = (i as f32 * 0.017) % 0.2;
+        assert!(ecs.set_sprite_animation_start_offset(entity, offset));
+        entities.push((entity, speed));
+    }
+    let dt = 0.17;
+    let mut expected = Vec::new();
+    for (entity, speed) in &entities {
+        let animation = ecs.world.get::<SpriteAnimation>(*entity).expect("animation component");
+        expected.push(simulate_var_dt(animation, dt * *speed));
+    }
+    ecs.update(dt);
+    for ((entity, _speed), (expected_index, expected_elapsed)) in entities.iter().zip(expected.into_iter()) {
+        let animation = ecs.world.get::<SpriteAnimation>(*entity).expect("animation component");
+        assert_eq!(
+            animation.frame_index, expected_index,
+            "mixed bucket sprite advanced to unexpected frame (timeline mix regression)"
+        );
+        assert!(
+            (animation.elapsed_in_frame - expected_elapsed).abs() <= 1e-4,
+            "elapsed mismatch for entity {:?}: expected {:.6}, got {:.6}",
+            entity,
+            expected_elapsed,
+            animation.elapsed_in_frame
+        );
+    }
+}

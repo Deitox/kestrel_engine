@@ -128,6 +128,8 @@ def main(argv: List[str]) -> int:
     PERF_DIR.mkdir(exist_ok=True)
 
     env = os.environ.copy()
+    env["PROFILE"] = args.profile
+    env["CARGO_PROFILE"] = args.profile
     env["ANIMATION_PROFILE_COUNT"] = str(args.count)
     env["ANIMATION_PROFILE_STEPS"] = str(args.steps)
     env["ANIMATION_PROFILE_WARMUP"] = str(args.warmup)

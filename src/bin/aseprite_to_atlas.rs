@@ -59,6 +59,7 @@ struct Timeline {
     name: String,
     frames: Vec<TimelineFrame>,
     mode: LoopMode,
+    lints: Vec<TimelineLint>,
 }
 
 #[derive(Debug)]
@@ -66,6 +67,38 @@ struct TimelineFrame {
     region: String,
     duration_ms: u32,
     events: Vec<String>,
+}
+
+#[derive(Debug)]
+struct TimelineLint {
+    code: &'static str,
+    severity: LintSeverity,
+    message: String,
+    timeline: String,
+    reference_ms: u32,
+    max_diff_ms: u32,
+    frames: Vec<LintFrame>,
+}
+
+#[derive(Debug)]
+struct LintFrame {
+    index: usize,
+    duration_ms: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LintSeverity {
+    Info,
+    Warn,
+}
+
+impl LintSeverity {
+    fn as_str(self) -> &'static str {
+        match self {
+            LintSeverity::Info => "info",
+            LintSeverity::Warn => "warn",
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -173,14 +206,18 @@ fn run() -> Result<()> {
     let events_map = if let Some(path) = events_file { load_events_file(&path)? } else { HashMap::new() };
     let timelines = build_timelines(&ase, &loop_config, &events_map)?;
 
-    let atlas_json = json!({
-        "image": ase.meta.image,
-        "width": determine_width(&ase.frames)?,
-        "height": determine_height(&ase.frames)?,
-        "regions": regions,
-        "animations": timelines_to_json(&timelines),
-        "atlas_key": atlas_key,
-    });
+    let (animations_json, lint_json) = timelines_to_json(&timelines);
+    let mut atlas_json = serde_json::Map::new();
+    atlas_json.insert("image".to_string(), json!(ase.meta.image));
+    atlas_json.insert("width".to_string(), json!(determine_width(&ase.frames)?));
+    atlas_json.insert("height".to_string(), json!(determine_height(&ase.frames)?));
+    atlas_json.insert("regions".to_string(), json!(regions));
+    atlas_json.insert("animations".to_string(), animations_json);
+    atlas_json.insert("atlas_key".to_string(), json!(atlas_key));
+    if !lint_json.is_empty() {
+        atlas_json.insert("lint".to_string(), serde_json::Value::Array(lint_json));
+    }
+    let atlas_json = serde_json::Value::Object(atlas_json);
 
     if let Some(dir) = output_path.parent() {
         fs::create_dir_all(dir).with_context(|| format!("creating output directory {}", dir.display()))?;
@@ -270,7 +307,13 @@ fn build_timelines(
                 names, frame
             );
         }
-        let timeline = Timeline { name: "default".to_string(), frames, mode: config.default_mode };
+        let mut lint_entries = Vec::new();
+        if let Some(lint) = detect_uniform_drift("default", &frames) {
+            report_lint(&lint);
+            lint_entries.push(lint);
+        }
+        let timeline =
+            Timeline { name: "default".to_string(), frames, mode: config.default_mode, lints: lint_entries };
         return Ok(vec![timeline]);
     }
 
@@ -309,7 +352,12 @@ fn build_timelines(
                 names, frame, tag.name
             );
         }
-        timelines.push(Timeline { name: tag.name.clone(), frames, mode });
+        let mut lint_entries = Vec::new();
+        if let Some(lint) = detect_uniform_drift(&tag.name, &frames) {
+            report_lint(&lint);
+            lint_entries.push(lint);
+        }
+        timelines.push(Timeline { name: tag.name.clone(), frames, mode, lints: lint_entries });
     }
     Ok(timelines)
 }
@@ -324,8 +372,61 @@ fn collate_events(records: Option<&Vec<TimelineEventRecord>>) -> HashMap<usize, 
     map
 }
 
-fn timelines_to_json(timelines: &[Timeline]) -> serde_json::Value {
+fn detect_uniform_drift(name: &str, frames: &[TimelineFrame]) -> Option<TimelineLint> {
+    if frames.len() < 2 {
+        return None;
+    }
+    let mut counts: HashMap<u32, usize> = HashMap::new();
+    for frame in frames {
+        *counts.entry(frame.duration_ms).or_insert(0) += 1;
+    }
+    let (reference, count) = counts.into_iter().max_by_key(|(_, count)| *count)?;
+    let mut minimum_majority = frames.len() * 3 / 5;
+    if minimum_majority == 0 {
+        minimum_majority = 1;
+    }
+    if count < minimum_majority {
+        return None;
+    }
+    let mut max_diff = 0_u32;
+    let mut offenders = Vec::new();
+    for (index, frame) in frames.iter().enumerate() {
+        let diff = reference.abs_diff(frame.duration_ms);
+        if diff > 0 {
+            max_diff = max_diff.max(diff);
+            offenders.push(LintFrame { index, duration_ms: frame.duration_ms });
+        }
+    }
+    if offenders.is_empty() {
+        return None;
+    }
+    let severity = if max_diff <= 1 { LintSeverity::Info } else { LintSeverity::Warn };
+    let message = format!(
+        "timeline '{}' drifts {}ms from {}ms baseline across {} frames",
+        name,
+        max_diff,
+        reference,
+        offenders.len()
+    );
+    Some(TimelineLint {
+        code: "uniform_dt_drift",
+        severity,
+        message,
+        timeline: name.to_string(),
+        reference_ms: reference,
+        max_diff_ms: max_diff,
+        frames: offenders,
+    })
+}
+
+fn report_lint(lint: &TimelineLint) {
+    let tier = lint.severity.as_str();
+    eprintln!("[aseprite_to_atlas] lint({tier}): {}", lint.message);
+}
+
+fn timelines_to_json(timelines: &[Timeline]) -> (serde_json::Value, Vec<serde_json::Value>) {
     let mut map = serde_json::Map::new();
+    let mut lint_entries = Vec::new();
     for timeline in timelines {
         let frames_json: Vec<serde_json::Value> = timeline
             .frames
@@ -353,6 +454,26 @@ fn timelines_to_json(timelines: &[Timeline]) -> serde_json::Value {
             timeline_json.insert("events".to_string(), serde_json::Value::Array(events_json));
         }
         map.insert(timeline.name.clone(), serde_json::Value::Object(timeline_json));
+        for lint in &timeline.lints {
+            lint_entries.push(lint_to_json(lint));
+        }
     }
-    serde_json::Value::Object(map)
+    (serde_json::Value::Object(map), lint_entries)
+}
+
+fn lint_to_json(lint: &TimelineLint) -> serde_json::Value {
+    let frames: Vec<serde_json::Value> = lint
+        .frames
+        .iter()
+        .map(|frame| json!({ "frame": frame.index, "duration_ms": frame.duration_ms }))
+        .collect();
+    json!({
+        "code": lint.code,
+        "severity": lint.severity.as_str(),
+        "timeline": lint.timeline,
+        "message": lint.message,
+        "reference_ms": lint.reference_ms,
+        "max_diff_ms": lint.max_diff_ms,
+        "frames": frames
+    })
 }

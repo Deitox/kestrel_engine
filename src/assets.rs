@@ -4,6 +4,7 @@ use glam::{Vec2, Vec4};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
+use std::convert::TryFrom;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -262,6 +263,7 @@ pub struct TextureAtlas {
     pub height: u32,
     pub regions: HashMap<Arc<str>, AtlasRegion>,
     pub animations: HashMap<String, SpriteTimeline>,
+    pub lint: Vec<SpriteAtlasLint>,
 }
 
 #[derive(Clone, Default)]
@@ -306,6 +308,29 @@ pub struct SpriteTimeline {
     pub frame_offsets: Arc<[f32]>,
     pub total_duration: f32,
     pub total_duration_inv: f32,
+}
+
+#[derive(Clone)]
+pub struct SpriteAtlasLint {
+    pub code: String,
+    pub severity: SpriteAtlasLintSeverity,
+    pub timeline: String,
+    pub message: String,
+    pub reference_ms: u32,
+    pub max_diff_ms: u32,
+    pub frames: Vec<SpriteAtlasLintFrame>,
+}
+
+#[derive(Clone)]
+pub enum SpriteAtlasLintSeverity {
+    Info,
+    Warn,
+}
+
+#[derive(Clone)]
+pub struct SpriteAtlasLintFrame {
+    pub frame: usize,
+    pub duration_ms: u32,
 }
 
 #[derive(Clone)]
@@ -435,6 +460,8 @@ struct AtlasFile {
     regions: HashMap<String, Rect>,
     #[serde(default)]
     animations: HashMap<String, AtlasTimelineFile>,
+    #[serde(default)]
+    lint: Vec<AtlasLintFile>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -462,6 +489,27 @@ struct AtlasTimelineFrameFile {
 struct AtlasTimelineEventFile {
     frame: usize,
     name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AtlasLintFile {
+    code: String,
+    severity: String,
+    timeline: String,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    reference_ms: Option<u32>,
+    #[serde(default)]
+    max_diff_ms: Option<u32>,
+    #[serde(default)]
+    frames: Vec<AtlasLintFrameFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AtlasLintFrameFile {
+    frame: usize,
+    duration_ms: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -768,6 +816,7 @@ pub fn parse_texture_atlas_bytes(
         regions.insert(Arc::clone(&name_arc), AtlasRegion { id, rect, uv });
     }
     let animations = parse_timelines(key_hint, &regions, af.animations, &mut diagnostics);
+    let lint = convert_lint_entries(af.lint)?;
     let atlas = TextureAtlas {
         image_key: af.image.clone(),
         image_path: image_path.clone(),
@@ -775,6 +824,7 @@ pub fn parse_texture_atlas_bytes(
         height: af.height,
         regions,
         animations,
+        lint,
     };
     Ok(TextureAtlasParseResult { atlas, diagnostics })
 }
@@ -857,6 +907,44 @@ fn parse_timelines(
         );
     }
     animations
+}
+
+fn convert_lint_entries(entries: Vec<AtlasLintFile>) -> Result<Vec<SpriteAtlasLint>> {
+    let mut out = Vec::new();
+    for entry in entries {
+        match SpriteAtlasLint::try_from(entry) {
+            Ok(lint) => out.push(lint),
+            Err(err) => {
+                eprintln!("[assets] warning: failed to parse atlas lint entry: {err}");
+            }
+        }
+    }
+    Ok(out)
+}
+
+impl TryFrom<AtlasLintFile> for SpriteAtlasLint {
+    type Error = anyhow::Error;
+
+    fn try_from(value: AtlasLintFile) -> Result<Self> {
+        let severity = match value.severity.to_ascii_lowercase().as_str() {
+            "warn" => SpriteAtlasLintSeverity::Warn,
+            _ => SpriteAtlasLintSeverity::Info,
+        };
+        let frames = value
+            .frames
+            .into_iter()
+            .map(|frame| SpriteAtlasLintFrame { frame: frame.frame, duration_ms: frame.duration_ms })
+            .collect();
+        Ok(Self {
+            code: value.code,
+            severity,
+            timeline: value.timeline,
+            message: value.message.unwrap_or_else(|| "atlas lint entry".to_string()),
+            reference_ms: value.reference_ms.unwrap_or(0),
+            max_diff_ms: value.max_diff_ms.unwrap_or(0),
+            frames,
+        })
+    }
 }
 
 impl AssetManager {

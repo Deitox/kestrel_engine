@@ -149,7 +149,7 @@ Artifacts: `perf/before_phase0.txt`, `perf/before_phase0.json`
 
 ## Phase 2 — Medium Lifts (another 10–20% possible)
 
-_Pre-req:_ Phase 1 metrics must confirm that the fast bucket handles the majority of animators and that `animation_targets_measure` is stable. These items are data-layout heavy and should be feature-gated (`sprite_anim_soa`, etc.) so we can fall back quickly if editor tooling or hot-reload scenarios surface regressions.
+_Pre-req:_ Phase 1 metrics must confirm that the fast bucket handles the majority of animators and that `animation_targets_measure` is stable. These items are data-layout heavy and should remain feature-gated (`sprite_anim_soa`, etc.) so we can fall back quickly if editor tooling or hot-reload scenarios surface regressions.
 
 ### 2.1 Fixed-point time counters
 
