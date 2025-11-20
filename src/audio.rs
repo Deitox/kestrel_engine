@@ -1,12 +1,36 @@
-use crate::events::GameEvent;
+use crate::events::{AudioEmitter, GameEvent};
 use crate::plugins::{EnginePlugin, PluginContext};
 use anyhow::Result;
 use cpal::traits::{DeviceTrait, HostTrait};
+use glam::Vec3;
 use rodio::source::{SineWave, Source};
-use rodio::{OutputStream, OutputStreamHandle, Sink};
+use rodio::{OutputStream, OutputStreamHandle, Sink, SpatialSink};
 use std::any::Any;
 use std::collections::VecDeque;
 use std::time::Duration;
+
+#[derive(Clone, Copy, Debug)]
+pub struct AudioListenerState {
+    pub position: Vec3,
+    pub forward: Vec3,
+    pub up: Vec3,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct AudioSpatialConfig {
+    pub enabled: bool,
+    pub min_distance: f32,
+    pub max_distance: f32,
+    pub pan_width: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SpatialParams {
+    gain: f32,
+    emitter: Vec3,
+    left_ear: Vec3,
+    right_ear: Vec3,
+}
 
 pub struct AudioManager {
     enabled: bool,
@@ -19,6 +43,8 @@ pub struct AudioManager {
     last_error: Option<String>,
     device_name: Option<String>,
     sample_rate_hz: Option<u32>,
+    listener: AudioListenerState,
+    spatial: AudioSpatialConfig,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -41,6 +67,8 @@ impl AudioManager {
     pub fn new(capacity: usize) -> Self {
         let capacity = capacity.max(1);
         let device_info = AudioDeviceInfo::detect();
+        let listener = AudioListenerState { position: Vec3::ZERO, forward: Vec3::new(0.0, 0.0, -1.0), up: Vec3::Y };
+        let spatial = AudioSpatialConfig { enabled: true, min_distance: 0.1, max_distance: 25.0, pan_width: 10.0 };
         match OutputStream::try_default() {
             Ok((stream, handle)) => Self {
                 enabled: false,
@@ -53,6 +81,8 @@ impl AudioManager {
                 last_error: None,
                 device_name: device_info.name.clone(),
                 sample_rate_hz: device_info.sample_rate_hz,
+                listener,
+                spatial,
             },
             Err(err) => {
                 eprintln!(
@@ -70,6 +100,8 @@ impl AudioManager {
                     last_error: Some(format!("Audio output unavailable: {err}")),
                     device_name: device_info.name,
                     sample_rate_hz: device_info.sample_rate_hz,
+                    listener,
+                    spatial,
                 }
             }
         }
@@ -97,6 +129,18 @@ impl AudioManager {
         self.last_error = None;
     }
 
+    pub fn set_listener_state(&mut self, state: AudioListenerState) {
+        self.listener = state;
+    }
+
+    pub fn spatial_config(&self) -> AudioSpatialConfig {
+        self.spatial
+    }
+
+    pub fn set_spatial_config(&mut self, cfg: AudioSpatialConfig) {
+        self.spatial = cfg;
+    }
+
     pub fn recent_triggers(&self) -> impl ExactSizeIterator<Item = &String> {
         self.triggers.iter()
     }
@@ -113,18 +157,25 @@ impl AudioManager {
     }
 
     pub fn handle_event(&mut self, event: &GameEvent) {
-        let label = match event {
-            GameEvent::SpriteSpawned { atlas, region, .. } => format!("spawn:{}:{}", atlas, region),
-            GameEvent::EntityDespawned { .. } => String::from("despawn"),
-            GameEvent::CollisionStarted { .. } => String::from("collision"),
-            GameEvent::CollisionEnded { .. } => String::from("collision_end"),
-            GameEvent::CollisionForce { force, .. } => format!("collision_force:{force:.3}"),
+        let (label, emitter, base_amp) = match event {
+            GameEvent::SpriteSpawned { atlas, region, audio, .. } => {
+                (format!("spawn:{}:{}", atlas, region), audio.as_ref(), 0.18)
+            }
+            GameEvent::EntityDespawned { .. } => (String::from("despawn"), None, 0.18),
+            GameEvent::CollisionStarted { audio, .. } => (String::from("collision"), audio.as_ref(), 0.18),
+            GameEvent::CollisionEnded { .. } => (String::from("collision_end"), None, 0.18),
+            GameEvent::CollisionForce { force, audio, .. } => {
+                let amplitude = (force / 2000.0).clamp(0.0, 1.0);
+                (format!("collision_force:{force:.3}"), audio.as_ref(), 0.12 + amplitude * 0.2)
+            }
             GameEvent::SpriteAnimationEvent { .. } => return,
             GameEvent::ScriptMessage { .. } => return,
         };
         self.push_trigger(label.clone());
         if self.enabled && self.playback_available {
-            self.play_label(&label);
+            let spatial = emitter.and_then(|em| self.compute_spatial(em));
+            let gain = spatial.as_ref().map(|s| s.gain).unwrap_or(1.0);
+            self.play_label(&label, base_amp * gain, spatial);
         }
     }
 
@@ -135,7 +186,7 @@ impl AudioManager {
         self.triggers.push_back(trigger);
     }
 
-    fn play_label(&mut self, label: &str) {
+    fn play_label(&mut self, label: &str, gain: f32, spatial: Option<SpatialParams>) {
         let handle = match self.handle.as_ref() {
             Some(handle) => handle,
             None => {
@@ -163,9 +214,24 @@ impl AudioManager {
         } else {
             return;
         };
+        let amplitude = force_magnitude.map_or(0.18, |force| 0.12 + (force / 2000.0) * 0.2) * gain;
+        if let Some(spatial) = spatial {
+            if let Ok(sink) = SpatialSink::try_new(
+                handle,
+                spatial.emitter.to_array(),
+                spatial.left_ear.to_array(),
+                spatial.right_ear.to_array(),
+            ) {
+                let source =
+                    SineWave::new(frequency_hz).take_duration(Duration::from_millis(140)).amplify(amplitude);
+                sink.append(source);
+                sink.detach();
+                self.last_error = None;
+                return;
+            }
+        }
         match Sink::try_new(handle) {
             Ok(sink) => {
-                let amplitude = force_magnitude.map_or(0.18, |force| 0.12 + (force / 2000.0) * 0.2);
                 let source =
                     SineWave::new(frequency_hz).take_duration(Duration::from_millis(140)).amplify(amplitude);
                 sink.append(source);
@@ -181,6 +247,33 @@ impl AudioManager {
     fn record_failure(&mut self, message: impl Into<String>) {
         self.failed_playbacks = self.failed_playbacks.saturating_add(1);
         self.last_error = Some(message.into());
+    }
+
+    fn compute_spatial(&self, emitter: &AudioEmitter) -> Option<SpatialParams> {
+        if !self.spatial.enabled {
+            return None;
+        }
+        let right = self.listener.forward.cross(self.listener.up).normalize_or_zero();
+        if right.length_squared() <= f32::EPSILON {
+            return None;
+        }
+        let rel = emitter.position - self.listener.position;
+        let distance = rel.length();
+        let max_distance = self
+            .spatial
+            .max_distance
+            .min(emitter.max_distance.max(self.spatial.min_distance + 0.001));
+        let range = (max_distance - self.spatial.min_distance).max(0.001);
+        let t = ((distance - self.spatial.min_distance) / range).clamp(0.0, 1.0);
+        let gain = (1.0 - t).powi(2);
+        let head_width = 0.3;
+        let half = right * (head_width * 0.5);
+        Some(SpatialParams {
+            gain,
+            emitter: rel,
+            left_ear: -half,
+            right_ear: half,
+        })
     }
 }
 
@@ -207,6 +300,18 @@ impl AudioPlugin {
 
     pub fn clear(&mut self) {
         self.manager.clear();
+    }
+
+    pub fn set_listener_state(&mut self, state: AudioListenerState) {
+        self.manager.set_listener_state(state);
+    }
+
+    pub fn spatial_config(&self) -> AudioSpatialConfig {
+        self.manager.spatial_config()
+    }
+
+    pub fn set_spatial_config(&mut self, cfg: AudioSpatialConfig) {
+        self.manager.set_spatial_config(cfg);
     }
 
     pub fn recent_triggers(&self) -> impl ExactSizeIterator<Item = &String> {

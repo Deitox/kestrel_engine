@@ -9,7 +9,7 @@ use crate::analytics::{
     KeyframeEditorTrackKind, KeyframeEditorUsageSnapshot,
 };
 use crate::animation_validation::{AnimationValidationEvent, AnimationValidationSeverity};
-use crate::audio::AudioHealthSnapshot;
+use crate::audio::{AudioHealthSnapshot, AudioSpatialConfig};
 use crate::camera::Camera2D;
 use crate::camera3d::Camera3D;
 use crate::ecs::{
@@ -393,14 +393,14 @@ struct ParsedAudioTrigger {
 
 fn summarize_game_event(event: &GameEvent) -> (String, egui::Color32) {
     match event {
-        GameEvent::SpriteSpawned { entity, atlas, region } => (
+        GameEvent::SpriteSpawned { entity, atlas, region, .. } => (
             format!("Sprite #{:04} spawned - {atlas}/{region}", entity.index()),
             egui::Color32::from_rgb(120, 200, 120),
         ),
         GameEvent::EntityDespawned { entity } => {
             (format!("Entity #{:04} despawned", entity.index()), egui::Color32::from_rgb(210, 130, 130))
         }
-        GameEvent::CollisionStarted { a, b } => (
+        GameEvent::CollisionStarted { a, b, .. } => (
             format!("Collision started between #{:04} and #{:04}", a.index(), b.index()),
             egui::Color32::from_rgb(220, 180, 90),
         ),
@@ -408,7 +408,7 @@ fn summarize_game_event(event: &GameEvent) -> (String, egui::Color32) {
             format!("Collision resolved between #{:04} and #{:04}", a.index(), b.index()),
             egui::Color32::from_rgb(130, 170, 220),
         ),
-        GameEvent::CollisionForce { a, b, force } => (
+        GameEvent::CollisionForce { a, b, force, .. } => (
             format!("Impact #{:04}/{:04} - force {:.1}", a.index(), b.index(), force),
             egui::Color32::from_rgb(200, 150, 240),
         ),
@@ -836,6 +836,10 @@ pub(super) struct UiActions {
     pub plugin_retry_asset_readback: Vec<String>,
     pub audio_set_enabled: Option<bool>,
     pub audio_clear_log: bool,
+    pub audio_spatial_enable: Option<bool>,
+    pub audio_spatial_min_distance: Option<f32>,
+    pub audio_spatial_max_distance: Option<f32>,
+    pub audio_spatial_pan_width: Option<f32>,
     pub frame_budget_action: Option<FrameBudgetAction>,
     pub save_prefab: Option<PrefabSaveRequest>,
     pub instantiate_prefab: Option<PrefabInstantiateRequest>,
@@ -1013,6 +1017,7 @@ pub(super) struct EditorUiParams {
     pub audio_enabled: bool,
     pub audio_health: AudioHealthSnapshot,
     pub audio_plugin_present: bool,
+    pub audio_spatial_config: AudioSpatialConfig,
     pub binary_prefabs_enabled: bool,
     pub prefab_entries: Arc<[PrefabShelfEntry]>,
     pub prefab_name_input: String,
@@ -1286,6 +1291,7 @@ impl App {
             gpu_timing_averages,
             gpu_timing_supported,
             gizmo_mode: mut gizmo_mode_state,
+            audio_spatial_config,
         } = params;
 
         fn show_script_handle_table(ui: &mut egui::Ui, handles: &[ScriptHandleBinding], id_suffix: &str) {
@@ -3359,6 +3365,33 @@ impl App {
                         }
                         if ui.checkbox(&mut audio_enabled, "Enable audio triggers").changed() {
                             actions.audio_set_enabled = Some(audio_enabled);
+                        }
+                        let mut spatial_enabled = audio_spatial_config.enabled;
+                        let mut min_distance = audio_spatial_config.min_distance;
+                        let mut max_distance = audio_spatial_config.max_distance;
+                        let mut pan_width = audio_spatial_config.pan_width;
+                        ui.checkbox(&mut spatial_enabled, "Enable positional audio");
+                        ui.horizontal(|ui| {
+                            ui.label("Min dist");
+                            ui.add(egui::Slider::new(&mut min_distance, 0.0..=5.0).logarithmic(true));
+                            ui.label("Max dist");
+                            ui.add(egui::Slider::new(&mut max_distance, 0.5..=50.0).logarithmic(true));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Pan width");
+                            ui.add(egui::Slider::new(&mut pan_width, 1.0..=30.0));
+                        });
+                        if spatial_enabled != audio_spatial_config.enabled {
+                            actions.audio_spatial_enable = Some(spatial_enabled);
+                        }
+                        if (min_distance - audio_spatial_config.min_distance).abs() > f32::EPSILON {
+                            actions.audio_spatial_min_distance = Some(min_distance.max(0.0));
+                        }
+                        if (max_distance - audio_spatial_config.max_distance).abs() > f32::EPSILON {
+                            actions.audio_spatial_max_distance = Some(max_distance.max(0.0));
+                        }
+                        if (pan_width - audio_spatial_config.pan_width).abs() > f32::EPSILON {
+                            actions.audio_spatial_pan_width = Some(pan_width.max(0.1));
                         }
                         if !audio_plugin_present {
                             ui.colored_label(

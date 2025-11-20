@@ -45,7 +45,7 @@ use crate::assets::{
     AnimationClip, AnimationGraphAsset, AssetManager, ClipInterpolation, ClipKeyframe, ClipScalarTrack,
     ClipSegment, ClipVec2Track, ClipVec4Track, SpriteTimeline, TextureAtlasDiagnostics,
 };
-use crate::audio::{AudioHealthSnapshot, AudioPlugin};
+use crate::audio::{AudioHealthSnapshot, AudioListenerState, AudioPlugin, AudioSpatialConfig};
 use crate::camera::Camera2D;
 use crate::camera3d::Camera3D;
 use crate::config::{AppConfig, AppConfigOverrides, SpriteGuardrailMode};
@@ -54,7 +54,7 @@ use crate::ecs::{
     SkeletonInstance, SpriteAnimation, SpriteAnimationInfo, SpriteInstance,
 };
 use crate::environment::EnvironmentRegistry;
-use crate::events::GameEvent;
+use crate::events::{AudioEmitter, GameEvent};
 use crate::gizmo::{GizmoInteraction, GizmoMode};
 use crate::input::{Input, InputEvent};
 use crate::material_registry::{MaterialGpu, MaterialRegistry};
@@ -1189,11 +1189,72 @@ impl App {
     }
 
     fn record_events(&mut self) {
-        let events = self.ecs.drain_events();
+        let listener = self.current_audio_listener_state();
+        if let Some(audio) = self.audio_plugin_mut() {
+            audio.set_listener_state(listener);
+        }
+        let events = self
+            .ecs
+            .drain_events()
+            .into_iter()
+            .map(|e| self.enrich_event_audio(e))
+            .collect::<Vec<_>>();
         if events.is_empty() {
             return;
         }
         self.with_plugins(|plugins, ctx| plugins.handle_events(ctx, &events));
+    }
+
+    fn current_audio_listener_state(&self) -> AudioListenerState {
+        match self.viewport_camera_mode {
+            ViewportCameraMode::Ortho2D => AudioListenerState {
+                position: Vec3::new(self.camera.position.x, self.camera.position.y, 0.0),
+                forward: Vec3::new(0.0, 0.0, -1.0),
+                up: Vec3::Y,
+            },
+            ViewportCameraMode::Perspective3D => {
+                if let Some(cam) = self.mesh_preview_plugin().map(|p| p.mesh_camera().clone()) {
+                    let forward = (cam.target - cam.position).normalize_or_zero();
+                    AudioListenerState { position: cam.position, forward, up: cam.up }
+                } else {
+                    AudioListenerState { position: Vec3::new(0.0, 0.0, 5.0), forward: Vec3::new(0.0, 0.0, -1.0), up: Vec3::Y }
+                }
+            }
+        }
+    }
+
+    fn enrich_event_audio(&self, event: GameEvent) -> GameEvent {
+        const DEFAULT_MAX_DISTANCE: f32 = 25.0;
+        match event {
+            GameEvent::SpriteSpawned { entity, atlas, region, audio: _ } => {
+                let audio = self
+                    .ecs
+                    .entity_world_position3d(entity)
+                    .map(|position| AudioEmitter { position, max_distance: DEFAULT_MAX_DISTANCE });
+                GameEvent::SpriteSpawned { entity, atlas, region, audio }
+            }
+            GameEvent::CollisionStarted { a, b, audio: _ } => {
+                let audio = match (self.ecs.entity_world_position3d(a), self.ecs.entity_world_position3d(b)) {
+                    (Some(pa), Some(pb)) => {
+                        let mid = (pa + pb) * 0.5;
+                        Some(AudioEmitter { position: mid, max_distance: DEFAULT_MAX_DISTANCE })
+                    }
+                    _ => None,
+                };
+                GameEvent::CollisionStarted { a, b, audio }
+            }
+            GameEvent::CollisionForce { a, b, force, audio: _ } => {
+                let audio = match (self.ecs.entity_world_position3d(a), self.ecs.entity_world_position3d(b)) {
+                    (Some(pa), Some(pb)) => {
+                        let mid = (pa + pb) * 0.5;
+                        Some(AudioEmitter { position: mid, max_distance: DEFAULT_MAX_DISTANCE })
+                    }
+                    _ => None,
+                };
+                GameEvent::CollisionForce { a, b, force, audio }
+            }
+            other => other,
+        }
     }
 
     fn apply_sprite_guardrails(
@@ -1494,6 +1555,10 @@ impl App {
 
     fn audio_plugin(&self) -> Option<&AudioPlugin> {
         self.plugin_manager().get::<AudioPlugin>()
+    }
+
+    fn audio_plugin_mut(&mut self) -> Option<&mut AudioPlugin> {
+        self.plugin_manager_mut().get_mut::<AudioPlugin>()
     }
 
     fn analytics_plugin(&self) -> Option<&AnalyticsPlugin> {
@@ -2819,11 +2884,23 @@ impl ApplicationHandler for App {
         } else {
             Arc::<[GameEvent]>::from([])
         };
-        let (audio_triggers, audio_enabled, audio_health, audio_plugin_present) =
+        let (audio_triggers, audio_enabled, audio_health, audio_plugin_present, audio_spatial_config) =
             if let Some(audio) = self.audio_plugin() {
-                (audio.recent_triggers().cloned().collect(), audio.enabled(), audio.health_snapshot(), true)
+                (
+                    audio.recent_triggers().cloned().collect(),
+                    audio.enabled(),
+                    audio.health_snapshot(),
+                    true,
+                    audio.spatial_config(),
+                )
             } else {
-                (Vec::new(), false, AudioHealthSnapshot::default(), false)
+                (
+                    Vec::new(),
+                    false,
+                    AudioHealthSnapshot::default(),
+                    false,
+                    AudioSpatialConfig { enabled: false, min_distance: 0.1, max_distance: 25.0, pan_width: 10.0 },
+                )
             };
         let (mesh_keys, environment_options, prefab_entries) = self.with_editor_ui_state_mut(|state| {
             let mesh = state.telemetry_cache.mesh_keys(&self.mesh_registry);
@@ -3422,6 +3499,7 @@ impl ApplicationHandler for App {
             audio_enabled,
             audio_health,
             audio_plugin_present,
+            audio_spatial_config,
             binary_prefabs_enabled: BINARY_PREFABS_ENABLED,
             prefab_entries,
             prefab_name_input: prefab_name_input_state,
@@ -4530,6 +4608,31 @@ impl ApplicationHandler for App {
             match self.plugin_runtime.manager_mut().get_mut::<AudioPlugin>() {
                 Some(audio) => audio.set_enabled(enabled),
                 None => self.set_ui_scene_status("Audio plugin unavailable; cannot update audio state."),
+            }
+        }
+        if actions.audio_spatial_enable.is_some()
+            || actions.audio_spatial_min_distance.is_some()
+            || actions.audio_spatial_max_distance.is_some()
+            || actions.audio_spatial_pan_width.is_some()
+        {
+            match self.plugin_runtime.manager_mut().get_mut::<AudioPlugin>() {
+                Some(audio) => {
+                    let mut cfg = audio.spatial_config();
+                    if let Some(en) = actions.audio_spatial_enable {
+                        cfg.enabled = en;
+                    }
+                    if let Some(min) = actions.audio_spatial_min_distance {
+                        cfg.min_distance = min.max(0.0);
+                    }
+                    if let Some(max) = actions.audio_spatial_max_distance {
+                        cfg.max_distance = max.max(cfg.min_distance + 0.001);
+                    }
+                    if let Some(width) = actions.audio_spatial_pan_width {
+                        cfg.pan_width = width.max(0.1);
+                    }
+                    audio.set_spatial_config(cfg);
+                }
+                None => self.set_ui_scene_status("Audio plugin unavailable; cannot update spatial audio."),
             }
         }
         if actions.audio_clear_log {

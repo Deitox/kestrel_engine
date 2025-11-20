@@ -1,6 +1,7 @@
-use crate::events::GameEvent;
+use crate::events::{AudioEmitter, GameEvent};
 use bevy_ecs::entity::Entity;
 use bincode::Options;
+use glam::Vec3;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::io::{self, Read, Write};
 use std::sync::Arc;
@@ -27,13 +28,19 @@ pub enum PluginHostResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RpcAudioEmitter {
+    pub position: [f32; 3],
+    pub max_distance: f32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum RpcGameEvent {
-    SpriteSpawned { entity: RpcEntity, atlas: String, region: String },
+    SpriteSpawned { entity: RpcEntity, atlas: String, region: String, audio: Option<RpcAudioEmitter> },
     SpriteAnimationEvent { entity: RpcEntity, timeline: String, event: String },
     EntityDespawned { entity: RpcEntity },
-    CollisionStarted { a: RpcEntity, b: RpcEntity },
+    CollisionStarted { a: RpcEntity, b: RpcEntity, audio: Option<RpcAudioEmitter> },
     CollisionEnded { a: RpcEntity, b: RpcEntity },
-    CollisionForce { a: RpcEntity, b: RpcEntity, force: f32 },
+    CollisionForce { a: RpcEntity, b: RpcEntity, force: f32, audio: Option<RpcAudioEmitter> },
     ScriptMessage { message: String },
 }
 
@@ -225,8 +232,13 @@ impl From<RpcEntity> for Entity {
 impl From<GameEvent> for RpcGameEvent {
     fn from(event: GameEvent) -> Self {
         match event {
-            GameEvent::SpriteSpawned { entity, atlas, region } => {
-                RpcGameEvent::SpriteSpawned { entity: entity.into(), atlas, region }
+            GameEvent::SpriteSpawned { entity, atlas, region, audio } => {
+                RpcGameEvent::SpriteSpawned {
+                    entity: entity.into(),
+                    atlas,
+                    region,
+                    audio: audio.map(RpcAudioEmitter::from),
+                }
             }
             GameEvent::SpriteAnimationEvent { entity, timeline, event } => {
                 RpcGameEvent::SpriteAnimationEvent {
@@ -236,12 +248,17 @@ impl From<GameEvent> for RpcGameEvent {
                 }
             }
             GameEvent::EntityDespawned { entity } => RpcGameEvent::EntityDespawned { entity: entity.into() },
-            GameEvent::CollisionStarted { a, b } => {
-                RpcGameEvent::CollisionStarted { a: a.into(), b: b.into() }
+            GameEvent::CollisionStarted { a, b, audio } => {
+                RpcGameEvent::CollisionStarted { a: a.into(), b: b.into(), audio: audio.map(RpcAudioEmitter::from) }
             }
             GameEvent::CollisionEnded { a, b } => RpcGameEvent::CollisionEnded { a: a.into(), b: b.into() },
-            GameEvent::CollisionForce { a, b, force } => {
-                RpcGameEvent::CollisionForce { a: a.into(), b: b.into(), force }
+            GameEvent::CollisionForce { a, b, force, audio } => {
+                RpcGameEvent::CollisionForce {
+                    a: a.into(),
+                    b: b.into(),
+                    force,
+                    audio: audio.map(RpcAudioEmitter::from),
+                }
             }
             GameEvent::ScriptMessage { message } => RpcGameEvent::ScriptMessage { message },
         }
@@ -251,8 +268,8 @@ impl From<GameEvent> for RpcGameEvent {
 impl From<RpcGameEvent> for GameEvent {
     fn from(event: RpcGameEvent) -> Self {
         match event {
-            RpcGameEvent::SpriteSpawned { entity, atlas, region } => {
-                GameEvent::SpriteSpawned { entity: entity.into(), atlas, region }
+            RpcGameEvent::SpriteSpawned { entity, atlas, region, audio } => {
+                GameEvent::SpriteSpawned { entity: entity.into(), atlas, region, audio: audio.map(AudioEmitter::from) }
             }
             RpcGameEvent::SpriteAnimationEvent { entity, timeline, event } => {
                 GameEvent::SpriteAnimationEvent {
@@ -262,15 +279,27 @@ impl From<RpcGameEvent> for GameEvent {
                 }
             }
             RpcGameEvent::EntityDespawned { entity } => GameEvent::EntityDespawned { entity: entity.into() },
-            RpcGameEvent::CollisionStarted { a, b } => {
-                GameEvent::CollisionStarted { a: a.into(), b: b.into() }
+            RpcGameEvent::CollisionStarted { a, b, audio } => {
+                GameEvent::CollisionStarted { a: a.into(), b: b.into(), audio: audio.map(AudioEmitter::from) }
             }
             RpcGameEvent::CollisionEnded { a, b } => GameEvent::CollisionEnded { a: a.into(), b: b.into() },
-            RpcGameEvent::CollisionForce { a, b, force } => {
-                GameEvent::CollisionForce { a: a.into(), b: b.into(), force }
+            RpcGameEvent::CollisionForce { a, b, force, audio } => {
+                GameEvent::CollisionForce { a: a.into(), b: b.into(), force, audio: audio.map(AudioEmitter::from) }
             }
             RpcGameEvent::ScriptMessage { message } => GameEvent::ScriptMessage { message },
         }
+    }
+}
+
+impl From<AudioEmitter> for RpcAudioEmitter {
+    fn from(value: AudioEmitter) -> Self {
+        RpcAudioEmitter { position: value.position.to_array(), max_distance: value.max_distance }
+    }
+}
+
+impl From<RpcAudioEmitter> for AudioEmitter {
+    fn from(value: RpcAudioEmitter) -> Self {
+        AudioEmitter { position: Vec3::from_array(value.position), max_distance: value.max_distance }
     }
 }
 

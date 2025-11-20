@@ -1,15 +1,22 @@
 use bevy_ecs::prelude::{Entity, Resource};
+use glam::Vec3;
 use std::fmt;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
+pub struct AudioEmitter {
+    pub position: Vec3,
+    pub max_distance: f32,
+}
+
+#[derive(Debug, Clone)]
 pub enum GameEvent {
-    SpriteSpawned { entity: Entity, atlas: String, region: String },
+    SpriteSpawned { entity: Entity, atlas: String, region: String, audio: Option<AudioEmitter> },
     SpriteAnimationEvent { entity: Entity, timeline: Arc<str>, event: Arc<str> },
     EntityDespawned { entity: Entity },
-    CollisionStarted { a: Entity, b: Entity },
+    CollisionStarted { a: Entity, b: Entity, audio: Option<AudioEmitter> },
     CollisionEnded { a: Entity, b: Entity },
-    CollisionForce { a: Entity, b: Entity, force: f32 },
+    CollisionForce { a: Entity, b: Entity, force: f32, audio: Option<AudioEmitter> },
     ScriptMessage { message: String },
 }
 
@@ -21,7 +28,7 @@ impl GameEvent {
 
     pub fn collision_started(a: Entity, b: Entity) -> Self {
         let (a, b) = Self::ordered_pair(a, b);
-        GameEvent::CollisionStarted { a, b }
+        GameEvent::CollisionStarted { a, b, audio: None }
     }
 
     pub fn collision_ended(a: Entity, b: Entity) -> Self {
@@ -31,14 +38,14 @@ impl GameEvent {
 
     pub fn collision_force(a: Entity, b: Entity, force: f32) -> Self {
         let (a, b) = Self::ordered_pair(a, b);
-        GameEvent::CollisionForce { a, b, force }
+        GameEvent::CollisionForce { a, b, force, audio: None }
     }
 }
 
 impl fmt::Display for GameEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            GameEvent::SpriteSpawned { entity, atlas, region } => {
+            GameEvent::SpriteSpawned { entity, atlas, region, .. } => {
                 write!(f, "SpriteSpawned entity={} atlas={} region={}", entity.index(), atlas, region)
             }
             GameEvent::SpriteAnimationEvent { entity, timeline, event } => {
@@ -53,13 +60,13 @@ impl fmt::Display for GameEvent {
             GameEvent::EntityDespawned { entity } => {
                 write!(f, "EntityDespawned entity={}", entity.index())
             }
-            GameEvent::CollisionStarted { a, b } => {
+            GameEvent::CollisionStarted { a, b, .. } => {
                 write!(f, "CollisionStarted a={} b={}", a.index(), b.index())
             }
             GameEvent::CollisionEnded { a, b } => {
                 write!(f, "CollisionEnded a={} b={}", a.index(), b.index())
             }
-            GameEvent::CollisionForce { a, b, force } => {
+            GameEvent::CollisionForce { a, b, force, .. } => {
                 write!(f, "CollisionForce a={} b={} force={:.3}", a.index(), b.index(), force)
             }
             GameEvent::ScriptMessage { message } => write!(f, "ScriptMessage {message}"),

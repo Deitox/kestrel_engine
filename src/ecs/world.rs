@@ -205,6 +205,7 @@ impl EcsWorld {
             entity: root,
             atlas: "main".to_string(),
             region: "checker".to_string(),
+            audio: None,
         });
 
         let orbit_center = Vec2::ZERO;
@@ -244,6 +245,7 @@ impl EcsWorld {
             entity: a,
             atlas: "main".to_string(),
             region: "checker".to_string(),
+            audio: None,
         });
 
         let translation_b = Vec2::new(0.9, 0.0);
@@ -278,6 +280,7 @@ impl EcsWorld {
             entity: b,
             atlas: "main".to_string(),
             region: "redorb".to_string(),
+            audio: None,
         });
 
         let translation_c = Vec2::new(0.0, 0.9);
@@ -312,6 +315,7 @@ impl EcsWorld {
             entity: c,
             atlas: "main".to_string(),
             region: "bluebox".to_string(),
+            audio: None,
         });
 
         let emitter = self.spawn_particle_emitter(
@@ -364,6 +368,7 @@ impl EcsWorld {
                 entity,
                 atlas: "main".to_string(),
                 region: rname.to_string(),
+                audio: None,
             });
         }
     }
@@ -600,6 +605,7 @@ impl EcsWorld {
             entity,
             atlas: atlas.to_string(),
             region: region_name.as_ref().to_string(),
+            audio: None,
         });
         Ok(entity)
     }
@@ -1865,6 +1871,18 @@ impl EcsWorld {
         Some((center - half, center + half))
     }
 
+    pub fn entity_world_position3d(&self, entity: Entity) -> Option<Vec3> {
+        if let Some(wt3d) = self.world.get::<WorldTransform3D>(entity) {
+            let t = wt3d.0.w_axis;
+            return Some(Vec3::new(t.x, t.y, t.z));
+        }
+        if let Some(wt2d) = self.world.get::<WorldTransform>(entity) {
+            let t = wt2d.0.w_axis;
+            return Some(Vec3::new(t.x, t.y, 0.0));
+        }
+        None
+    }
+
     pub fn collider_rects(&mut self) -> Vec<(Vec2, Vec2)> {
         let mut rects = Vec::new();
         let mut query = self.world.query::<(&WorldTransform, &Aabb)>();
@@ -2773,6 +2791,7 @@ impl EcsWorld {
                     entity: entity_id,
                     atlas: sprite.atlas_key.to_string(),
                     region: sprite.region.to_string(),
+                    audio: None,
                 });
             }
         }
