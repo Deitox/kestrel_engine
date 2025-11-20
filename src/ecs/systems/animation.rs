@@ -3688,20 +3688,21 @@ fn advance_animation_fast_loop(animation: &mut SpriteAnimation, delta: f32) -> b
 
     let durations = animation.frame_durations.as_ref();
     let offsets = animation.frame_offsets.as_ref();
+    let max_epsilon = CLIP_TIME_EPSILON;
     let mut index = animation.frame_index;
     debug_assert!(index < frame_count);
-    let mut current_duration = animation.current_duration;
+    let mut current_duration = animation.current_duration.max(max_epsilon);
     let mut current_offset = animation.current_frame_offset;
 
     if delta > 0.0 {
         let mut remaining = animation.elapsed_in_frame + delta;
-        let mut threshold = current_duration.max(CLIP_TIME_EPSILON);
-        if remaining <= threshold {
+        if remaining <= current_duration {
             animation.elapsed_in_frame = remaining.min(current_duration);
             animation.current_frame_offset = current_offset;
             return false;
         }
-        remaining -= threshold;
+        remaining -= current_duration;
+        let mut threshold;
         loop {
             index += 1;
             if index == frame_count {
@@ -3711,7 +3712,7 @@ fn advance_animation_fast_loop(animation: &mut SpriteAnimation, delta: f32) -> b
                 current_duration = *durations.get_unchecked(index);
                 current_offset = *offsets.get_unchecked(index);
             }
-            threshold = current_duration.max(CLIP_TIME_EPSILON);
+            threshold = current_duration.max(max_epsilon);
             if remaining <= threshold {
                 animation.frame_index = index;
                 animation.current_duration = current_duration;
@@ -3723,7 +3724,7 @@ fn advance_animation_fast_loop(animation: &mut SpriteAnimation, delta: f32) -> b
         }
     } else {
         let mut remaining = animation.elapsed_in_frame + delta;
-        if remaining >= -CLIP_TIME_EPSILON {
+        if remaining >= -max_epsilon {
             animation.elapsed_in_frame = remaining.max(0.0);
             animation.current_frame_offset = current_offset;
             return false;
@@ -3735,7 +3736,7 @@ fn advance_animation_fast_loop(animation: &mut SpriteAnimation, delta: f32) -> b
                 current_duration = *durations.get_unchecked(index);
                 current_offset = *offsets.get_unchecked(index);
             }
-            let threshold = current_duration.max(CLIP_TIME_EPSILON);
+            let threshold = current_duration.max(max_epsilon);
             if remaining <= threshold {
                 animation.frame_index = index;
                 animation.current_duration = current_duration;
