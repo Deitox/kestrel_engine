@@ -1,4 +1,4 @@
-﻿# Stretch Goal Issue Backlog
+# Stretch Goal Issue Backlog
 
 
 
@@ -14,15 +14,15 @@ This backlog converts every open stretch goal from `docs/MILESTONE_STATUS.md` in
 
 
 
-- **P0** â€“ Stability/determinism tasks that guard core engine loops.
+- **P0** - Stability/determinism tasks that guard core engine loops.
 
 
 
-- **P1** â€“ Tooling and workflow improvements that unblock daily editing.
+- **P1** - Tooling and workflow improvements that unblock daily editing.
 
 
 
-- **P2** â€“ Strategic feature bets for long-term differentiation.
+- **P2** - Strategic feature bets for long-term differentiation.
 
 
 
@@ -38,19 +38,19 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
 
 
 
-## P0 â€” Stability & Determinism
+## P0 - Stability & Determinism
 
-8. **[PerfGoal] Sprite timeline â‰¤0.300Â ms guardrail** â€” *Open.*
+8. **[PerfGoal] Sprite timeline <=0.300 ms guardrail** - *Open.*
 
-   - *Why:* The latest dev-profile bench run sits around 0.43Â ms for 10k animators. We already proved the release build can hit 0.288Â ms, but we need a concrete plan (bench procedure + kernel wins + CI guard) to stay under budget any time new sprite features land.
+   - *Why:* The latest dev-profile bench run sits around 0.43 ms for 10k animators. We already proved the release build can hit 0.288 ms, but we need a concrete plan (bench procedure + kernel wins + CI guard) to stay under budget any time new sprite features land.
 
    - *Plan & acceptance:*
-     1. **Release-profile baseline** â€” Add a `--profile bench-release` preset to `scripts/sprite_bench.py`, capture a fresh run (`perf/sprite_perf_guard_release.{txt,json}`) that demonstrates â‰¤0.300Â ms, and document the exact command in `docs/SPRITE_ANIMATION_PERF_PLAN.md`.
-     2. **Guarded automation** â€” Wire the new `sprite_perf_guard` binary into CI so every PR runs `python scripts/sprite_bench.py --profile bench-release --runs 1` followed by `cargo run --bin sprite_perf_guard -- --report target/animation_targets_report.json`. The pipeline must fail if mean/max >0.300Â ms or `%slow > 1%`.
-     3. **Const-dt SIMD bucket** â€” Implement the 8-lane SIMD kernel described in `docs/Sprite_Benchmark_Plan.md Â§2.2`, keep scalar fallbacks for tails, and add parity tests feeding randomized const-dt clips (including ping-pong flips). Acceptance: `cargo test --features sprite_anim_simd sprite_animation::simd_parity` passes and the release bench drops â‰¥10Â % in `sprite_timelines`.
-     4. **Var-dt next-dt cache** â€” Introduce a `next_dt[]` cache/prefetch for var-dt animators and extend `tests/sprite_animation.rs` with a mixed-bucket regression that randomizes const/var clips. Acceptance: telemetry shows reduced `var_dt` cost, and the mixed-bucket test runs under `cargo test`.
-     5. **Importer drift lint** â€” Finish the lint in `docs/SPRITE_ANIMATION_PERF_PLAN.md Â§4.1`: flag noisy â€œuniformâ€� timelines on import, persist severity, and add fixtures that assert lint output. Update `docs/animation_workflows.md` with a perf-capture checklist referencing the guard and lint expectations.
-     6. **Final publication** â€” Re-run the release capture with SIMD + cache enabled, attach artifacts (or publish via CI), and update `README.md`/`docs/SPRITE_ANIMATION_PERF_PLAN.md` with the new figures plus the CI job link. Acceptance: `sprite_timelines` mean/max â‰¤0.300Â ms in the committed release run and the CI guard is green.
+     1. **Release-profile baseline** - Add a `--profile bench-release` preset to `scripts/sprite_bench.py`, capture a fresh run (`perf/sprite_perf_guard_release.{txt,json}`) that demonstrates <=0.300 ms, and document the exact command in `docs/SPRITE_ANIMATION_PERF_PLAN.md`.
+     2. **Guarded automation** - Wire the new `sprite_perf_guard` binary into CI so every PR runs `python scripts/sprite_bench.py --profile bench-release --runs 1` followed by `cargo run --bin sprite_perf_guard -- --report target/animation_targets_report.json`. The pipeline must fail if mean/max >0.300 ms or `%slow > 1%`.
+     3. **Const-dt SIMD bucket** - Implement the 8-lane SIMD kernel described in `docs/Sprite_Benchmark_Plan.md Section 2.2`, keep scalar fallbacks for tails, and add parity tests feeding randomized const-dt clips (including ping-pong flips). Acceptance: `cargo test --features sprite_anim_simd sprite_animation::simd_parity` passes and the release bench drops >=10 % in `sprite_timelines`.
+     4. **Var-dt next-dt cache** - Introduce a `next_dt[]` cache/prefetch for var-dt animators and extend `tests/sprite_animation.rs` with a mixed-bucket regression that randomizes const/var clips. Acceptance: telemetry shows reduced `var_dt` cost, and the mixed-bucket test runs under `cargo test`.
+     5. **Importer drift lint** - Finish the lint in `docs/SPRITE_ANIMATION_PERF_PLAN.md Section 4.1`: flag noisy "uniform" timelines on import, persist severity, and add fixtures that assert lint output. Update `docs/animation_workflows.md` with a perf-capture checklist referencing the guard and lint expectations.
+     6. **Final publication** - Re-run the release capture with SIMD + cache enabled, attach artifacts (or publish via CI), and update `README.md`/`docs/SPRITE_ANIMATION_PERF_PLAN.md` with the new figures plus the CI job link. Acceptance: `sprite_timelines` mean/max <=0.300 ms in the committed release run and the CI guard is green.
 
 
 
@@ -58,7 +58,7 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
 
 
 
-1. **[M1] Swapchain regression harness** â€” âœ… *Completed via headless render path + synthetic surface-error tests.*
+1. **[M1] Swapchain regression harness** - *Completed via headless render path + synthetic surface-error tests.*
 
 
 
@@ -66,7 +66,7 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
 
 
 
-2. **[M1] Configurable VSync toggle** â€” âœ… *Completed (runtime toggle + renderer reconfigure UI panel).*
+2. **[M1] Configurable VSync toggle** - *Completed (runtime toggle + renderer reconfigure UI panel).*
 
 
 
@@ -142,7 +142,7 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
 
 
 
-## P1 â€” Tooling & Workflow Enhancements
+## P1 - Tooling & Workflow Enhancements
 
 
 
@@ -238,7 +238,7 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
 
 
 
-15. **[M11] Drag-and-drop prefab authoring** â€“ *Completed via the Prefab Shelf UI + viewport instancing pipeline.*
+15. **[M11] Drag-and-drop prefab authoring** - *Completed via the Prefab Shelf UI + viewport instancing pipeline.*
 
 
 
@@ -258,7 +258,7 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
 
 
 
-## P2 â€” Strategic Feature Bets
+## P2 - Strategic Feature Bets
 
 
 
@@ -266,17 +266,13 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
 
 
 
-16. **[M12] Advanced shadow mapping & light culling** - *Partially complete (cascaded shadows landed; light culling + telemetry still open).*
+16. **[M12] Advanced shadow mapping & light culling** - *Completed via clustered light grid + stats/overlay telemetry.*
 
 
 
 
 
-
-
-    - *Status:* Directional cascaded shadows with adjustable splits/resolution are implemented (`src/renderer.rs:464-2052`), but Milestone 12 still lists GPU perf baselines and clustered/forward+ light culling as outstanding polish (`docs/MILESTONE_STATUS.md:22`, `docs/MILESTONE_STATUS.md:95`). We still need the light-culling path plus analytics counters to meet the acceptance criteria (`KESTREL_ENGINE_ROADMAP.md:202`).
-
-
+    - *Highlights:* The clustered forward+ path now builds per-frame light grids with overflow warnings and cached metrics (`src/renderer/light_clusters.rs:78-469`, `src/renderer.rs:789-920`), and mesh shading consumes the clustered buffers (`assets/shaders/mesh_basic.wgsl:395-516`). The Stats panel and viewport overlay surface light-culling metrics and budget warnings while analytics records snapshots for HUDs (`src/app/editor_ui.rs:1449-1476`, `src/app/editor_ui.rs:3604-4045`, `src/app/mod.rs:1557-1584`, `src/app/mod.rs:2756-2759`, `src/analytics.rs:225-230`).
 
 
 
@@ -322,14 +318,22 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
 
 
 
-20. **[Long-term] Force fields, attractors, and particle trails** - *Open.*
-
-
-
-    - *Status:* Particle emitters only support standard burst/loop behaviors today (`src/ecs/systems/particles.rs:9-290`). Milestone 8 still lists force fields, attractors, and stretched trails as future experiments (`docs/MILESTONE_STATUS.md:18`, `docs/MILESTONE_STATUS.md:75`, `KESTREL_ENGINE_ROADMAP.md:145`), so none of the required components or inspector tooling exist yet.
-
-
-
+20. **[Long-term] Force fields, attractors, and particle trails** - *Open.*
+
+
+
+
+
+
+
+    - *Status:* Particle emitters only support standard burst/loop behaviors today (`src/ecs/systems/particles.rs:9-290`). Milestone 8 still lists force fields, attractors, and stretched trails as future experiments (`docs/MILESTONE_STATUS.md:18`, `docs/MILESTONE_STATUS.md:75`, `KESTREL_ENGINE_ROADMAP.md:145`), so none of the required components or inspector tooling exist yet.
+
+
+
+
+
+
+
 
 
 

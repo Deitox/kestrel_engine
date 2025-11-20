@@ -463,7 +463,9 @@ fn summarize_sprite_perf(samples: &[SpriteAnimPerfSample]) -> Option<SpritePerfR
 
 impl BenchMetadata {
     fn capture() -> Self {
-        let profile = env::var("PROFILE").unwrap_or_else(|_| "dev".to_string());
+        let profile = env::var("ANIMATION_PROFILE_NAME")
+            .or_else(|_| env::var("PROFILE"))
+            .unwrap_or_else(|_| "dev".to_string());
         Self {
             warmup_frames: WARMUP_STEPS,
             measured_frames: STEPS,

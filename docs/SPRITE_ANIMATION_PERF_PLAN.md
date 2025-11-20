@@ -6,6 +6,7 @@
 - Surface slow-path usage (var-dt, ping-pong, event-heavy clips) in-editor so asset changes stay honest, with no allocations/logging inside the hot loop.
 - Fail CI whenever perf metrics exceed thresholds and archive CSV/JSON artifacts per run; include commit SHA + feature flags.
 - Provide a repeatable perf matrix (baseline/SoA/fixed-point/SIMD) with archived CSVs plus README notes.
+- **Latest run:** `sprite_timelines` mean **0.262 ms** (p95 0.268 ms) @ 10,000 animators, bench-release, commit `bb6e80f`. Report captured in `target/animation_targets_report.json`.
 
 ---
 
