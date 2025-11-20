@@ -57,10 +57,6 @@ codegen-units = 8
 lto = "thin"
 panic = "abort"
 incremental = false
-debug = true
-
-[profile.bench-release]
-inherits = "release"
 debug = false
 
 [profile.release-fat]
@@ -69,6 +65,3 @@ codegen-units = 1
 lto = "fat"
 incremental = false
 debug = true
-
-[profile.bench]
-inherits = "release"

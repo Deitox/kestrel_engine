@@ -136,14 +136,14 @@ Artifacts: `perf/before_phase0.txt`, `perf/before_phase0.json`
 
 ### 1.5 Build/test parity
 
-**Why:** The bench harness must mirror shipping settings. Today `profile.release` already uses `opt-level=3`, ThinLTO, and `codegen-units=8`, while `profile.bench` overrides them (opt=2, no LTO, 16 units), skewing results.
+**Why:** The bench harness must mirror shipping settings. We now run benches with the standard `profile.release` to avoid divergence from shipped builds.
 
 **Tasks:**
-- [x] Align `profile.bench` with `profile.release` (copy ThinLTO, opt=3, codegen-units=8) so `cargo test --profile bench` matches local perf expectations (our `Cargo.toml` already inherits `release`, so no further work needed).
-- [ ] Consider a dedicated `profile.animation` that mirrors CI release builds (or simply force `--release`) if bench builds remain divergent.
+- [x] Drop the extra bench profile and rely on `--release` for bench runs so numbers match shipping.
+- [ ] Consider a dedicated `profile.animation` that mirrors CI release builds if we ever need stricter settings.
 - [x] Re-document the required flags in this plan/README after the profile change lands (README + plan now point at the helper script + command line).
 
-**Checkpoint:** Running `cargo test --release animation_targets_measure -- --ignored --nocapture` and `cargo test --profile bench …` should produce comparable numbers (≤5% skew).
+**Checkpoint:** Running `cargo test --release animation_targets_measure -- --ignored --nocapture` should produce stable numbers within the expected variance across runs.
 
 ---
 
@@ -270,7 +270,7 @@ idx.as_array().iter().enumerate().for_each(|(k,&v)| frame_idx[i+k]=v);
    - `perf/final.{txt,json}` + `perf/final_profile.{log,json}`
 4. **Graph (optional):** simple CSV and plot of ms vs animators (can be derived from the JSON summaries if needed).
 5. **Phase‑2 feature flags:** capture SoA/fixed-point/SIMD numbers with `python scripts/sprite_bench.py --features "sprite_anim_fixed_point,sprite_anim_simd"` (or pass the same list to `cargo test`). Always note the feature set in the perf artifact label.
-6. Use the new release bench preset when chasing sign-off numbers: `python scripts/sprite_bench.py --bench-release --label bench_release --runs 1` (the flag simply targets Cargo’s `bench-release` profile so the harness uses the same opts we ship). Commit or upload the resulting `perf/bench_release.{txt,json}` plus `target/animation_targets_report.json`.
+6. Use the release bench when chasing sign-off numbers: `python scripts/sprite_bench.py --profile release --label bench_release --runs 1`. Commit or upload the resulting `perf/bench_release.{txt,json}` plus `target/animation_targets_report.json`.
 7. After each sweep, run `cargo run --bin sprite_perf_guard -- --report target/animation_targets_report.json` to enforce the sprite budget thresholds (`mean/max ≤ 0.300 ms`, `%slow ≤ 1%`). The guard reuses the report emitted by the harness, so CI can invoke it without rerunning the bench.
 
 ---
@@ -303,7 +303,7 @@ idx.as_array().iter().enumerate().for_each(|(k,&v)| frame_idx[i+k]=v);
 - [x] 1.2 Split `sys_drive_sprite_animations` into fast/general buckets.
 - [x] 1.3 Document/run the anim-stats profiling workflow each time perf work lands.
 - [x] 1.4 Track SpriteFrameApplyQueue churn (tests + optional counters).
-- [x] 1.5 Align `profile.bench` with `profile.release` (opt3 + ThinLTO + `codegen-units=8`).
+- [x] 1.5 Run benches with the standard `profile.release` (bench-specific profile removed to avoid skew).
 - [x] 2.1 SoA animator storage (feature-gated). (`Cargo.toml:11` exposes `sprite_anim_soa`, and `src/ecs/systems/animation.rs:54` introduces `SpriteAnimatorSoa` with fast/slow driver paths such as `sys_drive_sprite_animations` delegating to the SoA runtime when the feature is enabled.)
 - [x] 2.2 Fixed-point or SIMD kernels (decide based on SoA results). (`sprite_anim_fixed_point` builds on the SoA runtime by mirroring per-field fixed-point buffers and running the fast-loop advance via `advance_animation_fast_loop_slot` (`src/ecs/systems/animation.rs:4141`), while public ECS APIs remain f32-facing.)
 - [ ] 2.3 Prefetch/next-dt cache for var-dt.

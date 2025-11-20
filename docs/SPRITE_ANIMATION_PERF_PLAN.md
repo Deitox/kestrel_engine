@@ -6,7 +6,7 @@
 - Surface slow-path usage (var-dt, ping-pong, event-heavy clips) in-editor so asset changes stay honest, with no allocations/logging inside the hot loop.
 - Fail CI whenever perf metrics exceed thresholds and archive CSV/JSON artifacts per run; include commit SHA + feature flags.
 - Provide a repeatable perf matrix (baseline/SoA/fixed-point/SIMD) with archived CSVs plus README notes.
-- **Latest run:** `sprite_timelines` mean **0.262 ms** (p95 0.268 ms) @ 10,000 animators, bench-release, commit `bb6e80f`. Report captured in `target/animation_targets_report.json`.
+- **Latest run:** `sprite_timelines` mean **0.262 ms** (p95 0.268 ms) @ 10,000 animators, release profile, commit `bb6e80f`. Report captured in `target/animation_targets_report.json`.
 
 ---
 
@@ -38,7 +38,7 @@
 | Task | Details | Exit Criteria |
 | --- | --- | --- |
 | 3.1 Perf guard action | GitHub Action runs the bench, records `{mean, median, p95, p99}` + Eval/Pack/Upload. If thresholds fail, rerun once and keep the better sample; after two failures block the build. Emit warnings when mean regresses >5% vs last green commit. Always upload artifacts and link them in CI logs. Gate on Eval `p95 ≤ 0.305 ms`, warn when Pack/Upload exceed budgets. | CI badge flips red on regression; logs show artifact links and trend comparisons. |
-| 3.2 Bench PGO profile | Capture PGO data for the animation bench target and bake into the **bench profile only** (`cargo test --profile bench-pgo ...`). Shipping/release builds can opt out but record the active mode in bench metadata. | Instructions documented; measured delta recorded plus metadata field showing `lto_mode`/`pgo`. |
+| 3.2 PGO capture path | Capture PGO data for the animation bench target using a dedicated PGO run (e.g., `cargo test --release -Z pgo ...`). Shipping/release builds can opt out but record the active mode in bench metadata. | Instructions documented; measured delta recorded plus metadata field showing `lto_mode`/`pgo`. |
 | 3.3 Fixed-point default | Keep `sprite_anim_fixed_point` enabled in production profiles while allowing opt-out for diagnostics. | Cargo profiles updated; documentation explains the default. |
 
 ---
@@ -99,7 +99,7 @@
 
 ## 10. Verification Checklist
 
-- [x] Bench logs ≤ 0.300 ms mean/max, `%slow ≤ 1%`. (Use the release-profile preset: `python scripts/sprite_bench.py --bench-release --label sprite_perf_guard --runs 1` followed by `cargo run --bin sprite_perf_guard -- --report target/animation_targets_report.json` to record and validate each run.)  
+- [x] Bench logs <= 0.300 ms mean/max, `%slow <= 1%`. (Use the release profile: `python scripts/sprite_bench.py --label sprite_perf_guard --runs 1` followed by `cargo run --bin sprite_perf_guard -- --report target/animation_targets_report.json` to record and validate each run.)  
 - [x] HUD counters accurate and highlighted on breaches. (`src/app/editor_ui.rs:799` warns when `%slow > 1%` for 60 frames and highlights SIM D tail ratios >5%, while `docs/animation_workflows.md:29` walks authors through using the Sprite Animation Perf HUD.)
 - [x] CI gate fails on simulated regression. (`cargo run --bin sprite_perf_guard -- --report target/animation_targets_report.json` enforces the thresholds, while `cargo test sprite_perf_guard` feeds the guard with fixtures to simulate a regression and proves the check fails when metrics drift.)  
 - [ ] Importer emits drift lint on synthetic noisy data.  

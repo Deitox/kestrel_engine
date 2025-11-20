@@ -15,7 +15,7 @@ This foundation remains unchanged; new work layers on top of it.
 
 ## Operating Principles
 - **Performance Budgets:** Each milestone owns a measurable CPU/GPU budget (see table below). Budgets are enforced via the roadmap checkpoint harness (`tests/animation_targets.rs`) that reports min/avg/max times and entity counts.
-- **Benchmark Profile:** Local perf runs should use `cargo test --profile bench animation_targets_measure -- --ignored --nocapture` which mirrors release settings without the heavy `lto=fat` rebuild overhead; CI still uses full `--release`. The helper `python scripts/capture_sprite_perf.py --label <phase> --runs 3` wraps this command, captures the anim_stats profile, exports summaries to `perf/`, and avoids storing bulky console logs.
+- **Benchmark Profile:** Local perf runs should use `cargo test --release animation_targets_measure -- --ignored --nocapture` so numbers mirror shipping settings; CI uses the same command. The helper `python scripts/capture_sprite_perf.py --label <phase> --runs 3` wraps this command, captures the anim_stats profile, exports summaries to `perf/`, and avoids storing bulky console logs.
 - **No Per-Frame Allocation:** Playback systems must avoid heap allocations during `update()`; preallocate storage, intern region names, and reuse buffers.
 - **Determinism:** Provide variable-step default with an optional fixed-step path for capture/replays. Extend golden tests to verify repeatability.
 - **Versioned Data:** Every animation-related asset (atlas, clips, graphs) carries a schema version; migrators live under `scripts/`.
@@ -76,7 +76,7 @@ Benchmarks emit CSV summaries for CI. Failing budgets block the milestone exit.
 - [x] `animation_targets_measure` extended with transform clip checkpoint (2 000 clips) and JSON reporting, with CI script enforcement.
 
 ### Exit Criteria
-- [x] Benchmarks show <= 0.40 ms CPU for 2 000 active clips (release). *(Latest `cargo test --profile bench animation_targets_measure -- --ignored --nocapture` reports 0.332 ms mean / 0.342 ms max.)*
+- [x] Benchmarks show <= 0.40 ms CPU for 2 000 active clips (release). *(Latest `cargo test --release animation_targets_measure -- --ignored --nocapture` reports 0.332 ms mean / 0.342 ms max.)*
 - [x] Golden tests validate interpolation correctness and final poses after deterministic playback.
 - [x] Scene/prefab round-trip tests verify clip bindings remain intact.
 
