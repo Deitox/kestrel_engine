@@ -1,4 +1,5 @@
 use crate::events::{AudioEmitter, GameEvent};
+use crate::plugins::PluginCapability;
 use bevy_ecs::entity::Entity;
 use bincode::Options;
 use glam::Vec3;
@@ -7,6 +8,7 @@ use std::io::{self, Read, Write};
 use std::sync::Arc;
 
 const FRAME_LEN_BYTES: usize = std::mem::size_of::<u32>();
+const MAX_FRAME_SIZE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum PluginHostRequest {
@@ -23,8 +25,20 @@ pub enum PluginHostRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum PluginHostResponse {
-    Ok { events: Vec<RpcGameEvent>, data: Option<RpcResponseData> },
-    Error(String),
+    Ok {
+        events: Vec<RpcGameEvent>,
+        capability_violations: Vec<RpcCapabilityEvent>,
+        data: Option<RpcResponseData>,
+    },
+    Error {
+        message: String,
+        capability_violations: Vec<RpcCapabilityEvent>,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RpcCapabilityEvent {
+    pub capability: PluginCapability,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -328,6 +342,12 @@ where
     let mut len_buf = [0u8; FRAME_LEN_BYTES];
     reader.read_exact(&mut len_buf)?;
     let len = u32::from_le_bytes(len_buf) as usize;
+    if len > MAX_FRAME_SIZE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("frame too large: {len} bytes (limit {MAX_FRAME_SIZE_BYTES})"),
+        ));
+    }
     let mut payload = vec![0u8; len];
     reader.read_exact(&mut payload)?;
     bincode_options().deserialize(&payload).map_err(to_io_error)

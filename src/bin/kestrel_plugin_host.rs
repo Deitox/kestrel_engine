@@ -14,15 +14,17 @@ use kestrel_engine::material_registry::MaterialRegistry;
 use kestrel_engine::mesh_registry::MeshRegistry;
 use kestrel_engine::plugin_rpc::{
     recv_frame, send_frame, PluginHostRequest, PluginHostResponse, RpcAssetReadbackPayload,
-    RpcAssetReadbackRequest, RpcAssetReadbackResponse, RpcComponentKind, RpcComponentSnapshot,
-    RpcEntityFilter, RpcEntityInfo, RpcEntitySnapshot, RpcGameEvent, RpcHierarchySnapshot,
-    RpcIterEntitiesRequest, RpcIterEntitiesResponse, RpcIteratorCursor, RpcReadComponentsRequest,
-    RpcReadComponentsResponse, RpcResponseData, RpcSnapshotFormat, RpcSpriteInfo, RpcSpriteSnapshot,
-    RpcTintSnapshot, RpcTransformSnapshot, RpcVelocitySnapshot, RpcWorldTransformSnapshot,
+    RpcAssetReadbackRequest, RpcAssetReadbackResponse, RpcCapabilityEvent, RpcComponentKind,
+    RpcComponentSnapshot, RpcEntityFilter, RpcEntityInfo, RpcEntitySnapshot, RpcGameEvent,
+    RpcHierarchySnapshot, RpcIterEntitiesRequest, RpcIterEntitiesResponse, RpcIteratorCursor,
+    RpcReadComponentsRequest, RpcReadComponentsResponse, RpcResponseData, RpcSnapshotFormat,
+    RpcSpriteInfo, RpcSpriteSnapshot, RpcTintSnapshot, RpcTransformSnapshot, RpcVelocitySnapshot,
+    RpcWorldTransformSnapshot,
 };
 use kestrel_engine::plugins::{
-    CapabilityTrackerHandle, EnginePlugin, FeatureRegistryHandle, PluginContext, PluginEntryFn,
-    ENGINE_PLUGIN_API_VERSION, PLUGIN_ENTRY_SYMBOL,
+    CapabilityTrackerHandle, CapabilityFlags, EnginePlugin, FeatureRegistryHandle, PluginCapability,
+    PluginCapabilityEvent, PluginContext, PluginEntryFn, PluginTrust, ENGINE_PLUGIN_API_VERSION,
+    PLUGIN_ENTRY_SYMBOL,
 };
 use kestrel_engine::renderer::Renderer;
 use kestrel_engine::time::Time;
@@ -32,7 +34,7 @@ use serde::Serialize;
 use std::cell::Cell;
 use std::env;
 use std::fs;
-use std::io::{self, BufReader, BufWriter};
+use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 use std::ptr;
 use std::time::Duration;
@@ -40,6 +42,8 @@ use std::time::Duration;
 thread_local! {
     static ACTIVE_ENGINE_STATE: Cell<*mut EngineState> = Cell::new(ptr::null_mut());
 }
+
+const MAX_BLOB_READ_BYTES: u64 = 16 * 1024 * 1024;
 
 fn main() {
     if let Err(err) = run() {
@@ -57,7 +61,8 @@ fn run() -> Result<()> {
 struct HostOptions {
     plugin_path: PathBuf,
     plugin_name: String,
-    capabilities: Vec<String>,
+    capabilities: Vec<PluginCapability>,
+    trust: PluginTrust,
 }
 
 impl HostOptions {
@@ -65,6 +70,7 @@ impl HostOptions {
         let mut plugin_path = None;
         let mut plugin_name = "<unknown>".to_string();
         let mut capabilities = Vec::new();
+        let mut trust = PluginTrust::Isolated;
         let mut args = env::args().skip(1);
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -78,7 +84,19 @@ impl HostOptions {
                 }
                 "--cap" => {
                     if let Some(cap) = args.next() {
-                        capabilities.push(cap);
+                        capabilities.push(
+                            PluginCapability::from_label(&cap)
+                                .ok_or_else(|| anyhow!("unknown capability label '{cap}'"))?,
+                        );
+                    }
+                }
+                "--trust" => {
+                    if let Some(mode) = args.next() {
+                        trust = match mode.as_str() {
+                            "isolated" => PluginTrust::Isolated,
+                            "full" => PluginTrust::Full,
+                            other => bail!("unknown trust mode '{other}'"),
+                        };
                     }
                 }
                 _ => {}
@@ -86,7 +104,7 @@ impl HostOptions {
         }
         let plugin_path =
             plugin_path.map(PathBuf::from).ok_or_else(|| anyhow!("--plugin argument missing"))?;
-        Ok(Self { plugin_path, plugin_name, capabilities })
+        Ok(Self { plugin_path, plugin_name, capabilities, trust })
     }
 }
 
@@ -125,7 +143,31 @@ impl PluginHostService {
             bail!("plugin returned null handle");
         }
         let plugin = unsafe { handle.into_box() };
-        Ok(Self { plugin, _library: library, engine: EngineState::new(), opts })
+        Ok(Self { plugin, _library: library, engine: EngineState::new(&opts), opts })
+    }
+
+    fn ok_response(
+        &mut self,
+        events: Vec<RpcGameEvent>,
+        data: Option<RpcResponseData>,
+    ) -> PluginHostResponse {
+        PluginHostResponse::Ok {
+            events,
+            capability_violations: self.capability_events(),
+            data,
+        }
+    }
+
+    fn error_response(&mut self, message: String) -> PluginHostResponse {
+        PluginHostResponse::Error { message, capability_violations: self.capability_events() }
+    }
+
+    fn capability_events(&mut self) -> Vec<RpcCapabilityEvent> {
+        self.engine
+            .drain_capability_events()
+            .into_iter()
+            .map(|evt| RpcCapabilityEvent { capability: evt.capability })
+            .collect()
     }
 
     fn run(mut self) -> Result<()> {
@@ -166,39 +208,30 @@ impl PluginHostService {
         let result = match request {
             PluginHostRequest::QueryEntityInfo { entity } => {
                 let info = self.engine.entity_info_snapshot(entity.into());
-                let response = PluginHostResponse::Ok {
-                    events: Vec::new(),
-                    data: Some(RpcResponseData::EntityInfo(info)),
-                };
+                let response = self.ok_response(Vec::new(), Some(RpcResponseData::EntityInfo(info)));
                 return (response, false);
             }
             PluginHostRequest::ReadComponents(request) => {
                 let payload = self.engine.read_components(request);
-                let response = PluginHostResponse::Ok {
-                    events: Vec::new(),
-                    data: Some(RpcResponseData::ReadComponents(payload)),
-                };
+                let response =
+                    self.ok_response(Vec::new(), Some(RpcResponseData::ReadComponents(payload)));
                 return (response, false);
             }
             PluginHostRequest::IterEntities(request) => {
                 let payload = self.engine.iter_entities(request);
-                let response = PluginHostResponse::Ok {
-                    events: Vec::new(),
-                    data: Some(RpcResponseData::IterEntities(payload)),
-                };
+                let response =
+                    self.ok_response(Vec::new(), Some(RpcResponseData::IterEntities(payload)));
                 return (response, false);
             }
             PluginHostRequest::AssetReadback(request) => match self.engine.asset_readback(request) {
                 Ok(payload) => {
-                    let response = PluginHostResponse::Ok {
-                        events: Vec::new(),
-                        data: Some(RpcResponseData::AssetReadback(payload)),
-                    };
+                    let response =
+                        self.ok_response(Vec::new(), Some(RpcResponseData::AssetReadback(payload)));
                     return (response, false);
                 }
                 Err(err) => {
                     eprintln!("[isolated-host] asset readback failed: {err:?}");
-                    return (PluginHostResponse::Error(err.to_string()), false);
+                    return (self.error_response(err.to_string()), false);
                 }
             },
             PluginHostRequest::Build => self.engine.with_context(|ctx| self.plugin.build(ctx)),
@@ -221,13 +254,12 @@ impl PluginHostService {
         };
         let captured_events = self.engine.drain_captured_events();
         let response = match result {
-            Ok(()) => PluginHostResponse::Ok {
-                events: captured_events.into_iter().map(RpcGameEvent::from).collect(),
-                data: None,
-            },
+            Ok(()) => {
+                self.ok_response(captured_events.into_iter().map(RpcGameEvent::from).collect(), None)
+            }
             Err(err) => {
                 eprintln!("[isolated-host] plugin call failed: {err:?}");
-                PluginHostResponse::Error(err.to_string())
+                self.error_response(err.to_string())
             }
         };
         (response, shutdown)
@@ -246,12 +278,16 @@ struct EngineState {
     feature_registry: FeatureRegistryHandle,
     capability_tracker: CapabilityTrackerHandle,
     pending_events: Vec<GameEvent>,
+    plugin_name: String,
+    capability_flags: CapabilityFlags,
+    trust: PluginTrust,
 }
 
 impl EngineState {
-    fn new() -> Self {
+    fn new(opts: &HostOptions) -> Self {
         let mut material_registry = MaterialRegistry::new();
         let mesh_registry = MeshRegistry::new(&mut material_registry);
+        let capability_flags = CapabilityFlags::from(opts.capabilities.as_slice());
         Self {
             renderer: block_on(Renderer::new(&WindowConfig::default())),
             ecs: EcsWorld::new(),
@@ -264,6 +300,9 @@ impl EngineState {
             feature_registry: FeatureRegistryHandle::isolated(),
             capability_tracker: CapabilityTrackerHandle::isolated(),
             pending_events: Vec::new(),
+            plugin_name: opts.plugin_name.clone(),
+            capability_flags,
+            trust: opts.trust,
         }
     }
 
@@ -290,7 +329,10 @@ impl EngineState {
                 None,
                 state.capability_tracker.clone(),
             );
-            f(&mut ctx)
+            ctx.set_active_plugin(&state.plugin_name, state.capability_flags, state.trust);
+            let result = f(&mut ctx);
+            ctx.clear_active_plugin();
+            result
         })
     }
 
@@ -317,6 +359,10 @@ impl EngineState {
 
     fn drain_captured_events(&mut self) -> Vec<GameEvent> {
         std::mem::take(&mut self.pending_events)
+    }
+
+    fn drain_capability_events(&mut self) -> Vec<PluginCapabilityEvent> {
+        self.capability_tracker.drain_events()
     }
 
     fn entity_info_snapshot(&self, entity: Entity) -> Option<RpcEntityInfo> {
@@ -411,14 +457,27 @@ impl EngineState {
             }
             RpcAssetReadbackPayload::BlobRange { blob_id, offset, length } => {
                 let path = self.sanitize_blob_path(&blob_id)?;
-                let data = fs::read(&path).with_context(|| format!("reading blob '{}'", path.display()))?;
-                let start = offset.min(data.len() as u64) as usize;
-                let end = if length == 0 {
-                    data.len()
-                } else {
-                    (offset.saturating_add(length)).min(data.len() as u64) as usize
-                };
-                let slice = data[start..end].to_vec();
+                let metadata = fs::metadata(&path)
+                    .with_context(|| format!("reading metadata for blob '{}'", path.display()))?;
+                let blob_len = metadata.len();
+                let start = offset.min(blob_len);
+                let available = blob_len.saturating_sub(start);
+                let requested = if length == 0 { available } else { length.min(available) };
+                if requested > MAX_BLOB_READ_BYTES {
+                    bail!(
+                        "blob range request ({requested} bytes) exceeds cap of {MAX_BLOB_READ_BYTES} bytes"
+                    );
+                }
+                let mut file = fs::File::open(&path)
+                    .with_context(|| format!("opening blob '{}' for range read", path.display()))?;
+                file.seek(SeekFrom::Start(start))
+                    .with_context(|| format!("seeking blob '{}' to offset {}", path.display(), start))?;
+                let reader = BufReader::new(file);
+                let mut slice = Vec::with_capacity(requested as usize);
+                reader
+                    .take(requested)
+                    .read_to_end(&mut slice)
+                    .with_context(|| format!("reading blob '{}' range {}..{}", path.display(), start, start + requested))?;
                 Ok(RpcAssetReadbackResponse {
                     request_id: request.request_id,
                     content_type: "application/octet-stream".to_string(),

@@ -22,13 +22,14 @@ impl RuntimeLoop {
 
     pub(crate) fn tick(&mut self, max_backlog: f32) -> RuntimeTick {
         self.time.tick();
-        let dt = self.time.delta_seconds();
-        self.accumulator += dt;
+        let dt_raw = self.time.delta_seconds();
+        self.accumulator += dt_raw;
         let mut dropped_backlog = None;
         if self.accumulator > max_backlog {
             dropped_backlog = Some(self.accumulator - max_backlog);
             self.accumulator = max_backlog;
         }
+        let dt = dt_raw.clamp(0.0, max_backlog);
         RuntimeTick { dt, dropped_backlog }
     }
 

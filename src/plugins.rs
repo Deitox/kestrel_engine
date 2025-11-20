@@ -109,6 +109,21 @@ impl PluginCapability {
             PluginCapability::All => "all",
         }
     }
+
+    pub fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "renderer" => Some(PluginCapability::Renderer),
+            "ecs" => Some(PluginCapability::Ecs),
+            "assets" => Some(PluginCapability::Assets),
+            "input" => Some(PluginCapability::Input),
+            "scripts" => Some(PluginCapability::Scripts),
+            "analytics" => Some(PluginCapability::Analytics),
+            "time" => Some(PluginCapability::Time),
+            "events" => Some(PluginCapability::Events),
+            "all" => Some(PluginCapability::All),
+            _ => None,
+        }
+    }
 }
 
 impl From<&[PluginCapability]> for CapabilityFlags {
@@ -407,6 +422,10 @@ impl CapabilityTrackerHandle {
     pub fn isolated() -> Self {
         Self(CapabilityTracker::new())
     }
+
+    pub fn drain_events(&self) -> Vec<PluginCapabilityEvent> {
+        self.0.drain_events()
+    }
 }
 
 #[repr(C)]
@@ -687,7 +706,7 @@ impl<'a> PluginContext<'a> {
         Ok(AssetApi { assets })
     }
 
-    pub(crate) fn set_active_plugin(
+    pub fn set_active_plugin(
         &mut self,
         name: &str,
         capabilities: CapabilityFlags,
@@ -698,10 +717,14 @@ impl<'a> PluginContext<'a> {
         self.active_trust = trust;
     }
 
-    pub(crate) fn clear_active_plugin(&mut self) {
+    pub fn clear_active_plugin(&mut self) {
         self.active_plugin = None;
         self.active_capabilities = CapabilityFlags::all();
         self.active_trust = PluginTrust::Full;
+    }
+
+    pub fn log_capability_violation(&self, plugin: &str, capability: PluginCapability) {
+        self.capability_tracker.log_violation(plugin, capability);
     }
 
     fn require_capability(&self, capability: PluginCapability) -> Result<(), CapabilityError> {
@@ -979,16 +1002,17 @@ impl PluginManager {
             .iter()
             .position(|slot| slot.name == plugin_name)
             .ok_or_else(|| anyhow!("plugin '{plugin_name}' not registered"))?;
-        let (result, watchdog) = {
+        let (result, watchdog, caps) = {
             let slot = self.plugins.get_mut(idx).expect("slot index valid");
             let proxy = slot
                 .isolated_proxy()
                 .ok_or_else(|| anyhow!("plugin '{plugin_name}' is not running in isolated mode"))?;
             match proxy.query_entity_info(entity) {
-                Ok(info) => (Ok(info), None),
-                Err(err) => (Err(err), proxy.take_watchdog_event()),
+                Ok(info) => (Ok(info), proxy.take_watchdog_event(), proxy.take_capability_violations()),
+                Err(err) => (Err(err), proxy.take_watchdog_event(), proxy.take_capability_violations()),
             }
         };
+        self.log_isolated_capability_violations(plugin_name, caps);
         if let Some(event) = watchdog {
             self.log_watchdog_event(event);
         }
@@ -1007,16 +1031,17 @@ impl PluginManager {
             .iter()
             .position(|slot| slot.name == plugin_name)
             .ok_or_else(|| anyhow!("plugin '{plugin_name}' not registered"))?;
-        let (response, watchdog) = {
+        let (response, watchdog, caps) = {
             let slot = self.plugins.get_mut(idx).expect("slot index valid");
             let proxy = slot
                 .isolated_proxy()
                 .ok_or_else(|| anyhow!("plugin '{plugin_name}' is not running in isolated mode"))?;
             match proxy.read_components(entity, components, format) {
-                Ok(resp) => (Ok(resp), None),
-                Err(err) => (Err(err), proxy.take_watchdog_event()),
+                Ok(resp) => (Ok(resp), proxy.take_watchdog_event(), proxy.take_capability_violations()),
+                Err(err) => (Err(err), proxy.take_watchdog_event(), proxy.take_capability_violations()),
             }
         };
+        self.log_isolated_capability_violations(plugin_name, caps);
         if let Some(event) = watchdog {
             self.log_watchdog_event(event);
         }
@@ -1046,16 +1071,17 @@ impl PluginManager {
             .iter()
             .position(|slot| slot.name == plugin_name)
             .ok_or_else(|| anyhow!("plugin '{plugin_name}' not registered"))?;
-        let (response, watchdog) = {
+        let (response, watchdog, caps) = {
             let slot = self.plugins.get_mut(idx).expect("slot index valid");
             let proxy = slot
                 .isolated_proxy()
                 .ok_or_else(|| anyhow!("plugin '{plugin_name}' is not running in isolated mode"))?;
             match proxy.iter_entities(filter, cursor, limit, components, format) {
-                Ok(resp) => (Ok(resp), None),
-                Err(err) => (Err(err), proxy.take_watchdog_event()),
+                Ok(resp) => (Ok(resp), proxy.take_watchdog_event(), proxy.take_capability_violations()),
+                Err(err) => (Err(err), proxy.take_watchdog_event(), proxy.take_capability_violations()),
             }
         };
+        self.log_isolated_capability_violations(plugin_name, caps);
         if let Some(event) = watchdog {
             self.log_watchdog_event(event);
         }
@@ -1099,50 +1125,55 @@ impl PluginManager {
             .iter()
             .position(|slot| slot.name == plugin_name)
             .ok_or_else(|| anyhow!("plugin '{plugin_name}' not registered"))?;
-        let (capabilities, filters) = {
+        let (capabilities, filters, trust) = {
             let slot = self.plugins.get(idx).expect("slot index valid");
-            (slot.capabilities, slot.asset_filters.clone())
+            (slot.capabilities, slot.asset_filters.clone(), slot.trust)
         };
         if !capabilities.contains(PluginCapability::Assets.flag()) {
             bail!("plugin '{plugin_name}' missing asset capability for readback");
         }
-        ensure_asset_filter_allows(&filters, &payload)?;
-        let (result, watchdog) = {
+        ensure_asset_filter_allows(&filters, &payload, trust)?;
+        let (result, watchdog, caps, elapsed) = {
             let slot = self.plugins.get_mut(idx).expect("slot index valid");
             let proxy = slot
                 .isolated_proxy()
                 .ok_or_else(|| anyhow!("plugin '{plugin_name}' is not running in isolated mode"))?;
             let start = Instant::now();
-            match proxy.asset_readback(payload.clone()) {
-                Ok(response) => {
-                    let stats = self.asset_metrics.entry(plugin_name.to_string()).or_default();
-                    stats.requests += 1;
-                    stats.bytes += response.byte_length;
-                    self.asset_metrics_snapshot = None;
-                    self.asset_cache.insert(key, response.clone());
-                    self.record_asset_readback_event(
-                        plugin_name,
-                        &payload,
-                        response.byte_length,
-                        start.elapsed(),
-                        false,
-                    );
-                    (Ok(response), None)
-                }
-                Err(err) => {
-                    if err.to_string().contains("asset readback budget exceeded") {
-                        let stats = self.asset_metrics.entry(plugin_name.to_string()).or_default();
-                        stats.throttled += 1;
-                        self.asset_metrics_snapshot = None;
-                    }
-                    (Err(err), proxy.take_watchdog_event())
-                }
-            }
+            let result = proxy.asset_readback(payload.clone());
+            let elapsed = start.elapsed();
+            let watchdog = proxy.take_watchdog_event();
+            let caps = proxy.take_capability_violations();
+            (result, watchdog, caps, elapsed)
         };
+        self.log_isolated_capability_violations(plugin_name, caps);
         if let Some(event) = watchdog {
             self.log_watchdog_event(event);
         }
-        result
+        match result {
+            Ok(response) => {
+                let stats = self.asset_metrics.entry(plugin_name.to_string()).or_default();
+                stats.requests += 1;
+                stats.bytes += response.byte_length;
+                self.asset_metrics_snapshot = None;
+                self.asset_cache.insert(key, response.clone());
+                self.record_asset_readback_event(
+                    plugin_name,
+                    &payload,
+                    response.byte_length,
+                    elapsed,
+                    false,
+                );
+                Ok(response)
+            }
+            Err(err) => {
+                if err.to_string().contains("asset readback budget exceeded") {
+                    let stats = self.asset_metrics.entry(plugin_name.to_string()).or_default();
+                    stats.throttled += 1;
+                    self.asset_metrics_snapshot = None;
+                }
+                Err(err)
+            }
+        }
     }
 
     fn log_ecs_entities(&mut self, plugin_name: &str, entities: impl IntoIterator<Item = Entity>) {
@@ -1166,6 +1197,19 @@ impl PluginManager {
         }
         self.pending_watchdog_events.push(event);
         self.watchdog_snapshot = None;
+    }
+
+    fn log_isolated_capability_violations(
+        &mut self,
+        plugin_name: &str,
+        caps: Vec<PluginCapability>,
+    ) {
+        if caps.is_empty() {
+            return;
+        }
+        for cap in caps {
+            self.capability_tracker.log_violation(plugin_name, cap);
+        }
     }
 
     fn mark_plugin_failed(&mut self, idx: usize, reason: String) {
@@ -1757,6 +1801,7 @@ struct IsolatedPluginProxy {
     asset_budget: AssetReadbackBudget,
     last_request_desc: Option<String>,
     pending_watchdog: Option<PluginWatchdogEvent>,
+    pending_capability_violations: Vec<PluginCapability>,
 }
 
 struct AssetReadbackBudget {
@@ -1804,7 +1849,13 @@ impl IsolatedPluginProxy {
         let version = entry.version.clone().unwrap_or_else(|| "0.1.0".to_string());
         let host_path = Self::host_binary_path().context("resolve isolated host binary")?;
         let mut command = Command::new(host_path);
-        command.arg("--plugin").arg(&plugin_path).arg("--name").arg(entry.name.as_str());
+        command
+            .arg("--plugin")
+            .arg(&plugin_path)
+            .arg("--name")
+            .arg(entry.name.as_str())
+            .arg("--trust")
+            .arg(entry.trust.label().to_ascii_lowercase());
         for capability in &entry.capabilities {
             command.arg("--cap").arg(capability.label());
         }
@@ -1833,6 +1884,7 @@ impl IsolatedPluginProxy {
             asset_budget: AssetReadbackBudget::new(8, 4 * 1024 * 1024, Duration::from_millis(16)),
             last_request_desc: None,
             pending_watchdog: None,
+            pending_capability_violations: Vec::new(),
         })
     }
 
@@ -1862,7 +1914,7 @@ impl IsolatedPluginProxy {
     fn call_remote(
         &mut self,
         request: PluginHostRequest,
-    ) -> Result<(Vec<GameEvent>, Option<RpcResponseData>)> {
+    ) -> Result<(Vec<GameEvent>, Vec<PluginCapability>, Option<RpcResponseData>)> {
         if self.terminated {
             bail!("isolated plugin host already terminated");
         }
@@ -1898,10 +1950,17 @@ impl IsolatedPluginProxy {
         };
         self.last_request_desc = None;
         match response {
-            PluginHostResponse::Ok { events, data } => {
-                Ok((events.into_iter().map(Into::into).collect(), data))
+            PluginHostResponse::Ok { events, capability_violations, data } => {
+                let caps: Vec<PluginCapability> =
+                    capability_violations.into_iter().map(|evt| evt.capability).collect();
+                self.pending_capability_violations = caps.clone();
+                Ok((events.into_iter().map(Into::into).collect(), caps, data))
             }
-            PluginHostResponse::Error(message) => bail!("isolated plugin error: {message}"),
+            PluginHostResponse::Error { message, capability_violations } => {
+                self.pending_capability_violations =
+                    capability_violations.into_iter().map(|evt| evt.capability).collect();
+                bail!("isolated plugin error: {message}")
+            }
         }
     }
 
@@ -1918,6 +1977,10 @@ impl IsolatedPluginProxy {
 
     fn take_watchdog_event(&mut self) -> Option<PluginWatchdogEvent> {
         self.pending_watchdog.take()
+    }
+
+    fn take_capability_violations(&mut self) -> Vec<PluginCapability> {
+        std::mem::take(&mut self.pending_capability_violations)
     }
 
     fn summarize_request(request: &PluginHostRequest) -> String {
@@ -1958,7 +2021,7 @@ impl IsolatedPluginProxy {
         if self.terminated {
             return;
         }
-        if let Err(err) = self.call_remote(PluginHostRequest::Shutdown) {
+        if let Err(err) = self.call_remote(PluginHostRequest::Shutdown).map(|_| ()) {
             eprintln!("[plugin:{}] failed to shutdown isolated host: {err:?}", self.name);
         }
         self.terminated = true;
@@ -1966,8 +2029,21 @@ impl IsolatedPluginProxy {
     }
 
     fn forward_with_ctx(&mut self, ctx: &mut PluginContext<'_>, request: PluginHostRequest) -> Result<()> {
-        let (events, _) = self.call_remote(request)?;
-        self.relay_events(ctx, events)
+        match self.call_remote(request) {
+            Ok((events, caps, _)) => {
+                for cap in caps {
+                    ctx.log_capability_violation(&self.name, cap);
+                }
+                self.pending_capability_violations.clear();
+                self.relay_events(ctx, events)
+            }
+            Err(err) => {
+                for cap in self.take_capability_violations() {
+                    ctx.log_capability_violation(&self.name, cap);
+                }
+                Err(err)
+            }
+        }
     }
 
     fn relay_events(&self, ctx: &mut PluginContext<'_>, events: Vec<GameEvent>) -> Result<()> {
@@ -1978,7 +2054,7 @@ impl IsolatedPluginProxy {
     }
 
     fn query_entity_info(&mut self, entity: Entity) -> Result<Option<RemoteEntityInfo>> {
-        let (events, payload) =
+        let (events, _caps, payload) =
             self.call_remote(PluginHostRequest::QueryEntityInfo { entity: entity.into() })?;
         if !events.is_empty() {
             eprintln!(
@@ -2008,7 +2084,7 @@ impl IsolatedPluginProxy {
             components,
             format,
         });
-        let (events, payload) = self.call_remote(request)?;
+        let (events, _caps, payload) = self.call_remote(request)?;
         if !events.is_empty() {
             eprintln!("[plugin:{}] read_components returned unexpected events ({})", self.name, events.len());
         }
@@ -2038,7 +2114,7 @@ impl IsolatedPluginProxy {
             components,
             format,
         });
-        let (events, payload) = self.call_remote(request)?;
+        let (events, _caps, payload) = self.call_remote(request)?;
         if !events.is_empty() {
             eprintln!("[plugin:{}] iter_entities returned unexpected events ({})", self.name, events.len());
         }
@@ -2055,7 +2131,7 @@ impl IsolatedPluginProxy {
         self.asset_budget.begin_request()?;
         let request_id = self.take_request_id();
         let request = PluginHostRequest::AssetReadback(RpcAssetReadbackRequest { request_id, payload });
-        let (events, response) = self.call_remote(request)?;
+        let (events, _caps, response) = self.call_remote(request)?;
         if !events.is_empty() {
             eprintln!("[plugin:{}] asset_readback returned unexpected events ({})", self.name, events.len());
         }
@@ -2241,9 +2317,9 @@ impl PluginAssetFilters {
         self.atlases.iter().any(|pattern| matches_asset_pattern(pattern, atlas_id))
     }
 
-    pub fn allows_blob(&self, blob_id: &str) -> bool {
+    pub fn allows_blob(&self, blob_id: &str, trust: PluginTrust) -> bool {
         if self.blobs.is_empty() {
-            return true;
+            return trust != PluginTrust::Isolated;
         }
         self.blobs.iter().any(|pattern| matches_asset_pattern(pattern, blob_id))
     }
@@ -2260,7 +2336,11 @@ fn matches_asset_pattern(pattern: &str, value: &str) -> bool {
     }
 }
 
-fn ensure_asset_filter_allows(filters: &PluginAssetFilters, payload: &RpcAssetReadbackPayload) -> Result<()> {
+fn ensure_asset_filter_allows(
+    filters: &PluginAssetFilters,
+    payload: &RpcAssetReadbackPayload,
+    trust: PluginTrust,
+) -> Result<()> {
     match payload {
         RpcAssetReadbackPayload::AtlasMeta { atlas_id }
         | RpcAssetReadbackPayload::AtlasBinary { atlas_id } => {
@@ -2271,7 +2351,7 @@ fn ensure_asset_filter_allows(filters: &PluginAssetFilters, payload: &RpcAssetRe
             }
         }
         RpcAssetReadbackPayload::BlobRange { blob_id, .. } => {
-            if filters.allows_blob(blob_id) {
+            if filters.allows_blob(blob_id, trust) {
                 Ok(())
             } else {
                 bail!("asset readback blocked by manifest filters for blob '{blob_id}'")
