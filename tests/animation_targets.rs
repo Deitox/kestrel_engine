@@ -13,7 +13,7 @@ use kestrel_engine::assets::{
 use kestrel_engine::ecs::{
     BoneTransforms, ClipInstance, EcsWorld, PropertyTrackPlayer, SkeletonInstance, Sprite,
     SpriteAnimPerfSample, SpriteAnimation, SpriteAnimationFrame, SpriteAnimationLoopMode, SpriteFrameHotData,
-    SpriteFrameState, Tint, Transform, TransformTrackPlayer, WorldTransform,
+    SpriteFrameState, SystemTimingSummary, Tint, Transform, TransformTrackPlayer, WorldTransform,
 };
 use rustc_version_runtime::version as rustc_version;
 use serde::Serialize;
@@ -22,7 +22,7 @@ use std::env;
 use std::fs::{create_dir_all, File};
 use std::hint::black_box;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -88,6 +88,8 @@ struct CaseReport {
     status: TargetStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     sprite_perf: Option<SpritePerfReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system_timings: Option<Vec<SystemTimingEntry>>,
 }
 
 #[derive(Serialize)]
@@ -108,6 +110,32 @@ struct SpritePerfReport {
     mod_or_div_calls_total: u64,
     var_dt_animators_total: u64,
     const_dt_animators_total: u64,
+    simd_lanes8_total: u64,
+    simd_lanes4_total: u64,
+    simd_tail_scalar_total: u64,
+    simd_chunk_time_ns_total: u64,
+    simd_scalar_time_ns_total: u64,
+}
+
+#[derive(Serialize)]
+struct SystemTimingEntry {
+    name: String,
+    last_ms: f32,
+    average_ms: f32,
+    max_ms: f32,
+    samples: u64,
+}
+
+impl From<SystemTimingSummary> for SystemTimingEntry {
+    fn from(summary: SystemTimingSummary) -> Self {
+        Self {
+            name: summary.name.to_string(),
+            last_ms: summary.last_ms,
+            average_ms: summary.average_ms,
+            max_ms: summary.max_ms,
+            samples: summary.samples,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -191,9 +219,17 @@ fn run_case(case: &BudgetCase) -> CaseReport {
     let mut elapsed = Vec::with_capacity(SAMPLES);
     let track_sprite_perf = matches!(case.kind, CaseKind::Sprite);
     let mut sprite_perf_samples = Vec::new();
+    let mut last_system_timings: Option<Vec<SystemTimingEntry>> = None;
+    let force_fixed_step =
+        std::env::var("ANIMATION_PROFILE_FORCE_FIXED_STEP").map(|value| value != "0").unwrap_or(true);
     for _ in 0..SAMPLES {
         let mut world = EcsWorld::new();
         seed_world(case, &mut world);
+        if force_fixed_step {
+            world.set_animation_time_fixed_step(Some(DT));
+        } else {
+            world.set_animation_time_fixed_step(None);
+        }
 
         for _ in 0..WARMUP_STEPS {
             world.update(DT);
@@ -210,6 +246,10 @@ fn run_case(case: &BudgetCase) -> CaseReport {
             sprite_perf_samples.extend(world.sprite_anim_perf_history());
         }
         black_box(&world);
+        let timings = world.system_timings().into_iter().map(SystemTimingEntry::from).collect::<Vec<_>>();
+        if !timings.is_empty() {
+            last_system_timings = Some(timings);
+        }
     }
 
     let summary = summarize(&elapsed);
@@ -240,6 +280,7 @@ fn run_case(case: &BudgetCase) -> CaseReport {
         summary,
         status,
         sprite_perf,
+        system_timings: last_system_timings,
     }
 }
 
@@ -347,6 +388,11 @@ fn summarize_sprite_perf(samples: &[SpriteAnimPerfSample]) -> Option<SpritePerfR
     let mut mod_calls_total = 0_u64;
     let mut var_total = 0_u64;
     let mut const_total = 0_u64;
+    let mut simd_lanes8_total = 0_u64;
+    let mut simd_lanes4_total = 0_u64;
+    let mut simd_tail_total = 0_u64;
+    let mut simd_chunk_time_total = 0_u64;
+    let mut simd_scalar_time_total = 0_u64;
 
     for sample in samples {
         fast_total += sample.fast_animators as u64;
@@ -357,6 +403,11 @@ fn summarize_sprite_perf(samples: &[SpriteAnimPerfSample]) -> Option<SpritePerfR
         mod_calls_total += sample.mod_or_div_calls as u64;
         var_total += sample.var_dt_animators as u64;
         const_total += sample.const_dt_animators as u64;
+        simd_lanes8_total += sample.simd_lanes_8 as u64;
+        simd_lanes4_total += sample.simd_lanes_4 as u64;
+        simd_tail_total += sample.simd_tail_scalar as u64;
+        simd_chunk_time_total += sample.simd_chunk_time_ns;
+        simd_scalar_time_total += sample.simd_scalar_time_ns;
 
         let slow_ratio = sample.slow_ratio() as f64;
         slow_ratios.push(slow_ratio);
@@ -402,6 +453,11 @@ fn summarize_sprite_perf(samples: &[SpriteAnimPerfSample]) -> Option<SpritePerfR
         mod_or_div_calls_total: mod_calls_total,
         var_dt_animators_total: var_total,
         const_dt_animators_total: const_total,
+        simd_lanes8_total,
+        simd_lanes4_total,
+        simd_tail_scalar_total: simd_tail_total,
+        simd_chunk_time_ns_total: simd_chunk_time_total,
+        simd_scalar_time_ns_total: simd_scalar_time_total,
     })
 }
 
@@ -429,10 +485,22 @@ fn current_timestamp_ms() -> u128 {
 }
 
 fn detect_target_cpu() -> String {
-    env::var("RUSTFLAGS")
-        .ok()
-        .and_then(|flags| parse_target_cpu(&flags))
-        .unwrap_or_else(|| "default".to_string())
+    if let Ok(flags) = env::var("RUSTFLAGS") {
+        if let Some(value) = parse_target_cpu(&flags) {
+            return value;
+        }
+    }
+    if let Some(value) = target_cpu_from_config() {
+        return value;
+    }
+    "default".to_string()
+}
+
+fn target_cpu_from_config() -> Option<String> {
+    let path = Path::new(".cargo").join("config.toml");
+    let contents = std::fs::read_to_string(path).ok()?;
+    let sanitized = contents.replace('[', " ").replace(']', " ").replace('"', " ").replace(',', " ");
+    parse_target_cpu(&sanitized)
 }
 
 fn parse_target_cpu(flags: &str) -> Option<String> {

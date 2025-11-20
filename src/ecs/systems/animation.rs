@@ -22,6 +22,10 @@ use std::collections::HashMap;
 use std::collections::{hash_map::DefaultHasher, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+#[cfg(feature = "anim_stats")]
+use std::time::Duration;
+#[cfg(any(feature = "anim_stats", feature = "sprite_anim_simd"))]
+use std::time::Instant;
 
 #[derive(Default, Resource)]
 pub struct SpriteFrameApplyQueue {
@@ -484,7 +488,7 @@ fn convert_slice_to_fp(values: &[f32]) -> Arc<[u32]> {
 }
 
 #[cfg(feature = "anim_stats")]
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[cfg(feature = "anim_stats")]
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -652,6 +656,8 @@ pub struct SpriteAnimPerfSample {
     pub simd_lanes_8: u32,
     pub simd_lanes_4: u32,
     pub simd_tail_scalar: u32,
+    pub simd_chunk_time_ns: u64,
+    pub simd_scalar_time_ns: u64,
     pub events_emitted: u32,
     pub events_coalesced: u32,
     pub slow_ratio_streak: u32,
@@ -940,6 +946,24 @@ fn perf_record_simd_mix(lanes8: u32, lanes4: u32, tail: u32) {
     perf_with_sample(|sample| sample.record_simd_mix(lanes8, lanes4, tail));
 }
 
+#[cfg(feature = "sprite_anim_simd")]
+fn perf_record_simd_chunk_time(time_ns: u64) {
+    if time_ns == 0 {
+        return;
+    }
+    perf_with_sample(|sample| sample.simd_chunk_time_ns = sample.simd_chunk_time_ns.saturating_add(time_ns));
+}
+
+#[cfg(feature = "sprite_anim_simd")]
+fn perf_record_simd_scalar_time(time_ns: u64) {
+    if time_ns == 0 {
+        return;
+    }
+    perf_with_sample(|sample| {
+        sample.simd_scalar_time_ns = sample.simd_scalar_time_ns.saturating_add(time_ns)
+    });
+}
+
 #[cfg(feature = "anim_stats")]
 pub fn reset_sprite_animation_stats() {
     SPRITE_FAST_LOOP_CALLS.store(0, Ordering::Relaxed);
@@ -1189,7 +1213,7 @@ pub fn sys_drive_sprite_animations(
         With<FastSpriteAnimator>,
     >,
     #[cfg(not(feature = "sprite_anim_soa"))] mut fast_animations: Query<
-        (Entity, &mut SpriteAnimation, &mut SpriteFrameState),
+        (Entity, &mut SpriteAnimation, &mut SpriteFrameState, &mut Sprite),
         With<FastSpriteAnimator>,
     >,
     mut general_animations: Query<
@@ -1244,13 +1268,7 @@ pub fn sys_drive_sprite_animations(
                 }
                 #[cfg(not(feature = "sprite_anim_soa"))]
                 {
-                    drive_fast_single(
-                        delta,
-                        has_group_scales,
-                        animation_time_ref,
-                        frame_updates.as_mut(),
-                        &mut fast_animations,
-                    );
+                    drive_fast_single(delta, has_group_scales, animation_time_ref, &mut fast_animations);
                 }
                 drive_general_single(
                     delta,
@@ -1288,7 +1306,6 @@ pub fn sys_drive_sprite_animations(
                         steps,
                         has_group_scales,
                         animation_time_ref,
-                        frame_updates.as_mut(),
                         &mut fast_animations,
                     );
                 }
@@ -1629,7 +1646,7 @@ mod tests {
             ResMut<EventBus>,
             ResMut<SpriteFrameApplyQueue>,
             ResMut<SpriteAnimPerfTelemetry>,
-            Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState), With<FastSpriteAnimator>>,
+            Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState, &mut Sprite), With<FastSpriteAnimator>>,
             Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState), Without<FastSpriteAnimator>>,
         )>::new(&mut world);
         #[cfg(feature = "sprite_anim_soa")]
@@ -2354,7 +2371,7 @@ mod tests {
             ResMut<EventBus>,
             ResMut<SpriteFrameApplyQueue>,
             ResMut<SpriteAnimPerfTelemetry>,
-            Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState), With<FastSpriteAnimator>>,
+            Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState, &mut Sprite), With<FastSpriteAnimator>>,
             Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState), Without<FastSpriteAnimator>>,
         )>::new(&mut world);
 
@@ -3671,7 +3688,8 @@ fn advance_animation_fast_loop(animation: &mut SpriteAnimation, delta: f32) -> b
 
     let durations = animation.frame_durations.as_ref();
     let offsets = animation.frame_offsets.as_ref();
-    let mut index = animation.frame_index % frame_count;
+    let mut index = animation.frame_index;
+    debug_assert!(index < frame_count);
     let mut current_duration = animation.current_duration;
     let mut current_offset = animation.current_frame_offset;
 
@@ -3732,20 +3750,27 @@ fn advance_animation_fast_loop(animation: &mut SpriteAnimation, delta: f32) -> b
 }
 
 #[cfg(not(feature = "sprite_anim_soa"))]
-#[cfg(not(feature = "sprite_anim_soa"))]
 fn drive_fast_single(
     delta: f32,
     has_group_scales: bool,
     animation_time: &AnimationTime,
-    frame_updates: &mut SpriteFrameApplyQueue,
-    animations: &mut Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState), With<FastSpriteAnimator>>,
+    animations: &mut Query<
+        (Entity, &mut SpriteAnimation, &mut SpriteFrameState, &mut Sprite),
+        With<FastSpriteAnimator>,
+    >,
 ) {
     #[cfg(feature = "anim_stats")]
     let mut processed = 0_u64;
 
+    if delta == 0.0 {
+        #[cfg(feature = "anim_stats")]
+        record_fast_bucket_sample(0);
+        return;
+    }
+
     perf_record_fast_bucket_frame();
 
-    for (entity, mut animation, mut sprite_state) in animations.iter_mut() {
+    for (_, mut animation, mut sprite_state, mut sprite) in animations.iter_mut() {
         let frame_count = animation.frames.len();
         if !prepare_animation(&mut animation, frame_count) {
             continue;
@@ -3766,7 +3791,7 @@ fn drive_fast_single(
         perf_record_fast_animator();
         debug_assert!(animation.fast_loop);
         if advance_animation_fast_loop(&mut animation, advance_delta) {
-            queue_sprite_frame_update(entity, &animation, &mut sprite_state, frame_updates);
+            apply_sprite_frame_immediate(&animation, &mut sprite_state, &mut sprite);
         }
         #[cfg(feature = "anim_stats")]
         {
@@ -3786,46 +3811,51 @@ fn drive_fast_single_soa(
     runtime: &mut SpriteAnimatorSoa,
     state_updates: &mut Vec<SpriteStateUpdate>,
 ) {
+    let processed =
+        drive_fast_single_soa_pass(delta, has_group_scales, animation_time, runtime, state_updates, true);
+    #[cfg(feature = "anim_stats")]
+    record_fast_bucket_sample(processed);
+    #[cfg(not(feature = "anim_stats"))]
+    {
+        let _ = processed;
+    }
+}
+
+#[cfg(feature = "sprite_anim_soa")]
+fn drive_fast_single_soa_pass(
+    delta: f32,
+    has_group_scales: bool,
+    animation_time: &AnimationTime,
+    runtime: &mut SpriteAnimatorSoa,
+    state_updates: &mut Vec<SpriteStateUpdate>,
+    record_bucket_frame: bool,
+) -> u64 {
     if delta == 0.0 || runtime.is_empty() {
-        return;
+        return 0;
     }
 
-    perf_record_fast_bucket_frame();
+    if record_bucket_frame {
+        perf_record_fast_bucket_frame();
+    }
 
     #[cfg(feature = "sprite_anim_simd")]
     if delta > 0.0 && runtime.len() >= SPRITE_SIMD_WIDTH {
-        let stats =
-            drive_fast_single_simd(delta, has_group_scales, animation_time, runtime, state_updates);
+        let stats = drive_fast_single_simd(delta, has_group_scales, animation_time, runtime, state_updates);
         perf_record_simd_mix(stats.lanes8, 0, stats.tail_scalar);
-        #[cfg(feature = "anim_stats")]
-        record_fast_bucket_sample(stats.processed);
-        #[cfg(not(feature = "anim_stats"))]
-        {
-            let _ = stats.processed;
-        }
-        return;
+        return stats.processed;
     }
 
-    #[cfg(feature = "anim_stats")]
     let mut processed = 0_u64;
 
     for slot in 0..runtime.len() {
         let handled =
             process_fast_slot(slot, delta, has_group_scales, animation_time, runtime, state_updates);
-        #[cfg(feature = "anim_stats")]
-        {
-            if handled {
-                processed += 1;
-            }
-        }
-        #[cfg(not(feature = "anim_stats"))]
-        {
-            let _ = handled;
+        if handled {
+            processed += 1;
         }
     }
 
-    #[cfg(feature = "anim_stats")]
-    record_fast_bucket_sample(processed);
+    processed
 }
 
 #[cfg(feature = "sprite_anim_soa")]
@@ -3841,58 +3871,23 @@ fn drive_fast_fixed_soa(
         return;
     }
 
-    #[cfg(feature = "anim_stats")]
-    let mut processed = 0_u64;
-
     perf_record_fast_bucket_frame();
+    let mut processed_total = 0_u64;
 
-    for slot in 0..runtime.len() {
-        if !prepare_animation_slot(runtime, slot) {
-            continue;
-        }
-
-        let Some(playback_rate) = resolve_playback_rate_slot(runtime, slot, has_group_scales, animation_time)
-        else {
-            continue;
-        };
-        let scaled_step = step * playback_rate;
-        if scaled_step == 0.0 {
-            continue;
-        }
-        perf_record_fast_animator();
-
-        let mut sprite_changed = false;
-        for _ in 0..steps {
-            #[cfg(test)]
-            tests::record_drive_fixed_step_iteration();
-            let Some(advance_delta) = accumulate_delta_slot(runtime, slot, scaled_step, CLIP_TIME_EPSILON)
-            else {
-                if !runtime.flags[slot].playing() {
-                    break;
-                }
-                continue;
-            };
-            if advance_animation_fast_loop_slot(runtime, slot, advance_delta) {
-                sprite_changed = true;
-            }
-            if !runtime.flags[slot].playing() {
-                break;
-            }
-        }
-
-        if sprite_changed {
-            let entity = runtime.entity(slot);
-            state_updates.push((entity, slot));
-        }
-
-        #[cfg(feature = "anim_stats")]
+    for _ in 0..steps {
+        let processed =
+            drive_fast_single_soa_pass(step, has_group_scales, animation_time, runtime, state_updates, false);
+        processed_total = processed_total.saturating_add(processed);
+        #[cfg(test)]
         {
-            processed += 1;
+            for _ in 0..processed {
+                tests::record_drive_fixed_step_iteration();
+            }
         }
     }
 
     #[cfg(feature = "anim_stats")]
-    record_fast_bucket_sample(processed);
+    record_fast_bucket_sample(processed_total);
 }
 
 #[cfg(not(feature = "sprite_anim_soa"))]
@@ -3901,8 +3896,10 @@ fn drive_fast_fixed(
     steps: u32,
     has_group_scales: bool,
     animation_time: &AnimationTime,
-    frame_updates: &mut SpriteFrameApplyQueue,
-    animations: &mut Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState), With<FastSpriteAnimator>>,
+    animations: &mut Query<
+        (Entity, &mut SpriteAnimation, &mut SpriteFrameState, &mut Sprite),
+        With<FastSpriteAnimator>,
+    >,
 ) {
     if step == 0.0 || steps == 0 {
         #[cfg(feature = "anim_stats")]
@@ -3915,7 +3912,7 @@ fn drive_fast_fixed(
 
     perf_record_fast_bucket_frame();
 
-    for (entity, mut animation, mut sprite_state) in animations.iter_mut() {
+    for (_, mut animation, mut sprite_state, mut sprite) in animations.iter_mut() {
         let frame_count = animation.frames.len();
         if !prepare_animation(&mut animation, frame_count) {
             continue;
@@ -3952,7 +3949,7 @@ fn drive_fast_fixed(
         }
 
         if sprite_changed {
-            queue_sprite_frame_update(entity, &animation, &mut sprite_state, frame_updates);
+            apply_sprite_frame_immediate(&animation, &mut sprite_state, &mut sprite);
         }
 
         #[cfg(feature = "anim_stats")]
@@ -4019,7 +4016,8 @@ fn drive_fast_single_simd(
             slot += 1;
             continue;
         }
-        let Some(playback_rate) = resolve_playback_rate_slot(runtime, slot, has_group_scales, animation_time) else {
+        let Some(playback_rate) = resolve_playback_rate_slot(runtime, slot, has_group_scales, animation_time)
+        else {
             slot += 1;
             continue;
         };
@@ -4052,11 +4050,13 @@ fn drive_fast_single_simd(
     }
     let tail_scalar = pending.len() as u32;
     for entry in pending {
+        let scalar_timer = Instant::now();
         if advance_animation_fast_loop_slot(runtime, entry.slot, entry.delta) {
             let entity = runtime.entity(entry.slot);
             state_updates.push((entity, entry.slot));
         }
         perf_record_fast_animator();
+        perf_record_simd_scalar_time(scalar_timer.elapsed().as_nanos() as u64);
     }
     SimdMixStats { processed, lanes8: simd_lanes, tail_scalar }
 }
@@ -4067,65 +4067,55 @@ fn apply_const_dt_simd_chunk(
     pending: &[PendingSimdSlot],
     state_updates: &mut Vec<SpriteStateUpdate>,
 ) {
+    let chunk_timer = Instant::now();
     debug_assert_eq!(pending.len(), SPRITE_SIMD_WIDTH);
-    let mut elapsed = [0.0_f32; SPRITE_SIMD_WIDTH];
-    let mut delta = [0.0_f32; SPRITE_SIMD_WIDTH];
-    let mut frame_dt = [0.0_f32; SPRITE_SIMD_WIDTH];
-    let mut frame_idx = [0_u32; SPRITE_SIMD_WIDTH];
-    let mut frame_count = [0_u32; SPRITE_SIMD_WIDTH];
-    let mut slots = [0_usize; SPRITE_SIMD_WIDTH];
-    for (lane, entry) in pending.iter().enumerate() {
+    for entry in pending {
         let slot = entry.slot;
-        slots[lane] = slot;
-        elapsed[lane] = runtime.elapsed_in_frame[slot];
-        delta[lane] = entry.delta;
-        frame_dt[lane] = runtime.const_dt_duration[slot].max(CLIP_TIME_EPSILON);
-        frame_idx[lane] = runtime.frame_index[slot];
-        frame_count[lane] = runtime.const_dt_frame_count[slot].max(1);
-    }
-    let total = f32x8::from(elapsed) + f32x8::from(delta);
-    let dt = f32x8::from(frame_dt);
-    let steps_vec = (total / dt).floor();
-    let new_elapsed_vec = total - (dt * steps_vec);
-    let steps_arr = steps_vec.to_array();
-    let new_elapsed_arr = new_elapsed_vec.to_array();
+        let dt_fp = runtime.const_dt_duration_fp[slot].max(FP_CLIP_EPSILON);
+        let delta_fp = fp_from_f32(entry.delta) as u64;
+        let total_fp = runtime.elapsed_in_frame_fp[slot] as u64 + delta_fp;
+        let steps = total_fp / dt_fp as u64;
+        let remainder_fp = (total_fp - steps * dt_fp as u64) as u32;
 
-    for lane in 0..SPRITE_SIMD_WIDTH {
-        let slot = slots[lane];
-        let frames = frame_count[lane] as usize;
-        let mut index = frame_idx[lane] as usize;
-        let steps = steps_arr[lane].max(0.0) as u32;
+        let frames = runtime.const_dt_frame_count[slot].max(1) as usize;
+        let mut index = runtime.frame_index[slot] as usize;
         if frames > 0 {
             let advance = (steps as usize) % frames;
             index = (index + advance) % frames;
         } else {
             index = 0;
         }
-        let clamped_elapsed = new_elapsed_arr[lane].clamp(0.0, frame_dt[lane]);
-        let elapsed_fp = fp_from_f32(clamped_elapsed);
-        let offset_f = frame_dt[lane] * index as f32;
-        let duration_fp = fp_from_f32(frame_dt[lane]);
-
         runtime.frame_index[slot] = index as u32;
-        runtime.elapsed_in_frame[slot] = clamped_elapsed;
-        runtime.elapsed_in_frame_fp[slot] = elapsed_fp;
-        runtime.current_duration[slot] = frame_dt[lane];
-        runtime.current_duration_fp[slot] = duration_fp;
-        runtime.current_frame_offset[slot] = offset_f;
-        runtime.current_frame_offset_fp[slot] = fp_from_f32(offset_f);
-        runtime.next_frame_duration[slot] = frame_dt[lane];
+        runtime.elapsed_in_frame_fp[slot] = remainder_fp;
+        runtime.elapsed_in_frame[slot] = f32_from_fp(remainder_fp);
+
+        let offsets = runtime.frame_offsets[slot].as_ref();
+        runtime.current_frame_offset[slot] = offsets.get(index).copied().unwrap_or(0.0);
         #[cfg(feature = "sprite_anim_fixed_point")]
         {
+            let offsets_fp = runtime.frame_offsets_fp[slot].as_ref();
+            runtime.current_frame_offset_fp[slot] = offsets_fp.get(index).copied().unwrap_or(0);
+        }
+
+        let durations = runtime.frame_durations[slot].as_ref();
+        let duration_f = durations.get(index).copied().unwrap_or(runtime.const_dt_duration[slot]);
+        runtime.current_duration[slot] = duration_f;
+        runtime.next_frame_duration[slot] = duration_f;
+        #[cfg(feature = "sprite_anim_fixed_point")]
+        {
+            let durations_fp = runtime.frame_durations_fp[slot].as_ref();
+            let duration_fp = durations_fp.get(index).copied().unwrap_or(dt_fp);
+            runtime.current_duration_fp[slot] = duration_fp;
             runtime.next_frame_duration_fp[slot] = duration_fp;
         }
+
         if steps > 0 {
             let entity = runtime.entity(slot);
             state_updates.push((entity, slot));
         }
-    }
-    for _ in 0..SPRITE_SIMD_WIDTH {
         perf_record_fast_animator();
     }
+    perf_record_simd_chunk_time(chunk_timer.elapsed().as_nanos() as u64);
 }
 
 #[cfg(feature = "sprite_anim_soa")]
@@ -4293,6 +4283,7 @@ fn prepare_animation_slot(runtime: &mut SpriteAnimatorSoa, slot: usize) -> bool 
     flags.playing()
 }
 
+#[inline(always)]
 fn resolve_playback_rate(
     animation: &mut SpriteAnimation,
     has_group_scales: bool,
@@ -4333,7 +4324,8 @@ fn advance_animation_fast_loop_slot(runtime: &mut SpriteAnimatorSoa, slot: usize
 
     let durations = runtime.frame_durations[slot].as_ref();
     let offsets = runtime.frame_offsets[slot].as_ref();
-    let mut index = (runtime.frame_index[slot] as usize) % frame_count;
+    let mut index = runtime.frame_index[slot] as usize;
+    debug_assert!(index < frame_count);
     let mut current_duration = runtime.current_duration[slot];
     let mut current_offset = runtime.current_frame_offset[slot];
     let mut next_duration = runtime.next_frame_duration[slot].max(CLIP_TIME_EPSILON);
@@ -4421,7 +4413,8 @@ fn advance_animation_fast_loop_slot(runtime: &mut SpriteAnimatorSoa, slot: usize
 
     let durations = runtime.frame_durations_fp[slot].as_ref();
     let offsets = runtime.frame_offsets_fp[slot].as_ref();
-    let mut index = (runtime.frame_index[slot] as usize) % frame_count;
+    let mut index = runtime.frame_index[slot] as usize;
+    debug_assert!(index < frame_count);
     let mut current_duration_fp = runtime.current_duration_fp[slot].max(FP_CLIP_EPSILON);
     let mut current_offset_fp = runtime.current_frame_offset_fp[slot];
     let mut next_duration_fp = runtime.next_frame_duration_fp[slot].max(FP_CLIP_EPSILON);
@@ -4505,6 +4498,7 @@ fn advance_animation_fast_loop_slot(runtime: &mut SpriteAnimatorSoa, slot: usize
 }
 
 #[cfg(feature = "sprite_anim_soa")]
+#[inline(always)]
 fn resolve_playback_rate_slot(
     runtime: &mut SpriteAnimatorSoa,
     slot: usize,
@@ -4528,6 +4522,7 @@ fn resolve_playback_rate_slot(
 }
 
 #[cfg(feature = "sprite_anim_soa")]
+#[inline(always)]
 fn accumulate_delta_slot(
     runtime: &mut SpriteAnimatorSoa,
     slot: usize,
@@ -4538,11 +4533,11 @@ fn accumulate_delta_slot(
         return None;
     }
     let mut pending = runtime.pending_delta[slot];
-    if pending != 0.0 && pending.signum() != delta.signum() {
+    if pending != 0.0 && (pending < 0.0) != (delta < 0.0) {
         pending = 0.0;
     }
     let total = pending + delta;
-    if total.abs() < epsilon {
+    if total > -epsilon && total < epsilon {
         runtime.pending_delta[slot] = total;
         None
     } else {
@@ -4568,6 +4563,19 @@ fn queue_sprite_frame_update(
     }
     sprite_state.queued_for_apply = true;
     frame_updates.push(entity);
+}
+
+fn apply_sprite_frame_immediate(
+    animation: &SpriteAnimation,
+    sprite_state: &mut SpriteFrameState,
+    sprite: &mut Sprite,
+) {
+    debug_assert_eq!(animation.frames.len(), animation.frame_hot_data.len());
+    let hot = unsafe { animation.frame_hot_data.get_unchecked(animation.frame_index) };
+    let frame = unsafe { animation.frames.get_unchecked(animation.frame_index) };
+    let region = Some(&frame.region);
+    sprite_state.update_from_hot_frame(hot, region);
+    sprite_state.apply_to_sprite(sprite);
 }
 
 #[cfg(feature = "sprite_anim_soa")]

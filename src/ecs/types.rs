@@ -158,6 +158,16 @@ impl SpriteFrameState {
         }
         self.queued_for_apply = false;
     }
+
+    pub fn apply_to_sprite(&mut self, sprite: &mut Sprite) {
+        if let Some(region) = self.pending_region.take() {
+            sprite.region = region;
+            self.region_initialized = true;
+        }
+        sprite.region_id = self.region_id;
+        sprite.uv = self.uv;
+        self.queued_for_apply = false;
+    }
 }
 
 #[derive(Component, Clone)]
@@ -334,17 +344,17 @@ impl SpriteAnimation {
             self.has_events && self.current_frame().map(|frame| !frame.events.is_empty()).unwrap_or(false);
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) fn accumulate_delta(&mut self, delta: f32, epsilon: f32) -> Option<f32> {
         if delta == 0.0 {
             return None;
         }
         let mut pending = self.pending_small_delta;
-        if pending != 0.0 && pending.signum() != delta.signum() {
+        if pending != 0.0 && (pending < 0.0) != (delta < 0.0) {
             pending = 0.0;
         }
         let total = pending + delta;
-        if total.abs() < epsilon {
+        if total > -epsilon && total < epsilon {
             self.pending_small_delta = total;
             None
         } else {

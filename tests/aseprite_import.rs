@@ -175,10 +175,8 @@ fn aseprite_to_atlas_emits_uniform_lint() {
 
     let generated = fs::read_to_string(&output_path).expect("read generated atlas json");
     let atlas: serde_json::Value = serde_json::from_str(&generated).expect("parse atlas output");
-    let lint_entries = atlas
-        .get("lint")
-        .and_then(|value| value.as_array())
-        .expect("atlas output should include lint array");
+    let lint_entries =
+        atlas.get("lint").and_then(|value| value.as_array()).expect("atlas output should include lint array");
     let lint = lint_entries
         .iter()
         .find(|entry| entry.get("code").and_then(|code| code.as_str()) == Some("uniform_dt_drift"))
@@ -188,10 +186,8 @@ fn aseprite_to_atlas_emits_uniform_lint() {
         Some("warn"),
         "drift > 1ms should emit a warn lint"
     );
-    let frames = lint
-        .get("frames")
-        .and_then(|value| value.as_array())
-        .expect("lint entry should include frames");
+    let frames =
+        lint.get("frames").and_then(|value| value.as_array()).expect("lint entry should include frames");
     assert_eq!(frames.len(), 2, "only the drifting frames should be reported");
 }
 
