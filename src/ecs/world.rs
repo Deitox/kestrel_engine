@@ -11,9 +11,10 @@ use crate::ecs::systems::{sys_cleanup_sprite_animator_soa, SpriteAnimatorSoa};
 use crate::events::{EventBus, GameEvent};
 use crate::mesh_registry::MeshRegistry;
 use crate::scene::{
-    ColliderData, ColorData, MeshData, MeshLightingData, OrbitControllerData, ParticleEmitterData, Scene,
-    SceneDependencies, SceneEntity, SceneEntityId, SkeletonClipData, SkeletonData, SpriteAnimationData,
-    SpriteData, Transform3DData, TransformClipData, TransformData,
+    ColliderData, ColorData, ForceFieldData, MeshData, MeshLightingData, OrbitControllerData,
+    ParticleAttractorData, ParticleEmitterData, ParticleTrailData, Scene, SceneDependencies, SceneEntity,
+    SceneEntityId, SkeletonClipData, SkeletonData, SpriteAnimationData, SpriteData, Transform3DData,
+    TransformClipData, TransformData,
 };
 use anyhow::{anyhow, Result};
 use bevy_ecs::prelude::{Entity, Schedule, With, World};
@@ -396,13 +397,59 @@ impl EcsWorld {
                     speed,
                     lifetime,
                     accumulator: 0.0,
-                    start_color,
-                    end_color,
-                    start_size,
+                start_color,
+                end_color,
+                start_size,
                     end_size,
                     atlas: Arc::from("main"),
                     region: Arc::from("green"),
                     source: None,
+                    trail: None,
+                },
+            ))
+            .id();
+        self.ensure_scene_entity_tag(entity);
+        entity
+    }
+
+    pub fn spawn_force_field(
+        &mut self,
+        position: Vec2,
+        strength: f32,
+        radius: f32,
+        kind: ForceFieldKind,
+        falloff: ForceFalloff,
+    ) -> Entity {
+        let entity = self
+            .world
+            .spawn((
+                Transform { translation: position, rotation: 0.0, scale: Vec2::ONE },
+                WorldTransform::default(),
+                ForceField { kind, strength, radius, falloff, direction: Vec2::Y },
+            ))
+            .id();
+        self.ensure_scene_entity_tag(entity);
+        entity
+    }
+
+    pub fn spawn_attractor(
+        &mut self,
+        position: Vec2,
+        strength: f32,
+        radius: f32,
+        min_distance: f32,
+    ) -> Entity {
+        let entity = self
+            .world
+            .spawn((
+                Transform { translation: position, rotation: 0.0, scale: Vec2::ONE },
+                WorldTransform::default(),
+                ParticleAttractor {
+                    strength,
+                    radius,
+                    min_distance,
+                    max_acceleration: 0.0,
+                    falloff: ForceFalloff::Linear,
                 },
             ))
             .id();
@@ -420,6 +467,48 @@ impl EcsWorld {
         if let Some(mut emitter) = self.world.get_mut::<ParticleEmitter>(entity) {
             emitter.start_color = start;
             emitter.end_color = end;
+        }
+    }
+
+    pub fn set_emitter_trail(&mut self, entity: Entity, trail: Option<ParticleTrail>) {
+        if let Some(mut emitter) = self.world.get_mut::<ParticleEmitter>(entity) {
+            emitter.trail = trail;
+        }
+    }
+
+    pub fn set_force_field(&mut self, entity: Entity, field: Option<ForceField>) {
+        let mut entity_mut = self.world.entity_mut(entity);
+        match field {
+            Some(field) => {
+                if entity_mut.get::<ForceField>().is_some() {
+                    if let Some(mut existing) = entity_mut.get_mut::<ForceField>() {
+                        *existing = field;
+                    }
+                } else {
+                    entity_mut.insert(field);
+                }
+            }
+            None => {
+                entity_mut.remove::<ForceField>();
+            }
+        }
+    }
+
+    pub fn set_attractor(&mut self, entity: Entity, attractor: Option<ParticleAttractor>) {
+        let mut entity_mut = self.world.entity_mut(entity);
+        match attractor {
+            Some(attractor) => {
+                if entity_mut.get::<ParticleAttractor>().is_some() {
+                    if let Some(mut existing) = entity_mut.get_mut::<ParticleAttractor>() {
+                        *existing = attractor;
+                    }
+                } else {
+                    entity_mut.insert(attractor);
+                }
+            }
+            None => {
+                entity_mut.remove::<ParticleAttractor>();
+            }
         }
     }
 
@@ -457,13 +546,19 @@ impl EcsWorld {
         let active_particles = particle_query.iter(&self.world).count() as u32;
         let mut emitter_query = self.world.query::<&ParticleEmitter>();
         let mut total_emitters = 0u32;
+        let mut trail_emitters = 0u32;
         let mut backlog_total = 0.0f32;
         let mut backlog_max = 0.0f32;
         for emitter in emitter_query.iter(&self.world) {
             total_emitters += 1;
+            if emitter.trail.is_some() {
+                trail_emitters += 1;
+            }
             backlog_total += emitter.accumulator;
             backlog_max = backlog_max.max(emitter.accumulator);
         }
+        let force_fields = self.world.query::<&ForceField>().iter(&self.world).count() as u32;
+        let attractors = self.world.query::<&ParticleAttractor>().iter(&self.world).count() as u32;
         let available_spawn = caps.max_total.saturating_sub(active_particles).min(caps.max_spawn_per_frame);
         ParticleBudgetMetrics {
             active_particles,
@@ -471,6 +566,9 @@ impl EcsWorld {
             max_total: caps.max_total,
             max_spawn_per_frame: caps.max_spawn_per_frame,
             total_emitters,
+            trail_emitters,
+            force_fields,
+            attractors,
             emitter_backlog_total: backlog_total,
             emitter_backlog_max_observed: backlog_max,
             emitter_backlog_limit: caps.max_emitter_backlog,
@@ -2024,6 +2122,17 @@ impl EcsWorld {
                 .and_then(|skel| self.world.get::<SceneEntityTag>(skel).map(|tag| tag.id.clone()));
             SkinMeshInfo { joint_count, skeleton_entity, skeleton_scene_id, mesh_key }
         });
+        let particle_emitter = self.world.get::<ParticleEmitter>(entity).map(|emitter| ParticleEmitterInfo {
+            rate: emitter.rate,
+            spread: emitter.spread,
+            speed: emitter.speed,
+            lifetime: emitter.lifetime,
+            start_size: emitter.start_size,
+            end_size: emitter.end_size,
+            trail: emitter.trail,
+        });
+        let force_field = self.world.get::<ForceField>(entity).copied();
+        let attractor = self.world.get::<ParticleAttractor>(entity).copied();
         Some(EntityInfo {
             scene_id,
             translation,
@@ -2039,6 +2148,9 @@ impl EcsWorld {
             tint,
             skeleton,
             skin_mesh,
+            particle_emitter,
+            force_field,
+            attractor,
         })
     }
     pub fn entity_exists(&self, entity: Entity) -> bool {
@@ -2665,7 +2777,14 @@ impl EcsWorld {
                 atlas: Arc::from(emitter.atlas.as_str()),
                 region: Arc::from(emitter.region.as_str()),
                 source: emitter.atlas_source.as_deref().map(|path| Arc::from(path)),
+                trail: emitter.trail.as_ref().map(|trail| ParticleTrail::from(trail.clone())),
             });
+        }
+        if let Some(field) = data.force_field.clone() {
+            entity.insert(ForceField::from(field));
+        }
+        if let Some(attractor) = data.attractor.clone() {
+            entity.insert(ParticleAttractor::from(attractor));
         }
         if let Some(orbit) = data.orbit.clone() {
             entity
@@ -2918,7 +3037,13 @@ impl EcsWorld {
                     .as_ref()
                     .map(|s| s.as_ref().to_string())
                     .or_else(|| assets.atlas_source(emitter.atlas.as_ref()).map(|p| p.to_string())),
+                trail: emitter.trail.map(ParticleTrailData::from),
             }),
+            force_field: self.world.get::<ForceField>(entity).map(|field| ForceFieldData::from(*field)),
+            attractor: self
+                .world
+                .get::<ParticleAttractor>(entity)
+                .map(|attractor| ParticleAttractorData::from(*attractor)),
             orbit: self.world.get::<OrbitController>(entity).map(|orbit| OrbitControllerData {
                 center: orbit.center.into(),
                 angular_speed: orbit.angular_speed,

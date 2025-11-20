@@ -13,8 +13,8 @@ use crate::audio::{AudioHealthSnapshot, AudioSpatialConfig};
 use crate::camera::Camera2D;
 use crate::camera3d::Camera3D;
 use crate::ecs::{
-    AnimationTime, EntityInfo, ParticleBudgetMetrics, PropertyTrackPlayer, SpatialMetrics, SpatialMode,
-    SpriteAnimPerfSample, SystemTimingSummary, TransformTrackPlayer,
+    AnimationTime, EntityInfo, ForceFalloff, ForceFieldKind, ParticleBudgetMetrics, ParticleTrail,
+    PropertyTrackPlayer, SpatialMetrics, SpatialMode, SpriteAnimPerfSample, SystemTimingSummary, TransformTrackPlayer,
 };
 use crate::events::GameEvent;
 use crate::gizmo::{
@@ -312,6 +312,18 @@ pub(super) enum InspectorAction {
     },
     AttachSkinMesh {
         entity: Entity,
+    },
+    SetEmitterTrail {
+        entity: Entity,
+        trail: Option<ParticleTrail>,
+    },
+    SetForceField {
+        entity: Entity,
+        field: Option<(ForceFieldKind, f32, f32, ForceFalloff, Vec2)>,
+    },
+    SetAttractor {
+        entity: Entity,
+        attractor: Option<(f32, f32, f32, f32, ForceFalloff)>,
     },
 }
 
@@ -1512,6 +1524,10 @@ impl App {
                                             metrics.average_backlog(),
                                             metrics.emitter_backlog_limit,
                                             metrics.emitter_backlog_max_observed
+                                        ));
+                                        ui.label(format!(
+                                            "Trail emitters: {} | Force fields: {} | Attractors: {}",
+                                            metrics.trail_emitters, metrics.force_fields, metrics.attractors
                                         ));
                                     } else {
                                         ui.label("Emitters: none active");

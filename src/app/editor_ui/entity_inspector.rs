@@ -3,7 +3,10 @@ use super::{
     MeshSubsetEntry, PrefabDragPayload, SkeletonAssetSummary, SkeletonEntityBinding, SpriteAtlasRequest,
     UiActions,
 };
-use crate::ecs::{EntityInfo, PropertyTrackPlayer, SkeletonInfo, TransformClipInfo, TransformTrackPlayer};
+use crate::ecs::{
+    EntityInfo, ForceFalloff, ForceFieldKind, ParticleAttractor, ParticleTrail, PropertyTrackPlayer, SkeletonInfo,
+    TransformClipInfo, TransformTrackPlayer,
+};
 use crate::gizmo::{GizmoInteraction, GizmoMode, ScaleHandle};
 use bevy_ecs::prelude::Entity;
 use egui::Ui;
@@ -190,6 +193,139 @@ pub(super) fn show_entity_inspector(
                 ui.label("Velocity: n/a");
             }
 
+            ui.separator();
+            ui.collapsing("Particles", |ui| {
+                if let Some(mut emitter) = info.particle_emitter {
+                    let mut trail_enabled = emitter.trail.is_some();
+                    let mut trail: ParticleTrail = emitter.trail.unwrap_or_default();
+                    ui.label("Emitter trail");
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut trail_enabled, "Enable");
+                        ui.label("Length scale");
+                        ui.add(egui::DragValue::new(&mut trail.length_scale).range(0.01..=2.0).speed(0.01));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Min len");
+                        ui.add(egui::DragValue::new(&mut trail.min_length).range(0.0..=5.0).speed(0.01));
+                        ui.label("Max len");
+                        ui.add(egui::DragValue::new(&mut trail.max_length).range(0.01..=5.0).speed(0.01));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Width");
+                        ui.add(egui::DragValue::new(&mut trail.width).range(0.01..=1.0).speed(0.01));
+                        ui.label("Fade");
+                        ui.add(egui::DragValue::new(&mut trail.fade).range(0.0..=1.0).speed(0.01));
+                    });
+                    let desired_trail = if trail_enabled { Some(trail) } else { None };
+                    if desired_trail != emitter.trail {
+                        actions.inspector_actions.push(InspectorAction::SetEmitterTrail {
+                            entity,
+                            trail: desired_trail,
+                        });
+                        emitter.trail = desired_trail;
+                        info.particle_emitter = Some(emitter);
+                        _inspector_refresh = true;
+                    }
+                } else {
+                    ui.label("No particle emitter on entity");
+                }
+
+                ui.separator();
+                ui.label("Force Field");
+                let mut field_enabled = info.force_field.is_some();
+                let mut field = info.force_field.unwrap_or_default();
+                let mut kind_label = match field.kind {
+                    ForceFieldKind::Radial => "Radial",
+                    ForceFieldKind::Directional => "Directional",
+                }
+                .to_string();
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut field_enabled, "Enabled");
+                        ui.label("Strength");
+                        ui.add(egui::DragValue::new(&mut field.strength).speed(0.05));
+                        ui.label("Radius");
+                        ui.add(egui::DragValue::new(&mut field.radius).range(0.0..=10.0).speed(0.05));
+                    });
+                egui::ComboBox::from_id_salt(("force_field_kind", entity.index()))
+                    .selected_text(kind_label.clone())
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut kind_label, "Radial".to_string(), "Radial");
+                        ui.selectable_value(&mut kind_label, "Directional".to_string(), "Directional");
+                    });
+                field.kind = if kind_label == "Directional" {
+                    ForceFieldKind::Directional
+                } else {
+                    ForceFieldKind::Radial
+                };
+                egui::ComboBox::from_id_salt(("force_field_falloff", entity.index()))
+                    .selected_text(match field.falloff {
+                        ForceFalloff::None => "None",
+                        ForceFalloff::Linear => "Linear",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut field.falloff, ForceFalloff::None, "None");
+                        ui.selectable_value(&mut field.falloff, ForceFalloff::Linear, "Linear");
+                    });
+                if matches!(field.kind, ForceFieldKind::Directional) {
+                    ui.horizontal(|ui| {
+                        ui.label("Direction");
+                        ui.add(egui::DragValue::new(&mut field.direction.x).speed(0.01));
+                        ui.add(egui::DragValue::new(&mut field.direction.y).speed(0.01));
+                    });
+                }
+                let desired_field = if field_enabled { Some(field) } else { None };
+                if desired_field != info.force_field {
+                    let dir = match field.kind {
+                        ForceFieldKind::Directional => field.direction,
+                        ForceFieldKind::Radial => Vec2::Y,
+                    };
+                    actions.inspector_actions.push(InspectorAction::SetForceField {
+                        entity,
+                        field: desired_field.map(|f| (f.kind, f.strength, f.radius, f.falloff, dir)),
+                    });
+                    info.force_field = desired_field;
+                    _inspector_refresh = true;
+                }
+
+                ui.separator();
+                ui.label("Attractor");
+                let mut attractor_enabled = info.attractor.is_some();
+                let mut attractor: ParticleAttractor = info.attractor.unwrap_or_default();
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut attractor_enabled, "Enabled");
+                    ui.label("Strength");
+                    ui.add(egui::DragValue::new(&mut attractor.strength).speed(0.05));
+                    ui.label("Radius");
+                    ui.add(egui::DragValue::new(&mut attractor.radius).range(0.0..=10.0).speed(0.05));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Min dist");
+                    ui.add(egui::DragValue::new(&mut attractor.min_distance).range(0.0..=5.0).speed(0.01));
+                    ui.label("Max accel");
+                    ui.add(
+                        egui::DragValue::new(&mut attractor.max_acceleration).range(0.0..=50.0).speed(0.05),
+                    );
+                });
+                egui::ComboBox::from_id_salt(("attractor_falloff", entity.index()))
+                    .selected_text(match attractor.falloff {
+                        ForceFalloff::None => "None",
+                        ForceFalloff::Linear => "Linear",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut attractor.falloff, ForceFalloff::None, "None");
+                        ui.selectable_value(&mut attractor.falloff, ForceFalloff::Linear, "Linear");
+                    });
+                let desired_attractor = if attractor_enabled { Some(attractor) } else { None };
+                if desired_attractor != info.attractor {
+                    actions.inspector_actions.push(InspectorAction::SetAttractor {
+                        entity,
+                        attractor: desired_attractor
+                            .map(|a| (a.strength, a.radius, a.min_distance, a.max_acceleration, a.falloff)),
+                    });
+                    info.attractor = desired_attractor;
+                    _inspector_refresh = true;
+                }
+            });
             ui.separator();
             let mut clip_info_opt: Option<TransformClipInfo> = info.transform_clip.clone();
             let mut transform_mask_opt: Option<TransformTrackPlayer> = info.transform_tracks;

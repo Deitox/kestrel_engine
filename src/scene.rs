@@ -2,6 +2,7 @@ use crate::assets::AssetManager;
 #[cfg(feature = "binary_scene")]
 use anyhow::anyhow;
 use anyhow::{bail, Context, Result};
+use crate::ecs::{ForceFalloff, ForceField, ForceFieldKind, ParticleAttractor, ParticleTrail};
 use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
@@ -1381,6 +1382,10 @@ pub struct SceneEntity {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orbit: Option<OrbitControllerData>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub force_field: Option<ForceFieldData>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attractor: Option<ParticleAttractorData>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spin: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<SceneEntityId>,
@@ -1483,7 +1488,7 @@ pub struct MeshData {
     pub lighting: MeshLightingData,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Vec2Data {
     pub x: f32,
     pub y: f32,
@@ -1610,6 +1615,26 @@ fn default_particle_emitter_region() -> String {
     "green".to_string()
 }
 
+fn default_particle_trail_length_scale() -> f32 {
+    0.2
+}
+
+fn default_particle_trail_min_length() -> f32 {
+    0.05
+}
+
+fn default_particle_trail_max_length() -> f32 {
+    0.6
+}
+
+fn default_particle_trail_width() -> f32 {
+    0.08
+}
+
+fn default_particle_trail_fade() -> f32 {
+    0.9
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParticleEmitterData {
     pub rate: f32,
@@ -1626,6 +1651,130 @@ pub struct ParticleEmitterData {
     pub region: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub atlas_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trail: Option<ParticleTrailData>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForceFieldData {
+    #[serde(default)]
+    pub kind: ForceFieldKind,
+    pub strength: f32,
+    pub radius: f32,
+    #[serde(default)]
+    pub falloff: ForceFalloff,
+    #[serde(default)]
+    pub direction: Vec2Data,
+}
+
+impl Default for ForceFieldData {
+    fn default() -> Self {
+        Self {
+            kind: ForceFieldKind::Radial,
+            strength: 0.0,
+            radius: 1.0,
+            falloff: ForceFalloff::Linear,
+            direction: Vec2Data { x: 0.0, y: 1.0 },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParticleAttractorData {
+    pub strength: f32,
+    pub radius: f32,
+    #[serde(default)]
+    pub min_distance: f32,
+    #[serde(default)]
+    pub max_acceleration: f32,
+    #[serde(default)]
+    pub falloff: ForceFalloff,
+}
+
+impl From<ForceFieldData> for ForceField {
+    fn from(data: ForceFieldData) -> Self {
+        Self {
+            kind: data.kind,
+            strength: data.strength,
+            radius: data.radius,
+            falloff: data.falloff,
+            direction: Vec2::from(data.direction),
+        }
+    }
+}
+
+impl From<ForceField> for ForceFieldData {
+    fn from(field: ForceField) -> Self {
+        Self {
+            kind: field.kind,
+            strength: field.strength,
+            radius: field.radius,
+            falloff: field.falloff,
+            direction: field.direction.into(),
+        }
+    }
+}
+
+impl From<ParticleAttractorData> for ParticleAttractor {
+    fn from(data: ParticleAttractorData) -> Self {
+        Self {
+            strength: data.strength,
+            radius: data.radius,
+            min_distance: data.min_distance,
+            max_acceleration: data.max_acceleration,
+            falloff: data.falloff,
+        }
+    }
+}
+
+impl From<ParticleAttractor> for ParticleAttractorData {
+    fn from(attractor: ParticleAttractor) -> Self {
+        Self {
+            strength: attractor.strength,
+            radius: attractor.radius,
+            min_distance: attractor.min_distance,
+            max_acceleration: attractor.max_acceleration,
+            falloff: attractor.falloff,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParticleTrailData {
+    #[serde(default = "default_particle_trail_length_scale")]
+    pub length_scale: f32,
+    #[serde(default = "default_particle_trail_min_length")]
+    pub min_length: f32,
+    #[serde(default = "default_particle_trail_max_length")]
+    pub max_length: f32,
+    #[serde(default = "default_particle_trail_width")]
+    pub width: f32,
+    #[serde(default = "default_particle_trail_fade")]
+    pub fade: f32,
+}
+
+impl From<ParticleTrailData> for ParticleTrail {
+    fn from(data: ParticleTrailData) -> Self {
+        Self {
+            length_scale: data.length_scale,
+            min_length: data.min_length,
+            max_length: data.max_length,
+            width: data.width,
+            fade: data.fade,
+        }
+    }
+}
+
+impl From<ParticleTrail> for ParticleTrailData {
+    fn from(trail: ParticleTrail) -> Self {
+        Self {
+            length_scale: trail.length_scale,
+            min_length: trail.min_length,
+            max_length: trail.max_length,
+            width: trail.width,
+            fade: trail.fade,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1976,6 +2125,7 @@ mod tests {
                 atlas: "fx_atlas".to_string(),
                 region: "spark".to_string(),
                 atlas_source: Some("assets/atlases/fx_atlas.json".to_string()),
+                trail: None,
             }),
             orbit: None,
             spin: None,

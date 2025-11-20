@@ -318,7 +318,7 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
 
 
 
-20. **[Long-term] Force fields, attractors, and particle trails** - *Open.*
+20. **[Long-term] Force fields, attractors, and particle trails** - *Completed (runtime + scene round-trip; editor UI pending).*
 
 
 
@@ -326,7 +326,7 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
 
 
 
-    - *Status:* Particle emitters only support standard burst/loop behaviors today (`src/ecs/systems/particles.rs:9-290`). Milestone 8 still lists force fields, attractors, and stretched trails as future experiments (`docs/MILESTONE_STATUS.md:18`, `docs/MILESTONE_STATUS.md:75`, `KESTREL_ENGINE_ROADMAP.md:145`), so none of the required components or inspector tooling exist yet.
+    - *Status:* Particle systems now support force fields and attractors (`src/ecs/types.rs:3094`, `src/ecs/systems/particles.rs:16-215`), scene I/O round-trips the new components (`src/scene.rs:1356-1717`, `src/ecs/world.rs:2358-2950`), and particles can render basic velocity-stretched trails. Editor/inspector authoring and HUD controls remain TODO.
 
 
 

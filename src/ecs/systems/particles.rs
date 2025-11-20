@@ -41,14 +41,13 @@ pub fn sys_update_emitters(
             continue;
         }
         emitter.accumulator -= to_spawn as f32;
-        let mut batch = Vec::with_capacity(to_spawn as usize);
         for _ in 0..to_spawn {
             let angle = rng.gen_range(-emitter.spread..=emitter.spread);
             let dir = Vec2::from_angle(transform.rotation + std::f32::consts::FRAC_PI_2 + angle);
             let velocity = dir * emitter.speed;
             let lifetime = emitter.lifetime;
             let start_size = emitter.start_size.max(0.01);
-            batch.push((
+            let mut entity = commands.spawn((
                 Transform {
                     translation: transform.translation + dir * 0.05,
                     rotation: 0.0,
@@ -68,8 +67,10 @@ pub fn sys_update_emitters(
                     end_size: emitter.end_size,
                 },
             ));
+            if let Some(trail) = emitter.trail {
+                entity.insert(trail);
+            }
         }
-        commands.spawn_batch(batch);
         frame_budget -= to_spawn;
         remaining_headroom -= to_spawn;
         active_particles = (active_particles + to_spawn).min(max_total);
@@ -89,13 +90,29 @@ pub fn sys_update_particles(
         &ParticleVisual,
         &mut Tint,
         Option<&mut Aabb>,
+        Option<&mut Force>,
+        Option<&Mass>,
+        Option<&ParticleTrail>,
     )>,
+    force_fields: Query<(&Transform, &ForceField), Without<Particle>>,
+    attractors: Query<(&Transform, &ParticleAttractor), Without<Particle>>,
     dt: Res<TimeDelta>,
     mut particle_state: ResMut<ParticleState>,
 ) {
     let _span = profiler.scope("sys_update_particles");
+    let mut field_cache = Vec::new();
+    for (transform, field) in force_fields.iter() {
+        field_cache.push((transform.translation, *field));
+    }
+    let mut attractor_cache = Vec::new();
+    for (transform, attractor) in attractors.iter() {
+        attractor_cache.push((transform.translation, *attractor));
+    }
+
     let mut active_particles = 0u32;
-    for (entity, mut particle, mut transform, velocity, visual, mut tint, aabb) in &mut particles {
+    for (entity, mut particle, mut transform, velocity, visual, mut tint, aabb, force, mass, trail) in
+        &mut particles
+    {
         particle.lifetime -= dt.0;
         if particle.lifetime <= 0.0 {
             commands.entity(entity).despawn();
@@ -104,16 +121,111 @@ pub fn sys_update_particles(
         active_particles = active_particles.saturating_add(1);
         let life_ratio = (particle.lifetime / particle.max_lifetime).clamp(0.0, 1.0);
         let progress = 1.0 - life_ratio;
-        let size = visual.start_size + (visual.end_size - visual.start_size) * progress;
-        transform.scale = Vec2::splat(size.max(0.01));
+        let visual_size = visual.start_size + (visual.end_size - visual.start_size) * progress;
+
+        let mut net_force = Vec2::ZERO;
+        let mut velocity_snapshot = None;
+        if let Some(mut vel) = velocity {
+            let mut accel = Vec2::ZERO;
+            let inv_mass = mass.and_then(|m| if m.0 > 0.0 { Some(1.0 / m.0) } else { None }).unwrap_or(1.0);
+
+            for (origin, field) in field_cache.iter() {
+                let mut dir = match field.kind {
+                    ForceFieldKind::Radial => transform.translation - *origin,
+                    ForceFieldKind::Directional => field.direction,
+                };
+                if dir.length_squared() <= f32::EPSILON && matches!(field.kind, ForceFieldKind::Radial) {
+                    continue;
+                }
+                if matches!(field.kind, ForceFieldKind::Directional) {
+                    dir = dir.normalize_or_zero();
+                } else {
+                    dir = dir.normalize_or_zero();
+                }
+                let distance = (transform.translation - *origin).length();
+                let falloff = match field.falloff {
+                    ForceFalloff::None => 1.0,
+                    ForceFalloff::Linear => {
+                        if field.radius <= 0.0 {
+                            0.0
+                        } else {
+                            (1.0 - (distance / field.radius)).clamp(0.0, 1.0)
+                        }
+                    }
+                };
+                if falloff <= 0.0 && matches!(field.kind, ForceFieldKind::Radial) && distance > field.radius {
+                    continue;
+                }
+                accel += dir * field.strength * falloff;
+            }
+
+            for (origin, attractor) in attractor_cache.iter() {
+                let to_origin = *origin - transform.translation;
+                let dist = to_origin.length();
+                if dist <= attractor.min_distance {
+                    continue;
+                }
+                if dist > attractor.radius {
+                    continue;
+                }
+                let dir = to_origin / dist;
+                let falloff = match attractor.falloff {
+                    ForceFalloff::None => 1.0,
+                    ForceFalloff::Linear => {
+                        if attractor.radius <= 0.0 {
+                            0.0
+                        } else {
+                            (1.0 - (dist / attractor.radius)).clamp(0.0, 1.0)
+                        }
+                    }
+                };
+                if falloff <= 0.0 {
+                    continue;
+                }
+                let mut push = dir * attractor.strength * falloff;
+                if attractor.max_acceleration > 0.0 {
+                    let max = attractor.max_acceleration;
+                    let len_sq = push.length_squared();
+                    if len_sq > max * max {
+                        push = push.normalize_or_zero() * max;
+                    }
+                }
+                accel += push;
+            }
+
+            if accel != Vec2::ZERO {
+                vel.0 += accel * inv_mass * dt.0;
+                net_force = accel;
+            }
+            vel.0 *= 0.98;
+            velocity_snapshot = Some(vel.0);
+        }
+        if let Some(mut force) = force {
+            force.0 = net_force;
+        }
+
+        let mut width = visual_size.max(0.01);
+        let mut length = width;
+        let mut rotation = transform.rotation;
+        if let Some(trail) = trail {
+            let velocity = velocity_snapshot.unwrap_or(Vec2::ZERO);
+            let speed = velocity.length();
+            let desired_length =
+                (speed * trail.length_scale).clamp(trail.min_length, trail.max_length.max(trail.min_length));
+            length = desired_length.max(0.01);
+            width = width.max(trail.width.max(0.01));
+            if speed > f32::EPSILON {
+                rotation = velocity.y.atan2(velocity.x) - std::f32::consts::FRAC_PI_2;
+            }
+            tint.0.w *= trail.fade.clamp(0.0, 1.0);
+        }
+        transform.rotation = rotation;
+        transform.scale = Vec2::new(width, length);
         if let Some(mut half) = aabb {
-            half.half = Vec2::splat((size * 0.5).max(0.01));
+            half.half = Vec2::new((width * 0.5).max(0.01), (length * 0.5).max(0.01));
         }
         let color = visual.start_color + (visual.end_color - visual.start_color) * progress;
         tint.0 = color;
-        if let Some(mut vel) = velocity {
-            vel.0 *= 0.98;
-        }
     }
     particle_state.active_particles = active_particles;
 }

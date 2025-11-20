@@ -8,6 +8,7 @@ use crate::scene::{MeshLightingData, SceneEntityId};
 use bevy_ecs::prelude::*;
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use rapier2d::prelude::{ColliderHandle, RigidBodyHandle};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 #[cfg(feature = "anim_stats")]
 use std::time::Instant;
@@ -3089,6 +3090,80 @@ pub struct Tint(pub Vec4);
 pub struct Mass(pub f32);
 #[derive(Component, Clone, Copy, Default)]
 pub struct Force(pub Vec2);
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForceFalloff {
+    None,
+    Linear,
+}
+
+impl Default for ForceFalloff {
+    fn default() -> Self {
+        ForceFalloff::Linear
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForceFieldKind {
+    Radial,
+    Directional,
+}
+
+impl Default for ForceFieldKind {
+    fn default() -> Self {
+        ForceFieldKind::Radial
+    }
+}
+
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub struct ForceField {
+    pub kind: ForceFieldKind,
+    pub strength: f32,
+    pub radius: f32,
+    pub falloff: ForceFalloff,
+    /// Only used for directional fields. Should be normalized.
+    pub direction: Vec2,
+}
+
+impl Default for ForceField {
+    fn default() -> Self {
+        Self {
+            kind: ForceFieldKind::Radial,
+            strength: 0.0,
+            radius: 1.0,
+            falloff: ForceFalloff::Linear,
+            direction: Vec2::Y,
+        }
+    }
+}
+
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
+pub struct ParticleAttractor {
+    pub strength: f32,
+    pub radius: f32,
+    pub min_distance: f32,
+    pub max_acceleration: f32,
+    pub falloff: ForceFalloff,
+}
+
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub struct ParticleTrail {
+    pub length_scale: f32,
+    pub min_length: f32,
+    pub max_length: f32,
+    pub width: f32,
+    /// Multiplier applied to alpha near the tail.
+    pub fade: f32,
+}
+
+impl Default for ParticleTrail {
+    fn default() -> Self {
+        Self { length_scale: 0.2, min_length: 0.05, max_length: 0.6, width: 0.08, fade: 0.9 }
+    }
+}
+
 #[derive(Component)]
 pub struct ParticleEmitter {
     pub rate: f32,
@@ -3103,6 +3178,7 @@ pub struct ParticleEmitter {
     pub atlas: Arc<str>,
     pub region: Arc<str>,
     pub source: Option<Arc<str>>,
+    pub trail: Option<ParticleTrail>,
 }
 #[derive(Component)]
 pub struct Particle {
@@ -3150,6 +3226,9 @@ pub struct ParticleBudgetMetrics {
     pub max_total: u32,
     pub max_spawn_per_frame: u32,
     pub total_emitters: u32,
+    pub trail_emitters: u32,
+    pub force_fields: u32,
+    pub attractors: u32,
     pub emitter_backlog_total: f32,
     pub emitter_backlog_max_observed: f32,
     pub emitter_backlog_limit: f32,
@@ -3291,6 +3370,17 @@ pub struct SkinMeshInfo {
     pub mesh_key: Option<String>,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+pub struct ParticleEmitterInfo {
+    pub rate: f32,
+    pub spread: f32,
+    pub speed: f32,
+    pub lifetime: f32,
+    pub start_size: f32,
+    pub end_size: f32,
+    pub trail: Option<ParticleTrail>,
+}
+
 #[derive(Clone)]
 pub struct EntityInfo {
     pub scene_id: SceneEntityId,
@@ -3307,6 +3397,9 @@ pub struct EntityInfo {
     pub tint: Option<Vec4>,
     pub skeleton: Option<SkeletonInfo>,
     pub skin_mesh: Option<SkinMeshInfo>,
+    pub particle_emitter: Option<ParticleEmitterInfo>,
+    pub force_field: Option<ForceField>,
+    pub attractor: Option<ParticleAttractor>,
 }
 
 #[derive(Clone)]

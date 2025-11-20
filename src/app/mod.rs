@@ -50,8 +50,8 @@ use crate::camera::Camera2D;
 use crate::camera3d::Camera3D;
 use crate::config::{AppConfig, AppConfigOverrides, SpriteGuardrailMode};
 use crate::ecs::{
-    AnimationTime, ClipInstance, EcsWorld, EntityInfo, InstanceData, MeshLightingInfo, ParticleCaps,
-    SkeletonInstance, SpriteAnimation, SpriteAnimationInfo, SpriteInstance,
+    AnimationTime, ClipInstance, EcsWorld, EntityInfo, ForceField, InstanceData, MeshLightingInfo,
+    ParticleAttractor, ParticleCaps, SkeletonInstance, SpriteAnimation, SpriteAnimationInfo, SpriteInstance,
 };
 use crate::environment::EnvironmentRegistry;
 use crate::events::{AudioEmitter, GameEvent};
@@ -3733,6 +3733,34 @@ impl ApplicationHandler for App {
                     } else {
                         self.set_inspector_status(Some("Failed to update velocity.".to_string()));
                     }
+                }
+                editor_ui::InspectorAction::SetEmitterTrail { entity, trail } => {
+                    self.ecs.set_emitter_trail(entity, trail);
+                    self.set_inspector_status(Some("Emitter trail updated.".to_string()));
+                }
+                editor_ui::InspectorAction::SetForceField { entity, field } => {
+                    let field = field.map(|(kind, strength, radius, falloff, direction)| ForceField {
+                        kind,
+                        strength,
+                        radius,
+                        falloff,
+                        direction,
+                    });
+                    self.ecs.set_force_field(entity, field);
+                    self.set_inspector_status(Some("Force field updated.".to_string()));
+                }
+                editor_ui::InspectorAction::SetAttractor { entity, attractor } => {
+                    let attractor = attractor.map(
+                        |(strength, radius, min_distance, max_acceleration, falloff)| ParticleAttractor {
+                            strength,
+                            radius,
+                            min_distance,
+                            max_acceleration,
+                            falloff,
+                        },
+                    );
+                    self.ecs.set_attractor(entity, attractor);
+                    self.set_inspector_status(Some("Attractor updated.".to_string()));
                 }
                 editor_ui::InspectorAction::ClearTransformClip { entity } => {
                     if self.ecs.clear_transform_clip(entity) {

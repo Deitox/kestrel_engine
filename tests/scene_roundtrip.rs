@@ -2,9 +2,9 @@ use bevy_ecs::prelude::Entity;
 use glam::{EulerRot, Quat, Vec2, Vec3, Vec4};
 use kestrel_engine::assets::AssetManager;
 use kestrel_engine::ecs::{
-    Aabb, Children, EcsWorld, Mass, MeshLighting, MeshRef, MeshSurface, Parent, ParticleEmitter,
-    PropertyTrackPlayer, SceneEntityTag, Sprite, Tint, Transform, Transform3D, TransformTrackPlayer,
-    Velocity, WorldTransform, WorldTransform3D,
+    Aabb, Children, EcsWorld, ForceField, ForceFieldKind, Mass, MeshLighting, MeshRef, MeshSurface, Parent,
+    ParticleAttractor, ParticleEmitter, PropertyTrackPlayer, SceneEntityTag, Sprite, Tint, Transform,
+    Transform3D, TransformTrackPlayer, Velocity, WorldTransform, WorldTransform3D,
 };
 use kestrel_engine::environment::EnvironmentRegistry;
 use kestrel_engine::material_registry::MaterialRegistry;
@@ -282,6 +282,14 @@ fn scene_roundtrip_preserves_transforms_and_emitters() {
                 atlas: Arc::from("main"),
                 region: Arc::from("green"),
                 source: Some(Arc::from("assets/images/atlas.json")),
+                trail: None,
+            },
+            ForceField {
+                kind: ForceFieldKind::Radial,
+                strength: 2.0,
+                radius: 3.0,
+                falloff: kestrel_engine::ecs::ForceFalloff::Linear,
+                direction: Vec2::Y,
             },
         ))
         .id();
@@ -299,6 +307,13 @@ fn scene_roundtrip_preserves_transforms_and_emitters() {
             MeshRef { key: "test_triangle".to_string() },
             MeshSurface::default(),
             Parent(parent),
+            ParticleAttractor {
+                strength: 1.5,
+                radius: 2.5,
+                min_distance: 0.1,
+                max_acceleration: 4.0,
+                falloff: kestrel_engine::ecs::ForceFalloff::Linear,
+            },
         ))
         .id();
     world.world.entity_mut(parent).insert(Children(vec![child]));
@@ -320,6 +335,10 @@ fn scene_roundtrip_preserves_transforms_and_emitters() {
     assert!(loaded_scene.entities.iter().any(|entity| {
         entity.mesh.as_ref().map(|mesh| mesh.key.as_str() == "test_triangle").unwrap_or(false)
     }));
+    let loaded_field = loaded_scene.entities.iter().find_map(|entity| entity.force_field.as_ref());
+    assert!(loaded_field.is_some(), "force field component should round-trip");
+    let loaded_attractor = loaded_scene.entities.iter().find_map(|entity| entity.attractor.as_ref());
+    assert!(loaded_attractor.is_some(), "attractor component should round-trip");
 
     let mut new_world = EcsWorld::new();
     let mut new_registry = MeshRegistry::new(&mut material_registry);
@@ -621,6 +640,7 @@ fn scene_roundtrip_captures_hierarchy_dependencies_and_environment_metadata() {
                 atlas: Arc::from("main"),
                 region: Arc::from("green"),
                 source: Some(Arc::from("assets/images/atlas.json")),
+                trail: None,
             },
         ))
         .id();
