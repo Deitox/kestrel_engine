@@ -63,6 +63,18 @@ jobs:
             --bench-profile release `
             --bench-test animation_targets_measure `
             --bench-test-args "--ignored --nocapture"
+      - name: Enforce sprite perf guard
+        shell: pwsh
+        env:
+          SPRITE_GUARD_ALLOW_MISSING: ${{ env.SPRITE_GUARD_ALLOW_MISSING || '' }}
+        run: |
+          $profile = "release"
+          if ($env:SPRITE_GUARD_ALLOW_MISSING -eq "1") {
+            Write-Host "Skipping sprite_perf_guard because SPRITE_GUARD_ALLOW_MISSING=1"
+          } else {
+            python scripts/sprite_bench.py --profile $profile --runs 1 --report-path artifacts/animation_targets_report.json
+            cargo run --bin sprite_perf_guard -- --report artifacts/animation_targets_report.json
+          }
       - name: Run GPU baseline check
         shell: pwsh
         run: |
