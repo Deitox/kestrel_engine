@@ -404,7 +404,7 @@ fn summarize_game_event(event: &GameEvent) -> (String, egui::Color32) {
             format!("Collision started between #{:04} and #{:04}", a.index(), b.index()),
             egui::Color32::from_rgb(220, 180, 90),
         ),
-        GameEvent::CollisionEnded { a, b } => (
+        GameEvent::CollisionEnded { a, b, .. } => (
             format!("Collision resolved between #{:04} and #{:04}", a.index(), b.index()),
             egui::Color32::from_rgb(130, 170, 220),
         ),

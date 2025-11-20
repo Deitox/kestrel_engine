@@ -33,7 +33,7 @@ use std::cell::Cell;
 use std::env;
 use std::fs;
 use std::io::{self, BufReader, BufWriter};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::ptr;
 use std::time::Duration;
 
@@ -410,8 +410,8 @@ impl EngineState {
                 })
             }
             RpcAssetReadbackPayload::BlobRange { blob_id, offset, length } => {
-                let path = Path::new(&blob_id);
-                let data = fs::read(path).with_context(|| format!("reading blob '{}'", path.display()))?;
+                let path = self.sanitize_blob_path(&blob_id)?;
+                let data = fs::read(&path).with_context(|| format!("reading blob '{}'", path.display()))?;
                 let start = offset.min(data.len() as u64) as usize;
                 let end = if length == 0 {
                     data.len()
@@ -428,6 +428,28 @@ impl EngineState {
                 })
             }
         }
+    }
+
+    fn sanitize_blob_path(&self, blob_id: &str) -> Result<PathBuf> {
+        let path = Path::new(blob_id);
+        if path.is_absolute() {
+            bail!("blob path must be relative");
+        }
+        if path.components().any(|c| matches!(c, Component::ParentDir)) {
+            bail!("blob path cannot traverse upwards");
+        }
+        let root = env::current_dir().context("resolve host working directory")?;
+        let candidate = root.join(path);
+        if let Ok(canon) = candidate.canonicalize() {
+            if !canon.starts_with(&root) {
+                bail!("blob path escapes sandbox");
+            }
+            return Ok(canon);
+        }
+        if !candidate.starts_with(&root) {
+            bail!("blob path escapes sandbox");
+        }
+        Ok(candidate)
     }
 
     fn matches_filter(&self, entity_ref: &EntityRef<'_>, filter: &RpcEntityFilter) -> bool {

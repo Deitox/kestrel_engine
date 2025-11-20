@@ -1702,6 +1702,7 @@ dependencies = [
  "smallvec",
  "uuid",
  "wgpu",
+ "wide",
  "winit",
 ]
 

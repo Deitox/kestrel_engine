@@ -39,7 +39,7 @@ pub enum RpcGameEvent {
     SpriteAnimationEvent { entity: RpcEntity, timeline: String, event: String },
     EntityDespawned { entity: RpcEntity },
     CollisionStarted { a: RpcEntity, b: RpcEntity, audio: Option<RpcAudioEmitter> },
-    CollisionEnded { a: RpcEntity, b: RpcEntity },
+    CollisionEnded { a: RpcEntity, b: RpcEntity, audio: Option<RpcAudioEmitter> },
     CollisionForce { a: RpcEntity, b: RpcEntity, force: f32, audio: Option<RpcAudioEmitter> },
     ScriptMessage { message: String },
 }
@@ -251,7 +251,9 @@ impl From<GameEvent> for RpcGameEvent {
             GameEvent::CollisionStarted { a, b, audio } => {
                 RpcGameEvent::CollisionStarted { a: a.into(), b: b.into(), audio: audio.map(RpcAudioEmitter::from) }
             }
-            GameEvent::CollisionEnded { a, b } => RpcGameEvent::CollisionEnded { a: a.into(), b: b.into() },
+            GameEvent::CollisionEnded { a, b, audio } => {
+                RpcGameEvent::CollisionEnded { a: a.into(), b: b.into(), audio: audio.map(RpcAudioEmitter::from) }
+            }
             GameEvent::CollisionForce { a, b, force, audio } => {
                 RpcGameEvent::CollisionForce {
                     a: a.into(),
@@ -282,7 +284,9 @@ impl From<RpcGameEvent> for GameEvent {
             RpcGameEvent::CollisionStarted { a, b, audio } => {
                 GameEvent::CollisionStarted { a: a.into(), b: b.into(), audio: audio.map(AudioEmitter::from) }
             }
-            RpcGameEvent::CollisionEnded { a, b } => GameEvent::CollisionEnded { a: a.into(), b: b.into() },
+            RpcGameEvent::CollisionEnded { a, b, audio } => {
+                GameEvent::CollisionEnded { a: a.into(), b: b.into(), audio: audio.map(AudioEmitter::from) }
+            }
             RpcGameEvent::CollisionForce { a, b, force, audio } => {
                 GameEvent::CollisionForce { a: a.into(), b: b.into(), force, audio: audio.map(AudioEmitter::from) }
             }

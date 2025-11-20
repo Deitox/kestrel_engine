@@ -1226,31 +1226,42 @@ impl App {
     fn enrich_event_audio(&self, event: GameEvent) -> GameEvent {
         const DEFAULT_MAX_DISTANCE: f32 = 25.0;
         match event {
-            GameEvent::SpriteSpawned { entity, atlas, region, audio: _ } => {
-                let audio = self
-                    .ecs
-                    .entity_world_position3d(entity)
-                    .map(|position| AudioEmitter { position, max_distance: DEFAULT_MAX_DISTANCE });
+            GameEvent::SpriteSpawned { entity, atlas, region, audio } => {
+                let audio = audio.or_else(|| {
+                    self.ecs
+                        .entity_world_position3d(entity)
+                        .map(|position| AudioEmitter { position, max_distance: DEFAULT_MAX_DISTANCE })
+                });
                 GameEvent::SpriteSpawned { entity, atlas, region, audio }
             }
-            GameEvent::CollisionStarted { a, b, audio: _ } => {
-                let audio = match (self.ecs.entity_world_position3d(a), self.ecs.entity_world_position3d(b)) {
+            GameEvent::CollisionStarted { a, b, audio } => {
+                let audio = audio.or_else(|| match (self.ecs.entity_world_position3d(a), self.ecs.entity_world_position3d(b)) {
                     (Some(pa), Some(pb)) => {
                         let mid = (pa + pb) * 0.5;
                         Some(AudioEmitter { position: mid, max_distance: DEFAULT_MAX_DISTANCE })
                     }
                     _ => None,
-                };
+                });
                 GameEvent::CollisionStarted { a, b, audio }
             }
-            GameEvent::CollisionForce { a, b, force, audio: _ } => {
-                let audio = match (self.ecs.entity_world_position3d(a), self.ecs.entity_world_position3d(b)) {
+            GameEvent::CollisionEnded { a, b, audio } => {
+                let audio = audio.or_else(|| match (self.ecs.entity_world_position3d(a), self.ecs.entity_world_position3d(b)) {
                     (Some(pa), Some(pb)) => {
                         let mid = (pa + pb) * 0.5;
                         Some(AudioEmitter { position: mid, max_distance: DEFAULT_MAX_DISTANCE })
                     }
                     _ => None,
-                };
+                });
+                GameEvent::CollisionEnded { a, b, audio }
+            }
+            GameEvent::CollisionForce { a, b, force, audio } => {
+                let audio = audio.or_else(|| match (self.ecs.entity_world_position3d(a), self.ecs.entity_world_position3d(b)) {
+                    (Some(pa), Some(pb)) => {
+                        let mid = (pa + pb) * 0.5;
+                        Some(AudioEmitter { position: mid, max_distance: DEFAULT_MAX_DISTANCE })
+                    }
+                    _ => None,
+                });
                 GameEvent::CollisionForce { a, b, force, audio }
             }
             other => other,

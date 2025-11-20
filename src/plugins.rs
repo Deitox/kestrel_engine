@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::ptr;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 const ISOLATED_RPC_TIMEOUT: Duration = Duration::from_secs(10);
@@ -1751,7 +1751,7 @@ struct IsolatedPluginProxy {
     version: String,
     child: Child,
     stdin: Option<ChildStdin>,
-    stdout: BufReader<ChildStdout>,
+    stdout: Arc<Mutex<BufReader<ChildStdout>>>,
     terminated: bool,
     next_request_id: RpcRequestId,
     asset_budget: AssetReadbackBudget,
@@ -1827,7 +1827,7 @@ impl IsolatedPluginProxy {
             version,
             child,
             stdin: Some(stdin),
-            stdout: BufReader::new(stdout),
+            stdout: Arc::new(Mutex::new(BufReader::new(stdout))),
             terminated: false,
             next_request_id: 1,
             asset_budget: AssetReadbackBudget::new(8, 4 * 1024 * 1024, Duration::from_millis(16)),
@@ -1871,18 +1871,31 @@ impl IsolatedPluginProxy {
         self.last_request_desc = Some(summary);
         send_frame(stdin, &request).context("send isolated plugin request")?;
         let start = Instant::now();
-        let response: PluginHostResponse =
-            recv_frame(&mut self.stdout).context("recv isolated plugin response")?;
-        let elapsed = start.elapsed();
-        if elapsed > ISOLATED_RPC_TIMEOUT {
-            self.record_watchdog_event(
-                format!("RPC timeout after {:.1} ms", elapsed.as_secs_f32() * 1000.0),
-                elapsed,
-            );
-            self.terminated = true;
-            let _ = self.child.kill();
-            bail!("isolated plugin '{}' exceeded RPC timeout ({elapsed:?})", self.name);
-        }
+        let stdout = Arc::clone(&self.stdout);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = {
+                let mut guard = stdout.lock().expect("stdout mutex poisoned");
+                recv_frame(&mut *guard)
+            };
+            let _ = tx.send(result);
+        });
+        let response: PluginHostResponse = match rx.recv_timeout(ISOLATED_RPC_TIMEOUT) {
+            Ok(result) => result.context("recv isolated plugin response")?,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let elapsed = start.elapsed();
+                self.record_watchdog_event(
+                    format!("RPC timeout after {:.1} ms", elapsed.as_secs_f32() * 1000.0),
+                    elapsed,
+                );
+                self.terminated = true;
+                let _ = self.child.kill();
+                bail!("isolated plugin '{}' exceeded RPC timeout ({elapsed:?})", self.name);
+            }
+            Err(err) => {
+                bail!("isolated plugin recv channel failed: {err}");
+            }
+        };
         self.last_request_desc = None;
         match response {
             PluginHostResponse::Ok { events, data } => {

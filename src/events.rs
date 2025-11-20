@@ -15,7 +15,7 @@ pub enum GameEvent {
     SpriteAnimationEvent { entity: Entity, timeline: Arc<str>, event: Arc<str> },
     EntityDespawned { entity: Entity },
     CollisionStarted { a: Entity, b: Entity, audio: Option<AudioEmitter> },
-    CollisionEnded { a: Entity, b: Entity },
+    CollisionEnded { a: Entity, b: Entity, audio: Option<AudioEmitter> },
     CollisionForce { a: Entity, b: Entity, force: f32, audio: Option<AudioEmitter> },
     ScriptMessage { message: String },
 }
@@ -33,7 +33,7 @@ impl GameEvent {
 
     pub fn collision_ended(a: Entity, b: Entity) -> Self {
         let (a, b) = Self::ordered_pair(a, b);
-        GameEvent::CollisionEnded { a, b }
+        GameEvent::CollisionEnded { a, b, audio: None }
     }
 
     pub fn collision_force(a: Entity, b: Entity, force: f32) -> Self {
@@ -63,7 +63,7 @@ impl fmt::Display for GameEvent {
             GameEvent::CollisionStarted { a, b, .. } => {
                 write!(f, "CollisionStarted a={} b={}", a.index(), b.index())
             }
-            GameEvent::CollisionEnded { a, b } => {
+            GameEvent::CollisionEnded { a, b, .. } => {
                 write!(f, "CollisionEnded a={} b={}", a.index(), b.index())
             }
             GameEvent::CollisionForce { a, b, force, .. } => {
