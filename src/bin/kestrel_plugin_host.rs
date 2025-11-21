@@ -40,7 +40,7 @@ use std::ptr;
 use std::time::Duration;
 
 thread_local! {
-    static ACTIVE_ENGINE_STATE: Cell<*mut EngineState> = Cell::new(ptr::null_mut());
+    static ACTIVE_ENGINE_STATE: Cell<*mut EngineState> = const { Cell::new(ptr::null_mut()) };
 }
 
 const MAX_BLOB_READ_BYTES: u64 = 16 * 1024 * 1024;

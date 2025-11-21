@@ -1,7 +1,7 @@
 use crate::renderer::GpuPassTiming;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -107,6 +107,13 @@ impl GpuBaselineSnapshot {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum BaselinePassStatus {
+    Matched,
+    MissingInCurrent,
+    MissingInBaseline,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GpuPassSnapshot {
     pub label: String,
@@ -124,6 +131,7 @@ pub struct GpuBaselineDelta {
     pub delta_ms: f32,
     pub allowed_drift_ms: f32,
     pub within_tolerance: bool,
+    pub status: BaselinePassStatus,
 }
 
 /// Compares two snapshots and returns per-pass deltas against the supplied tolerances.
@@ -143,20 +151,46 @@ pub fn compare_baselines(
     for entry in &baseline.passes {
         baseline_map.insert(entry.label.as_str(), entry);
     }
+    let mut matched_baseline = HashSet::new();
     let mut deltas = Vec::new();
     for curr in &current.passes {
-        let Some(base) = baseline_map.get(curr.label.as_str()) else {
+        if let Some(base) = baseline_map.get(curr.label.as_str()) {
+            matched_baseline.insert(curr.label.as_str());
+            let allowed = tolerances.get(curr.label.as_str()).copied().unwrap_or(default_tolerance_ms);
+            let delta = curr.average_ms - base.average_ms;
+            deltas.push(GpuBaselineDelta {
+                label: curr.label.clone(),
+                baseline_avg_ms: base.average_ms,
+                current_avg_ms: curr.average_ms,
+                delta_ms: delta,
+                allowed_drift_ms: allowed,
+                within_tolerance: delta <= allowed,
+                status: BaselinePassStatus::Matched,
+            });
+        } else {
+            deltas.push(GpuBaselineDelta {
+                label: curr.label.clone(),
+                baseline_avg_ms: 0.0,
+                current_avg_ms: curr.average_ms,
+                delta_ms: curr.average_ms,
+                allowed_drift_ms: 0.0,
+                within_tolerance: false,
+                status: BaselinePassStatus::MissingInBaseline,
+            });
+        }
+    }
+    for base in &baseline.passes {
+        if matched_baseline.contains(base.label.as_str()) {
             continue;
-        };
-        let allowed = tolerances.get(curr.label.as_str()).copied().unwrap_or(default_tolerance_ms);
-        let delta = curr.average_ms - base.average_ms;
+        }
         deltas.push(GpuBaselineDelta {
-            label: curr.label.clone(),
+            label: base.label.clone(),
             baseline_avg_ms: base.average_ms,
-            current_avg_ms: curr.average_ms,
-            delta_ms: delta,
-            allowed_drift_ms: allowed,
-            within_tolerance: delta <= allowed,
+            current_avg_ms: 0.0,
+            delta_ms: base.average_ms,
+            allowed_drift_ms: 0.0,
+            within_tolerance: false,
+            status: BaselinePassStatus::MissingInCurrent,
         });
     }
     deltas.sort_by(|a, b| a.label.cmp(&b.label));
@@ -237,8 +271,71 @@ mod tests {
         let sprite = deltas.iter().find(|d| d.label == "Sprite pass").unwrap();
         assert!((sprite.delta_ms - 0.2).abs() < f32::EPSILON);
         assert!(sprite.within_tolerance);
+        assert_eq!(sprite.status, BaselinePassStatus::Matched);
         let mesh = deltas.iter().find(|d| d.label == "Mesh pass").unwrap();
         assert!((mesh.delta_ms - 0.1).abs() < f32::EPSILON);
         assert_eq!(mesh.allowed_drift_ms, 0.2);
+        assert_eq!(mesh.status, BaselinePassStatus::Matched);
+    }
+
+    #[test]
+    fn compare_baseline_reports_missing_and_extra_passes() {
+        let baseline = GpuBaselineSnapshot {
+            label: "base".into(),
+            timestamp: "t0".into(),
+            commit: "abc".into(),
+            frame_count: 1,
+            passes: vec![
+                GpuPassSnapshot {
+                    label: "Sprite pass".into(),
+                    latest_ms: 1.0,
+                    average_ms: 1.0,
+                    max_ms: 1.0,
+                    sample_count: 1,
+                },
+                GpuPassSnapshot {
+                    label: "Mesh pass".into(),
+                    latest_ms: 0.5,
+                    average_ms: 0.5,
+                    max_ms: 0.5,
+                    sample_count: 1,
+                },
+            ],
+        };
+        let current = GpuBaselineSnapshot {
+            label: "cur".into(),
+            timestamp: "t1".into(),
+            commit: "def".into(),
+            frame_count: 1,
+            passes: vec![
+                GpuPassSnapshot {
+                    label: "Sprite pass".into(),
+                    latest_ms: 1.2,
+                    average_ms: 1.2,
+                    max_ms: 1.2,
+                    sample_count: 1,
+                },
+                GpuPassSnapshot {
+                    label: "Lighting pass".into(),
+                    latest_ms: 0.7,
+                    average_ms: 0.7,
+                    max_ms: 0.7,
+                    sample_count: 1,
+                },
+            ],
+        };
+        let deltas = compare_baselines(&baseline, &current, &HashMap::new(), 0.2).unwrap();
+        assert_eq!(deltas.len(), 3);
+        let sprite = deltas.iter().find(|d| d.label == "Sprite pass").unwrap();
+        assert_eq!(sprite.status, BaselinePassStatus::Matched);
+        let mesh = deltas.iter().find(|d| d.label == "Mesh pass").unwrap();
+        assert_eq!(mesh.status, BaselinePassStatus::MissingInCurrent);
+        assert!(!mesh.within_tolerance);
+        assert_eq!(mesh.allowed_drift_ms, 0.0);
+        let lighting = deltas.iter().find(|d| d.label == "Lighting pass").unwrap();
+        assert_eq!(lighting.status, BaselinePassStatus::MissingInBaseline);
+        assert_eq!(lighting.baseline_avg_ms, 0.0);
+        assert_eq!(lighting.current_avg_ms, 0.7);
+        assert!(!lighting.within_tolerance);
     }
 }

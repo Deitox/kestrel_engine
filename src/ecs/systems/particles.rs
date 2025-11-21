@@ -137,11 +137,7 @@ pub fn sys_update_particles(
                 if dir.length_squared() <= f32::EPSILON && matches!(field.kind, ForceFieldKind::Radial) {
                     continue;
                 }
-                if matches!(field.kind, ForceFieldKind::Directional) {
-                    dir = dir.normalize_or_zero();
-                } else {
-                    dir = dir.normalize_or_zero();
-                }
+                dir = dir.normalize_or_zero();
                 let distance = (transform.translation - *origin).length();
                 let falloff = match field.falloff {
                     ForceFalloff::None => 1.0,
@@ -207,6 +203,7 @@ pub fn sys_update_particles(
         let mut width = visual_size.max(0.01);
         let mut length = width;
         let mut rotation = transform.rotation;
+        let mut fade = 1.0;
         if let Some(trail) = trail {
             let velocity = velocity_snapshot.unwrap_or(Vec2::ZERO);
             let speed = velocity.length();
@@ -217,14 +214,15 @@ pub fn sys_update_particles(
             if speed > f32::EPSILON {
                 rotation = velocity.y.atan2(velocity.x) - std::f32::consts::FRAC_PI_2;
             }
-            tint.0.w *= trail.fade.clamp(0.0, 1.0);
+            fade = trail.fade.clamp(0.0, 1.0);
         }
         transform.rotation = rotation;
         transform.scale = Vec2::new(width, length);
         if let Some(mut half) = aabb {
             half.half = Vec2::new((width * 0.5).max(0.01), (length * 0.5).max(0.01));
         }
-        let color = visual.start_color + (visual.end_color - visual.start_color) * progress;
+        let mut color = visual.start_color + (visual.end_color - visual.start_color) * progress;
+        color.w *= fade;
         tint.0 = color;
     }
     particle_state.active_particles = active_particles;

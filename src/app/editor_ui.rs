@@ -3175,30 +3175,28 @@ impl App {
                     ui.heading("GPU Timings");
                     if !gpu_timing_supported {
                         ui.small("Device does not support GPU timestamp queries.");
+                    } else if gpu_history_empty {
+                        ui.small("No GPU timing samples captured yet.");
                     } else {
-                        if gpu_history_empty {
-                            ui.small("No GPU timing samples captured yet.");
+                        if !gpu_timing_snapshot.is_empty() {
+                            for timing in gpu_timing_snapshot.iter() {
+                                let average = gpu_timing_averages
+                                    .get(&timing.label)
+                                    .map(|(sum, count)| sum / (*count as f32))
+                                    .unwrap_or(timing.duration_ms);
+                                ui.label(format!(
+                                    "{:<20} {:>6.2} ms (avg {:>6.2} ms)",
+                                    timing.label, timing.duration_ms, average
+                                ));
+                            }
                         } else {
-                            if !gpu_timing_snapshot.is_empty() {
-                                for timing in gpu_timing_snapshot.iter() {
-                                    let average = gpu_timing_averages
-                                        .get(&timing.label)
-                                        .map(|(sum, count)| sum / (*count as f32))
-                                        .unwrap_or(timing.duration_ms);
-                                    ui.label(format!(
-                                        "{:<20} {:>6.2} ms (avg {:>6.2} ms)",
-                                        timing.label, timing.duration_ms, average
-                                    ));
-                                }
-                            } else {
-                                ui.label("No GPU timing snapshot available.");
-                            }
-                            if ui.button("Export GPU CSV").clicked() {
-                                gpu_export_requested = true;
-                            }
-                            if let Some(status) = gpu_metrics_status.as_ref() {
-                                ui.small(status.as_str());
-                            }
+                            ui.label("No GPU timing snapshot available.");
+                        }
+                        if ui.button("Export GPU CSV").clicked() {
+                            gpu_export_requested = true;
+                        }
+                        if let Some(status) = gpu_metrics_status.as_ref() {
+                            ui.small(status.as_str());
                         }
                     }
 

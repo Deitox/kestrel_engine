@@ -1246,7 +1246,7 @@ pub fn sys_drive_sprite_animations(
     };
     perf_set_step_kind(step_kind);
     let has_group_scales = animation_time.has_group_scales();
-    let animation_time_ref: &AnimationTime = &*animation_time;
+    let animation_time_ref: &AnimationTime = &animation_time;
     match plan {
         AnimationDelta::None => {}
         AnimationDelta::Single(delta) => {
@@ -2550,7 +2550,7 @@ pub fn sys_drive_transform_clips(
         return;
     }
     let has_group_scales = animation_time.has_group_scales();
-    let animation_time_ref: &AnimationTime = &*animation_time;
+    let animation_time_ref: &AnimationTime = &animation_time;
     let delta = match plan {
         AnimationDelta::None => return,
         AnimationDelta::Single(amount) => amount,
@@ -2574,7 +2574,7 @@ pub fn sys_drive_skeletal_clips(
         return;
     }
     let has_group_scales = animation_time.has_group_scales();
-    let animation_time_ref: &AnimationTime = &*animation_time;
+    let animation_time_ref: &AnimationTime = &animation_time;
     let delta = match plan {
         AnimationDelta::None => return,
         AnimationDelta::Single(amount) => amount,
@@ -2862,9 +2862,7 @@ fn drive_transform_clips(
             sampling_transform_player.apply_scale = false;
         }
         let mut sampling_property_player = property_mask;
-        if !wants_tint {
-            sampling_property_player.apply_tint = false;
-        } else if tint.is_none() {
+        if !wants_tint || tint.is_none() {
             sampling_property_player.apply_tint = false;
         }
         let disabled_transform_player =

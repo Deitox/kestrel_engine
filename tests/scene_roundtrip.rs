@@ -781,7 +781,7 @@ fn scene_roundtrip_captures_hierarchy_dependencies_and_environment_metadata() {
             .expect("retain mesh from dependencies");
     }
     assert_eq!(runtime_meshes.mesh_ref_count(MESH_KEY).unwrap_or(0), 1);
-    runtime_meshes.release_mesh(MESH_KEY);
+    runtime_meshes.release_mesh(MESH_KEY, &mut runtime_materials);
     assert_eq!(runtime_meshes.mesh_ref_count(MESH_KEY).unwrap_or(0), 0);
 
     let mut runtime_environments = EnvironmentRegistry::new();

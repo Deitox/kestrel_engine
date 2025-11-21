@@ -3,6 +3,7 @@ use anyhow::{anyhow, Context, Result};
 use glam::{Vec2, Vec3};
 use half::f16;
 use image::{DynamicImage, ImageReader};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::f32::consts::{PI, TAU};
 use std::fs;
@@ -167,9 +168,16 @@ impl EnvironmentRegistry {
             if let Some(path) = source {
                 let new_source = path.to_string();
                 if entry.definition.source() != Some(new_source.as_str()) {
+                    let new_label = Path::new(&new_source)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| entry.definition.key().to_string());
+                    entry.definition.set_label(new_label);
                     entry.definition.set_source(Some(new_source));
                     entry.maps = None;
                     entry.gpu = None;
+                    self.bump_revision();
                 }
             }
             return Ok(());
@@ -308,6 +316,10 @@ impl EnvironmentDefinition {
     pub fn set_source(&mut self, source: Option<String>) {
         self.source = source;
     }
+
+    pub fn set_label(&mut self, label: String) {
+        self.label = label;
+    }
 }
 
 impl EnvironmentMaps {
@@ -350,6 +362,8 @@ impl EnvironmentGpu {
         for face in 0..6 {
             let face_data = &maps.diffuse.faces[face];
             let face_half = f32_to_f16_bits(face_data);
+            let (pixel_bytes, padded_stride) =
+                padded_upload_bytes(bytemuck::cast_slice(&face_half), maps.diffuse.size, maps.diffuse.size, 8);
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &diffuse_texture,
@@ -357,10 +371,10 @@ impl EnvironmentGpu {
                     origin: wgpu::Origin3d { x: 0, y: 0, z: face as u32 },
                     aspect: wgpu::TextureAspect::All,
                 },
-                bytemuck::cast_slice(&face_half),
+                pixel_bytes.as_ref(),
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some((maps.diffuse.size * 8) as u32),
+                    bytes_per_row: Some(padded_stride),
                     rows_per_image: Some(maps.diffuse.size),
                 },
                 wgpu::Extent3d {
@@ -394,6 +408,8 @@ impl EnvironmentGpu {
         for (level_idx, level) in maps.specular.levels.iter().enumerate() {
             for face in 0..6 {
                 let face_half = f32_to_f16_bits(&level.faces[face]);
+                let (pixel_bytes, padded_stride) =
+                    padded_upload_bytes(bytemuck::cast_slice(&face_half), level.size, level.size, 8);
                 queue.write_texture(
                     wgpu::TexelCopyTextureInfo {
                         texture: &specular_texture,
@@ -401,10 +417,10 @@ impl EnvironmentGpu {
                         origin: wgpu::Origin3d { x: 0, y: 0, z: face as u32 },
                         aspect: wgpu::TextureAspect::All,
                     },
-                    bytemuck::cast_slice(&face_half),
+                    pixel_bytes.as_ref(),
                     wgpu::TexelCopyBufferLayout {
                         offset: 0,
-                        bytes_per_row: Some((level.size * 8) as u32),
+                        bytes_per_row: Some(padded_stride),
                         rows_per_image: Some(level.size),
                     },
                     wgpu::Extent3d { width: level.size, height: level.size, depth_or_array_layers: 1 },
@@ -434,6 +450,8 @@ impl EnvironmentGpu {
             view_formats: &[],
         }));
         let brdf_half = f32_to_f16_bits(&maps.brdf.data);
+        let (brdf_bytes, brdf_stride) =
+            padded_upload_bytes(bytemuck::cast_slice(&brdf_half), maps.brdf.width, maps.brdf.height, 8);
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &brdf_texture,
@@ -441,10 +459,10 @@ impl EnvironmentGpu {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            bytemuck::cast_slice(&brdf_half),
+            brdf_bytes.as_ref(),
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some((maps.brdf.width * 8) as u32),
+                bytes_per_row: Some(brdf_stride),
                 rows_per_image: Some(maps.brdf.height),
             },
             wgpu::Extent3d { width: maps.brdf.width, height: maps.brdf.height, depth_or_array_layers: 1 },
@@ -499,6 +517,32 @@ fn is_supported_environment_file(path: &Path) -> bool {
         Some(ext) => matches!(ext.as_str(), "hdr" | "exr" | "png"),
         None => false,
     }
+}
+
+fn padded_upload_bytes<'a>(
+    data: &'a [u8],
+    width: u32,
+    height: u32,
+    bytes_per_pixel: u32,
+) -> (Cow<'a, [u8]>, u32) {
+    let row_bytes = width.saturating_mul(bytes_per_pixel);
+    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u32;
+    let remainder = row_bytes % align;
+    let padded_row_bytes = if remainder == 0 { row_bytes } else { row_bytes + (align - remainder) };
+    if padded_row_bytes == row_bytes {
+        return (Cow::Borrowed(data), row_bytes);
+    }
+    let mut padded = vec![0u8; (padded_row_bytes.saturating_mul(height)) as usize];
+    let src_row_bytes = row_bytes as usize;
+    for row in 0..height as usize {
+        let src_start = row * src_row_bytes;
+        let dst_start = row * padded_row_bytes as usize;
+        let src_end = src_start + src_row_bytes;
+        if src_end <= data.len() && dst_start + src_row_bytes <= padded.len() {
+            padded[dst_start..dst_start + src_row_bytes].copy_from_slice(&data[src_start..src_end]);
+        }
+    }
+    (Cow::Owned(padded), padded_row_bytes)
 }
 
 fn environment_key_from_path(path: &Path) -> Option<String> {
@@ -621,8 +665,7 @@ fn compute_diffuse_cubemap(image: &HdrImage, size: u32) -> Cubemap {
         vec![0.0; (size * size * 4) as usize],
         vec![0.0; (size * size * 4) as usize],
     ];
-    for face in 0..6 {
-        let data = &mut faces[face];
+    for (face, data) in faces.iter_mut().enumerate() {
         for y in 0..size {
             for x in 0..size {
                 let dir = cubemap_direction(face, x, y, size);
@@ -665,8 +708,7 @@ fn compute_specular_cubemap(image: &HdrImage, base_size: u32, mip_count: u32) ->
             vec![0.0; (size * size * 4) as usize],
             vec![0.0; (size * size * 4) as usize],
         ];
-        for face in 0..6 {
-            let data = &mut faces[face];
+        for (face, data) in faces.iter_mut().enumerate() {
             for y in 0..size {
                 for x in 0..size {
                     let r = cubemap_direction(face, x, y, size);
@@ -795,7 +837,7 @@ fn hammersley(i: u32, n: u32) -> Vec2 {
 
 fn radical_inverse_vdc(bits: u32) -> f32 {
     let mut b = bits;
-    b = (b << 16) | (b >> 16);
+    b = b.rotate_right(16);
     b = ((b & 0x5555_5555) << 1) | ((b & 0xAAAA_AAAA) >> 1);
     b = ((b & 0x3333_3333) << 2) | ((b & 0xCCCC_CCCC) >> 2);
     b = ((b & 0x0F0F_0F0F) << 4) | ((b & 0xF0F0_F0F0) >> 4);

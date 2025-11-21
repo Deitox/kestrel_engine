@@ -1063,6 +1063,7 @@ impl App {
         }
     }
 
+    #[allow(clippy::type_complexity)]
     fn build_segment_cache_vec2(
         frames: &[ClipKeyframe<Vec2>],
     ) -> (Arc<[Vec2]>, Arc<[ClipSegment<Vec2>]>, Arc<[f32]>) {
@@ -1089,6 +1090,7 @@ impl App {
         )
     }
 
+    #[allow(clippy::type_complexity)]
     fn build_segment_cache_scalar(
         frames: &[ClipKeyframe<f32>],
     ) -> (Arc<[f32]>, Arc<[ClipSegment<f32>]>, Arc<[f32]>) {
@@ -1115,6 +1117,7 @@ impl App {
         )
     }
 
+    #[allow(clippy::type_complexity)]
     fn build_segment_cache_vec4(
         frames: &[ClipKeyframe<Vec4>],
     ) -> (Arc<[Vec4]>, Arc<[ClipSegment<Vec4>]>, Arc<[f32]>) {

@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use glam::{Mat3, Mat4, Vec2, Vec3, Vec4};
 use gltf::mesh::Mode;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 #[repr(C)]
@@ -310,15 +310,11 @@ impl Mesh {
         let mut subsets: Vec<MeshSubset> = Vec::new();
         let mut processed_nodes = false;
 
-        for node in document.nodes() {
-            if let Some(mesh) = node.mesh() {
-                let transform = Mat4::from_cols_array_2d(&node.transform().matrix());
-                let normal_matrix = Self::normal_matrix_from_transform(transform);
-                Self::append_mesh_primitives(
-                    &mesh,
-                    node.name(),
-                    transform,
-                    normal_matrix,
+        for scene in document.scenes() {
+            for node in scene.nodes() {
+                processed_nodes |= Self::traverse_node_primitives(
+                    &node,
+                    Mat4::IDENTITY,
                     &buffers,
                     &material_key_map,
                     &default_material_key,
@@ -327,7 +323,23 @@ impl Mesh {
                     &mut indices,
                     &mut subsets,
                 )?;
-                processed_nodes = true;
+            }
+        }
+
+        if !processed_nodes {
+            let roots = Self::root_nodes(&document);
+            for node in roots {
+                processed_nodes |= Self::traverse_node_primitives(
+                    &node,
+                    Mat4::IDENTITY,
+                    &buffers,
+                    &material_key_map,
+                    &default_material_key,
+                    path_ref,
+                    &mut vertices,
+                    &mut indices,
+                    &mut subsets,
+                )?;
             }
         }
 
@@ -360,6 +372,56 @@ impl Mesh {
         let mesh = Mesh { vertices, indices, subsets, bounds };
 
         Ok(MeshImport { mesh, materials, textures })
+    }
+
+    fn traverse_node_primitives(
+        node: &gltf::Node,
+        parent_transform: Mat4,
+        buffers: &[gltf::buffer::Data],
+        material_key_map: &HashMap<usize, String>,
+        default_material_key: &str,
+        path_ref: &Path,
+        vertices: &mut Vec<MeshVertex>,
+        indices: &mut Vec<u32>,
+        subsets: &mut Vec<MeshSubset>,
+    ) -> Result<bool> {
+        let local_transform = Mat4::from_cols_array_2d(&node.transform().matrix());
+        let world_transform = parent_transform * local_transform;
+        let normal_matrix = Self::normal_matrix_from_transform(world_transform);
+        let mut processed = false;
+
+        if let Some(mesh) = node.mesh() {
+            Self::append_mesh_primitives(
+                &mesh,
+                node.name(),
+                world_transform,
+                normal_matrix,
+                buffers,
+                material_key_map,
+                default_material_key,
+                path_ref,
+                vertices,
+                indices,
+                subsets,
+            )?;
+            processed = true;
+        }
+
+        for child in node.children() {
+            processed |= Self::traverse_node_primitives(
+                &child,
+                world_transform,
+                buffers,
+                material_key_map,
+                default_material_key,
+                path_ref,
+                vertices,
+                indices,
+                subsets,
+            )?;
+        }
+
+        Ok(processed)
     }
 
     fn append_mesh_primitives(
@@ -458,6 +520,25 @@ impl Mesh {
             });
         }
         Ok(())
+    }
+
+    fn root_nodes(document: &gltf::Document) -> Vec<gltf::Node<'_>> {
+        let mut has_parent = HashSet::new();
+        for node in document.nodes() {
+            for child in node.children() {
+                has_parent.insert(child.index());
+            }
+        }
+        let mut roots = Vec::new();
+        for node in document.nodes() {
+            if !has_parent.contains(&node.index()) {
+                roots.push(node);
+            }
+        }
+        if roots.is_empty() {
+            roots.extend(document.nodes());
+        }
+        roots
     }
 
     fn subset_name(node_name: Option<&str>, mesh_name: Option<&str>, primitive_index: usize) -> String {

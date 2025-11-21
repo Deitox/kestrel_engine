@@ -16,17 +16,12 @@ pub(crate) const SCALE_SNAP_STEP: f32 = 0.1;
 pub(crate) const TRANSLATE_SNAP_STEP: f32 = 0.05;
 pub(crate) const ROTATE_SNAP_STEP_RADIANS: f32 = 15.0_f32.to_radians();
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq, Default)]
 pub(crate) enum GizmoMode {
+    #[default]
     Translate,
-    Scale,
     Rotate,
-}
-
-impl Default for GizmoMode {
-    fn default() -> Self {
-        GizmoMode::Translate
-    }
+    Scale,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -136,10 +131,9 @@ pub(crate) fn detect_scale_handle(
     let mut kind = None;
     if rel_view.x.abs() >= deadzone && rel_view.x.abs() <= axis_length && rel_view.y.abs() <= axis_half {
         kind = Some(if shift { ScaleHandleKind::Uniform } else { ScaleHandleKind::Axis(Axis2::X) });
-    } else if rel_view.y.abs() >= deadzone && rel_view.y.abs() <= axis_length && rel_view.x.abs() <= axis_half
-    {
+    } else if rel_view.y.abs() >= deadzone && rel_view.y.abs() <= axis_length && rel_view.x.abs() <= axis_half {
         kind = Some(if shift { ScaleHandleKind::Uniform } else { ScaleHandleKind::Axis(Axis2::Y) });
-    } else if dist >= GIZMO_SCALE_INNER_RADIUS_PX && dist <= GIZMO_SCALE_OUTER_RADIUS_PX {
+    } else if (GIZMO_SCALE_INNER_RADIUS_PX..=GIZMO_SCALE_OUTER_RADIUS_PX).contains(&dist) {
         kind = Some(ScaleHandleKind::Uniform);
     }
     let kind = kind?;

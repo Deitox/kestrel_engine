@@ -19,20 +19,25 @@ struct MeshEntry {
     source: Option<PathBuf>,
     ref_count: usize,
     permanent: bool,
+    material_keys: Vec<String>,
 }
 
 impl MeshRegistry {
     pub fn new(materials: &mut MaterialRegistry) -> Self {
         let mut registry = MeshRegistry { entries: HashMap::new(), default: String::new(), revision: 0 };
-        registry.insert_entry("cube", Mesh::cube(1.0), None, true).expect("cube mesh should insert");
+        registry
+            .insert_entry("cube", Mesh::cube(1.0), None, Vec::new(), true)
+            .expect("cube mesh should insert");
         match crate::mesh::Mesh::load_gltf_with_materials("assets/models/demo_triangle.gltf") {
             Ok(import) => {
+                let material_keys: Vec<String> = import.materials.iter().map(|mat| mat.key.clone()).collect();
                 materials.register_gltf_import(&import.materials, &import.textures);
                 let mesh = import.mesh;
                 let _ = registry.insert_entry(
                     "demo_triangle",
                     mesh,
                     Some(PathBuf::from("assets/models/demo_triangle.gltf")),
+                    material_keys,
                     true,
                 );
                 registry.default = "demo_triangle".to_string();
@@ -53,10 +58,17 @@ impl MeshRegistry {
         key: impl Into<String>,
         mesh: Mesh,
         source: Option<PathBuf>,
+        material_keys: Vec<String>,
         permanent: bool,
     ) -> Result<()> {
         let key_str = key.into();
-        self.entries.insert(key_str, MeshEntry { mesh, gpu: None, source, ref_count: 0, permanent });
+        if self.entries.contains_key(&key_str) {
+            return Err(anyhow!("Mesh '{key_str}' already registered in registry"));
+        }
+        self.entries.insert(
+            key_str,
+            MeshEntry { mesh, gpu: None, source, ref_count: 0, permanent, material_keys },
+        );
         self.bump_revision();
         Ok(())
     }
@@ -83,6 +95,7 @@ impl MeshRegistry {
             if entry.source.is_none() {
                 if let Some(p) = path {
                     entry.source = Some(PathBuf::from(p));
+                    self.bump_revision();
                 }
             }
             return Ok(());
@@ -97,11 +110,33 @@ impl MeshRegistry {
         path: impl AsRef<Path>,
         materials: &mut MaterialRegistry,
     ) -> Result<()> {
+        if self.entries.contains_key(key) {
+            return Err(anyhow!("Mesh '{key}' already registered in registry"));
+        }
         let path_ref = path.as_ref();
         let import = Mesh::load_gltf_with_materials(path_ref)?;
         materials.register_gltf_import(&import.materials, &import.textures);
         let mesh = import.mesh;
-        self.insert_entry(key.to_string(), mesh, Some(path_ref.to_path_buf()), false)
+        let material_keys: Vec<String> = import.materials.iter().map(|mat| mat.key.clone()).collect();
+        let mut retained: Vec<String> = Vec::new();
+        for mat_key in &material_keys {
+            if let Err(err) = materials.retain(mat_key) {
+                for retained_key in retained {
+                    materials.release(&retained_key);
+                }
+                return Err(err);
+            }
+            retained.push(mat_key.clone());
+        }
+        if let Err(err) =
+            self.insert_entry(key.to_string(), mesh, Some(path_ref.to_path_buf()), material_keys, false)
+        {
+            for mat_key in retained {
+                materials.release(&mat_key);
+            }
+            return Err(err);
+        }
+        Ok(())
     }
 
     pub fn retain_mesh(
@@ -117,19 +152,23 @@ impl MeshRegistry {
         Ok(())
     }
 
-    pub fn release_mesh(&mut self, key: &str) {
+    pub fn release_mesh(&mut self, key: &str, materials: &mut MaterialRegistry) {
         let mut remove = false;
+        let mut material_keys: Vec<String> = Vec::new();
         if let Some(entry) = self.entries.get_mut(key) {
-            if entry.ref_count == 0 {
-                return;
+            if entry.ref_count > 0 {
+                entry.ref_count -= 1;
             }
-            entry.ref_count -= 1;
             if entry.ref_count == 0 && !entry.permanent {
                 remove = true;
+                material_keys = entry.material_keys.clone();
             }
         }
         if remove {
             self.entries.remove(key);
+            for mat_key in material_keys {
+                materials.release(&mat_key);
+            }
             self.bump_revision();
         }
     }
@@ -189,7 +228,7 @@ mod tests {
         assert_eq!(registry.mesh_ref_count("cube"), Some(0));
         registry.retain_mesh("cube", None, &mut materials).expect("retain cube");
         assert_eq!(registry.mesh_ref_count("cube"), Some(1));
-        registry.release_mesh("cube");
+        registry.release_mesh("cube", &mut materials);
         assert_eq!(registry.mesh_ref_count("cube"), Some(0));
 
         registry
@@ -199,7 +238,87 @@ mod tests {
             .retain_mesh("temp_triangle", Some("assets/models/demo_triangle.gltf"), &mut materials)
             .expect("retain temp mesh");
         assert_eq!(registry.mesh_ref_count("temp_triangle"), Some(1));
-        registry.release_mesh("temp_triangle");
+        registry.release_mesh("temp_triangle", &mut materials);
         assert!(!registry.has("temp_triangle"), "non-permanent mesh should be removed at refcount 0");
+    }
+
+    #[test]
+    fn ensure_mesh_source_updates_revision() {
+        let mut materials = MaterialRegistry::new();
+        let mut registry = MeshRegistry::new(&mut materials);
+        let before = registry.version();
+        registry.ensure_mesh("cube", Some("assets/models/cube.gltf"), &mut materials).unwrap();
+        assert!(registry.version() > before, "revision should bump when source is recorded");
+        let recorded = registry.mesh_source("cube").expect("cube should have a source set");
+        assert!(recorded.ends_with("assets/models/cube.gltf"));
+    }
+
+    #[test]
+    fn duplicate_mesh_key_is_rejected() {
+        let mut materials = MaterialRegistry::new();
+        let mut registry = MeshRegistry::new(&mut materials);
+        registry
+            .load_from_path("temp_triangle", "assets/models/demo_triangle.gltf", &mut materials)
+            .expect("first load ok");
+        let err = registry
+            .load_from_path("temp_triangle", "assets/models/demo_triangle.gltf", &mut materials)
+            .expect_err("duplicate load should fail");
+        let message = err.to_string();
+        assert!(message.contains("already registered"), "unexpected error: {message}");
+    }
+
+    #[test]
+    fn release_without_retain_cleans_mesh_and_materials() {
+        let mut materials = MaterialRegistry::new();
+        let mut registry = MeshRegistry::new(&mut materials);
+        registry
+            .load_from_path("temp_triangle", "assets/models/demo_triangle.gltf", &mut materials)
+            .expect("load temp mesh");
+        let subset_materials: Vec<String> = registry
+            .mesh_subsets("temp_triangle")
+            .unwrap()
+            .iter()
+            .filter_map(|subset| subset.material.clone())
+            .collect();
+        assert!(!subset_materials.is_empty(), "import should register materials");
+        for key in &subset_materials {
+            assert!(materials.has(key), "material '{key}' should exist after import");
+        }
+
+        registry.release_mesh("temp_triangle", &mut materials);
+        assert!(!registry.has("temp_triangle"), "mesh should be removed even without prior retain");
+        for key in subset_materials {
+            assert!(
+                !materials.has(&key),
+                "material '{key}' should be released when mesh is dropped without references"
+            );
+        }
+    }
+
+    #[test]
+    fn releasing_mesh_cleans_imported_materials() {
+        let mut materials = MaterialRegistry::new();
+        let mut registry = MeshRegistry::new(&mut materials);
+        registry
+            .load_from_path("temp_triangle", "assets/models/demo_triangle.gltf", &mut materials)
+            .expect("load temp mesh");
+        let subset_materials: Vec<String> = registry
+            .mesh_subsets("temp_triangle")
+            .unwrap()
+            .iter()
+            .filter_map(|subset| subset.material.clone())
+            .collect();
+        assert!(!subset_materials.is_empty(), "import should register materials");
+        for key in &subset_materials {
+            assert!(materials.has(key), "material '{key}' should exist after import");
+        }
+        registry
+            .retain_mesh("temp_triangle", Some("assets/models/demo_triangle.gltf"), &mut materials)
+            .expect("retain temp mesh");
+        registry.release_mesh("temp_triangle", &mut materials);
+        for key in subset_materials {
+            assert!(!materials.has(&key), "material '{key}' should be released with mesh");
+        }
+        assert!(!registry.has("temp_triangle"));
     }
 }

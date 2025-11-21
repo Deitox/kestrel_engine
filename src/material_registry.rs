@@ -2,6 +2,7 @@ use crate::mesh::{ImportedMaterial, ImportedTexture, MaterialTextureBinding};
 use crate::renderer::Renderer;
 use anyhow::{anyhow, Result};
 use bytemuck::{Pod, Zeroable};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
@@ -116,19 +117,25 @@ impl MaterialRegistry {
         import_textures: &[ImportedTexture],
     ) {
         for texture in import_textures {
-            self.textures.entry(texture.key.clone()).or_insert_with(|| TextureEntry {
-                width: texture.width,
-                height: texture.height,
-                data: texture.data.clone(),
-                gpu_srgb: None,
-                gpu_linear: None,
-            });
+            self.textures
+                .entry(texture.key.clone())
+                .and_modify(|entry| {
+                    entry.width = texture.width;
+                    entry.height = texture.height;
+                    entry.data = texture.data.clone();
+                    entry.gpu_srgb = None;
+                    entry.gpu_linear = None;
+                })
+                .or_insert_with(|| TextureEntry {
+                    width: texture.width,
+                    height: texture.height,
+                    data: texture.data.clone(),
+                    gpu_srgb: None,
+                    gpu_linear: None,
+                });
         }
 
         for material in import_materials {
-            if self.materials.contains_key(&material.key) {
-                continue;
-            }
             let definition = MaterialDefinition {
                 key: material.key.clone(),
                 label: material.label.clone(),
@@ -142,11 +149,19 @@ impl MaterialRegistry {
                 emissive_texture: material.emissive_texture.clone(),
                 source: material.source.clone(),
             };
-            self.bump_texture_refs(&definition, 1);
-            self.materials.insert(
-                material.key.clone(),
-                MaterialEntry { definition, gpu: None, ref_count: 0, permanent: false },
-            );
+            if let Some(mut entry) = self.materials.remove(&material.key) {
+                self.bump_texture_refs(&entry.definition, -1);
+                entry.definition = definition;
+                entry.gpu = None;
+                self.bump_texture_refs(&entry.definition, 1);
+                self.materials.insert(material.key.clone(), entry);
+            } else {
+                self.bump_texture_refs(&definition, 1);
+                self.materials.insert(
+                    material.key.clone(),
+                    MaterialEntry { definition, gpu: None, ref_count: 0, permanent: false },
+                );
+            }
         }
     }
 
@@ -341,6 +356,7 @@ impl MaterialRegistry {
         let make_texture = |data: [u8; 4],
                             format: wgpu::TextureFormat|
          -> (wgpu::Texture, wgpu::TextureView) {
+            let (pixel_data, padded_row_bytes) = Self::prepare_texture_upload(&data, 1, 1);
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("Material Default Texture"),
                 size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
@@ -358,8 +374,12 @@ impl MaterialRegistry {
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
-                &data,
-                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4), rows_per_image: Some(1) },
+                pixel_data.as_ref(),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_row_bytes),
+                    rows_per_image: Some(1),
+                },
                 wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
             );
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -407,6 +427,8 @@ impl MaterialRegistry {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
+        let (pixel_data, padded_row_bytes) =
+            Self::prepare_texture_upload(&entry.data, entry.width, entry.height);
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &texture,
@@ -414,10 +436,10 @@ impl MaterialRegistry {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &entry.data,
+            pixel_data.as_ref(),
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(4 * entry.width),
+                bytes_per_row: Some(padded_row_bytes),
                 rows_per_image: Some(entry.height),
             },
             wgpu::Extent3d { width: entry.width, height: entry.height, depth_or_array_layers: 1 },
@@ -437,9 +459,7 @@ impl MaterialRegistry {
         }
     }
 
-    fn texture_bindings<'a>(
-        definition: &'a MaterialDefinition,
-    ) -> impl Iterator<Item = &'a MaterialTextureBinding> {
+    fn texture_bindings(definition: &MaterialDefinition) -> impl Iterator<Item = &MaterialTextureBinding> {
         [
             definition.base_color_texture.as_ref(),
             definition.metallic_roughness_texture.as_ref(),
@@ -471,6 +491,37 @@ impl MaterialRegistry {
                 self.texture_material_refs.remove(key);
                 self.textures.remove(key);
             }
+        }
+    }
+
+    fn padded_bytes_per_row(width: u32) -> u32 {
+        let unpadded = width.saturating_mul(4);
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u32;
+        let remainder = unpadded % align;
+        if remainder == 0 { unpadded } else { unpadded + align - remainder }
+    }
+
+    fn prepare_texture_upload<'a>(
+        data: &'a [u8],
+        width: u32,
+        height: u32,
+    ) -> (Cow<'a, [u8]>, u32) {
+        let row_bytes = width.saturating_mul(4);
+        let padded_row_bytes = Self::padded_bytes_per_row(width);
+        if padded_row_bytes == row_bytes {
+            (Cow::Borrowed(data), row_bytes)
+        } else {
+            let mut padded = vec![0u8; (padded_row_bytes.saturating_mul(height)) as usize];
+            for row in 0..height {
+                let src_start = (row_bytes * row) as usize;
+                let dst_start = (padded_row_bytes * row) as usize;
+                let src_end = src_start + row_bytes as usize;
+                if src_end <= data.len() && dst_start + row_bytes as usize <= padded.len() {
+                    padded[dst_start..dst_start + row_bytes as usize]
+                        .copy_from_slice(&data[src_start..src_end]);
+                }
+            }
+            (Cow::Owned(padded), padded_row_bytes)
         }
     }
 }

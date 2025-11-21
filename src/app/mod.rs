@@ -545,7 +545,7 @@ impl App {
             Ok(AnimationReloadData::Clip { clip, bytes }) => {
                 let key = result.request.key.clone();
                 let path_string = result.request.path.to_string_lossy().to_string();
-                self.assets.replace_clip(&key, &path_string, clip);
+                self.assets.replace_clip(&key, &path_string, *clip);
                 self.queue_animation_watch_root(&result.request.path, AnimationAssetKind::Clip);
                 if let Some(updated) = self.assets.clip(&key) {
                     let canonical = Arc::new(updated.clone());
@@ -1946,7 +1946,7 @@ impl App {
             }
             for key in previous_mesh {
                 if !next_mesh.contains(&key) {
-                    self.mesh_registry.release_mesh(&key);
+                    self.mesh_registry.release_mesh(&key, &mut self.material_registry);
                 }
             }
             for key in &newly_required {
@@ -2171,7 +2171,7 @@ impl App {
         let mesh_to_release: Vec<String> =
             self.scene_mesh_refs.iter().filter(|key| !persistent_meshes.contains(*key)).cloned().collect();
         for key in &mesh_to_release {
-            self.mesh_registry.release_mesh(key);
+            self.mesh_registry.release_mesh(key, &mut self.material_registry);
         }
         self.scene_mesh_refs = persistent_meshes.clone();
         self.with_editor_ui_state_mut(|state| state.scene_mesh_snapshot = None);
@@ -2707,6 +2707,7 @@ impl ApplicationHandler for App {
         };
         let view_proj = self.camera.view_projection(viewport_size);
         let default_material_key = self.material_registry.default_key().to_string();
+        #[allow(clippy::type_complexity)]
         let mut mesh_draw_infos: Vec<(String, Mat4, MeshLightingInfo, String, Option<Arc<[Mat4]>>)> =
             Vec::new();
         if let Some((preview_key, preview_model)) = self
@@ -5059,7 +5060,7 @@ struct AnimationReloadResult {
 }
 
 enum AnimationReloadData {
-    Clip { clip: AnimationClip, bytes: Vec<u8> },
+    Clip { clip: Box<AnimationClip>, bytes: Vec<u8> },
     Graph { graph: AnimationGraphAsset, bytes: Vec<u8> },
     Skeletal { import: skeletal::SkeletonImport },
 }
@@ -5259,7 +5260,7 @@ fn run_animation_reload_job(job: AnimationReloadJob) -> AnimationReloadResult {
             };
             let label = request.path.to_string_lossy().to_string();
             match parse_animation_clip_bytes(&bytes, &request.key, &label) {
-                Ok(clip) => Ok(AnimationReloadData::Clip { clip, bytes }),
+                Ok(clip) => Ok(AnimationReloadData::Clip { clip: Box::new(clip), bytes }),
                 Err(err) => Err(err),
             }
         }

@@ -438,7 +438,8 @@ impl MeshPreviewPlugin {
 
                 self.persistent_meshes.insert(new_key.clone());
                 if self.persistent_meshes.remove(&previous) {
-                    ctx.mesh_registry_mut()?.release_mesh(&previous);
+                    let (mesh_registry, material_registry) = ctx.mesh_registry_and_materials()?;
+                    mesh_registry.release_mesh(&previous, material_registry);
                 }
 
                 {
@@ -796,8 +797,11 @@ impl EnginePlugin for MeshPreviewPlugin {
     }
 
     fn shutdown(&mut self, ctx: &mut PluginContext<'_>) -> Result<()> {
-        for mesh in std::mem::take(&mut self.persistent_meshes) {
-            ctx.mesh_registry_mut()?.release_mesh(&mesh);
+        {
+            let (mesh_registry, material_registry) = ctx.mesh_registry_and_materials()?;
+            for mesh in std::mem::take(&mut self.persistent_meshes) {
+                mesh_registry.release_mesh(&mesh, material_registry);
+            }
         }
         for material in std::mem::take(&mut self.persistent_materials) {
             ctx.material_registry_mut()?.release(&material);
