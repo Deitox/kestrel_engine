@@ -136,6 +136,16 @@ pub struct MeshImport {
     pub textures: Vec<ImportedTexture>,
 }
 
+#[derive(Default)]
+struct MeshScratch {
+    positions: Vec<Vec3>,
+    normals: Vec<Vec3>,
+    tex_coords: Vec<Vec2>,
+    joints: Vec<[u16; 4]>,
+    weights: Vec<[f32; 4]>,
+    local_indices: Vec<u32>,
+}
+
 impl Mesh {
     pub fn new(vertices: Vec<MeshVertex>, indices: Vec<u32>) -> Self {
         let subset =
@@ -308,6 +318,29 @@ impl Mesh {
         let mut vertices: Vec<MeshVertex> = Vec::new();
         let mut indices: Vec<u32> = Vec::new();
         let mut subsets: Vec<MeshSubset> = Vec::new();
+        let mut scratch = MeshScratch::default();
+
+        // Pre-size the buffers based on primitive counts to reduce reallocations.
+        let mut estimated_vertices = 0usize;
+        let mut estimated_indices = 0usize;
+        let mut estimated_subsets = 0usize;
+        for mesh in document.meshes() {
+            for primitive in mesh.primitives() {
+                if primitive.mode() != Mode::Triangles {
+                    continue;
+                }
+                estimated_subsets += 1;
+                if let Some(accessor) = primitive.get(&gltf::Semantic::Positions) {
+                    estimated_vertices += accessor.count();
+                }
+                if let Some(accessor) = primitive.indices() {
+                    estimated_indices += accessor.count();
+                }
+            }
+        }
+        vertices.reserve(estimated_vertices);
+        indices.reserve(estimated_indices);
+        subsets.reserve(estimated_subsets);
         let mut processed_nodes = false;
 
         if let Some(scene) = document.default_scene() {
@@ -322,6 +355,7 @@ impl Mesh {
                     &mut vertices,
                     &mut indices,
                     &mut subsets,
+                    &mut scratch,
                 )?;
             }
         } else if let Some(scene) = document.scenes().next() {
@@ -336,6 +370,7 @@ impl Mesh {
                     &mut vertices,
                     &mut indices,
                     &mut subsets,
+                    &mut scratch,
                 )?;
             }
         }
@@ -353,6 +388,7 @@ impl Mesh {
                     &mut vertices,
                     &mut indices,
                     &mut subsets,
+                    &mut scratch,
                 )?;
             }
         }
@@ -371,6 +407,7 @@ impl Mesh {
                     &mut vertices,
                     &mut indices,
                     &mut subsets,
+                    &mut scratch,
                 )?;
             }
         }
@@ -399,6 +436,7 @@ impl Mesh {
         vertices: &mut Vec<MeshVertex>,
         indices: &mut Vec<u32>,
         subsets: &mut Vec<MeshSubset>,
+        scratch: &mut MeshScratch,
     ) -> Result<bool> {
         let local_transform = Mat4::from_cols_array_2d(&node.transform().matrix());
         let world_transform = parent_transform * local_transform;
@@ -418,6 +456,7 @@ impl Mesh {
                 vertices,
                 indices,
                 subsets,
+                scratch,
             )?;
             processed = true;
         }
@@ -433,6 +472,7 @@ impl Mesh {
                 vertices,
                 indices,
                 subsets,
+                scratch,
             )?;
         }
 
@@ -452,6 +492,7 @@ impl Mesh {
         vertices: &mut Vec<MeshVertex>,
         indices: &mut Vec<u32>,
         subsets: &mut Vec<MeshSubset>,
+        scratch: &mut MeshScratch,
     ) -> Result<()> {
         for (primitive_index, primitive) in mesh.primitives().enumerate() {
             if primitive.mode() != Mode::Triangles {
@@ -461,66 +502,77 @@ impl Mesh {
             let positions_iter = reader
                 .read_positions()
                 .ok_or_else(|| anyhow!("POSITION attribute missing in {}", path_ref.display()))?;
-            let positions: Vec<Vec3> = positions_iter.map(Vec3::from_array).collect();
-            if positions.is_empty() {
+            scratch.positions.clear();
+            scratch.positions.extend(positions_iter.map(Vec3::from_array));
+            if scratch.positions.is_empty() {
                 continue;
             }
 
-            let mut normals: Vec<Vec3> = reader
-                .read_normals()
-                .map(|it| it.map(Vec3::from_array).collect())
-                .unwrap_or_else(|| vec![Vec3::ZERO; positions.len()]);
+            scratch.normals.clear();
+            if let Some(read_normals) = reader.read_normals() {
+                scratch.normals.extend(read_normals.map(Vec3::from_array));
+            } else {
+                scratch.normals.resize(scratch.positions.len(), Vec3::ZERO);
+            }
 
-            let mut tex_coords: Vec<Vec2> = reader
-                .read_tex_coords(0)
-                .map(|coords| coords.into_f32().map(Vec2::from_array).collect())
-                .unwrap_or_else(|| vec![Vec2::ZERO; positions.len()]);
+            scratch.tex_coords.clear();
+            if let Some(tex) = reader.read_tex_coords(0) {
+                scratch.tex_coords.extend(tex.into_f32().map(Vec2::from_array));
+            } else {
+                scratch.tex_coords.resize(scratch.positions.len(), Vec2::ZERO);
+            }
 
-            let mut joints: Vec<[u16; 4]> = reader
-                .read_joints(0)
-                .map(|it| it.into_u16().collect())
-                .unwrap_or_else(|| vec![[0; 4]; positions.len()]);
-            let mut weights: Vec<[f32; 4]> = reader
-                .read_weights(0)
-                .map(|it| it.into_f32().collect())
-                .unwrap_or_else(|| vec![[0.0; 4]; positions.len()]);
+            scratch.joints.clear();
+            if let Some(j) = reader.read_joints(0) {
+                scratch.joints.extend(j.into_u16());
+            } else {
+                scratch.joints.resize(scratch.positions.len(), [0; 4]);
+            }
+            scratch.weights.clear();
+            if let Some(w) = reader.read_weights(0) {
+                scratch.weights.extend(w.into_f32());
+            } else {
+                scratch.weights.resize(scratch.positions.len(), [0.0; 4]);
+            }
 
-            let local_indices: Vec<u32> = reader
-                .read_indices()
-                .map(|read| read.into_u32().collect())
-                .unwrap_or_else(|| (0..positions.len() as u32).collect());
+            scratch.local_indices.clear();
+            if let Some(read) = reader.read_indices() {
+                scratch.local_indices.extend(read.into_u32());
+            } else {
+                scratch.local_indices.extend(0..scratch.positions.len() as u32);
+            }
 
-            if normals.is_empty()
-                || normals.len() != positions.len()
-                || normals.iter().all(|n| n.length_squared() == 0.0)
+            if scratch.normals.is_empty()
+                || scratch.normals.len() != scratch.positions.len()
+                || scratch.normals.iter().all(|n| n.length_squared() == 0.0)
             {
-                normals = compute_normals(&positions, &local_indices);
+                scratch.normals = compute_normals(&scratch.positions, &scratch.local_indices);
             }
 
-            if tex_coords.len() != positions.len() {
-                tex_coords.resize(positions.len(), Vec2::ZERO);
+            if scratch.tex_coords.len() != scratch.positions.len() {
+                scratch.tex_coords.resize(scratch.positions.len(), Vec2::ZERO);
             }
-            if joints.len() != positions.len() {
-                joints.resize(positions.len(), [0; 4]);
+            if scratch.joints.len() != scratch.positions.len() {
+                scratch.joints.resize(scratch.positions.len(), [0; 4]);
             }
-            if weights.len() != positions.len() {
-                weights.resize(positions.len(), [0.0; 4]);
+            if scratch.weights.len() != scratch.positions.len() {
+                scratch.weights.resize(scratch.positions.len(), [0.0; 4]);
             }
 
             let base_vertex = vertices.len() as u32;
-            vertices.extend(positions.iter().enumerate().map(|(i, pos)| {
-                let norm = normals.get(i).copied().unwrap_or(Vec3::Y).normalize_or_zero();
+            vertices.extend(scratch.positions.iter().enumerate().map(|(i, pos)| {
+                let norm = scratch.normals.get(i).copied().unwrap_or(Vec3::Y).normalize_or_zero();
                 let transformed_pos = transform.transform_point3(*pos);
                 let transformed_normal = (normal_matrix * norm).normalize_or_zero();
-                let uv = tex_coords.get(i).copied().unwrap_or(Vec2::ZERO);
-                let joint_indices = joints.get(i).copied().unwrap_or([0; 4]);
-                let weight_values = weights.get(i).copied().unwrap_or([0.0; 4]);
+                let uv = scratch.tex_coords.get(i).copied().unwrap_or(Vec2::ZERO);
+                let joint_indices = scratch.joints.get(i).copied().unwrap_or([0; 4]);
+                let weight_values = scratch.weights.get(i).copied().unwrap_or([0.0; 4]);
                 MeshVertex::new(transformed_pos, transformed_normal, Vec4::new(1.0, 0.0, 0.0, 1.0), uv)
                     .with_skin(joint_indices, weight_values)
             }));
 
             let index_offset = indices.len() as u32;
-            indices.extend(local_indices.iter().map(|idx| idx + base_vertex));
+            indices.extend(scratch.local_indices.iter().map(|idx| idx + base_vertex));
             let index_count = (indices.len() as u32) - index_offset;
             let material_key = primitive
                 .material()

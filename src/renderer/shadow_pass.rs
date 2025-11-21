@@ -583,16 +583,21 @@ impl ShadowPass {
     }
 }
 
+const SHADOW_CASCADE_EPS: f32 = 0.01;
+
 #[allow(clippy::needless_range_loop)]
 fn compute_cascade_splits(camera: &Camera3D, lighting: &SceneLightingState) -> [f32; MAX_SHADOW_CASCADES] {
     let safe_near = camera.near.max(0.01);
     let mut target_far = (safe_near + lighting.shadow_distance).min(camera.far);
     if target_far <= safe_near {
-        target_far = safe_near + 0.01;
+        target_far = safe_near + SHADOW_CASCADE_EPS;
     }
-    let range = (target_far - safe_near).max(0.01);
+    let range = (target_far - safe_near).max(SHADOW_CASCADE_EPS);
     let mut splits = [target_far; MAX_SHADOW_CASCADES];
-    let cascade_count = lighting.shadow_cascade_count.max(1) as usize;
+    let mut cascade_count = lighting.shadow_cascade_count.max(1) as usize;
+    if range < SHADOW_CASCADE_EPS * 4.0 {
+        cascade_count = cascade_count.min(2);
+    }
     let lambda = lighting.shadow_split_lambda.clamp(0.0, 1.0);
     for cascade in 0..cascade_count {
         let p = (cascade + 1) as f32 / cascade_count as f32;
@@ -603,7 +608,7 @@ fn compute_cascade_splits(camera: &Camera3D, lighting: &SceneLightingState) -> [
     }
     for idx in 1..MAX_SHADOW_CASCADES {
         if splits[idx] <= splits[idx - 1] {
-            splits[idx] = splits[idx - 1] + 0.01;
+            splits[idx] = splits[idx - 1] + SHADOW_CASCADE_EPS;
         }
     }
     splits[MAX_SHADOW_CASCADES - 1] = target_far;
