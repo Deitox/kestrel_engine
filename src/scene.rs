@@ -2127,6 +2127,8 @@ mod tests {
                 atlas_source: Some("assets/atlases/fx_atlas.json".to_string()),
                 trail: None,
             }),
+            force_field: None,
+            attractor: None,
             orbit: None,
             spin: None,
             parent_id: None,

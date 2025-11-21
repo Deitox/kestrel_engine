@@ -494,13 +494,20 @@ fn isolated_plugin_emits_script_message_via_rpc() {
             "requires_features": [],
             "provides_features": [],
             "capabilities": ["renderer","ecs","assets","input","events","time"],
-            "trust": "isolated"
+            "trust": "isolated",
+            "asset_filters": {
+                "atlases": ["*"],
+                "blobs": ["*"]
+            }
         }]
     });
     fs::write(&manifest_path, serde_json::to_string_pretty(&manifest_json).unwrap())
         .expect("manifest written");
-    let manifest =
+    let mut manifest =
         PluginManager::load_manifest(&manifest_path).expect("manifest read").expect("manifest present");
+    let entry = manifest.entry_mut("example_dynamic").expect("manifest entry");
+    entry.asset_filters.blobs = vec!["*".to_string()];
+    entry.asset_filters.atlases = vec!["*".to_string()];
 
     let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
     let mut ecs = EcsWorld::new();
@@ -633,13 +640,20 @@ fn isolated_asset_readback_roundtrip() {
             "requires_features": [],
             "provides_features": [],
             "capabilities": ["renderer","ecs","assets","input","events","time"],
-            "trust": "isolated"
+            "trust": "isolated",
+            "asset_filters": {
+                "atlases": ["*"],
+                "blobs": ["*"]
+            }
         }]
     });
     fs::write(&manifest_path, serde_json::to_string_pretty(&manifest_json).unwrap())
         .expect("manifest written");
-    let manifest =
+    let mut manifest =
         PluginManager::load_manifest(&manifest_path).expect("manifest read").expect("manifest present");
+    let entry = manifest.entry_mut("example_dynamic").expect("manifest entry");
+    entry.asset_filters.blobs = vec!["*".to_string()];
+    entry.asset_filters.atlases = vec!["*".to_string()];
 
     let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
     let mut ecs = EcsWorld::new();
@@ -668,10 +682,11 @@ fn isolated_asset_readback_roundtrip() {
     let loaded = manager.load_dynamic_from_manifest(&manifest, &mut ctx).expect("manifest loads");
     assert_eq!(loaded, vec!["example_dynamic"]);
 
-    let blob_path = std::env::current_dir().expect("cwd").join("assets").join("images").join("atlas.png");
+    let blob_rel = PathBuf::from("assets").join("images").join("atlas.png");
+    let blob_path = std::env::current_dir().expect("cwd").join(&blob_rel);
     assert!(blob_path.exists(), "atlas.png must exist for blob readback");
     let payload = RpcAssetReadbackPayload::BlobRange {
-        blob_id: blob_path.to_string_lossy().to_string(),
+        blob_id: blob_rel.to_string_lossy().to_string(),
         offset: 0,
         length: 64,
     };
@@ -703,8 +718,11 @@ fn isolated_asset_readback_budget_is_enforced() {
     });
     fs::write(&manifest_path, serde_json::to_string_pretty(&manifest_json).unwrap())
         .expect("manifest written");
-    let manifest =
+    let mut manifest =
         PluginManager::load_manifest(&manifest_path).expect("manifest read").expect("manifest present");
+    let entry = manifest.entry_mut("example_dynamic").expect("manifest entry");
+    entry.asset_filters.blobs = vec!["*".to_string()];
+    entry.asset_filters.atlases = vec!["*".to_string()];
 
     let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
     let mut ecs = EcsWorld::new();
@@ -732,9 +750,10 @@ fn isolated_asset_readback_budget_is_enforced() {
 
     manager.load_dynamic_from_manifest(&manifest, &mut ctx).expect("manifest loads");
 
-    let blob_path = std::env::current_dir().expect("cwd").join("assets").join("images").join("atlas.png");
+    let blob_rel = PathBuf::from("assets").join("images").join("atlas.png");
+    let blob_path = std::env::current_dir().expect("cwd").join(&blob_rel);
     assert!(blob_path.exists(), "atlas.png must exist for blob readbacks");
-    let blob_id = blob_path.to_string_lossy().to_string();
+    let blob_id = blob_rel.to_string_lossy().to_string();
 
     for i in 0..8 {
         let payload =
@@ -768,7 +787,11 @@ fn isolated_plugin_telemetry_pipeline() {
             "requires_features": [],
             "provides_features": [],
             "capabilities": ["ecs","assets","events","time"],
-            "trust": "isolated"
+            "trust": "isolated",
+            "asset_filters": {
+                "atlases": ["*"],
+                "blobs": ["*"]
+            }
         }]
     });
     fs::write(&manifest_path, serde_json::to_string_pretty(&manifest_json).unwrap())
@@ -817,10 +840,11 @@ fn isolated_plugin_telemetry_pipeline() {
         "capability events recorded for builtin plugin"
     );
 
-    let blob_path = std::env::current_dir().expect("cwd").join("assets").join("images").join("atlas.png");
+    let blob_rel = PathBuf::from("assets").join("images").join("atlas.png");
+    let blob_path = std::env::current_dir().expect("cwd").join(&blob_rel);
     assert!(blob_path.exists(), "atlas.png must exist for blob readbacks");
     let payload = RpcAssetReadbackPayload::BlobRange {
-        blob_id: blob_path.to_string_lossy().to_string(),
+        blob_id: blob_rel.to_string_lossy().to_string(),
         offset: 0,
         length: 128,
     };

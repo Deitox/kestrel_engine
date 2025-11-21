@@ -1859,6 +1859,8 @@ impl IsolatedPluginProxy {
         for capability in &entry.capabilities {
             command.arg("--cap").arg(capability.label());
         }
+        let cwd = env::current_dir().context("resolve working directory for isolated host")?;
+        command.current_dir(&cwd);
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1881,7 +1883,7 @@ impl IsolatedPluginProxy {
             stdout: Arc::new(Mutex::new(BufReader::new(stdout))),
             terminated: false,
             next_request_id: 1,
-            asset_budget: AssetReadbackBudget::new(8, 4 * 1024 * 1024, Duration::from_millis(16)),
+            asset_budget: AssetReadbackBudget::new(8, 4 * 1024 * 1024, Duration::from_millis(250)),
             last_request_desc: None,
             pending_watchdog: None,
             pending_capability_violations: Vec::new(),

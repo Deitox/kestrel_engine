@@ -498,14 +498,15 @@ impl EngineState {
             bail!("blob path cannot traverse upwards");
         }
         let root = env::current_dir().context("resolve host working directory")?;
+        let root_canon = root.canonicalize().unwrap_or_else(|_| root.clone());
         let candidate = root.join(path);
         if let Ok(canon) = candidate.canonicalize() {
-            if !canon.starts_with(&root) {
+            if !canon.starts_with(&root_canon) {
                 bail!("blob path escapes sandbox");
             }
             return Ok(canon);
         }
-        if !candidate.starts_with(&root) {
+        if !candidate.starts_with(&root) && !candidate.starts_with(&root_canon) {
             bail!("blob path escapes sandbox");
         }
         Ok(candidate)

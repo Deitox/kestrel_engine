@@ -390,6 +390,7 @@ mod tests {
     fn response_payload_serializes() {
         let response = PluginHostResponse::Ok {
             events: Vec::new(),
+            capability_violations: Vec::new(),
             data: Some(RpcResponseData::EntityInfo(Some(RpcEntityInfo {
                 entity: RpcEntity { bits: 42 },
                 scene_id: "demo".to_string(),
@@ -441,6 +442,7 @@ mod tests {
     fn asset_readback_response_round_trip() {
         let response = PluginHostResponse::Ok {
             events: Vec::new(),
+            capability_violations: Vec::new(),
             data: Some(RpcResponseData::AssetReadback(RpcAssetReadbackResponse {
                 request_id: 88,
                 content_type: "application/json".to_string(),

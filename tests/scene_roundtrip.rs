@@ -556,6 +556,8 @@ fn scene_clone_subtree_includes_descendants() {
             mass: None,
             collider: None,
             particle_emitter: None,
+            force_field: None,
+            attractor: None,
             orbit: None,
             spin: None,
             parent_id,

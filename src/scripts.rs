@@ -163,19 +163,31 @@ impl ScriptWorld {
     }
 
     fn set_emitter_rate(&mut self, rate: f32) {
+        if !self.ensure_finite("set_emitter_rate", &[rate]) {
+            return;
+        }
         self.state.borrow_mut().commands.push(ScriptCommand::SetEmitterRate { rate: rate.max(0.0) });
     }
 
     fn set_emitter_spread(&mut self, spread: f32) {
+        if !self.ensure_finite("set_emitter_spread", &[spread]) {
+            return;
+        }
         let clamped = spread.clamp(0.0, std::f32::consts::PI);
         self.state.borrow_mut().commands.push(ScriptCommand::SetEmitterSpread { spread: clamped });
     }
 
     fn set_emitter_speed(&mut self, speed: f32) {
+        if !self.ensure_finite("set_emitter_speed", &[speed]) {
+            return;
+        }
         self.state.borrow_mut().commands.push(ScriptCommand::SetEmitterSpeed { speed: speed.max(0.0) });
     }
 
     fn set_emitter_lifetime(&mut self, lifetime: f32) {
+        if !self.ensure_finite("set_emitter_lifetime", &[lifetime]) {
+            return;
+        }
         self.state
             .borrow_mut()
             .commands
@@ -183,6 +195,9 @@ impl ScriptWorld {
     }
 
     fn set_emitter_start_color(&mut self, r: f32, g: f32, b: f32, a: f32) {
+        if !self.ensure_finite("set_emitter_start_color", &[r, g, b, a]) {
+            return;
+        }
         self.state
             .borrow_mut()
             .commands
@@ -190,6 +205,9 @@ impl ScriptWorld {
     }
 
     fn set_emitter_end_color(&mut self, r: f32, g: f32, b: f32, a: f32) {
+        if !self.ensure_finite("set_emitter_end_color", &[r, g, b, a]) {
+            return;
+        }
         self.state
             .borrow_mut()
             .commands
@@ -197,10 +215,16 @@ impl ScriptWorld {
     }
 
     fn set_emitter_start_size(&mut self, size: f32) {
+        if !self.ensure_finite("set_emitter_start_size", &[size]) {
+            return;
+        }
         self.state.borrow_mut().commands.push(ScriptCommand::SetEmitterStartSize { size: size.max(0.01) });
     }
 
     fn set_emitter_end_size(&mut self, size: f32) {
+        if !self.ensure_finite("set_emitter_end_size", &[size]) {
+            return;
+        }
         self.state.borrow_mut().commands.push(ScriptCommand::SetEmitterEndSize { size: size.max(0.01) });
     }
 
