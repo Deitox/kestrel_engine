@@ -182,7 +182,7 @@ pub fn sys_build_spatial_hash(
     let use_quadtree = settings.fallback_enabled && average >= settings.density_threshold.max(1.0);
     let mut node_count = 0usize;
     let mode = if use_quadtree {
-        quadtree.rebuild(&bounds, &collider_data);
+        quadtree.rebuild(&bounds, collider_data);
         node_count = quadtree.node_count();
         SpatialMode::Quadtree
     } else {
@@ -205,8 +205,8 @@ pub fn sys_collide_spatial(
     grid: Res<SpatialHash>,
     quadtree: Res<SpatialQuadtree>,
     metrics: Res<SpatialMetrics>,
-    mut movers: Query<(Entity, &Transform, &Aabb, &mut Velocity), Without<RapierBody>>,
-    positions: Query<(&Transform, &Aabb), Without<RapierBody>>,
+    mut movers: Query<(Entity, &Transform, &Aabb, &mut Velocity, Option<&Mass>), Without<RapierBody>>,
+    positions: Query<(&Transform, &Aabb, Option<&Mass>), Without<RapierBody>>,
     mut events: ResMut<EventBus>,
     mut contacts: ResMut<ParticleContacts>,
 ) {
@@ -217,9 +217,10 @@ pub fn sys_collide_spatial(
     let mut checked: SmallVec<[Entity; 16]> = SmallVec::new();
     let mut candidates: SmallVec<[Entity; 16]> = SmallVec::new();
     let neighbors = [(-1, -1), (0, -1), (1, -1), (-1, 0), (0, 0), (1, 0), (-1, 1), (0, 1), (1, 1)];
-    for (e, t, a, mut v) in &mut movers {
+    for (e, t, a, mut v, mass) in &mut movers {
         let mut impulse = Vec2::ZERO;
         checked.clear();
+        let self_mass = mass.map(|m| m.0).unwrap_or(1.0);
         match metrics.mode {
             SpatialMode::Grid => {
                 let key = grid.key(t.translation);
@@ -232,6 +233,7 @@ pub fn sys_collide_spatial(
                             list.iter().copied(),
                             &positions,
                             &mut checked,
+                            self_mass,
                             &mut impulse,
                             current_pairs,
                             previous_pairs,
@@ -252,6 +254,7 @@ pub fn sys_collide_spatial(
                     candidates.iter().copied(),
                     &positions,
                     &mut checked,
+                    self_mass,
                     &mut impulse,
                     current_pairs,
                     previous_pairs,
@@ -270,13 +273,15 @@ fn overlap(a_pos: Vec2, a_half: Vec2, b_pos: Vec2, b_half: Vec2) -> bool {
     (a_pos.x - b_pos.x).abs() < (a_half.x + b_half.x) && (a_pos.y - b_pos.y).abs() < (a_half.y + b_half.y)
 }
 
-fn process_neighbors<'a, I>(
+#[allow(clippy::too_many_arguments)]
+fn process_neighbors<I>(
     entity: Entity,
     translation: Vec2,
     half: Vec2,
     neighbors: I,
-    positions: &Query<(&Transform, &Aabb), Without<RapierBody>>,
+    positions: &Query<(&Transform, &Aabb, Option<&Mass>), Without<RapierBody>>,
     checked: &mut SmallVec<[Entity; 16]>,
+    self_mass: f32,
     impulse: &mut Vec2,
     contacts: &mut HashSet<(Entity, Entity)>,
     previous_pairs: &mut HashSet<(Entity, Entity)>,
@@ -285,15 +290,37 @@ fn process_neighbors<'a, I>(
     I: IntoIterator<Item = Entity>,
 {
     for other in neighbors {
-        if other == entity || checked.iter().any(|&c| c == other) {
+        if other == entity || checked.contains(&other) {
             continue;
         }
         checked.push(other);
-        if let Ok((ot, oa)) = positions.get(other) {
+        if let Ok((ot, oa, other_mass)) = positions.get(other) {
             if overlap(translation, half, ot.translation, oa.half) {
                 let delta = translation - ot.translation;
-                let dir = delta.signum();
-                *impulse += dir * 0.04;
+                let overlap_x = half.x + oa.half.x - delta.x.abs();
+                let overlap_y = half.y + oa.half.y - delta.y.abs();
+                if overlap_x > 0.0 && overlap_y > 0.0 {
+                    let (axis_sign, penetration) = if overlap_x < overlap_y {
+                        let sign = if delta.x >= 0.0 { 1.0 } else { -1.0 };
+                        (Vec2::new(sign, 0.0), overlap_x)
+                    } else {
+                        let sign = if delta.y >= 0.0 { 1.0 } else { -1.0 };
+                        (Vec2::new(0.0, sign), overlap_y)
+                    };
+                    let other_mass_val = other_mass.map(|m| m.0).unwrap_or(1.0);
+                    let self_eff = if self_mass > 0.0 { self_mass } else { f32::INFINITY };
+                    let other_eff = if other_mass_val > 0.0 { other_mass_val } else { f32::INFINITY };
+                    let mass_share = if self_eff.is_infinite() && other_eff.is_infinite() {
+                        0.5
+                    } else if self_eff.is_infinite() {
+                        0.0
+                    } else if other_eff.is_infinite() {
+                        1.0
+                    } else {
+                        other_eff / (self_eff + other_eff + f32::EPSILON)
+                    };
+                    *impulse += axis_sign * penetration * mass_share;
+                }
                 let pair = if entity.index() <= other.index() { (entity, other) } else { (other, entity) };
                 if contacts.insert(pair) && !previous_pairs.remove(&pair) {
                     events.push(GameEvent::collision_started(pair.0, pair.1));

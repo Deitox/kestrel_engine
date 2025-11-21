@@ -388,6 +388,7 @@ impl Mesh {
         Ok(MeshImport { mesh, materials, textures })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn traverse_node_primitives(
         node: &gltf::Node,
         parent_transform: Mat4,
@@ -438,6 +439,7 @@ impl Mesh {
         Ok(processed)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn append_mesh_primitives(
         mesh: &gltf::Mesh,
         node_name: Option<&str>,

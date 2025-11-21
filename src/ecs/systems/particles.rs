@@ -79,6 +79,7 @@ pub fn sys_update_emitters(
     particle_state.active_particles = active_particles.max(0) as u32;
 }
 
+#[allow(clippy::type_complexity)]
 pub fn sys_update_particles(
     mut profiler: ResMut<SystemProfiler>,
     mut commands: Commands,

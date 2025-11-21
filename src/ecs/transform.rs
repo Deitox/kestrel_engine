@@ -73,6 +73,7 @@ impl VisitTracker {
     }
 }
 
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn sys_propagate_scene_transforms(
     mut profiler: ResMut<SystemProfiler>,
     mut nodes: Query<(

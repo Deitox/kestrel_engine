@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_arguments, clippy::collapsible_if)]
 use crate::assets::{
     skeletal::{SkeletalClip, SkeletonAsset},
     AnimationClip, ClipInterpolation, ClipKeyframe, ClipScalarTrack, ClipVec2Track, ClipVec4Track,
@@ -2645,7 +2646,7 @@ pub enum SpriteAnimationLoopMode {
 }
 
 impl SpriteAnimationLoopMode {
-    pub fn from_str(value: &str) -> Self {
+    pub fn parse(value: &str) -> Self {
         match value.to_ascii_lowercase().as_str() {
             "once_hold" | "oncehold" => Self::OnceHold,
             "once_stop" | "oncestop" | "once" => Self::OnceStop,
@@ -2665,6 +2666,14 @@ impl SpriteAnimationLoopMode {
             Self::OnceStop => "once_stop",
             Self::PingPong => "pingpong",
         }
+    }
+}
+
+impl std::str::FromStr for SpriteAnimationLoopMode {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self::parse(s))
     }
 }
 
@@ -2783,15 +2792,10 @@ mod tests {
 pub struct MeshRef {
     pub key: String,
 }
-#[derive(Component, Clone)]
+#[derive(Component, Clone, Default)]
 pub struct MeshSurface {
     pub material: Option<String>,
     pub lighting: MeshLighting,
-}
-impl Default for MeshSurface {
-    fn default() -> Self {
-        Self { material: None, lighting: MeshLighting::default() }
-    }
 }
 #[derive(Clone)]
 pub struct MeshLighting {
@@ -3091,30 +3095,20 @@ pub struct Mass(pub f32);
 #[derive(Component, Clone, Copy, Default)]
 pub struct Force(pub Vec2);
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ForceFalloff {
     None,
+    #[default]
     Linear,
 }
 
-impl Default for ForceFalloff {
-    fn default() -> Self {
-        ForceFalloff::Linear
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ForceFieldKind {
+    #[default]
     Radial,
     Directional,
-}
-
-impl Default for ForceFieldKind {
-    fn default() -> Self {
-        ForceFieldKind::Radial
-    }
 }
 
 #[derive(Component, Clone, Copy, Debug, PartialEq)]

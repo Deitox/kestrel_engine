@@ -515,7 +515,7 @@ impl InputEvent {
                     MouseScrollDelta::LineDelta(_, y) => *y,
                     MouseScrollDelta::PixelDelta(p) => p.y as f32,
                 };
-                InputEvent::Wheel { delta: d as f32 }
+                InputEvent::Wheel { delta: d }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 InputEvent::CursorPos { x: position.x as f32, y: position.y as f32 }

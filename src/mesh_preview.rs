@@ -19,17 +19,12 @@ pub(crate) const MESH_CAMERA_FOV_RADIANS: f32 = 60.0_f32.to_radians();
 pub(crate) const MESH_CAMERA_NEAR: f32 = 0.1;
 pub(crate) const MESH_CAMERA_FAR: f32 = 100.0;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum MeshControlMode {
+    #[default]
     Disabled,
     Orbit,
     Freefly,
-}
-
-impl Default for MeshControlMode {
-    fn default() -> Self {
-        MeshControlMode::Disabled
-    }
 }
 
 impl MeshControlMode {
@@ -122,7 +117,7 @@ impl FreeflyController {
         self.orientation() * Vec3::Y
     }
 
-    pub(crate) fn to_camera(&self) -> Camera3D {
+    pub(crate) fn as_camera(&self) -> Camera3D {
         let forward = self.forward();
         let mut camera = Camera3D::new(
             self.position,
@@ -294,7 +289,7 @@ impl MeshPreviewPlugin {
                 self.mesh_freefly = FreeflyController::from_camera(&self.mesh_camera);
             }
             MeshControlMode::Freefly => {
-                self.mesh_camera = self.mesh_freefly.to_camera();
+                self.mesh_camera = self.mesh_freefly.as_camera();
             }
         }
         self.mesh_status = Some(mode.status_message().to_string());
@@ -338,7 +333,7 @@ impl MeshPreviewPlugin {
             }
             MeshControlMode::Freefly => {
                 self.mesh_freefly = FreeflyController::from_camera(&self.mesh_camera);
-                self.mesh_camera = self.mesh_freefly.to_camera();
+                self.mesh_camera = self.mesh_freefly.as_camera();
             }
         }
         self.mesh_control_mode = mode;
@@ -394,7 +389,7 @@ impl MeshPreviewPlugin {
         self.mesh_freefly_rot_velocity = Vec3::ZERO;
         self.mesh_freefly.roll = 0.0;
         if self.mesh_control_mode == MeshControlMode::Freefly {
-            self.mesh_camera = self.mesh_freefly.to_camera();
+            self.mesh_camera = self.mesh_freefly.as_camera();
         }
         if self.mesh_frustum_lock {
             self.mesh_frustum_focus = self.compute_focus_point(ctx)?;
@@ -671,7 +666,7 @@ impl MeshPreviewPlugin {
                     ctx.input_mut()?.wheel = 0.0;
                 }
 
-                self.mesh_camera = self.mesh_freefly.to_camera();
+                self.mesh_camera = self.mesh_freefly.as_camera();
 
                 if self.mesh_frustum_lock {
                     let direction = (self.mesh_frustum_focus - self.mesh_camera.position).normalize_or_zero();

@@ -439,19 +439,27 @@ impl PluginHandle {
         self.data.is_null() || self.vtable.is_null()
     }
 
+    /// # Safety
+    /// Caller must ensure the boxed plugin was allocated by this process and remains valid for the handle lifetime.
     pub unsafe fn from_box(plugin: Box<dyn EnginePlugin>) -> Self {
         Self::from_raw(Box::into_raw(plugin))
     }
 
+    /// # Safety
+    /// `raw` must be a valid, non-null pointer created from `Box<dyn EnginePlugin>` with matching vtable layout.
     pub unsafe fn from_raw(raw: *mut dyn EnginePlugin) -> Self {
         let erased: (*mut (), *mut ()) = mem::transmute(raw);
         Self { data: erased.0, vtable: erased.1 }
     }
 
+    /// # Safety
+    /// Returned pointer must eventually be converted back into a `Box<dyn EnginePlugin>` to avoid leaks.
     pub unsafe fn into_raw(self) -> *mut dyn EnginePlugin {
         mem::transmute((self.data, self.vtable))
     }
 
+    /// # Safety
+    /// Handle must contain a valid plugin pointer and vtable pair; using an invalid handle is undefined behavior.
     pub unsafe fn into_box(self) -> Box<dyn EnginePlugin> {
         Box::from_raw(self.into_raw())
     }
@@ -1625,6 +1633,7 @@ impl PluginManager {
         self.clear_dynamic_statuses();
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn insert_plugin(
         &mut self,
         mut plugin: Box<dyn EnginePlugin>,
@@ -1724,7 +1733,6 @@ impl PluginManager {
         };
 
         let export = unsafe { entry_fn() };
-        drop(entry_fn);
 
         if export.api_version != ENGINE_PLUGIN_API_VERSION {
             bail!(

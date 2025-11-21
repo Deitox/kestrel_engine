@@ -583,6 +583,7 @@ impl ShadowPass {
     }
 }
 
+#[allow(clippy::needless_range_loop)]
 fn compute_cascade_splits(camera: &Camera3D, lighting: &SceneLightingState) -> [f32; MAX_SHADOW_CASCADES] {
     let safe_near = camera.near.max(0.01);
     let mut target_far = (safe_near + lighting.shadow_distance).min(camera.far);

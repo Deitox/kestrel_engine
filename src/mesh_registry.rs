@@ -69,15 +69,32 @@ impl MeshRegistry {
                 let mesh = import.mesh;
                 let source = PathBuf::from("assets/models/demo_triangle.gltf");
                 let fingerprint = registry.mesh_source_fingerprint(&source);
-                let _ = registry.insert_entry(
-                    "demo_triangle",
-                    mesh,
-                    Some(source),
-                    fingerprint,
-                    material_keys,
-                    true,
-                );
-                registry.default = "demo_triangle".to_string();
+                let mut retained: Vec<String> = Vec::new();
+                let default_result: Result<()> = (|| {
+                    for mat_key in &material_keys {
+                        materials.retain(mat_key)?;
+                        retained.push(mat_key.clone());
+                    }
+                    registry.insert_entry(
+                        "demo_triangle",
+                        mesh,
+                        Some(source),
+                        fingerprint,
+                        material_keys,
+                        true,
+                    )
+                })();
+                match default_result {
+                    Ok(()) => {
+                        registry.default = "demo_triangle".to_string();
+                    }
+                    Err(err) => {
+                        eprintln!("[mesh] failed to load default demo_triangle.gltf: {err:?}");
+                        for mat_key in retained {
+                            materials.release(&mat_key);
+                        }
+                    }
+                }
             }
             Err(err) => {
                 eprintln!("[mesh] demo_triangle.gltf unavailable: {err:?}");
@@ -329,10 +346,13 @@ impl MeshRegistry {
             metadata.modified().ok().and_then(|ts| ts.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_nanos());
 
         if let Some(entry) = self.fingerprint_cache.get(path) {
-            if entry.len == len && entry.modified == modified {
-                if matches!(self.hash_algorithm, MeshHashAlgorithm::Metadata) {
-                    return Some(entry.hash);
+            if entry.len == len && entry.modified == modified && matches!(self.hash_algorithm, MeshHashAlgorithm::Metadata)
+            {
+                if let Some(pos) = self.fingerprint_cache_order.iter().position(|p| p == path) {
+                    self.fingerprint_cache_order.remove(pos);
+                    self.fingerprint_cache_order.push_back(path.to_path_buf());
                 }
+                return Some(entry.hash);
             }
         }
 
@@ -341,13 +361,14 @@ impl MeshRegistry {
             MeshHashAlgorithm::Metadata => metadata_fingerprint(len, modified),
         };
         let path_buf = path.to_path_buf();
+        if let Some(pos) = self.fingerprint_cache_order.iter().position(|p| p == path) {
+            self.fingerprint_cache_order.remove(pos);
+        }
         self.fingerprint_cache.insert(path_buf.clone(), CachedFingerprint { len, modified, hash });
         self.fingerprint_cache_order.push_back(path_buf.clone());
         while self.fingerprint_cache_order.len() > self.fingerprint_cache_limit {
             if let Some(evicted) = self.fingerprint_cache_order.pop_front() {
-                if evicted != path_buf {
-                    self.fingerprint_cache.remove(&evicted);
-                }
+                self.fingerprint_cache.remove(&evicted);
             }
         }
         Some(hash)
@@ -454,11 +475,12 @@ mod tests {
         registry.release_mesh("cube", &mut materials);
         assert_eq!(registry.mesh_ref_count("cube"), Some(0));
 
+        let gltf = write_temp_gltf("MatCount");
         registry
-            .load_from_path("temp_triangle", "assets/models/demo_triangle.gltf", &mut materials)
+            .load_from_path("temp_triangle", gltf.path(), &mut materials)
             .expect("load temp mesh");
         registry
-            .retain_mesh("temp_triangle", Some("assets/models/demo_triangle.gltf"), &mut materials)
+            .retain_mesh("temp_triangle", gltf.path().to_str(), &mut materials)
             .expect("retain temp mesh");
         assert_eq!(registry.mesh_ref_count("temp_triangle"), Some(1));
         registry.release_mesh("temp_triangle", &mut materials);
@@ -496,9 +518,8 @@ mod tests {
     fn release_without_retain_cleans_mesh_and_materials() {
         let mut materials = MaterialRegistry::new();
         let mut registry = MeshRegistry::new(&mut materials);
-        registry
-            .load_from_path("temp_triangle", "assets/models/demo_triangle.gltf", &mut materials)
-            .expect("load temp mesh");
+        let gltf = write_temp_gltf("MatRelease");
+        registry.load_from_path("temp_triangle", gltf.path(), &mut materials).expect("load temp mesh");
         let subset_materials: Vec<String> = registry
             .mesh_subsets("temp_triangle")
             .unwrap()
@@ -524,9 +545,8 @@ mod tests {
     fn releasing_mesh_cleans_imported_materials() {
         let mut materials = MaterialRegistry::new();
         let mut registry = MeshRegistry::new(&mut materials);
-        registry
-            .load_from_path("temp_triangle", "assets/models/demo_triangle.gltf", &mut materials)
-            .expect("load temp mesh");
+        let gltf = write_temp_gltf("MatReleaseRetained");
+        registry.load_from_path("temp_triangle", gltf.path(), &mut materials).expect("load temp mesh");
         let subset_materials: Vec<String> = registry
             .mesh_subsets("temp_triangle")
             .unwrap()
@@ -538,7 +558,7 @@ mod tests {
             assert!(materials.has(key), "material '{key}' should exist after import");
         }
         registry
-            .retain_mesh("temp_triangle", Some("assets/models/demo_triangle.gltf"), &mut materials)
+            .retain_mesh("temp_triangle", gltf.path().to_str(), &mut materials)
             .expect("retain temp mesh");
         registry.release_mesh("temp_triangle", &mut materials);
         for key in subset_materials {

@@ -767,14 +767,14 @@ enum SpriteAnimStepKind {
 }
 
 impl SpriteAnimStepKind {
-    fn as_u8(self) -> u8 {
+    const fn as_u8(self) -> u8 {
         match self {
             SpriteAnimStepKind::Variable => 0,
             SpriteAnimStepKind::Fixed => 1,
         }
     }
 
-    fn from_u8(value: u8) -> Self {
+    const fn from_u8(value: u8) -> Self {
         if value == 1 {
             SpriteAnimStepKind::Fixed
         } else {
@@ -881,8 +881,8 @@ impl Drop for SpriteAnimPerfFrame<'_> {
 }
 
 thread_local! {
-    static SPRITE_PERF_SAMPLE_PTR: Cell<usize> = Cell::new(0);
-    static SPRITE_PERF_STEP_KIND: Cell<u8> = Cell::new(SpriteAnimStepKind::Variable.as_u8());
+    static SPRITE_PERF_SAMPLE_PTR: Cell<usize> = const { Cell::new(0) };
+    static SPRITE_PERF_STEP_KIND: Cell<u8> = const { Cell::new(SpriteAnimStepKind::Variable.as_u8()) };
 }
 
 fn perf_set_sample(sample: Option<*mut SpriteAnimPerfSample>) {
@@ -1335,6 +1335,7 @@ pub fn sys_init_sprite_frame_state(
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub fn sys_flag_fast_sprite_animators(
     mut commands: Commands,
     #[cfg(feature = "sprite_anim_soa")] mut runtime: ResMut<SpriteAnimatorSoa>,
@@ -1350,10 +1351,8 @@ pub fn sys_flag_fast_sprite_animators(
             if marker.is_none() {
                 commands.entity(entity).insert(FastSpriteAnimator);
             }
-        } else {
-            if marker.is_some() {
-                commands.entity(entity).remove::<FastSpriteAnimator>();
-            }
+        } else if marker.is_some() {
+            commands.entity(entity).remove::<FastSpriteAnimator>();
             #[cfg(feature = "sprite_anim_soa")]
             {
                 runtime.remove(entity);
@@ -2531,6 +2530,7 @@ mod tests {
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub fn sys_drive_transform_clips(
     mut profiler: ResMut<SystemProfiler>,
     animation_plan: Res<AnimationPlan>,
@@ -2798,6 +2798,7 @@ fn normalize_time(time: f32, duration: f32, looped: bool) -> f32 {
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn drive_transform_clips(
     delta: f32,
     has_group_scales: bool,
@@ -3105,38 +3106,19 @@ fn apply_clip_sample(
     let needs_scale = transform_mask.apply_scale && scale_changed;
     if (needs_translation || needs_rotation || needs_scale) && transform.is_some() {
         if let Some(mut transform) = transform {
-            if transform_mask.apply_translation && transform_mask.apply_rotation && transform_mask.apply_scale
-            {
-                if needs_translation {
-                    if let Some(value) = sample.translation {
-                        transform.translation = value;
-                    }
+            if needs_translation {
+                if let Some(value) = sample.translation {
+                    transform.translation = value;
                 }
-                if needs_rotation {
-                    if let Some(value) = sample.rotation {
-                        transform.rotation = value;
-                    }
+            }
+            if needs_rotation {
+                if let Some(value) = sample.rotation {
+                    transform.rotation = value;
                 }
-                if needs_scale {
-                    if let Some(value) = sample.scale {
-                        transform.scale = value;
-                    }
-                }
-            } else {
-                if needs_translation {
-                    if let Some(value) = sample.translation {
-                        transform.translation = value;
-                    }
-                }
-                if needs_rotation {
-                    if let Some(value) = sample.rotation {
-                        transform.rotation = value;
-                    }
-                }
-                if needs_scale {
-                    if let Some(value) = sample.scale {
-                        transform.scale = value;
-                    }
+            }
+            if needs_scale {
+                if let Some(value) = sample.scale {
+                    transform.scale = value;
                 }
             }
         }

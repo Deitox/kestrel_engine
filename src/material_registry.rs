@@ -496,7 +496,7 @@ impl MaterialRegistry {
 
     fn padded_bytes_per_row(width: u32) -> u32 {
         let unpadded = width.saturating_mul(4);
-        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u32;
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let remainder = unpadded % align;
         if remainder == 0 { unpadded } else { unpadded + align - remainder }
     }

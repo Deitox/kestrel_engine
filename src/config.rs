@@ -54,17 +54,12 @@ pub struct EditorConfig {
     pub sprite_guardrail_mode: SpriteGuardrailMode,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum MeshHashAlgorithm {
+    #[default]
     Blake3,
     Metadata,
-}
-
-impl Default for MeshHashAlgorithm {
-    fn default() -> Self {
-        MeshHashAlgorithm::Blake3
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

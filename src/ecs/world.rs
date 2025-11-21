@@ -60,6 +60,12 @@ pub struct EcsWorld {
     schedule_fixed: Schedule,
 }
 
+impl Default for EcsWorld {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EcsWorld {
     pub fn new() -> Self {
         let mut world = World::new();
@@ -319,7 +325,7 @@ impl EcsWorld {
             audio: None,
         });
 
-        let emitter = self.spawn_particle_emitter(
+        self.spawn_particle_emitter(
             Vec2::new(0.0, 0.0),
             35.0,
             std::f32::consts::PI / 3.0,
@@ -329,8 +335,7 @@ impl EcsWorld {
             Vec4::new(1.0, 0.2, 0.2, 0.0),
             0.18,
             0.05,
-        );
-        emitter
+        )
     }
 
     pub fn spawn_burst(&mut self, _assets: &AssetManager, count: usize) {
@@ -374,6 +379,7 @@ impl EcsWorld {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn_particle_emitter(
         &mut self,
         position: Vec2,
@@ -849,8 +855,7 @@ impl EcsWorld {
         let sample = {
             if let Some(mut instance) = self.world.get_mut::<ClipInstance>(entity) {
                 instance.replace_clip(Arc::clone(&clip_name), Arc::clone(&clip_arc));
-                let sample = instance.sample_cached();
-                sample
+                instance.sample_cached()
             } else {
                 let mut entity_mut = self.world.entity_mut(entity);
                 let mut instance = ClipInstance::new(Arc::clone(&clip_name), Arc::clone(&clip_arc));
@@ -932,7 +937,6 @@ impl EcsWorld {
         if let Some(mut instance) = self.world.get_mut::<ClipInstance>(entity) {
             instance.set_time(time);
             let sample = instance.sample_cached();
-            drop(instance);
             self.apply_clip_sample_immediate(entity, sample);
             self.sync_clip_instance_last_values(entity, sample);
             true
@@ -945,7 +949,6 @@ impl EcsWorld {
         if let Some(mut instance) = self.world.get_mut::<ClipInstance>(entity) {
             instance.reset();
             let sample = instance.sample_cached();
-            drop(instance);
             self.apply_clip_sample_immediate(entity, sample);
             self.sync_clip_instance_last_values(entity, sample);
             true
@@ -1139,10 +1142,8 @@ impl EcsWorld {
         if self.world.get_entity(entity).is_err() {
             return false;
         }
-        if mask.apply_tint {
-            if self.world.get::<Tint>(entity).is_none() {
-                self.world.entity_mut(entity).insert(Tint(Vec4::ONE));
-            }
+        if mask.apply_tint && self.world.get::<Tint>(entity).is_none() {
+            self.world.entity_mut(entity).insert(Tint(Vec4::ONE));
         }
         self.world.entity_mut(entity).insert(mask);
         true
@@ -1280,7 +1281,6 @@ impl EcsWorld {
             sprite.region = Arc::clone(name);
             sprite.region_id = info.id;
             sprite.uv = info.uv;
-            drop(sprite);
             self.world.entity_mut(entity).remove::<SpriteAnimation>();
             true
         } else {
@@ -1372,7 +1372,6 @@ impl EcsWorld {
             return false;
         };
         animation.set_start_offset(offset);
-        drop(animation);
         self.reinitialize_sprite_animation_phase(entity);
         true
     }
@@ -1382,7 +1381,6 @@ impl EcsWorld {
             return false;
         };
         animation.set_random_start(random);
-        drop(animation);
         self.reinitialize_sprite_animation_phase(entity);
         true
     }
@@ -1488,7 +1486,6 @@ impl EcsWorld {
         } else {
             None
         };
-        drop(animation);
         self.apply_sprite_snapshot(entity, snapshot);
         true
     }
@@ -1656,7 +1653,6 @@ impl EcsWorld {
             animation.refresh_current_duration();
             animation.refresh_pending_start_events();
             let snapshot = Self::current_frame_snapshot(&animation);
-            drop(animation);
             self.apply_sprite_snapshot(entity, snapshot);
             true
         } else {
@@ -1672,16 +1668,15 @@ impl EcsWorld {
             let atlas_key_str = atlas_key.as_ref();
             let uv_rect = if sprite.is_initialized() {
                 sprite.uv
+            } else if let Some((region, info)) =
+                assets.atlas_region_info(atlas_key_str, sprite.region.as_ref())
+            {
+                sprite.region = region.clone();
+                sprite.region_id = info.id;
+                sprite.uv = info.uv;
+                info.uv
             } else {
-                if let Some((region, info)) = assets.atlas_region_info(atlas_key_str, sprite.region.as_ref())
-                {
-                    sprite.region = region.clone();
-                    sprite.region_id = info.id;
-                    sprite.uv = info.uv;
-                    info.uv
-                } else {
-                    sprite.uv
-                }
+                sprite.uv
             };
             let model_mat = if let Some(wt) = world {
                 wt.0
@@ -1727,7 +1722,6 @@ impl EcsWorld {
         if let Some(mut transform) = self.world.get_mut::<Transform3D>(entity) {
             transform.translation = translation;
             let updated = *transform;
-            drop(transform);
             if let Some(mut transform2d) = self.world.get_mut::<Transform>(entity) {
                 transform2d.translation = Vec2::new(translation.x, translation.y);
             }
@@ -1742,7 +1736,6 @@ impl EcsWorld {
         if let Some(mut transform) = self.world.get_mut::<Transform3D>(entity) {
             transform.scale = scale;
             let updated = *transform;
-            drop(transform);
             if let Some(mut transform2d) = self.world.get_mut::<Transform>(entity) {
                 transform2d.scale = Vec2::new(scale.x, scale.y);
             }
@@ -1757,7 +1750,6 @@ impl EcsWorld {
         if let Some(mut transform) = self.world.get_mut::<Transform3D>(entity) {
             transform.rotation = Quat::from_euler(EulerRot::XYZ, euler.x, euler.y, euler.z);
             let updated = *transform;
-            drop(transform);
             self.update_world_transform3d(entity, updated);
             true
         } else {
@@ -2627,10 +2619,7 @@ impl EcsWorld {
         }
         let dependencies =
             SceneDependencies::from_entities(&entities, assets, &mesh_source, &material_source);
-        let mut scene = Scene::default();
-        scene.entities = entities;
-        scene.dependencies = dependencies;
-        Some(scene)
+        Some(Scene { entities, dependencies, ..Scene::default() })
     }
 
     pub fn instantiate_prefab(&mut self, scene: &Scene, assets: &AssetManager) -> Result<Vec<Entity>> {
@@ -2774,7 +2763,7 @@ impl EcsWorld {
                 end_size: emitter.end_size,
                 atlas: Arc::from(emitter.atlas.as_str()),
                 region: Arc::from(emitter.region.as_str()),
-                source: emitter.atlas_source.as_deref().map(|path| Arc::from(path)),
+                source: emitter.atlas_source.as_deref().map(Arc::from),
                 trail: emitter.trail.as_ref().map(|trail| ParticleTrail::from(trail.clone())),
             });
         }
@@ -2822,7 +2811,6 @@ impl EcsWorld {
         }
 
         let entity_id = entity.id();
-        drop(entity);
 
         if let Some(collider) = collider_handle {
             let mut rapier = self.world.resource_mut::<RapierState>();
@@ -2893,7 +2881,7 @@ impl EcsWorld {
                 self.set_sprite_animation_random_start(entity_id, sprite.random_start);
                 self.set_sprite_animation_group(entity_id, sprite.group.as_deref());
                 if let Some(mode_str) = sprite.loop_mode.as_ref() {
-                    let mode = SpriteAnimationLoopMode::from_str(mode_str);
+                    let mode = SpriteAnimationLoopMode::parse(mode_str);
                     self.set_sprite_animation_loop_mode(entity_id, mode);
                 } else {
                     self.set_sprite_animation_looped(entity_id, sprite.looped);

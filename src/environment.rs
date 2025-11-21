@@ -539,7 +539,7 @@ fn padded_upload_bytes<'a>(
     bytes_per_pixel: u32,
 ) -> (Cow<'a, [u8]>, u32) {
     let row_bytes = width.saturating_mul(bytes_per_pixel);
-    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u32;
+    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let remainder = row_bytes % align;
     let padded_row_bytes = if remainder == 0 { row_bytes } else { row_bytes + (align - remainder) };
     if padded_row_bytes == row_bytes {

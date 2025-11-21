@@ -44,6 +44,10 @@ struct CachedAtlasImage {
     pixels: Arc<[u8]>,
 }
 
+type Vec2SegmentCache = (Arc<[Vec2]>, Arc<[ClipSegment<Vec2>]>, Arc<[f32]>);
+type ScalarSegmentCache = (Arc<[f32]>, Arc<[ClipSegment<f32>]>, Arc<[f32]>);
+type Vec4SegmentCache = (Arc<[Vec4]>, Arc<[ClipSegment<Vec4>]>, Arc<[f32]>);
+
 fn build_vec2_track(raw: ClipVec2TrackFile) -> Result<(ClipVec2Track, f32)> {
     if raw.keyframes.is_empty() {
         return Err(anyhow!("Clip vec2 track must contain at least one keyframe"));
@@ -126,7 +130,7 @@ fn build_vec4_track(raw: ClipVec4TrackFile) -> Result<(ClipVec4Track, f32)> {
 
 fn build_segment_cache_vec2(
     frames: &[ClipKeyframe<Vec2>],
-) -> (Arc<[Vec2]>, Arc<[ClipSegment<Vec2>]>, Arc<[f32]>) {
+) -> Vec2SegmentCache {
     if frames.len() < 2 {
         return (Arc::from([]), Arc::from([]), Arc::from([]));
     }
@@ -152,7 +156,7 @@ fn build_segment_cache_vec2(
 
 fn build_segment_cache_scalar(
     frames: &[ClipKeyframe<f32>],
-) -> (Arc<[f32]>, Arc<[ClipSegment<f32>]>, Arc<[f32]>) {
+) -> ScalarSegmentCache {
     if frames.len() < 2 {
         return (Arc::from([]), Arc::from([]), Arc::from([]));
     }
@@ -178,7 +182,7 @@ fn build_segment_cache_scalar(
 
 fn build_segment_cache_vec4(
     frames: &[ClipKeyframe<Vec4>],
-) -> (Arc<[Vec4]>, Arc<[ClipSegment<Vec4>]>, Arc<[f32]>) {
+) -> Vec4SegmentCache {
     if frames.len() < 2 {
         return (Arc::from([]), Arc::from([]), Arc::from([]));
     }
@@ -882,7 +886,7 @@ fn parse_timelines(
                 "once_stop".to_string()
             }
         });
-        let mode_enum = SpriteAnimationLoopMode::from_str(&mode_str);
+        let mode_enum = SpriteAnimationLoopMode::parse(&mode_str);
         let looped = mode_enum.looped();
         for (frame, names) in event_map {
             diagnostics.warn(format!(
