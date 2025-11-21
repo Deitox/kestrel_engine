@@ -2,6 +2,7 @@ use crate::assets::skeletal;
 use crate::assets::{
     parse_animation_clip_bytes, parse_animation_graph_bytes, parse_texture_atlas_bytes, AnimationClip,
     AnimationGraphAsset, TextureAtlasParseResult,
+    ClipKeyframe,
 };
 use serde_json::Value;
 use std::collections::HashSet;
@@ -34,6 +35,8 @@ pub struct AnimationValidationEvent {
 }
 
 pub struct AnimationValidator;
+
+const MIN_CLIP_KEYFRAME_SPAN: f32 = 1.0 / 120.0;
 
 impl AnimationValidator {
     /// Validate the asset at `path` and return any validation events.
@@ -224,6 +227,43 @@ impl AnimationValidator {
                 path,
                 AnimationValidationSeverity::Warning,
                 "Clip duration is zero; ensure at least one keyframe has time > 0.",
+            ));
+        }
+        let mut short_spans = Vec::new();
+        if let Some(track) = clip.translation.as_ref() {
+            if let Some(span) = min_keyframe_span(track.keyframes.as_ref()) {
+                if span < MIN_CLIP_KEYFRAME_SPAN {
+                    short_spans.push(format!("translation min span {:.1}ms", span * 1000.0));
+                }
+            }
+        }
+        if let Some(track) = clip.rotation.as_ref() {
+            if let Some(span) = min_keyframe_span(track.keyframes.as_ref()) {
+                if span < MIN_CLIP_KEYFRAME_SPAN {
+                    short_spans.push(format!("rotation min span {:.1}ms", span * 1000.0));
+                }
+            }
+        }
+        if let Some(track) = clip.scale.as_ref() {
+            if let Some(span) = min_keyframe_span(track.keyframes.as_ref()) {
+                if span < MIN_CLIP_KEYFRAME_SPAN {
+                    short_spans.push(format!("scale min span {:.1}ms", span * 1000.0));
+                }
+            }
+        }
+        if let Some(track) = clip.tint.as_ref() {
+            if let Some(span) = min_keyframe_span(track.keyframes.as_ref()) {
+                if span < MIN_CLIP_KEYFRAME_SPAN {
+                    short_spans.push(format!("tint min span {:.1}ms", span * 1000.0));
+                }
+            }
+        }
+        if !short_spans.is_empty() {
+            let joined = short_spans.join(", ");
+            events.push(Self::event(
+                path,
+                AnimationValidationSeverity::Warning,
+                format!("Very short keyframe spans may cause popping ({joined}); consider spreading keys."),
             ));
         }
         let summary = Self::track_summary(clip);
@@ -433,6 +473,20 @@ fn looks_like_atlas_json(bytes: &[u8]) -> bool {
         return image_ok && regions_ok && width_ok && height_ok;
     }
     false
+}
+
+fn min_keyframe_span<T>(keyframes: &[ClipKeyframe<T>]) -> Option<f32> {
+    if keyframes.len() < 2 {
+        return None;
+    }
+    let mut min_span = f32::MAX;
+    for window in keyframes.windows(2) {
+        let span = (window[1].time - window[0].time).abs();
+        if span < min_span {
+            min_span = span;
+        }
+    }
+    if min_span.is_finite() { Some(min_span) } else { None }
 }
 
 #[cfg(test)]

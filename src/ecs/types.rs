@@ -14,6 +14,18 @@ use std::sync::Arc;
 #[cfg(feature = "anim_stats")]
 use std::time::Instant;
 
+const PLAYBACK_RATE_SMOOTH_ALPHA: f32 = 0.2;
+
+fn smoothed_playback_rate(current: f32, desired: f32) -> f32 {
+    if desired == 0.0 || !desired.is_finite() {
+        return 0.0;
+    }
+    if !current.is_finite() || current == 0.0 {
+        return desired;
+    }
+    current + (desired - current) * PLAYBACK_RATE_SMOOTH_ALPHA
+}
+
 #[derive(Component, Clone, Copy)]
 pub struct Transform {
     pub translation: Vec2,
@@ -314,7 +326,8 @@ impl SpriteAnimation {
 
     pub fn ensure_playback_rate(&mut self, group_scale: f32) -> f32 {
         if self.playback_rate_dirty {
-            self.playback_rate = self.speed * group_scale;
+            let desired = self.speed * group_scale;
+            self.playback_rate = smoothed_playback_rate(self.playback_rate, desired);
             self.playback_rate_dirty = false;
         }
         self.playback_rate
@@ -672,7 +685,8 @@ impl ClipInstance {
 
     pub fn ensure_playback_rate(&mut self, group_scale: f32) -> f32 {
         if self.playback_rate_dirty {
-            self.playback_rate = self.speed * group_scale;
+            let desired = self.speed * group_scale;
+            self.playback_rate = smoothed_playback_rate(self.playback_rate, desired);
             self.playback_rate_dirty = false;
         }
         self.playback_rate
@@ -2954,7 +2968,8 @@ impl SkeletonInstance {
 
     pub fn ensure_playback_rate(&mut self, group_scale: f32) -> f32 {
         if self.playback_rate_dirty {
-            self.playback_rate = self.speed * group_scale;
+            let desired = self.speed * group_scale;
+            self.playback_rate = smoothed_playback_rate(self.playback_rate, desired);
             self.playback_rate_dirty = false;
         }
         self.playback_rate

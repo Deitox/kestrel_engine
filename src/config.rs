@@ -58,8 +58,8 @@ pub struct EditorConfig {
 #[serde(rename_all = "snake_case")]
 pub enum MeshHashAlgorithm {
     #[default]
-    Blake3,
     Metadata,
+    Blake3,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -78,7 +78,45 @@ impl Default for MeshConfig {
 
 impl MeshConfig {
     const fn default_cache_limit() -> usize {
-        512
+        256
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TimingConfig {
+    #[serde(default = "TimingConfig::default_fixed_dt_seconds")]
+    pub fixed_dt_seconds: f32,
+    #[serde(default = "TimingConfig::default_max_backlog_seconds")]
+    pub max_backlog_seconds: f32,
+    #[serde(default = "TimingConfig::default_smoothing_half_life_ms")]
+    pub frame_smoothing_half_life_ms: f32,
+}
+
+impl TimingConfig {
+    const fn default_fixed_dt_seconds() -> f32 {
+        1.0 / 60.0
+    }
+
+    const fn default_max_backlog_seconds() -> f32 {
+        0.25
+    }
+
+    const fn default_smoothing_half_life_ms() -> f32 {
+        16.0
+    }
+
+    pub fn smoothing_half_life_seconds(&self) -> f32 {
+        (self.frame_smoothing_half_life_ms.max(0.0)) / 1000.0
+    }
+}
+
+impl Default for TimingConfig {
+    fn default() -> Self {
+        Self {
+            fixed_dt_seconds: Self::default_fixed_dt_seconds(),
+            max_backlog_seconds: Self::default_max_backlog_seconds(),
+            frame_smoothing_half_life_ms: Self::default_smoothing_half_life_ms(),
+        }
     }
 }
 
@@ -105,6 +143,8 @@ pub struct AppConfig {
     pub shadow: ShadowConfig,
     #[serde(default)]
     pub editor: EditorConfig,
+    #[serde(default)]
+    pub timing: TimingConfig,
 }
 
 #[derive(Debug, Clone, Default)]

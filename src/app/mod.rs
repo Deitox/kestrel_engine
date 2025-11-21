@@ -112,7 +112,6 @@ const INPUT_CONFIG_PATH: &str = "config/input.json";
 const SCRIPT_CONSOLE_CAPACITY: usize = 200;
 const SCRIPT_HISTORY_CAPACITY: usize = 64;
 const BINARY_PREFABS_ENABLED: bool = cfg!(feature = "binary_scene");
-const MAX_FIXED_TIMESTEP_BACKLOG: f32 = 0.5;
 
 struct SkeletonPlaybackSnapshot {
     entity: Entity,
@@ -1069,7 +1068,13 @@ impl App {
             start_color: ui_emitter_start_color,
             end_color: ui_emitter_end_color,
         };
-        let runtime_loop = RuntimeLoop::new(Time::new(), 1.0 / 60.0);
+        let timing_cfg = &config.timing;
+        let runtime_loop = RuntimeLoop::new(
+            Time::new(),
+            timing_cfg.fixed_dt_seconds,
+            timing_cfg.max_backlog_seconds,
+            timing_cfg.smoothing_half_life_seconds(),
+        );
         let mut input = Input::from_config(INPUT_CONFIG_PATH);
         let mut assets = AssetManager::new();
         let mut prefab_library = PrefabLibrary::new("assets/prefabs");
@@ -2476,7 +2481,7 @@ impl ApplicationHandler for App {
             event_loop.exit();
             return;
         }
-        let RuntimeTick { dt, dropped_backlog } = self.runtime_loop.tick(MAX_FIXED_TIMESTEP_BACKLOG);
+        let RuntimeTick { dt, dropped_backlog, .. } = self.runtime_loop.tick();
         if let Some(dropped) = dropped_backlog {
             eprintln!("[time] Dropping {:.3}s of fixed-step backlog to maintain responsiveness", dropped);
         }
