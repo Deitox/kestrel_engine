@@ -1,7 +1,9 @@
 use std::any::Any;
 use std::cell::RefCell;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::SystemTime;
@@ -269,6 +271,8 @@ pub struct ScriptHost {
     scope: Scope<'static>,
     script_path: PathBuf,
     last_modified: Option<SystemTime>,
+    last_len: Option<u64>,
+    last_digest: Option<u64>,
     error: Option<String>,
     enabled: bool,
     initialized: bool,
@@ -288,6 +292,8 @@ impl ScriptHost {
             scope: Scope::new(),
             script_path: path.as_ref().to_path_buf(),
             last_modified: None,
+            last_len: None,
+            last_digest: None,
             error: None,
             enabled: true,
             initialized: false,
@@ -438,8 +444,26 @@ impl ScriptHost {
             }
         };
         let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        if self.ast.is_none() || self.last_modified.is_none_or(|prev| modified > prev) {
-            self.load_script()?;
+        let len = metadata.len();
+
+        let metadata_changed = self.ast.is_none()
+            || self.last_modified.is_none_or(|prev| prev != modified)
+            || self.last_len.is_none_or(|prev| prev != len);
+
+        if metadata_changed {
+            let source = fs::read_to_string(&self.script_path)
+                .with_context(|| format!("Reading {}", self.script_path.display()))?;
+            self.load_script_from_source(source, modified, len)?;
+            return Ok(());
+        }
+
+        if let Some(previous_digest) = self.last_digest {
+            let source = fs::read_to_string(&self.script_path)
+                .with_context(|| format!("Reading {}", self.script_path.display()))?;
+            let digest = hash_source(&source);
+            if digest != previous_digest {
+                self.load_script_from_source(source, modified, len)?;
+            }
         }
         Ok(())
     }
@@ -447,17 +471,38 @@ impl ScriptHost {
     fn load_script(&mut self) -> Result<&AST> {
         let source = fs::read_to_string(&self.script_path)
             .with_context(|| format!("Reading {}", self.script_path.display()))?;
-        let ast = self.engine.compile(source).with_context(|| "Compiling Rhai script")?;
+        let metadata = fs::metadata(&self.script_path)
+            .with_context(|| format!("Reading {}", self.script_path.display()))?;
+        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let len = metadata.len();
+        self.load_script_from_source(source, modified, len)
+    }
+
+    fn load_script_from_source(
+        &mut self,
+        source: String,
+        modified: SystemTime,
+        len: u64,
+    ) -> Result<&AST> {
+        let ast = self.engine.compile(&source).with_context(|| "Compiling Rhai script")?;
         self.scope = Scope::new();
         self.engine
             .run_ast_with_scope(&mut self.scope, &ast)
             .map_err(|err| anyhow!("Evaluating script global statements: {err}"))?;
-        self.last_modified = fs::metadata(&self.script_path).ok().and_then(|meta| meta.modified().ok());
+        self.last_modified = Some(modified);
+        self.last_len = Some(len);
+        self.last_digest = Some(hash_source(&source));
         self.initialized = false;
         self.error = None;
         self.ast = Some(ast);
-        Ok(self.ast.as_ref().unwrap())
+        Ok(self.ast.as_ref().expect("script AST set during load"))
     }
+}
+
+fn hash_source(source: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    source.hash(&mut hasher);
+    hasher.finish()
 }
 
 pub struct ScriptPlugin {
@@ -661,6 +706,33 @@ mod tests {
         host.eval_repl("world.set_spawn_per_press(7);").expect("repl command");
         let commands = host.drain_commands();
         assert!(matches!(&commands[..], [ScriptCommand::SetSpawnPerPress { count }] if *count == 7));
+    }
+
+    #[test]
+    fn reload_detects_changes_when_metadata_is_stable() {
+        let script = write_script(
+            r#"
+                let value = 1;
+                fn init(world) {}
+                fn update(world, dt) {}
+            "#,
+        );
+        let mut host = ScriptHost::new(script.path());
+        host.force_reload().expect("initial load");
+        assert_eq!(host.eval_repl("value").expect("read value").as_deref(), Some("1"));
+
+        let replacement = r#"
+                let value = 2;
+                fn init(world) {}
+                fn update(world, dt) {}
+            "#;
+        std::fs::write(script.path(), replacement).expect("rewrite script");
+        let metadata = std::fs::metadata(script.path()).expect("metadata");
+        host.last_modified = metadata.modified().ok();
+        host.last_len = Some(metadata.len());
+
+        host.reload_if_needed().expect("reload check");
+        assert_eq!(host.eval_repl("value").expect("read value").as_deref(), Some("2"));
     }
 
     #[test]

@@ -7,6 +7,8 @@ use std::collections::{HashMap, VecDeque};
 use std::convert::TryFrom;
 use std::env;
 use std::fs;
+use std::hash::Hasher;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -42,6 +44,7 @@ struct CachedAtlasImage {
     width: u32,
     height: u32,
     pixels: Arc<[u8]>,
+    sample: Option<u64>,
 }
 
 type Vec2SegmentCache = (Arc<[Vec2]>, Arc<[ClipSegment<Vec2>]>, Arc<[f32]>);
@@ -1033,13 +1036,15 @@ impl AssetManager {
         self.clip_sources.insert(key.to_string(), json_path.to_string());
     }
     pub fn retain_atlas(&mut self, key: &str, json_path: Option<&str>) -> Result<()> {
-        if self.atlases.contains_key(key) {
-            *self.atlas_refs.entry(key.to_string()).or_insert(0) += 1;
-            if let Some(path) = json_path {
-                self.atlas_sources.insert(key.to_string(), path.to_string());
-            }
-            return Ok(());
-        }
+        self.retain_atlas_with_reload(key, json_path, false)
+    }
+
+    pub fn retain_atlas_with_reload(
+        &mut self,
+        key: &str,
+        json_path: Option<&str>,
+        allow_reload: bool,
+    ) -> Result<()> {
         let path_owned = if let Some(path) = json_path {
             path.to_string()
         } else if let Some(stored) = self.atlas_sources.get(key) {
@@ -1047,6 +1052,30 @@ impl AssetManager {
         } else {
             return Err(anyhow!("Atlas '{key}' is not loaded and no JSON path provided to retain it."));
         };
+
+        if self.atlases.contains_key(key) {
+            if let Some(existing_path) = self.atlas_sources.get(key) {
+                if existing_path != &path_owned {
+                    if !allow_reload {
+                        return Err(anyhow!(
+                            "Atlas '{key}' is already loaded from '{}'; refusing to swap to '{}' without reload",
+                            existing_path,
+                            path_owned
+                        ));
+                    }
+                    self.reload_atlas_from_path(key, &path_owned)?;
+                }
+            } else if allow_reload {
+                self.reload_atlas_from_path(key, &path_owned)?;
+            } else {
+                return Err(anyhow!(
+                    "Atlas '{key}' is already loaded without a recorded source; refusing to swap source automatically"
+                ));
+            }
+            *self.atlas_refs.entry(key.to_string()).or_insert(0) += 1;
+            return Ok(());
+        }
+
         self.load_atlas_internal(key, &path_owned)?;
         self.atlas_sources.insert(key.to_string(), path_owned);
         self.atlas_refs.insert(key.to_string(), 1);
@@ -1058,13 +1087,15 @@ impl AssetManager {
         keys
     }
     pub fn retain_clip(&mut self, key: &str, json_path: Option<&str>) -> Result<()> {
-        if self.clips.contains_key(key) {
-            *self.clip_refs.entry(key.to_string()).or_insert(0) += 1;
-            if let Some(path) = json_path {
-                self.clip_sources.insert(key.to_string(), path.to_string());
-            }
-            return Ok(());
-        }
+        self.retain_clip_with_reload(key, json_path, false)
+    }
+
+    pub fn retain_clip_with_reload(
+        &mut self,
+        key: &str,
+        json_path: Option<&str>,
+        allow_reload: bool,
+    ) -> Result<()> {
         let path_owned = if let Some(path) = json_path {
             path.to_string()
         } else if let Some(stored) = self.clip_sources.get(key) {
@@ -1072,6 +1103,32 @@ impl AssetManager {
         } else {
             return Err(anyhow!("Clip '{key}' is not loaded and no JSON path provided to retain it."));
         };
+
+        if self.clips.contains_key(key) {
+            let new_ref = self.clip_refs.get(key).copied().unwrap_or(0).saturating_add(1);
+            if let Some(stored) = self.clip_sources.get(key) {
+                if stored != &path_owned {
+                    if !allow_reload {
+                        return Err(anyhow!(
+                            "Clip '{key}' is already loaded from '{}'; refusing to swap to '{}' without reload",
+                            stored,
+                            path_owned
+                        ));
+                    }
+                    self.load_clip_internal(key, &path_owned)?;
+                }
+            } else if !allow_reload {
+                return Err(anyhow!(
+                    "Clip '{key}' is already loaded without a recorded source; refusing to swap source automatically"
+                ));
+            } else {
+                self.load_clip_internal(key, &path_owned)?;
+            }
+            self.clip_sources.insert(key.to_string(), path_owned);
+            self.clip_refs.insert(key.to_string(), new_ref);
+            return Ok(());
+        }
+
         self.load_clip_internal(key, &path_owned)?;
         self.clip_sources.insert(key.to_string(), path_owned);
         self.clip_refs.insert(key.to_string(), 1);
@@ -1213,13 +1270,15 @@ impl AssetManager {
         self.load_skeleton_internal(key, gltf_path)
     }
     pub fn retain_skeleton(&mut self, key: &str, gltf_path: Option<&str>) -> Result<()> {
-        if self.skeletons.contains_key(key) {
-            *self.skeleton_refs.entry(key.to_string()).or_insert(0) += 1;
-            if let Some(path) = gltf_path {
-                self.skeleton_sources.insert(key.to_string(), path.to_string());
-            }
-            return Ok(());
-        }
+        self.retain_skeleton_with_reload(key, gltf_path, false)
+    }
+
+    pub fn retain_skeleton_with_reload(
+        &mut self,
+        key: &str,
+        gltf_path: Option<&str>,
+        allow_reload: bool,
+    ) -> Result<()> {
         let path_owned = if let Some(path) = gltf_path {
             path.to_string()
         } else if let Some(stored) = self.skeleton_sources.get(key) {
@@ -1227,6 +1286,32 @@ impl AssetManager {
         } else {
             return Err(anyhow!("Skeleton '{key}' is not loaded and no GLTF path provided to retain it."));
         };
+
+        if self.skeletons.contains_key(key) {
+            let new_ref = self.skeleton_refs.get(key).copied().unwrap_or(0).saturating_add(1);
+            if let Some(stored) = self.skeleton_sources.get(key) {
+                if stored != &path_owned {
+                    if !allow_reload {
+                        return Err(anyhow!(
+                            "Skeleton '{key}' is already loaded from '{}'; refusing to swap to '{}' without reload",
+                            stored,
+                            path_owned
+                        ));
+                    }
+                    self.load_skeleton_internal(key, &path_owned)?;
+                }
+            } else if !allow_reload {
+                return Err(anyhow!(
+                    "Skeleton '{key}' is already loaded without a recorded source; refusing to swap source automatically"
+                ));
+            } else {
+                self.load_skeleton_internal(key, &path_owned)?;
+            }
+            self.skeleton_sources.insert(key.to_string(), path_owned);
+            self.skeleton_refs.insert(key.to_string(), new_ref);
+            return Ok(());
+        }
+
         self.load_skeleton_internal(key, &path_owned)?;
         self.skeleton_sources.insert(key.to_string(), path_owned);
         self.skeleton_refs.insert(key.to_string(), 1);
@@ -1377,8 +1462,9 @@ impl AssetManager {
     fn cached_atlas_pixels(&mut self, image_path: &Path) -> Result<(Arc<[u8]>, u32, u32)> {
         let metadata = fs::metadata(image_path)?;
         let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let sample = quick_file_sample_hash(image_path);
         if let Some(entry) = self.atlas_image_cache.get(image_path) {
-            if entry.modified == modified {
+            if entry.modified == modified && samples_match(entry.sample, sample) {
                 let cached = (Arc::clone(&entry.pixels), entry.width, entry.height);
                 self.touch_cached_atlas_image(image_path);
                 return Ok(cached);
@@ -1390,7 +1476,7 @@ impl AssetManager {
         let pixels: Arc<[u8]> = Arc::from(img.into_raw().into_boxed_slice());
         self.atlas_image_cache.insert(
             image_path.to_path_buf(),
-            CachedAtlasImage { modified, width, height, pixels: Arc::clone(&pixels) },
+            CachedAtlasImage { modified, width, height, pixels: Arc::clone(&pixels), sample },
         );
         self.touch_cached_atlas_image(image_path);
         Ok((pixels, width, height))
@@ -1475,10 +1561,13 @@ impl AssetManager {
             .get(key)
             .cloned()
             .ok_or_else(|| anyhow!("Atlas '{key}' has no recorded source; cannot hot-reload"))?;
+        self.reload_atlas_from_path(key, &source)
+    }
 
+    fn reload_atlas_from_path(&mut self, key: &str, json_path: &str) -> Result<TextureAtlasDiagnostics> {
         let previous_image = self.atlases.get(key).map(|atlas| atlas.image_path.clone());
 
-        let diagnostics = self.load_atlas_internal(key, &source)?;
+        let diagnostics = self.load_atlas_internal(key, json_path)?;
 
         if let Some(image_path) = previous_image {
             self.texture_cache.remove(&image_path);
@@ -1492,6 +1581,7 @@ impl AssetManager {
                 }
             }
         }
+        self.atlas_sources.insert(key.to_string(), json_path.to_string());
         Ok(diagnostics)
     }
 }
@@ -1524,10 +1614,67 @@ fn normalize_asset_path(path: &Path) -> PathBuf {
     }
 }
 
+const ATLAS_SAMPLE_BYTES: usize = 4_096;
+
+fn quick_file_sample_hash(path: &Path) -> Option<u64> {
+    let metadata = fs::metadata(path).ok()?;
+    let file_len = metadata.len();
+    let mut file = fs::File::open(path).ok()?;
+    let mut buf = [0u8; ATLAS_SAMPLE_BYTES];
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+
+    // Head
+    let head_read = file.read(&mut buf).ok()?;
+    if head_read == 0 {
+        return None;
+    }
+    hasher.write(&buf[..head_read]);
+
+    // Middle sample if possible
+    if file_len > (ATLAS_SAMPLE_BYTES as u64 * 3) {
+        let mid_start = file_len / 2;
+        let mid_offset = mid_start.saturating_sub((ATLAS_SAMPLE_BYTES as u64) / 2);
+        file.seek(SeekFrom::Start(mid_offset)).ok()?;
+        let mid_read = file.read(&mut buf).ok()?;
+        if mid_read > 0 {
+            hasher.write(&buf[..mid_read]);
+        }
+    }
+
+    // Tail
+    if file_len > ATLAS_SAMPLE_BYTES as u64 {
+        let tail_start = file_len.saturating_sub(ATLAS_SAMPLE_BYTES as u64);
+        if tail_start > 0 {
+            file.seek(SeekFrom::Start(tail_start)).ok()?;
+            let tail_read = file.read(&mut buf).ok()?;
+            if tail_read > 0 {
+                hasher.write(&buf[..tail_read]);
+            }
+        }
+    } else {
+        let tail_read = file.read(&mut buf).ok()?;
+        if tail_read > 0 {
+            hasher.write(&buf[..tail_read]);
+        }
+    }
+
+    Some(hasher.finish())
+}
+
+fn samples_match(expected: Option<u64>, actual: Option<u64>) -> bool {
+    match (expected, actual) {
+        (Some(lhs), Some(rhs)) => lhs == rhs,
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use tempfile::tempdir;
+    use image::{Rgba, RgbaImage};
 
     #[test]
     fn clip_key_for_source_path_handles_equivalent_paths() {
@@ -1551,6 +1698,142 @@ mod tests {
         let canonical = normalize_asset_path(&relative);
         assert_eq!(assets.graph_key_for_source_path(&relative).as_deref(), Some("example"));
         assert_eq!(assets.graph_key_for_source_path(&canonical).as_deref(), Some("example"));
+    }
+
+    #[test]
+    fn retain_atlas_rejects_path_swap_without_reload() {
+        let dir = tempdir().expect("temp dir");
+        let image_path = dir.path().join("atlas.png");
+        let mut img = RgbaImage::new(1, 1);
+        img.put_pixel(0, 0, Rgba([255, 255, 255, 255]));
+        img.save(&image_path).expect("save png");
+
+        let make_atlas = |path: &PathBuf| {
+            let json = r#"{
+  "image": "atlas.png",
+  "width": 1,
+  "height": 1,
+  "regions": { "full": { "x": 0, "y": 0, "w": 1, "h": 1 } }
+}"#;
+            std::fs::write(path, json).expect("write atlas json");
+        };
+
+        let atlas_a = dir.path().join("atlas_a.json");
+        let atlas_b = dir.path().join("atlas_b.json");
+        make_atlas(&atlas_a);
+        make_atlas(&atlas_b);
+
+        let mut assets = AssetManager::new();
+        assets.retain_atlas("atlas", atlas_a.to_str()).expect("load first atlas");
+
+        let err = assets
+            .retain_atlas("atlas", atlas_b.to_str())
+            .expect_err("path swap should be rejected by default");
+        assert!(err.to_string().contains("refusing to swap"), "unexpected error: {err}");
+
+        assets
+            .retain_atlas_with_reload("atlas", atlas_b.to_str(), true)
+            .expect("reload should succeed when explicitly allowed");
+        assert_eq!(assets.atlas_source("atlas"), atlas_b.to_str());
+    }
+
+    #[test]
+    fn cached_atlas_pixels_reloads_on_sample_mismatch() {
+        let dir = tempdir().expect("temp dir");
+        let image_path = dir.path().join("atlas.png");
+        let mut img = RgbaImage::new(2, 2);
+        img.put_pixel(0, 0, Rgba([1, 2, 3, 4]));
+        img.put_pixel(1, 1, Rgba([5, 6, 7, 8]));
+        img.save(&image_path).expect("save png");
+
+        let mut assets = AssetManager::new();
+        let _ = assets.cached_atlas_pixels(&image_path).expect("initial cache fill");
+        let actual_sample = quick_file_sample_hash(&image_path);
+        {
+            let entry = assets.atlas_image_cache.get_mut(&image_path).expect("cache entry");
+            entry.sample = actual_sample.map(|s| s ^ 0xFFFF);
+        }
+        let _ = assets.cached_atlas_pixels(&image_path).expect("recache on sample mismatch");
+        let cached = assets.atlas_image_cache.get(&image_path).expect("cached after reload");
+        assert_eq!(cached.sample, actual_sample, "sample should refresh after mismatch");
+    }
+
+    #[test]
+    fn retain_clip_rejects_path_swap_without_reload() {
+        let dir = tempdir().expect("temp dir");
+        let clip_a = dir.path().join("clip_a.json");
+        let clip_b = dir.path().join("clip_b.json");
+        let clip_json = |duration: f32| -> String {
+            format!(
+                r#"{{
+  "version": 1,
+  "looped": false,
+  "tracks": {{
+    "translation": {{
+      "keyframes": [ {{ "time": 0.0, "value": [0.0, 0.0] }}, {{ "time": {duration}, "value": [1.0, 1.0] }} ]
+    }}
+  }}
+}}"#
+            )
+        };
+        std::fs::write(&clip_a, clip_json(1.0)).expect("write clip a");
+        std::fs::write(&clip_b, clip_json(2.0)).expect("write clip b");
+
+        let mut assets = AssetManager::new();
+        assets.retain_clip("clip", clip_a.to_str()).expect("load clip a");
+        let duration_a = assets.clip("clip").expect("clip loaded").duration;
+        assert!((duration_a - 1.0).abs() < f32::EPSILON);
+
+        let err = assets
+            .retain_clip("clip", clip_b.to_str())
+            .expect_err("path swap should be rejected by default");
+        assert!(err.to_string().contains("refusing to swap"), "unexpected error: {err}");
+
+        assets
+            .retain_clip_with_reload("clip", clip_b.to_str(), true)
+            .expect("reload should succeed when allowed");
+        let duration_b = assets.clip("clip").expect("clip reloaded").duration;
+        assert!((duration_b - 2.0).abs() < f32::EPSILON, "duration should reflect reloaded clip");
+        assert_eq!(assets.clip_source("clip"), clip_b.to_str());
+    }
+
+    #[test]
+    fn retain_skeleton_rejects_path_swap_without_reload() {
+        use crate::assets::skeletal::{SkeletonAsset, SkeletonJoint};
+        use glam::{Mat4, Quat, Vec3};
+
+        let key = "skel";
+        let mut assets = AssetManager::new();
+        // Seed a dummy skeleton entry to simulate a loaded asset.
+        let joint = SkeletonJoint {
+            name: Arc::from("root"),
+            parent: None,
+            rest_local: Mat4::IDENTITY,
+            rest_world: Mat4::IDENTITY,
+            rest_translation: Vec3::ZERO,
+            rest_rotation: Quat::IDENTITY,
+            rest_scale: Vec3::ONE,
+            inverse_bind: Mat4::IDENTITY,
+        };
+        assets.skeletons.insert(
+            key.to_string(),
+            Arc::new(SkeletonAsset {
+                name: Arc::from("dummy"),
+                joints: Arc::from([joint]),
+                roots: Arc::from([0]),
+            }),
+        );
+        assets.skeleton_sources.insert(key.to_string(), "path/a.gltf".to_string());
+        assets.skeleton_refs.insert(key.to_string(), 0);
+
+        let err = assets
+            .retain_skeleton(key, Some("path/b.gltf"))
+            .expect_err("path swap should be rejected by default for skeletons");
+        assert!(err.to_string().contains("refusing to swap"), "unexpected error: {err}");
+        assert_eq!(
+            assets.skeleton_sources.get(key).map(|s| s.as_str()),
+            Some("path/a.gltf")
+        );
     }
 }
 const ATLAS_IMAGE_CACHE_LIMIT: usize = 16;

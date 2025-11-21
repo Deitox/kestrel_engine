@@ -383,28 +383,41 @@ impl MeshRegistry {
         let modified =
             metadata.modified().ok().and_then(|ts| ts.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_nanos());
 
-        if let Some(entry) = self.fingerprint_cache.get(path) {
-            if entry.len == len && entry.modified == modified && entry.algorithm == self.hash_algorithm {
-                let hash = entry.hash;
-                let cached_sample = entry.sample;
-                let current_sample = quick_sample_hash(path);
-                if samples_match(cached_sample, current_sample) {
-                    self.refresh_cache_entry(path);
-                    return Some(hash);
+        match self.hash_algorithm {
+            MeshHashAlgorithm::Blake3 => {
+                // Always read the file to avoid missing metadata-stable changes.
+                let computed = hash_file_with_blake3(path)?;
+                let hash = computed.hash;
+                self.insert_fingerprint(path, len, modified, computed);
+                Some(hash)
+            }
+            MeshHashAlgorithm::Metadata => {
+                let sample = quick_sample_hash(path);
+                if let Some((cached_sample, cached_hash)) = self
+                    .fingerprint_cache
+                    .get(path)
+                    .filter(|entry| {
+                        entry.len == len
+                            && entry.modified == modified
+                            && entry.algorithm == self.hash_algorithm
+                    })
+                    .map(|entry| (entry.sample, entry.hash))
+                {
+                    if samples_match(cached_sample, sample) {
+                        self.refresh_cache_entry(path);
+                        return Some(cached_hash);
+                    }
                 }
+
+                let computed = FingerprintResult {
+                    hash: metadata_fingerprint(len, modified, sample),
+                    sample,
+                };
+                let hash = computed.hash;
+                self.insert_fingerprint(path, len, modified, computed);
+                Some(hash)
             }
         }
-
-        let computed = match self.hash_algorithm {
-            MeshHashAlgorithm::Blake3 => hash_file_with_blake3(path)?,
-            MeshHashAlgorithm::Metadata => FingerprintResult {
-                hash: metadata_fingerprint(len, modified),
-                sample: quick_sample_hash(path),
-            },
-        };
-        let hash = computed.hash;
-        self.insert_fingerprint(path, len, modified, computed);
-        Some(hash)
     }
 }
 
@@ -437,10 +450,11 @@ fn hash_file_with_blake3(path: &Path) -> Option<FingerprintResult> {
     Some(FingerprintResult { hash: u128::from_le_bytes(out), sample })
 }
 
-fn metadata_fingerprint(len: u64, modified: Option<u128>) -> u128 {
+fn metadata_fingerprint(len: u64, modified: Option<u128>, sample: Option<u64>) -> u128 {
     let mut hasher = DefaultHasher::new();
     len.hash(&mut hasher);
     modified.hash(&mut hasher);
+    sample.hash(&mut hasher);
     hasher.finish() as u128
 }
 
@@ -785,5 +799,52 @@ mod tests {
             actual, expected.hash,
             "Blake3 hashing should read the file even when metadata matches cached entry"
         );
+    }
+
+    #[test]
+    fn blake3_rehashes_even_when_metadata_and_sample_match() {
+        let mut materials = MaterialRegistry::new();
+        let mut registry = MeshRegistry::new(&mut materials);
+
+        let gltf = write_temp_gltf("MatHashSample");
+        let expected = hash_file_with_blake3(gltf.path()).expect("hash should compute");
+
+        let metadata = std::fs::metadata(gltf.path()).expect("metadata should exist");
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|ts| ts.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos());
+
+        // Pretend the cached hash is stale but the quick sample still matches.
+        let stale_hash = expected.hash ^ 0xABCD;
+        registry.fingerprint_cache.insert(
+            gltf.path().to_path_buf(),
+            CachedFingerprint {
+                len: metadata.len(),
+                modified,
+                hash: stale_hash,
+                sample: expected.sample,
+                algorithm: MeshHashAlgorithm::Blake3,
+            },
+        );
+        registry.fingerprint_cache_order.push_back(gltf.path().to_path_buf());
+
+        let actual = registry.mesh_source_fingerprint(gltf.path()).expect("hash should recompute");
+        assert_eq!(
+            actual, expected.hash,
+            "Blake3 hashing should recompute even when metadata and sample match"
+        );
+    }
+
+    #[test]
+    fn metadata_fingerprint_changes_when_sample_differs() {
+        let len = 1_024;
+        let modified = Some(123_456u128);
+        let sample_a = metadata_fingerprint(len, modified, Some(0xABCD_1234u64));
+        let sample_b = metadata_fingerprint(len, modified, Some(0xFFFF_0001u64));
+        assert_ne!(sample_a, sample_b, "sample should influence metadata fingerprint");
+        let missing_sample = metadata_fingerprint(len, modified, None);
+        assert_ne!(sample_a, missing_sample, "absent sample should change fingerprint");
     }
 }
