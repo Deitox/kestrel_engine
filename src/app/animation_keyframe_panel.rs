@@ -637,15 +637,13 @@ impl AnimationKeyframePanel {
                     summary.key_count,
                     self.interpolation_label(summary.interpolation)
                 ));
-                if self.can_edit_track(summary.kind) {
-                    if ui.button("Insert Key at Scrub").clicked() {
-                        let clamped = self.scrub_time.min(summary.duration.max(0.0));
-                        self.pending_commands.push(AnimationPanelCommand::InsertKey {
-                            binding: summary.binding,
-                            time: clamped,
-                            value: None,
-                        });
-                    }
+                if self.can_edit_track(summary.kind) && ui.button("Insert Key at Scrub").clicked() {
+                    let clamped = self.scrub_time.min(summary.duration.max(0.0));
+                    self.pending_commands.push(AnimationPanelCommand::InsertKey {
+                        binding: summary.binding,
+                        time: clamped,
+                        value: None,
+                    });
                 }
             });
         } else {
@@ -1250,8 +1248,7 @@ mod tests {
         let track_id = AnimationTrackId(5);
         panel.selected_tracks.insert(track_id);
         panel.handle_key_click(KeyframeId::new(track_id, 0), track_id, Modifiers::default());
-        let mut shift_modifiers = Modifiers::default();
-        shift_modifiers.shift = true;
+        let shift_modifiers = Modifiers { shift: true, ..Default::default() };
         panel.handle_key_click(KeyframeId::new(track_id, 3), track_id, shift_modifiers);
         assert_eq!(panel.selected_keys.len(), 4);
         assert!(panel.selected_keys.contains(&KeyframeId::new(track_id, 2)));
@@ -1520,8 +1517,7 @@ mod tests {
 
     #[test]
     fn dragging_axis_scrubs_selected_tracks() {
-        let mut panel = AnimationKeyframePanel::default();
-        panel.visible_duration = 1.0;
+        let mut panel = AnimationKeyframePanel { visible_duration: 1.0, ..Default::default() };
         let track_id = AnimationTrackId(3);
         panel.selected_tracks.insert(track_id);
         panel.last_selected_track = Some(track_id);

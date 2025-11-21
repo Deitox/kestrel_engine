@@ -488,6 +488,12 @@ impl EnvironmentGpu {
     }
 }
 
+impl Default for EnvironmentRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn is_supported_environment_file(path: &Path) -> bool {
     match path.extension().and_then(|ext| ext.to_str()).map(|s| s.to_ascii_lowercase()) {
         Some(ext) => matches!(ext.as_str(), "hdr" | "exr" | "png"),

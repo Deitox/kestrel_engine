@@ -16,7 +16,7 @@ const BINARY_SCENE_MAGIC: [u8; 4] = *b"KSCN";
 #[cfg(feature = "binary_scene")]
 const BINARY_SCENE_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Scene {
     #[serde(default)]
     pub metadata: SceneMetadata,
@@ -24,16 +24,6 @@ pub struct Scene {
     pub dependencies: SceneDependencies,
     #[serde(default)]
     pub entities: Vec<SceneEntity>,
-}
-
-impl Default for Scene {
-    fn default() -> Self {
-        Self {
-            metadata: SceneMetadata::default(),
-            dependencies: SceneDependencies::default(),
-            entities: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -320,29 +310,19 @@ impl Default for SceneFreeflyCamera {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum ScenePreviewCameraMode {
     Disabled,
+    #[default]
     Orbit,
     Freefly,
 }
 
-impl Default for ScenePreviewCameraMode {
-    fn default() -> Self {
-        ScenePreviewCameraMode::Orbit
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum SceneViewportMode {
+    #[default]
     Ortho2D,
     Perspective3D,
-}
-
-impl Default for SceneViewportMode {
-    fn default() -> Self {
-        SceneViewportMode::Ortho2D
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -1902,7 +1882,7 @@ impl Scene {
     }
 
     fn is_binary_payload(bytes: &[u8]) -> bool {
-        bytes.len() >= BINARY_SCENE_MAGIC.len() && &bytes[..BINARY_SCENE_MAGIC.len()] == BINARY_SCENE_MAGIC
+        bytes.len() >= BINARY_SCENE_MAGIC.len() && bytes[..BINARY_SCENE_MAGIC.len()] == BINARY_SCENE_MAGIC
     }
 
     #[cfg(feature = "binary_scene")]

@@ -149,8 +149,8 @@ impl App {
                                     ) = (gizmo_center_viewport, cursor_viewport, cursor_ray)
                                     {
                                         let dist = pointer_viewport.distance(center_viewport);
-                                        if dist >= GIZMO_ROTATE_INNER_RADIUS_PX
-                                            && dist <= GIZMO_ROTATE_OUTER_RADIUS_PX
+                                        if (GIZMO_ROTATE_INNER_RADIUS_PX..=GIZMO_ROTATE_OUTER_RADIUS_PX)
+                                            .contains(&dist)
                                         {
                                             let plane_normal = self.mesh_camera_forward();
                                             if let Some(hit) = App::intersect_ray_plane(
@@ -246,9 +246,7 @@ impl App {
                                 (gizmo_center_viewport, cursor_viewport)
                             {
                                 let dist = pointer_viewport.distance(center_viewport);
-                                if dist >= GIZMO_ROTATE_INNER_RADIUS_PX
-                                    && dist <= GIZMO_ROTATE_OUTER_RADIUS_PX
-                                {
+                                if (GIZMO_ROTATE_INNER_RADIUS_PX..=GIZMO_ROTATE_OUTER_RADIUS_PX).contains(&dist) {
                                     if let (Some(pointer_world), Some(info)) =
                                         (cursor_world_2d, selected_info.as_ref())
                                     {

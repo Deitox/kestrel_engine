@@ -377,7 +377,7 @@ impl EngineState {
     }
 
     fn iter_entities(&self, request: RpcIterEntitiesRequest) -> RpcIterEntitiesResponse {
-        let limit = request.limit.max(1).min(512) as usize;
+        let limit = request.limit.clamp(1, 512) as usize;
         let mut matched_entities = Vec::new();
         {
             let world = &self.ecs.world;

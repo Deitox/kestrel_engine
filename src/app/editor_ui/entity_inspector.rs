@@ -330,7 +330,7 @@ pub(super) fn show_entity_inspector(
             let mut clip_info_opt: Option<TransformClipInfo> = info.transform_clip.clone();
             let mut transform_mask_opt: Option<TransformTrackPlayer> = info.transform_tracks;
             let mut property_mask_opt: Option<PropertyTrackPlayer> = info.property_tracks;
-            let mut clip_keys: Vec<String> = ctx.clip_keys.iter().cloned().collect();
+            let mut clip_keys: Vec<String> = ctx.clip_keys.to_vec();
             if let Some(ref clip_info) = clip_info_opt {
                 if !clip_keys.iter().any(|key| key == &clip_info.clip_key) {
                     clip_keys.push(clip_info.clip_key.clone());
@@ -548,7 +548,7 @@ pub(super) fn show_entity_inspector(
 
             ui.separator();
             let mut skeleton_info_opt: Option<SkeletonInfo> = info.skeleton.clone();
-            let mut skeleton_keys: Vec<String> = ctx.skeleton_keys.iter().cloned().collect();
+            let mut skeleton_keys: Vec<String> = ctx.skeleton_keys.to_vec();
             if let Some(ref skeleton_info) = skeleton_info_opt {
                 if !skeleton_keys.contains(&skeleton_info.skeleton_key) {
                     skeleton_keys.push(skeleton_info.skeleton_key.clone());
@@ -733,7 +733,7 @@ pub(super) fn show_entity_inspector(
                 ui.separator();
                 let mut skip_sprite_controls = false;
                 let mut atlas_selection = sprite.atlas.clone();
-                let mut atlas_keys: Vec<String> = ctx.atlas_keys.iter().cloned().collect();
+                let mut atlas_keys: Vec<String> = ctx.atlas_keys.to_vec();
                 if !atlas_keys.contains(&atlas_selection) {
                     atlas_keys.push(atlas_selection.clone());
                     atlas_keys.sort();

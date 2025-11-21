@@ -2221,23 +2221,18 @@ impl App {
                                     script_debugger.focus_repl = true;
                                     history_used = true;
                                 }
-                            } else if down {
-                                if index < history_len {
-                                    index += 1;
-                                    if index >= history_len {
-                                        script_debugger.repl_history_index = None;
-                                        script_debugger.repl_input.clear();
-                                    } else {
-                                        script_debugger.repl_history_index = Some(index);
-                                        script_debugger.repl_input = script_debugger
-                                            .repl_history
-                                            .get(index)
-                                            .cloned()
-                                            .unwrap_or_default();
-                                    }
-                                    script_debugger.focus_repl = true;
-                                    history_used = true;
+                            } else if down && index < history_len {
+                                index += 1;
+                                if index >= history_len {
+                                    script_debugger.repl_history_index = None;
+                                    script_debugger.repl_input.clear();
+                                } else {
+                                    script_debugger.repl_history_index = Some(index);
+                                    script_debugger.repl_input =
+                                        script_debugger.repl_history.get(index).cloned().unwrap_or_default();
                                 }
+                                script_debugger.focus_repl = true;
+                                history_used = true;
                             }
                         }
                         if response.changed() && !history_used {
@@ -2933,7 +2928,7 @@ impl App {
                     let event_count = recent_events.len();
                     let latest_event_text = recent_events
                         .last()
-                        .map(|event| summarize_game_event(event))
+                        .map(summarize_game_event)
                         .map(|(text, _)| ellipsize(&text, 48));
                     let events_header_label = if event_count == 0 {
                         "Recent Events (0)".to_string()
@@ -3133,7 +3128,7 @@ impl App {
                                     } else {
                                         ui.add_enabled(false, Checkbox::new(&mut enabled_flag, &status.name));
                                     }
-                                    let (color, summary) = plugin_status_summary(&status);
+                                    let (color, summary) = plugin_status_summary(status);
                                     ui.colored_label(color, summary);
                                     let version_label = status.version.as_deref().unwrap_or("n/a");
                                     ui.small(format!("v{} (built-in)", version_label));
@@ -3283,7 +3278,7 @@ impl App {
                         ui.small("Enable the 'binary_scene' Cargo feature to export binary prefabs.");
                     }
                     let drop_result =
-                        ui.dnd_drop_zone::<PrefabDragPayload, _>(egui::Frame::group(&ui.style()), |ui| {
+                        ui.dnd_drop_zone::<PrefabDragPayload, _>(egui::Frame::group(ui.style()), |ui| {
                             ui.set_min_height(48.0);
                             if selected_entity.is_some() {
                                 ui.label("Drag the selected entity here to save it as a prefab.");
@@ -3293,7 +3288,7 @@ impl App {
                         });
                     let dropped_prefab = drop_result.1;
                     if let Some(payload) = dropped_prefab {
-                        let payload = (*payload).clone();
+                        let payload = *payload;
                         let mut prefab_name = prefab_name_input.trim().to_string();
                         if prefab_name.is_empty() {
                             prefab_name = format!("prefab_{}", payload.entity.index());

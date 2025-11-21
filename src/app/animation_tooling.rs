@@ -580,7 +580,7 @@ impl App {
                     value: KeyframeValue::None,
                 }]
             })
-            .unwrap_or_else(Vec::new)
+            .unwrap_or_default()
     }
 
     fn clip_resource(&self, key: &str) -> Option<Arc<AnimationClip>> {
@@ -696,7 +696,7 @@ impl App {
         let interpolation =
             target.as_ref().map(|track| track.interpolation).unwrap_or(ClipInterpolation::Linear);
         let mut frames: Vec<ClipKeyframe<Vec2>> =
-            target.as_ref().map(|track| track.keyframes.iter().copied().collect()).unwrap_or_else(Vec::new);
+            target.as_ref().map(|track| track.keyframes.iter().copied().collect()).unwrap_or_default();
         match edit {
             TrackEditOperation::Insert { time, value } => {
                 let insert_value = value
@@ -773,7 +773,7 @@ impl App {
         let interpolation =
             target.as_ref().map(|track| track.interpolation).unwrap_or(ClipInterpolation::Linear);
         let mut frames: Vec<ClipKeyframe<f32>> =
-            target.as_ref().map(|track| track.keyframes.iter().copied().collect()).unwrap_or_else(Vec::new);
+            target.as_ref().map(|track| track.keyframes.iter().copied().collect()).unwrap_or_default();
         match edit {
             TrackEditOperation::Insert { time, value } => {
                 let insert_value = value.and_then(|v| v.as_scalar()).or(sample).unwrap_or(fallback);
@@ -844,7 +844,7 @@ impl App {
         let interpolation =
             target.as_ref().map(|track| track.interpolation).unwrap_or(ClipInterpolation::Linear);
         let mut frames: Vec<ClipKeyframe<Vec4>> =
-            target.as_ref().map(|track| track.keyframes.iter().copied().collect()).unwrap_or_else(Vec::new);
+            target.as_ref().map(|track| track.keyframes.iter().copied().collect()).unwrap_or_default();
         match edit {
             TrackEditOperation::Insert { time, value } => {
                 let insert_value = value

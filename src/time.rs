@@ -22,3 +22,9 @@ impl Time {
         self.last.duration_since(self.start).as_secs_f32()
     }
 }
+
+impl Default for Time {
+    fn default() -> Self {
+        Self::new()
+    }
+}

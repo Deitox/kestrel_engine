@@ -60,6 +60,12 @@ impl SystemProfiler {
     }
 }
 
+impl Default for SystemProfiler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct SystemProfileScope<'a> {
     name: &'static str,
     profiler: &'a mut SystemProfiler,

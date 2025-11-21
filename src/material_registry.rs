@@ -475,6 +475,12 @@ impl MaterialRegistry {
     }
 }
 
+impl Default for MaterialRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MaterialGpu {
     pub fn bind_group(&self) -> &wgpu::BindGroup {
         self.bind_group.as_ref()

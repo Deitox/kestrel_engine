@@ -1491,6 +1491,12 @@ impl AssetManager {
     }
 }
 
+impl Default for AssetManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn resolve_atlas_image_path(json_path: &str, image: &str) -> PathBuf {
     let image_path = Path::new(image);
     if image_path.is_absolute() {

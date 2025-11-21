@@ -127,16 +127,11 @@ fn default_graph_key(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum ViewportCameraMode {
+    #[default]
     Ortho2D,
     Perspective3D,
-}
-
-impl Default for ViewportCameraMode {
-    fn default() -> Self {
-        ViewportCameraMode::Ortho2D
-    }
 }
 
 impl ViewportCameraMode {

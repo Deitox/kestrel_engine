@@ -476,8 +476,7 @@ mod tests {
 
     #[test]
     fn present_mode_respects_vsync_flag() {
-        let mut cfg = WindowConfig::default();
-        cfg.vsync = false;
+        let cfg = WindowConfig { vsync: false, ..Default::default() };
         let surface = WindowSurface::new(&cfg);
         let modes = vec![wgpu::PresentMode::Immediate, wgpu::PresentMode::Fifo];
         assert_eq!(surface.select_present_mode(&modes), wgpu::PresentMode::Immediate);
