@@ -789,7 +789,10 @@ fn scene_roundtrip_captures_hierarchy_dependencies_and_environment_metadata() {
         runtime_environments.retain(dep.key(), dep.path()).expect("retain environment");
         assert_eq!(runtime_environments.ref_count(dep.key()), Some(1));
         runtime_environments.release(dep.key());
-        assert_eq!(runtime_environments.ref_count(dep.key()), Some(0));
+        assert!(
+            runtime_environments.ref_count(dep.key()).is_none(),
+            "non-permanent environments should be dropped at refcount 0"
+        );
     }
 }
 

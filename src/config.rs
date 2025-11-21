@@ -54,6 +54,39 @@ pub struct EditorConfig {
     pub sprite_guardrail_mode: SpriteGuardrailMode,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeshHashAlgorithm {
+    Blake3,
+    Metadata,
+}
+
+impl Default for MeshHashAlgorithm {
+    fn default() -> Self {
+        MeshHashAlgorithm::Blake3
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MeshConfig {
+    #[serde(default)]
+    pub hash_algorithm: MeshHashAlgorithm,
+    #[serde(default = "MeshConfig::default_cache_limit")]
+    pub hash_cache_limit: usize,
+}
+
+impl Default for MeshConfig {
+    fn default() -> Self {
+        Self { hash_algorithm: MeshHashAlgorithm::default(), hash_cache_limit: Self::default_cache_limit() }
+    }
+}
+
+impl MeshConfig {
+    const fn default_cache_limit() -> usize {
+        512
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ShadowConfig {
     #[serde(default = "ShadowConfig::default_cascade_count")]
@@ -71,6 +104,8 @@ pub struct AppConfig {
     pub window: WindowConfig,
     #[serde(default)]
     pub particles: ParticleConfig,
+    #[serde(default)]
+    pub mesh: MeshConfig,
     #[serde(default)]
     pub shadow: ShadowConfig,
     #[serde(default)]

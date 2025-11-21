@@ -310,7 +310,21 @@ impl Mesh {
         let mut subsets: Vec<MeshSubset> = Vec::new();
         let mut processed_nodes = false;
 
-        for scene in document.scenes() {
+        if let Some(scene) = document.default_scene() {
+            for node in scene.nodes() {
+                processed_nodes |= Self::traverse_node_primitives(
+                    &node,
+                    Mat4::IDENTITY,
+                    &buffers,
+                    &material_key_map,
+                    &default_material_key,
+                    path_ref,
+                    &mut vertices,
+                    &mut indices,
+                    &mut subsets,
+                )?;
+            }
+        } else if let Some(scene) = document.scenes().next() {
             for node in scene.nodes() {
                 processed_nodes |= Self::traverse_node_primitives(
                     &node,
@@ -799,5 +813,71 @@ mod tests {
             "second node translation should be applied"
         );
         assert!(mesh.vertices.iter().any(|v| v.position[0] < 0.5), "first node should remain near origin");
+    }
+
+    #[test]
+    fn load_gltf_uses_default_scene_only() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        const GLTF_JSON: &str = r#"{
+  "asset": { "version": "2.0" },
+  "buffers": [
+    {
+      "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAEAAAACAAAA",
+      "byteLength": 108
+    }
+  ],
+  "bufferViews": [
+    { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+    { "buffer": 0, "byteOffset": 36, "byteLength": 36, "target": 34962 },
+    { "buffer": 0, "byteOffset": 72, "byteLength": 24, "target": 34962 },
+    { "buffer": 0, "byteOffset": 96, "byteLength": 12, "target": 34963 }
+  ],
+  "accessors": [
+    { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 0, 0], "max": [1, 1, 0] },
+    { "bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 0, 1], "max": [0, 0, 1] },
+    { "bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC2", "min": [0, 0], "max": [1, 1] },
+    { "bufferView": 3, "componentType": 5125, "count": 3, "type": "SCALAR", "min": [0], "max": [2] }
+  ],
+  "materials": [
+    {
+      "name": "Simple",
+      "pbrMetallicRoughness": { "baseColorFactor": [1, 1, 1, 1] }
+    }
+  ],
+  "meshes": [
+    {
+      "name": "Tri",
+      "primitives": [
+        {
+          "attributes": { "POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2 },
+          "indices": 3,
+          "material": 0
+        }
+      ]
+    }
+  ],
+  "nodes": [
+    { "mesh": 0, "name": "A", "translation": [0, 0, 0] },
+    { "mesh": 0, "name": "B", "translation": [5, 0, 0] }
+  ],
+  "scenes": [
+    { "nodes": [0] },
+    { "nodes": [1] }
+  ],
+  "scene": 0
+}"#;
+
+        let mut gltf_file = NamedTempFile::new().expect("temp gltf file");
+        gltf_file.write_all(GLTF_JSON.as_bytes()).expect("write gltf");
+
+        let mesh = Mesh::load_gltf(gltf_file.path()).expect("load temporary gltf");
+        assert_eq!(mesh.vertices.len(), 3, "only the default scene should be imported");
+        assert!(
+            mesh.vertices.iter().all(|v| v.position[0] < 2.0),
+            "geometry from non-default scenes should be ignored"
+        );
+        assert_eq!(mesh.subsets.len(), 1);
     }
 }

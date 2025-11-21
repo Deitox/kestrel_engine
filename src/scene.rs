@@ -5,10 +5,12 @@ use anyhow::{bail, Context, Result};
 use crate::ecs::{ForceFalloff, ForceField, ForceFieldKind, ParticleAttractor, ParticleTrail};
 use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
+use blake3::Hasher as Blake3Hasher;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
+use std::io::Read;
 use std::path::Path;
 use uuid::Uuid;
 
@@ -779,6 +781,22 @@ impl SceneDependencyFingerprints {
     }
 }
 
+fn dependency_path_fingerprint(path: &Path) -> Option<u128> {
+    let mut file = fs::File::open(path).ok()?;
+    let mut hasher = Blake3Hasher::new();
+    let mut buf = [0u8; 131_072];
+    loop {
+        let read = file.read(&mut buf).ok()?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+    }
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
+    Some(u128::from_le_bytes(out))
+}
+
 impl SceneDependencies {
     pub fn from_entities<F, G>(
         entities: &[SceneEntity],
@@ -883,13 +901,23 @@ impl SceneDependencies {
     }
 
     pub fn fingerprints(&self) -> SceneDependencyFingerprints {
-        fn hash_entries(tag: &'static str, mut entries: Vec<(String, Option<String>)>) -> u64 {
-            entries.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        self.fingerprints_with(|dep| {
+            dep.path().and_then(|p| dependency_path_fingerprint(Path::new(p)))
+        })
+    }
+
+    pub fn fingerprints_with<F>(&self, mut mesh_fingerprint: F) -> SceneDependencyFingerprints
+    where
+        F: FnMut(MeshDependencyView<'_>) -> Option<u128>,
+    {
+        fn hash_entries(tag: &'static str, mut entries: Vec<(String, Option<String>, Option<u128>)>) -> u64 {
+            entries.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.cmp(&b.2)));
             let mut hasher = DefaultHasher::new();
-            for (key, path) in entries {
+            for (key, path, fingerprint) in entries {
                 tag.hash(&mut hasher);
                 key.hash(&mut hasher);
                 path.hash(&mut hasher);
+                fingerprint.hash(&mut hasher);
             }
             hasher.finish()
         }
@@ -898,37 +926,42 @@ impl SceneDependencies {
             atlases: hash_entries(
                 "atlas",
                 self.atlas_dependencies()
-                    .map(|dep| (dep.key().to_string(), dep.path().map(|p| p.to_string())))
+                    .map(|dep| (dep.key().to_string(), dep.path().map(|p| p.to_string()), None))
                     .collect(),
             ),
             clips: hash_entries(
                 "clip",
                 self.clip_dependencies()
-                    .map(|dep| (dep.key().to_string(), dep.path().map(|p| p.to_string())))
+                    .map(|dep| (dep.key().to_string(), dep.path().map(|p| p.to_string()), None))
                     .collect(),
             ),
             skeletons: hash_entries(
                 "skeleton",
                 self.skeleton_dependencies()
-                    .map(|dep| (dep.key().to_string(), dep.path().map(|p| p.to_string())))
+                    .map(|dep| (dep.key().to_string(), dep.path().map(|p| p.to_string()), None))
                     .collect(),
             ),
             meshes: hash_entries(
                 "mesh",
                 self.mesh_dependencies()
-                    .map(|dep| (dep.key().to_string(), dep.path().map(|p| p.to_string())))
+                    .map(|dep| {
+                        let key = dep.key().to_string();
+                        let path = dep.path().map(|p| p.to_string());
+                        let fingerprint = mesh_fingerprint(dep);
+                        (key, path, fingerprint)
+                    })
                     .collect(),
             ),
             materials: hash_entries(
                 "material",
                 self.material_dependencies()
-                    .map(|dep| (dep.key().to_string(), dep.path().map(|p| p.to_string())))
+                    .map(|dep| (dep.key().to_string(), dep.path().map(|p| p.to_string()), None))
                     .collect(),
             ),
             environments: hash_entries(
                 "environment",
                 self.environment_dependencies()
-                    .map(|dep| (dep.key().to_string(), dep.path().map(|p| p.to_string())))
+                    .map(|dep| (dep.key().to_string(), dep.path().map(|p| p.to_string()), None))
                     .collect(),
             ),
         }

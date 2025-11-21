@@ -1,8 +1,15 @@
-use std::collections::HashMap;
+use blake3::Hasher as Blake3Hasher;
+use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, VecDeque};
+use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
+use std::hash::{Hash, Hasher};
 
 use anyhow::{anyhow, Result};
 
+use crate::config::MeshHashAlgorithm;
 use crate::material_registry::MaterialRegistry;
 use crate::mesh::{Mesh, MeshBounds, MeshSubset};
 use crate::renderer::{GpuMesh, Renderer};
@@ -11,32 +18,62 @@ pub struct MeshRegistry {
     entries: HashMap<String, MeshEntry>,
     default: String,
     revision: u64,
+    fingerprint_cache: HashMap<PathBuf, CachedFingerprint>,
+    fingerprint_cache_order: VecDeque<PathBuf>,
+    hash_algorithm: MeshHashAlgorithm,
+    fingerprint_cache_limit: usize,
 }
 
 struct MeshEntry {
     mesh: Mesh,
     gpu: Option<GpuMesh>,
     source: Option<PathBuf>,
+    fingerprint: Option<u128>,
     ref_count: usize,
     permanent: bool,
     material_keys: Vec<String>,
 }
 
+struct CachedFingerprint {
+    len: u64,
+    modified: Option<u128>,
+    hash: u128,
+}
+
 impl MeshRegistry {
     pub fn new(materials: &mut MaterialRegistry) -> Self {
-        let mut registry = MeshRegistry { entries: HashMap::new(), default: String::new(), revision: 0 };
+        Self::new_with_hash(materials, MeshHashAlgorithm::default(), None)
+    }
+
+    pub fn new_with_hash(
+        materials: &mut MaterialRegistry,
+        hash_algorithm: MeshHashAlgorithm,
+        cache_limit: Option<usize>,
+    ) -> Self {
+        let mut registry = MeshRegistry {
+            entries: HashMap::new(),
+            default: String::new(),
+            revision: 0,
+            fingerprint_cache: HashMap::new(),
+            fingerprint_cache_order: VecDeque::new(),
+            hash_algorithm,
+            fingerprint_cache_limit: cache_limit.unwrap_or(512),
+        };
         registry
-            .insert_entry("cube", Mesh::cube(1.0), None, Vec::new(), true)
+            .insert_entry("cube", Mesh::cube(1.0), None, None, Vec::new(), true)
             .expect("cube mesh should insert");
         match crate::mesh::Mesh::load_gltf_with_materials("assets/models/demo_triangle.gltf") {
             Ok(import) => {
                 let material_keys: Vec<String> = import.materials.iter().map(|mat| mat.key.clone()).collect();
                 materials.register_gltf_import(&import.materials, &import.textures);
                 let mesh = import.mesh;
+                let source = PathBuf::from("assets/models/demo_triangle.gltf");
+                let fingerprint = registry.mesh_source_fingerprint(&source);
                 let _ = registry.insert_entry(
                     "demo_triangle",
                     mesh,
-                    Some(PathBuf::from("assets/models/demo_triangle.gltf")),
+                    Some(source),
+                    fingerprint,
                     material_keys,
                     true,
                 );
@@ -58,6 +95,7 @@ impl MeshRegistry {
         key: impl Into<String>,
         mesh: Mesh,
         source: Option<PathBuf>,
+        fingerprint: Option<u128>,
         material_keys: Vec<String>,
         permanent: bool,
     ) -> Result<()> {
@@ -67,7 +105,7 @@ impl MeshRegistry {
         }
         self.entries.insert(
             key_str,
-            MeshEntry { mesh, gpu: None, source, ref_count: 0, permanent, material_keys },
+            MeshEntry { mesh, gpu: None, source, fingerprint, ref_count: 0, permanent, material_keys },
         );
         self.bump_revision();
         Ok(())
@@ -91,11 +129,23 @@ impl MeshRegistry {
         path: Option<&str>,
         materials: &mut MaterialRegistry,
     ) -> Result<()> {
-        if let Some(entry) = self.entries.get_mut(key) {
-            if entry.source.is_none() {
-                if let Some(p) = path {
-                    entry.source = Some(PathBuf::from(p));
-                    self.bump_revision();
+        if let Some(entry) = self.entries.get(key) {
+            let recorded_source = entry.source.clone();
+            let recorded_fingerprint = entry.fingerprint;
+            if let Some(p) = path {
+                let supplied = PathBuf::from(p);
+                let supplied_fingerprint = self.mesh_source_fingerprint(&supplied);
+                let needs_reload = match recorded_source {
+                    Some(existing) => existing != supplied || recorded_fingerprint != supplied_fingerprint,
+                    None => true,
+                };
+                if needs_reload {
+                    return self.reload_from_path(key, &supplied, materials);
+                }
+            } else if let Some(existing) = recorded_source {
+                let latest_fingerprint = self.mesh_source_fingerprint(&existing);
+                if recorded_fingerprint != latest_fingerprint {
+                    return self.reload_from_path(key, &existing, materials);
                 }
             }
             return Ok(());
@@ -128,14 +178,67 @@ impl MeshRegistry {
             }
             retained.push(mat_key.clone());
         }
-        if let Err(err) =
-            self.insert_entry(key.to_string(), mesh, Some(path_ref.to_path_buf()), material_keys, false)
+        let fingerprint = self.mesh_source_fingerprint(path_ref);
+        if let Err(err) = self.insert_entry(
+            key.to_string(),
+            mesh,
+            Some(path_ref.to_path_buf()),
+            fingerprint,
+            material_keys,
+            false,
+        )
         {
             for mat_key in retained {
                 materials.release(&mat_key);
             }
             return Err(err);
         }
+        Ok(())
+    }
+
+    fn reload_from_path(
+        &mut self,
+        key: &str,
+        path: &Path,
+        materials: &mut MaterialRegistry,
+    ) -> Result<()> {
+        let (ref_count, permanent, old_materials) = {
+            let entry =
+                self.entries.get(key).ok_or_else(|| anyhow!("Mesh '{key}' not registered for reload"))?;
+            (entry.ref_count, entry.permanent, entry.material_keys.clone())
+        };
+
+        let import = Mesh::load_gltf_with_materials(path)?;
+        materials.register_gltf_import(&import.materials, &import.textures);
+        let material_keys: Vec<String> = import.materials.iter().map(|mat| mat.key.clone()).collect();
+        let mut retained: Vec<String> = Vec::new();
+        for mat_key in &material_keys {
+            if let Err(err) = materials.retain(mat_key) {
+                for retained_key in retained {
+                    materials.release(&retained_key);
+                }
+                return Err(err);
+            }
+            retained.push(mat_key.clone());
+        }
+
+        let fingerprint = self.mesh_source_fingerprint(path);
+
+        if let Some(entry) = self.entries.get_mut(key) {
+            entry.mesh = import.mesh;
+            entry.gpu = None;
+            entry.source = Some(path.to_path_buf());
+            entry.fingerprint = fingerprint;
+            entry.material_keys = material_keys;
+            entry.ref_count = ref_count;
+            entry.permanent = permanent;
+        }
+
+        for mat_key in old_materials {
+            materials.release(&mat_key);
+        }
+
+        self.bump_revision();
         Ok(())
     }
 
@@ -214,12 +317,132 @@ impl MeshRegistry {
     fn bump_revision(&mut self) {
         self.revision = self.revision.wrapping_add(1);
     }
+
+    pub fn fingerprint_for_path(&mut self, path: &Path) -> Option<u128> {
+        self.mesh_source_fingerprint(path)
+    }
+
+    fn mesh_source_fingerprint(&mut self, path: &Path) -> Option<u128> {
+        let metadata = fs::metadata(path).ok()?;
+        let len = metadata.len();
+        let modified =
+            metadata.modified().ok().and_then(|ts| ts.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_nanos());
+
+        if let Some(entry) = self.fingerprint_cache.get(path) {
+            if entry.len == len && entry.modified == modified {
+                if matches!(self.hash_algorithm, MeshHashAlgorithm::Metadata) {
+                    return Some(entry.hash);
+                }
+            }
+        }
+
+        let hash = match self.hash_algorithm {
+            MeshHashAlgorithm::Blake3 => hash_file_with_blake3(path)?,
+            MeshHashAlgorithm::Metadata => metadata_fingerprint(len, modified),
+        };
+        let path_buf = path.to_path_buf();
+        self.fingerprint_cache.insert(path_buf.clone(), CachedFingerprint { len, modified, hash });
+        self.fingerprint_cache_order.push_back(path_buf.clone());
+        while self.fingerprint_cache_order.len() > self.fingerprint_cache_limit {
+            if let Some(evicted) = self.fingerprint_cache_order.pop_front() {
+                if evicted != path_buf {
+                    self.fingerprint_cache.remove(&evicted);
+                }
+            }
+        }
+        Some(hash)
+    }
+}
+
+fn hash_file_with_blake3(path: &Path) -> Option<u128> {
+    let mut file = fs::File::open(path).ok()?;
+    let mut hasher = Blake3Hasher::new();
+    let mut buf = [0u8; 131_072];
+    loop {
+        let read = file.read(&mut buf).ok()?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+    }
+    let finalized = hasher.finalize();
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&finalized.as_bytes()[..16]);
+    Some(u128::from_le_bytes(out))
+}
+
+fn metadata_fingerprint(len: u64, modified: Option<u128>) -> u128 {
+    let mut hasher = DefaultHasher::new();
+    len.hash(&mut hasher);
+    modified.hash(&mut hasher);
+    hasher.finish() as u128
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::material_registry::MaterialRegistry;
+    use std::path::Path;
+    use std::time::Duration;
+    use tempfile::NamedTempFile;
+
+    const SIMPLE_TRIANGLE_GLTF: &str = r#"{
+  "asset": { "version": "2.0" },
+  "buffers": [
+    {
+      "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAEAAAACAAAA",
+      "byteLength": 108
+    }
+  ],
+  "bufferViews": [
+    { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+    { "buffer": 0, "byteOffset": 36, "byteLength": 36, "target": 34962 },
+    { "buffer": 0, "byteOffset": 72, "byteLength": 24, "target": 34962 },
+    { "buffer": 0, "byteOffset": 96, "byteLength": 12, "target": 34963 }
+  ],
+  "accessors": [
+    { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 0, 0], "max": [1, 1, 0] },
+    { "bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 0, 1], "max": [0, 0, 1] },
+    { "bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC2", "min": [0, 0], "max": [1, 1] },
+    { "bufferView": 3, "componentType": 5125, "count": 3, "type": "SCALAR", "min": [0], "max": [2] }
+  ],
+  "materials": [
+    {
+      "name": "MATERIAL_NAME",
+      "pbrMetallicRoughness": { "baseColorFactor": [1, 1, 1, 1] }
+    }
+  ],
+  "meshes": [
+    {
+      "name": "Tri",
+      "primitives": [
+        {
+          "attributes": { "POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2 },
+          "indices": 3,
+          "material": 0
+        }
+      ]
+    }
+  ],
+  "nodes": [
+    { "mesh": 0, "name": "Root", "translation": [0, 0, 0] }
+  ],
+  "scenes": [
+    { "nodes": [0] }
+  ],
+  "scene": 0
+}"#;
+
+    fn write_gltf(path: &Path, material_name: &str) {
+        let json = SIMPLE_TRIANGLE_GLTF.replace("MATERIAL_NAME", material_name);
+        std::fs::write(path, json.as_bytes()).expect("write gltf json");
+    }
+
+    fn write_temp_gltf(material_name: &str) -> NamedTempFile {
+        let file = NamedTempFile::new().expect("temp gltf file");
+        write_gltf(file.path(), material_name);
+        file
+    }
 
     #[test]
     fn retain_release_tracks_counts() {
@@ -246,11 +469,13 @@ mod tests {
     fn ensure_mesh_source_updates_revision() {
         let mut materials = MaterialRegistry::new();
         let mut registry = MeshRegistry::new(&mut materials);
+        let gltf = write_temp_gltf("MatRevision");
+        let gltf_path_str = gltf.path().to_str();
         let before = registry.version();
-        registry.ensure_mesh("cube", Some("assets/models/cube.gltf"), &mut materials).unwrap();
+        registry.ensure_mesh("cube", gltf_path_str, &mut materials).unwrap();
         assert!(registry.version() > before, "revision should bump when source is recorded");
         let recorded = registry.mesh_source("cube").expect("cube should have a source set");
-        assert!(recorded.ends_with("assets/models/cube.gltf"));
+        assert_eq!(recorded, gltf.path());
     }
 
     #[test]
@@ -320,5 +545,121 @@ mod tests {
             assert!(!materials.has(&key), "material '{key}' should be released with mesh");
         }
         assert!(!registry.has("temp_triangle"));
+    }
+
+    #[test]
+    fn ensure_mesh_reloads_when_source_changes() {
+        let mut materials = MaterialRegistry::new();
+        let mut registry = MeshRegistry::new(&mut materials);
+
+        let gltf_a = write_temp_gltf("MatA");
+        let gltf_b = write_temp_gltf("MatB");
+        let key = "temp_reload";
+
+        registry
+            .load_from_path(key, gltf_a.path(), &mut materials)
+            .expect("first load should succeed");
+        let mat_a_key = format!("{}::MatA", gltf_a.path().display());
+        assert!(materials.has(&mat_a_key));
+        let before = registry.version();
+
+        registry
+            .ensure_mesh(key, gltf_b.path().to_str(), &mut materials)
+            .expect("reload should succeed");
+        let mat_b_key = format!("{}::MatB", gltf_b.path().display());
+        assert!(materials.has(&mat_b_key), "new material should be registered");
+        assert!(!materials.has(&mat_a_key), "old material should be released after reload");
+
+        let recorded_source = registry.mesh_source(key).expect("source should be recorded");
+        assert_eq!(recorded_source, gltf_b.path(), "new source should replace old source");
+        assert!(registry.version() > before, "revision should advance when reloads happen");
+    }
+
+    #[test]
+    fn ensure_mesh_reloads_when_source_contents_change() {
+        let mut materials = MaterialRegistry::new();
+        let mut registry = MeshRegistry::new(&mut materials);
+
+        let gltf = write_temp_gltf("MatOriginal");
+        let key = "temp_reload_same_path";
+
+        registry
+            .load_from_path(key, gltf.path(), &mut materials)
+            .expect("first load should succeed");
+        let original_mat_key = format!("{}::MatOriginal", gltf.path().display());
+        assert!(materials.has(&original_mat_key));
+        let before = registry.version();
+
+        std::thread::sleep(Duration::from_millis(5));
+        write_gltf(gltf.path(), "MatReloadedLong");
+
+        registry
+            .ensure_mesh(key, gltf.path().to_str(), &mut materials)
+            .expect("reload should succeed for in-place edits");
+        let reloaded_mat_key = format!("{}::MatReloadedLong", gltf.path().display());
+        assert!(materials.has(&reloaded_mat_key), "new material should be registered");
+        assert!(
+            !materials.has(&original_mat_key),
+            "old material should be released after same-path reload"
+        );
+
+        let recorded_source = registry.mesh_source(key).expect("source should stay recorded");
+        assert_eq!(recorded_source, gltf.path(), "source path should remain the same");
+        assert!(registry.version() > before, "revision should advance when content reloads happen");
+    }
+
+    #[test]
+    fn ensure_mesh_reloads_in_place_without_explicit_path() {
+        let mut materials = MaterialRegistry::new();
+        let mut registry = MeshRegistry::new(&mut materials);
+
+        let gltf = write_temp_gltf("MatAlpha");
+        let key = "temp_reload_no_path";
+
+        registry.load_from_path(key, gltf.path(), &mut materials).expect("first load should succeed");
+        let mat_alpha = format!("{}::MatAlpha", gltf.path().display());
+        assert!(materials.has(&mat_alpha));
+        let before = registry.version();
+
+        std::thread::sleep(Duration::from_millis(5));
+        write_gltf(gltf.path(), "MatBeta");
+
+        registry.ensure_mesh(key, None, &mut materials).expect("reload should work without path");
+        let mat_beta = format!("{}::MatBeta", gltf.path().display());
+        assert!(materials.has(&mat_beta), "new material should be registered");
+        assert!(
+            !materials.has(&mat_alpha),
+            "old material should be released after same-path reload"
+        );
+        assert!(registry.version() > before, "revision should advance when content reloads happen");
+    }
+
+    #[test]
+    fn blake3_rehashes_even_when_metadata_matches() {
+        let mut materials = MaterialRegistry::new();
+        let mut registry = MeshRegistry::new(&mut materials);
+
+        let gltf = write_temp_gltf("MatHash");
+        let expected = hash_file_with_blake3(gltf.path()).expect("hash should compute");
+
+        let metadata = std::fs::metadata(gltf.path()).expect("metadata should exist");
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|ts| ts.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos());
+
+        let stale_hash = expected ^ 0xFFFF;
+        registry.fingerprint_cache.insert(
+            gltf.path().to_path_buf(),
+            CachedFingerprint { len: metadata.len(), modified, hash: stale_hash },
+        );
+        registry.fingerprint_cache_order.push_back(gltf.path().to_path_buf());
+
+        let actual = registry.mesh_source_fingerprint(gltf.path()).expect("hash should recompute");
+        assert_eq!(
+            actual, expected,
+            "Blake3 hashing should read the file even when metadata matches cached entry"
+        );
     }
 }

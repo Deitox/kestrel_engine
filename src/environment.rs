@@ -164,6 +164,7 @@ impl EnvironmentRegistry {
 
     pub fn retain(&mut self, key: &str, source: Option<&str>) -> Result<()> {
         if let Some(entry) = self.environments.get_mut(key) {
+            let mut bumped = false;
             entry.ref_count = entry.ref_count.saturating_add(1);
             if let Some(path) = source {
                 let new_source = path.to_string();
@@ -178,7 +179,12 @@ impl EnvironmentRegistry {
                     entry.maps = None;
                     entry.gpu = None;
                     self.bump_revision();
+                    bumped = true;
                 }
+            }
+            // Even if the source didn't change, a ref-count mutation is a meaningful state change.
+            if !bumped {
+                self.bump_revision();
             }
             return Ok(());
         }
@@ -196,20 +202,27 @@ impl EnvironmentRegistry {
     }
 
     pub fn release(&mut self, key: &str) -> bool {
+        let mut existed = false;
+        let mut should_remove = false;
+        let mut ref_changed = false;
         if let Some(entry) = self.environments.get_mut(key) {
-            if entry.permanent {
-                return true;
-            }
+            existed = true;
             if entry.ref_count > 0 {
                 entry.ref_count -= 1;
+                ref_changed = true;
             }
-            if entry.ref_count == 0 {
-                entry.gpu = None;
-                entry.maps = None;
+            if entry.ref_count == 0 && !entry.permanent {
+                should_remove = true;
             }
-            return true;
         }
-        false
+        if should_remove {
+            self.environments.remove(key);
+            self.bump_revision();
+        } else if existed && ref_changed {
+            // Keep resident, but surface ref-count change to versioned consumers.
+            self.bump_revision();
+        }
+        existed
     }
 
     pub fn ref_count(&self, key: &str) -> Option<usize> {
@@ -646,13 +659,67 @@ mod tests {
             assert_eq!(entry.ref_count, 1);
             assert!(entry.maps.is_some(), "maps should be cached after retain");
         }
+        let before_release_version = registry.version();
         assert!(registry.release(key));
-        {
-            let entry = registry.environments.get(key).expect("entry");
-            assert_eq!(entry.ref_count, 0);
-            assert!(entry.maps.is_none(), "maps should be dropped when refcount reaches zero");
-            assert!(entry.gpu.is_none(), "gpu resources cleared when refcount reaches zero");
-        }
+        assert!(
+            !registry.environments.contains_key(key),
+            "non-permanent environment should be removed when the last reference is released"
+        );
+        assert!(
+            registry.version() > before_release_version,
+            "removing an environment should bump the registry revision"
+        );
+    }
+
+    #[test]
+    fn release_removes_zero_ref_environment() {
+        let mut registry = EnvironmentRegistry::new();
+        let before = registry.version();
+        registry.environments.insert(
+            "temp".to_string(),
+            EnvironmentEntry {
+                definition: EnvironmentDefinition {
+                    key: "temp".to_string(),
+                    label: "Temp".to_string(),
+                    source: Some("path/to/env.hdr".to_string()),
+                },
+                maps: None,
+                gpu: None,
+                ref_count: 0,
+                permanent: false,
+            },
+        );
+
+        assert!(registry.release("temp"));
+        assert!(!registry.environments.contains_key("temp"));
+        assert!(registry.version() > before);
+    }
+
+    #[test]
+    fn retain_bumps_version_for_existing_environment() {
+        let mut registry = EnvironmentRegistry::new();
+        let default_key = registry.default_key().to_string();
+        let before = registry.version();
+        registry.retain(&default_key, None).expect("retain default env");
+        assert!(registry.version() > before, "refcount change should bump revision");
+    }
+
+    #[test]
+    fn release_bumps_version_for_permanent_environment() {
+        let mut registry = EnvironmentRegistry::new();
+        let default_key = registry.default_key().to_string();
+        let before = registry.version();
+        let existed = registry.release(&default_key);
+        assert!(existed);
+        assert_eq!(
+            registry.ref_count(&default_key),
+            Some(0),
+            "permanent environment should keep entry but allow refcount to reach zero"
+        );
+        assert!(
+            registry.version() > before,
+            "releasing a permanent environment should still update revision"
+        );
     }
 }
 

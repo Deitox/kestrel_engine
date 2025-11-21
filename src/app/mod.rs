@@ -3,6 +3,7 @@ mod animation_tooling;
 mod animation_watch;
 mod asset_watch_tooling;
 mod atlas_watch;
+mod mesh_watch;
 mod editor_shell;
 mod editor_ui;
 mod gizmo_interaction;
@@ -21,6 +22,7 @@ use self::animation_keyframe_panel::{
 };
 use self::animation_watch::{AnimationAssetKind, AnimationAssetWatcher};
 use self::atlas_watch::AtlasHotReload;
+use self::atlas_watch::normalize_path_for_watch;
 use self::editor_shell::{
     EditorShell, EditorUiState, EditorUiStateParams, EmitterUiDefaults, ScriptDebuggerStatus,
     ScriptHandleBinding,
@@ -28,6 +30,7 @@ use self::editor_shell::{
 use self::plugin_host::{BuiltinPluginFactory, PluginHost};
 use self::plugin_runtime::{PluginContextInputs, PluginRuntime};
 use self::runtime_loop::{RuntimeLoop, RuntimeTick};
+use self::mesh_watch::MeshHotReload;
 pub(crate) use self::telemetry_tooling::FrameBudgetSnapshot;
 use self::telemetry_tooling::GpuTimingFrame;
 #[cfg(feature = "alloc_profiler")]
@@ -309,6 +312,7 @@ pub struct App {
 
     sprite_atlas_views: HashMap<String, Arc<wgpu::TextureView>>,
     atlas_hot_reload: Option<AtlasHotReload>,
+    mesh_hot_reload: Option<MeshHotReload>,
     animation_asset_watcher: Option<AnimationAssetWatcher>,
     animation_watch_roots_queue: Vec<(PathBuf, AnimationAssetKind)>,
     animation_watch_roots_pending: HashSet<(PathBuf, AnimationAssetKind)>,
@@ -781,6 +785,51 @@ impl App {
         }
     }
 
+    fn sync_mesh_hot_reload(&mut self) {
+        let Some(watcher) = self.mesh_hot_reload.as_mut() else {
+            return;
+        };
+        let mut desired: Vec<(PathBuf, PathBuf, String)> = Vec::new();
+        for key in self.mesh_registry.keys() {
+            if let Some(path) = self.mesh_registry.mesh_source(key) {
+                if let Some((original, normalized)) = normalize_path_for_watch(path) {
+                    desired.push((original, normalized, key.to_string()));
+                }
+            }
+        }
+        if let Err(err) = watcher.sync(&desired) {
+            eprintln!("[mesh] mesh hot-reload sync failed: {err}");
+        }
+    }
+
+    fn process_mesh_hot_reload_events(&mut self) {
+        let keys = if let Some(watcher) = self.mesh_hot_reload.as_mut() {
+            watcher.drain_keys()
+        } else {
+            Vec::new()
+        };
+        if keys.is_empty() {
+            return;
+        }
+        let mut unique = keys;
+        unique.sort();
+        unique.dedup();
+        for key in unique {
+            let source = self
+                .mesh_registry
+                .mesh_source(&key)
+                .and_then(|p| p.to_str().map(|s| s.to_string()));
+            if let Some(path) = source {
+                match self.mesh_registry.ensure_mesh(&key, Some(&path), &mut self.material_registry) {
+                    Ok(()) => println!("[mesh] Hot reloaded '{key}' from {path}"),
+                    Err(err) => eprintln!("[mesh] Failed to hot reload mesh '{key}': {err}"),
+                }
+            } else {
+                eprintln!("[mesh] Hot reload skipped for '{key}': no source path recorded");
+            }
+        }
+    }
+
     fn refresh_camera_follow(&mut self) -> bool {
         let Some(target_id) = self.camera_follow_target.as_ref().map(|id| id.as_str().to_string()) else {
             return false;
@@ -1042,7 +1091,11 @@ impl App {
         }
         let environment_intensity = default_environment_intensity;
         let mut material_registry = MaterialRegistry::new();
-        let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+        let mut mesh_registry = MeshRegistry::new_with_hash(
+            &mut material_registry,
+            config.mesh.hash_algorithm,
+            Some(config.mesh.hash_cache_limit),
+        );
         let scene_material_refs = HashSet::new();
         let scene_clip_refs = HashMap::new();
         let ui_state = EditorUiState::new(EditorUiStateParams {
@@ -1113,6 +1166,13 @@ impl App {
                 None
             }
         };
+        let mesh_hot_reload = match MeshHotReload::new() {
+            Ok(watcher) => Some(watcher),
+            Err(err) => {
+                eprintln!("[mesh] mesh hot-reload disabled: {err}");
+                None
+            }
+        };
         let animation_asset_watcher = Self::init_animation_asset_watcher();
         let animation_reload_worker = AnimationReloadWorker::new();
         let animation_reload_queue = AnimationReloadQueue::new(MAX_PENDING_ANIMATION_RELOADS_PER_KIND);
@@ -1157,6 +1217,7 @@ impl App {
             emitter_entity: Some(emitter),
             sprite_atlas_views: HashMap::new(),
             atlas_hot_reload,
+            mesh_hot_reload,
             animation_asset_watcher,
             animation_watch_roots_queue: Vec::new(),
             animation_watch_roots_pending: HashSet::new(),
@@ -1177,6 +1238,7 @@ impl App {
         };
         app.seed_animation_watch_roots();
         app.sync_animation_asset_watch_roots();
+        app.sync_mesh_hot_reload();
         app.apply_particle_caps();
         app.apply_editor_camera_settings();
         app.report_audio_startup_status();
@@ -1855,7 +1917,13 @@ impl App {
     }
 
     fn update_scene_dependencies(&mut self, deps: &SceneDependencies) -> Result<()> {
-        let fingerprint = deps.fingerprints();
+        let fingerprint = {
+            let mesh_registry = &mut self.mesh_registry;
+            deps.fingerprints_with(|dep| {
+                dep.path()
+                    .and_then(|p| mesh_registry.fingerprint_for_path(Path::new(p)))
+            })
+        };
         let cached_fingerprint = {
             let state = self.editor_ui_state();
             state.scene_dependency_fingerprints
@@ -2412,6 +2480,8 @@ impl ApplicationHandler for App {
         if let Some(dropped) = dropped_backlog {
             eprintln!("[time] Dropping {:.3}s of fixed-step backlog to maintain responsiveness", dropped);
         }
+        self.sync_mesh_hot_reload();
+        self.process_mesh_hot_reload_events();
         self.sync_atlas_hot_reload();
         self.process_atlas_hot_reload_events();
         self.process_animation_asset_watchers();

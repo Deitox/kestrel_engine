@@ -164,7 +164,7 @@ pub fn compare_baselines(
                 current_avg_ms: curr.average_ms,
                 delta_ms: delta,
                 allowed_drift_ms: allowed,
-                within_tolerance: delta <= allowed,
+                within_tolerance: delta.abs() <= allowed,
                 status: BaselinePassStatus::Matched,
             });
         } else {
@@ -275,6 +275,42 @@ mod tests {
         let mesh = deltas.iter().find(|d| d.label == "Mesh pass").unwrap();
         assert!((mesh.delta_ms - 0.1).abs() < f32::EPSILON);
         assert_eq!(mesh.allowed_drift_ms, 0.2);
+        assert_eq!(mesh.status, BaselinePassStatus::Matched);
+    }
+
+    #[test]
+    fn compare_baseline_uses_absolute_delta_for_tolerance() {
+        let baseline = GpuBaselineSnapshot {
+            label: "base".into(),
+            timestamp: "t0".into(),
+            commit: "abc".into(),
+            frame_count: 1,
+            passes: vec![GpuPassSnapshot {
+                label: "Mesh pass".into(),
+                latest_ms: 1.0,
+                average_ms: 1.0,
+                max_ms: 1.0,
+                sample_count: 1,
+            }],
+        };
+        let current = GpuBaselineSnapshot {
+            label: "cur".into(),
+            timestamp: "t1".into(),
+            commit: "def".into(),
+            frame_count: 1,
+            passes: vec![GpuPassSnapshot {
+                label: "Mesh pass".into(),
+                latest_ms: 0.3,
+                average_ms: 0.3,
+                max_ms: 0.3,
+                sample_count: 1,
+            }],
+        };
+        let deltas = compare_baselines(&baseline, &current, &HashMap::new(), 0.2).unwrap();
+        assert_eq!(deltas.len(), 1);
+        let mesh = deltas.first().expect("one delta expected");
+        assert!((mesh.delta_ms + 0.7).abs() < f32::EPSILON);
+        assert!(!mesh.within_tolerance, "large improvements should also register as drift");
         assert_eq!(mesh.status, BaselinePassStatus::Matched);
     }
 
