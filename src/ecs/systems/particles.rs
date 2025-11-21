@@ -23,6 +23,8 @@ pub fn sys_update_emitters(
     active_particles = active_particles.clamp(0, max_total);
     let mut remaining_headroom = (max_total - active_particles).max(0);
     let mut frame_budget = remaining_headroom.min(max_spawn_per_frame);
+    let mut batch_plain = Vec::new();
+    let mut batch_with_trail = Vec::new();
 
     for (mut emitter, transform) in emitters.iter_mut() {
         let spawn_rate = emitter.rate.max(0.0);
@@ -47,7 +49,7 @@ pub fn sys_update_emitters(
             let velocity = dir * emitter.speed;
             let lifetime = emitter.lifetime;
             let start_size = emitter.start_size.max(0.01);
-            let mut entity = commands.spawn((
+            let base = (
                 Transform {
                     translation: transform.translation + dir * 0.05,
                     rotation: 0.0,
@@ -66,14 +68,36 @@ pub fn sys_update_emitters(
                     start_size: emitter.start_size,
                     end_size: emitter.end_size,
                 },
-            ));
+            );
             if let Some(trail) = emitter.trail {
-                entity.insert(trail);
+                batch_with_trail.push((
+                    base.0,
+                    base.1,
+                    base.2,
+                    base.3,
+                    base.4,
+                    base.5,
+                    base.6,
+                    base.7,
+                    base.8,
+                    trail,
+                ));
+            } else {
+                batch_plain.push(base);
             }
         }
         frame_budget -= to_spawn;
         remaining_headroom -= to_spawn;
         active_particles = (active_particles + to_spawn).min(max_total);
+    }
+
+    if !batch_plain.is_empty() {
+        let batch = batch_plain.drain(..).collect::<Vec<_>>();
+        commands.spawn_batch(batch);
+    }
+    if !batch_with_trail.is_empty() {
+        let batch = batch_with_trail.drain(..).collect::<Vec<_>>();
+        commands.spawn_batch(batch);
     }
 
     particle_state.active_particles = active_particles.max(0) as u32;
