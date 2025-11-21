@@ -2,10 +2,10 @@ use blake3::Hasher as Blake3Hasher;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, VecDeque};
 use std::fs;
-use std::io::Read;
+use std::hash::{Hash, Hasher};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
-use std::hash::{Hash, Hasher};
 
 use anyhow::{anyhow, Result};
 
@@ -38,6 +38,8 @@ struct CachedFingerprint {
     len: u64,
     modified: Option<u128>,
     hash: u128,
+    sample: Option<u64>,
+    algorithm: MeshHashAlgorithm,
 }
 
 impl MeshRegistry {
@@ -182,7 +184,7 @@ impl MeshRegistry {
         }
         let path_ref = path.as_ref();
         let import = Mesh::load_gltf_with_materials(path_ref)?;
-        materials.register_gltf_import(&import.materials, &import.textures);
+        let snapshot = materials.register_gltf_import_with_snapshot(&import.materials, &import.textures);
         let mesh = import.mesh;
         let material_keys: Vec<String> = import.materials.iter().map(|mat| mat.key.clone()).collect();
         let mut retained: Vec<String> = Vec::new();
@@ -191,6 +193,7 @@ impl MeshRegistry {
                 for retained_key in retained {
                     materials.release(&retained_key);
                 }
+                snapshot.rollback(materials);
                 return Err(err);
             }
             retained.push(mat_key.clone());
@@ -208,6 +211,7 @@ impl MeshRegistry {
             for mat_key in retained {
                 materials.release(&mat_key);
             }
+            snapshot.rollback(materials);
             return Err(err);
         }
         Ok(())
@@ -226,7 +230,7 @@ impl MeshRegistry {
         };
 
         let import = Mesh::load_gltf_with_materials(path)?;
-        materials.register_gltf_import(&import.materials, &import.textures);
+        let snapshot = materials.register_gltf_import_with_snapshot(&import.materials, &import.textures);
         let material_keys: Vec<String> = import.materials.iter().map(|mat| mat.key.clone()).collect();
         let mut retained: Vec<String> = Vec::new();
         for mat_key in &material_keys {
@@ -234,6 +238,7 @@ impl MeshRegistry {
                 for retained_key in retained {
                     materials.release(&retained_key);
                 }
+                snapshot.rollback(materials);
                 return Err(err);
             }
             retained.push(mat_key.clone());
@@ -339,6 +344,39 @@ impl MeshRegistry {
         self.mesh_source_fingerprint(path)
     }
 
+    fn refresh_cache_entry(&mut self, path: &Path) {
+        if let Some(pos) = self.fingerprint_cache_order.iter().position(|p| p == path) {
+            self.fingerprint_cache_order.remove(pos);
+        }
+        self.fingerprint_cache_order.push_back(path.to_path_buf());
+    }
+
+    fn insert_fingerprint(
+        &mut self,
+        path: &Path,
+        len: u64,
+        modified: Option<u128>,
+        fingerprint: FingerprintResult,
+    ) {
+        let path_buf = path.to_path_buf();
+        self.refresh_cache_entry(path);
+        self.fingerprint_cache.insert(
+            path_buf,
+            CachedFingerprint {
+                len,
+                modified,
+                hash: fingerprint.hash,
+                sample: fingerprint.sample,
+                algorithm: self.hash_algorithm,
+            },
+        );
+        while self.fingerprint_cache_order.len() > self.fingerprint_cache_limit {
+            if let Some(evicted) = self.fingerprint_cache_order.pop_front() {
+                self.fingerprint_cache.remove(&evicted);
+            }
+        }
+    }
+
     fn mesh_source_fingerprint(&mut self, path: &Path) -> Option<u128> {
         let metadata = fs::metadata(path).ok()?;
         let len = metadata.len();
@@ -346,39 +384,42 @@ impl MeshRegistry {
             metadata.modified().ok().and_then(|ts| ts.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_nanos());
 
         if let Some(entry) = self.fingerprint_cache.get(path) {
-            if entry.len == len && entry.modified == modified && matches!(self.hash_algorithm, MeshHashAlgorithm::Metadata)
-            {
-                if let Some(pos) = self.fingerprint_cache_order.iter().position(|p| p == path) {
-                    self.fingerprint_cache_order.remove(pos);
-                    self.fingerprint_cache_order.push_back(path.to_path_buf());
+            if entry.len == len && entry.modified == modified && entry.algorithm == self.hash_algorithm {
+                let hash = entry.hash;
+                let cached_sample = entry.sample;
+                let current_sample = quick_sample_hash(path);
+                if samples_match(cached_sample, current_sample) {
+                    self.refresh_cache_entry(path);
+                    return Some(hash);
                 }
-                return Some(entry.hash);
             }
         }
 
-        let hash = match self.hash_algorithm {
+        let computed = match self.hash_algorithm {
             MeshHashAlgorithm::Blake3 => hash_file_with_blake3(path)?,
-            MeshHashAlgorithm::Metadata => metadata_fingerprint(len, modified),
+            MeshHashAlgorithm::Metadata => FingerprintResult {
+                hash: metadata_fingerprint(len, modified),
+                sample: quick_sample_hash(path),
+            },
         };
-        let path_buf = path.to_path_buf();
-        if let Some(pos) = self.fingerprint_cache_order.iter().position(|p| p == path) {
-            self.fingerprint_cache_order.remove(pos);
-        }
-        self.fingerprint_cache.insert(path_buf.clone(), CachedFingerprint { len, modified, hash });
-        self.fingerprint_cache_order.push_back(path_buf.clone());
-        while self.fingerprint_cache_order.len() > self.fingerprint_cache_limit {
-            if let Some(evicted) = self.fingerprint_cache_order.pop_front() {
-                self.fingerprint_cache.remove(&evicted);
-            }
-        }
+        let hash = computed.hash;
+        self.insert_fingerprint(path, len, modified, computed);
         Some(hash)
     }
 }
 
-fn hash_file_with_blake3(path: &Path) -> Option<u128> {
+const FINGERPRINT_SAMPLE_BYTES: usize = 4_096;
+
+struct FingerprintResult {
+    hash: u128,
+    sample: Option<u64>,
+}
+
+fn hash_file_with_blake3(path: &Path) -> Option<FingerprintResult> {
     let mut file = fs::File::open(path).ok()?;
     let mut hasher = Blake3Hasher::new();
     let mut buf = [0u8; 131_072];
+
     loop {
         let read = file.read(&mut buf).ok()?;
         if read == 0 {
@@ -386,10 +427,14 @@ fn hash_file_with_blake3(path: &Path) -> Option<u128> {
         }
         hasher.update(&buf[..read]);
     }
+
     let finalized = hasher.finalize();
     let mut out = [0u8; 16];
     out.copy_from_slice(&finalized.as_bytes()[..16]);
-    Some(u128::from_le_bytes(out))
+
+    let sample = quick_sample_hash(path);
+
+    Some(FingerprintResult { hash: u128::from_le_bytes(out), sample })
 }
 
 fn metadata_fingerprint(len: u64, modified: Option<u128>) -> u128 {
@@ -397,6 +442,59 @@ fn metadata_fingerprint(len: u64, modified: Option<u128>) -> u128 {
     len.hash(&mut hasher);
     modified.hash(&mut hasher);
     hasher.finish() as u128
+}
+
+fn quick_sample_hash(path: &Path) -> Option<u64> {
+    let metadata = fs::metadata(path).ok()?;
+    let file_len = metadata.len();
+    let mut file = fs::File::open(path).ok()?;
+    let mut buf = [0u8; FINGERPRINT_SAMPLE_BYTES];
+    let mut hasher = DefaultHasher::new();
+
+    // Head
+    let head_read = file.read(&mut buf).ok()?;
+    if head_read == 0 {
+        return None;
+    }
+    hasher.write(&buf[..head_read]);
+
+    // Middle sample if the file is large enough to avoid overlapping head/tail.
+    if file_len > (FINGERPRINT_SAMPLE_BYTES as u64 * 3) {
+        let mid_start = file_len / 2;
+        let mid_offset = mid_start.saturating_sub((FINGERPRINT_SAMPLE_BYTES as u64) / 2);
+        file.seek(SeekFrom::Start(mid_offset)).ok()?;
+        let mid_read = file.read(&mut buf).ok()?;
+        if mid_read > 0 {
+            hasher.write(&buf[..mid_read]);
+        }
+    }
+
+    // Tail
+    if file_len > FINGERPRINT_SAMPLE_BYTES as u64 {
+        let tail_start = file_len.saturating_sub(FINGERPRINT_SAMPLE_BYTES as u64);
+        if tail_start > 0 {
+            file.seek(SeekFrom::Start(tail_start)).ok()?;
+            let tail_read = file.read(&mut buf).ok()?;
+            if tail_read > 0 {
+                hasher.write(&buf[..tail_read]);
+            }
+        }
+    } else {
+        let tail_read = file.read(&mut buf).ok()?;
+        if tail_read > 0 {
+            hasher.write(&buf[..tail_read]);
+        }
+    }
+
+    Some(hasher.finish())
+}
+
+fn samples_match(expected: Option<u64>, actual: Option<u64>) -> bool {
+    match (expected, actual) {
+        (Some(lhs), Some(rhs)) => lhs == rhs,
+        (None, None) => true,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -669,16 +767,22 @@ mod tests {
             .and_then(|ts| ts.duration_since(UNIX_EPOCH).ok())
             .map(|d| d.as_nanos());
 
-        let stale_hash = expected ^ 0xFFFF;
+        let stale_hash = expected.hash ^ 0xFFFF;
         registry.fingerprint_cache.insert(
             gltf.path().to_path_buf(),
-            CachedFingerprint { len: metadata.len(), modified, hash: stale_hash },
+            CachedFingerprint {
+                len: metadata.len(),
+                modified,
+                hash: stale_hash,
+                sample: expected.sample.map(|s| s ^ 0x1234_5678),
+                algorithm: MeshHashAlgorithm::Blake3,
+            },
         );
         registry.fingerprint_cache_order.push_back(gltf.path().to_path_buf());
 
         let actual = registry.mesh_source_fingerprint(gltf.path()).expect("hash should recompute");
         assert_eq!(
-            actual, expected,
+            actual, expected.hash,
             "Blake3 hashing should read the file even when metadata matches cached entry"
         );
     }

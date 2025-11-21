@@ -41,6 +41,7 @@ pub struct MaterialRegistry {
 }
 
 #[allow(dead_code)]
+#[derive(Clone)]
 struct MaterialEntry {
     definition: MaterialDefinition,
     gpu: Option<Arc<MaterialGpu>>,
@@ -48,6 +49,7 @@ struct MaterialEntry {
     permanent: bool,
 }
 
+#[derive(Clone)]
 struct TextureEntry {
     width: u32,
     height: u32,
@@ -64,6 +66,7 @@ struct DefaultTextures {
 }
 
 #[allow(dead_code)]
+#[derive(Clone)]
 pub struct MaterialGpu {
     bind_group: Arc<wgpu::BindGroup>,
     uniform_buffer: Arc<wgpu::Buffer>,
@@ -117,7 +120,21 @@ impl MaterialRegistry {
         import_materials: &[ImportedMaterial],
         import_textures: &[ImportedTexture],
     ) {
+        let _ = self.register_gltf_import_with_snapshot(import_materials, import_textures);
+    }
+
+    pub(crate) fn register_gltf_import_with_snapshot(
+        &mut self,
+        import_materials: &[ImportedMaterial],
+        import_textures: &[ImportedTexture],
+    ) -> ImportSnapshot {
+        let mut snapshot = ImportSnapshot::default();
         for texture in import_textures {
+            if let Some(existing) = self.textures.get(&texture.key) {
+                snapshot.overwritten_textures.insert(texture.key.clone(), existing.clone());
+            } else {
+                snapshot.new_textures.push(texture.key.clone());
+            }
             self.textures
                 .entry(texture.key.clone())
                 .and_modify(|entry| {
@@ -137,6 +154,11 @@ impl MaterialRegistry {
         }
 
         for material in import_materials {
+            if let Some(existing) = self.materials.get(&material.key) {
+                snapshot.overwritten_materials.insert(material.key.clone(), existing.clone());
+            } else {
+                snapshot.new_materials.push(material.key.clone());
+            }
             let definition = MaterialDefinition {
                 key: material.key.clone(),
                 label: material.label.clone(),
@@ -164,6 +186,7 @@ impl MaterialRegistry {
                 );
             }
         }
+        snapshot
     }
 
     pub fn default_key(&self) -> &str {
@@ -544,6 +567,45 @@ impl MaterialRegistry {
 impl Default for MaterialRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct ImportSnapshot {
+    overwritten_materials: HashMap<String, MaterialEntry>,
+    new_materials: Vec<String>,
+    overwritten_textures: HashMap<String, TextureEntry>,
+    new_textures: Vec<String>,
+}
+
+impl ImportSnapshot {
+    pub(crate) fn rollback(self, registry: &mut MaterialRegistry) {
+        // Remove newly added materials and revert overwritten ones.
+        for key in self.new_materials {
+            if let Some(entry) = registry.materials.remove(&key) {
+                registry.bump_texture_refs(&entry.definition, -1);
+            }
+        }
+        for (key, mut previous) in self.overwritten_materials {
+            if let Some(entry) = registry.materials.remove(&key) {
+                registry.bump_texture_refs(&entry.definition, -1);
+                // Preserve current ref_count/permanent flags to avoid dropping live references.
+                previous.ref_count = entry.ref_count;
+                previous.permanent = entry.permanent;
+                registry.bump_texture_refs(&previous.definition, 1);
+                registry.materials.insert(key, previous);
+            }
+        }
+
+        // Remove newly added textures and restore overwritten ones.
+        for key in self.new_textures {
+            registry.textures.remove(&key);
+            registry.texture_material_refs.remove(&key);
+        }
+        for (key, texture) in self.overwritten_textures {
+            registry.textures.insert(key.clone(), texture);
+            // Texture refs are tracked via materials; restoring materials above maintains counts.
+        }
     }
 }
 
