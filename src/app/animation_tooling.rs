@@ -373,7 +373,7 @@ impl App {
         };
         let mut target_index = timeline.frames.len() - 1;
         for (index, offset) in timeline.frame_offsets.iter().enumerate() {
-            let span = timeline.durations.get(index).copied().unwrap_or(0.0).max(std::f32::EPSILON);
+            let span = timeline.durations.get(index).copied().unwrap_or(0.0).max(f32::EPSILON);
             if wrapped <= offset + span || index == timeline.frames.len() - 1 {
                 target_index = index;
                 break;
@@ -1075,7 +1075,7 @@ impl App {
         for window in frames.windows(2) {
             let start = &window[0];
             let end = &window[1];
-            let span = (end.time - start.time).max(std::f32::EPSILON);
+            let span = (end.time - start.time).max(f32::EPSILON);
             let inv_span = 1.0 / span;
             offsets.push(start.time);
             let delta = end.value - start.value;
@@ -1101,7 +1101,7 @@ impl App {
         for window in frames.windows(2) {
             let start = &window[0];
             let end = &window[1];
-            let span = (end.time - start.time).max(std::f32::EPSILON);
+            let span = (end.time - start.time).max(f32::EPSILON);
             let inv_span = 1.0 / span;
             offsets.push(start.time);
             let delta = end.value - start.value;
@@ -1127,7 +1127,7 @@ impl App {
         for window in frames.windows(2) {
             let start = &window[0];
             let end = &window[1];
-            let span = (end.time - start.time).max(std::f32::EPSILON);
+            let span = (end.time - start.time).max(f32::EPSILON);
             let inv_span = 1.0 / span;
             offsets.push(start.time);
             let delta = end.value - start.value;

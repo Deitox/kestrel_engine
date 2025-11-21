@@ -2551,7 +2551,7 @@ impl ApplicationHandler for App {
                 self.set_active_camera_bookmark(None);
             }
 
-            if self.input.right_held() {
+            if self.input.right_mouse_held() {
                 let (dx, dy) = self.input.mouse_delta;
                 if dx.abs() > f32::EPSILON || dy.abs() > f32::EPSILON {
                     self.camera.pan_screen_delta(Vec2::new(dx, dy), viewport_size);

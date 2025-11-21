@@ -556,7 +556,7 @@ impl MeshPreviewPlugin {
                 self.mesh_freefly_rot_velocity = Vec3::ZERO;
                 let (dx, dy, right_held) = {
                     let input = ctx.input()?;
-                    (input.mouse_delta.0, input.mouse_delta.1, input.right_held())
+                    (input.mouse_delta.0, input.mouse_delta.1, input.right_mouse_held())
                 };
                 if right_held && (dx.abs() > f32::EPSILON || dy.abs() > f32::EPSILON) {
                     let sensitivity = 0.008;
@@ -594,7 +594,7 @@ impl MeshPreviewPlugin {
                     let input = ctx.input()?;
                     FreeflySnapshot {
                         mouse_delta: input.mouse_delta,
-                        right_held: input.right_held(),
+                        right_held: input.right_mouse_held(),
                         roll_right: input.freefly_roll_right(),
                         roll_left: input.freefly_roll_left(),
                         forward: input.freefly_forward(),

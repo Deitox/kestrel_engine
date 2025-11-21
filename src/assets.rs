@@ -136,7 +136,7 @@ fn build_segment_cache_vec2(
     for window in frames.windows(2) {
         let start = &window[0];
         let end = &window[1];
-        let span = (end.time - start.time).max(std::f32::EPSILON);
+        let span = (end.time - start.time).max(f32::EPSILON);
         let inv_span = 1.0 / span;
         offsets.push(start.time);
         let delta = end.value - start.value;
@@ -162,7 +162,7 @@ fn build_segment_cache_scalar(
     for window in frames.windows(2) {
         let start = &window[0];
         let end = &window[1];
-        let span = (end.time - start.time).max(std::f32::EPSILON);
+        let span = (end.time - start.time).max(f32::EPSILON);
         let inv_span = 1.0 / span;
         offsets.push(start.time);
         let delta = end.value - start.value;
@@ -188,7 +188,7 @@ fn build_segment_cache_vec4(
     for window in frames.windows(2) {
         let start = &window[0];
         let end = &window[1];
-        let span = (end.time - start.time).max(std::f32::EPSILON);
+        let span = (end.time - start.time).max(f32::EPSILON);
         let inv_span = 1.0 / span;
         offsets.push(start.time);
         let delta = end.value - start.value;

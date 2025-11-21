@@ -677,7 +677,7 @@ mod tests {
     fn random_range_returns_value_for_equal_bounds() {
         let state = Rc::new(RefCell::new(SharedState::default()));
         let mut world = ScriptWorld::new(state);
-        let value = world.random_range(3.14, 3.14);
-        assert_eq!(value, 3.14);
+        let value = world.random_range(std::f32::consts::PI, std::f32::consts::PI);
+        assert_eq!(value, std::f32::consts::PI);
     }
 }

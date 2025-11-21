@@ -812,7 +812,7 @@ where
     let mut offsets = Vec::with_capacity(frames.len() - 1);
     for window in frames.windows(2) {
         offsets.push(window[0].time);
-        let span = (window[1].time - window[0].time).max(std::f32::EPSILON);
+        let span = (window[1].time - window[0].time).max(f32::EPSILON);
         let inv_span = 1.0 / span;
         let delta = delta_fn(window);
         segments.push(ClipSegment { slope: delta * inv_span, span, inv_span });
@@ -920,7 +920,7 @@ fn apply_phase_offset(animation: &mut SpriteAnimation, random_seed: f32) {
         animation.refresh_current_duration();
         return;
     }
-    let total = animation.total_duration().max(std::f32::EPSILON);
+    let total = animation.total_duration().max(f32::EPSILON);
     let offset = (random_seed * total).rem_euclid(total);
     animation.frame_index = 0;
     animation.elapsed_in_frame = 0.0;
@@ -928,7 +928,7 @@ fn apply_phase_offset(animation: &mut SpriteAnimation, random_seed: f32) {
 
     let mut accumulated = 0.0;
     for (index, duration) in animation.frame_durations.iter().copied().enumerate() {
-        let duration = duration.max(std::f32::EPSILON);
+        let duration = duration.max(f32::EPSILON);
         if offset < accumulated + duration {
             animation.frame_index = index;
             animation.elapsed_in_frame = (offset - accumulated).clamp(0.0, duration);

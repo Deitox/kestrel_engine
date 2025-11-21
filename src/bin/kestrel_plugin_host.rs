@@ -444,13 +444,32 @@ impl EngineState {
                     .assets
                     .atlas_snapshot(&atlas_id)
                     .ok_or_else(|| anyhow!("atlas '{atlas_id}' not loaded"))?;
-                let bytes = fs::read(snapshot.image_path)
-                    .with_context(|| format!("reading atlas image '{}'", snapshot.image_path.display()))?;
-                let content_type = guess_content_type(snapshot.image_path);
+                let image_path = snapshot
+                    .image_path
+                    .to_str()
+                    .ok_or_else(|| anyhow!("atlas image path contains invalid UTF-8"))?;
+                let path = self.sanitize_blob_path(image_path)?;
+                let metadata = fs::metadata(&path)
+                    .with_context(|| format!("reading metadata for atlas image '{}'", path.display()))?;
+                let byte_length = metadata.len();
+                if byte_length > MAX_BLOB_READ_BYTES {
+                    bail!(
+                        "atlas image '{}' exceeds readback cap of {} bytes ({} bytes)",
+                        path.display(),
+                        MAX_BLOB_READ_BYTES,
+                        byte_length
+                    );
+                }
+                let mut file =
+                    fs::File::open(&path).with_context(|| format!("opening atlas image '{}'", path.display()))?;
+                let mut bytes = Vec::with_capacity(byte_length as usize);
+                file.read_to_end(&mut bytes)
+                    .with_context(|| format!("reading atlas image '{}'", path.display()))?;
+                let content_type = guess_content_type(&path);
                 Ok(RpcAssetReadbackResponse {
                     request_id: request.request_id,
                     content_type: content_type.to_string(),
-                    byte_length: bytes.len() as u64,
+                    byte_length,
                     bytes,
                     metadata_json: None,
                 })

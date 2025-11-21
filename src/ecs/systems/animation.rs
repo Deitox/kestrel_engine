@@ -1524,7 +1524,7 @@ mod tests {
         instance.set_playing(false);
         instance.clear_dirty();
 
-        let sentinel = Mat4::from_scale(Vec3::splat(3.14));
+        let sentinel = Mat4::from_scale(Vec3::splat(std::f32::consts::PI));
         let mut bones = BoneTransforms::new(instance.joint_count());
         for mat in bones.model.iter_mut() {
             *mat = sentinel;
@@ -2767,7 +2767,7 @@ where
         let start = &window[0];
         let end = &window[1];
         if time <= end.time {
-            let span = (end.time - start.time).max(std::f32::EPSILON);
+            let span = (end.time - start.time).max(f32::EPSILON);
             let alpha = ((time - start.time) / span).clamp(0.0, 1.0);
             return lerp(start.value, end.value, alpha);
         }
@@ -2786,7 +2786,7 @@ fn normalize_time(time: f32, duration: f32, looped: bool) -> f32 {
         if time >= 0.0 && time < duration {
             return time;
         }
-        let wrapped = time.rem_euclid(duration.max(std::f32::EPSILON));
+        let wrapped = time.rem_euclid(duration.max(f32::EPSILON));
         if wrapped <= CLIP_TIME_EPSILON && time > 0.0 && (time - duration).abs() <= CLIP_TIME_EPSILON {
             duration
         } else {
@@ -3197,7 +3197,7 @@ pub(crate) fn initialize_animation_phase(animation: &mut SpriteAnimation, entity
     let total = animation.total_duration();
     if animation.random_start && total > 0.0 {
         let random_fraction = stable_random_fraction(entity, animation.timeline.as_ref());
-        offset = (offset + random_fraction * total).rem_euclid(total.max(std::f32::EPSILON));
+        offset = (offset + random_fraction * total).rem_euclid(total.max(f32::EPSILON));
     }
 
     if !animation.mode.looped() && total > 0.0 {
@@ -3487,7 +3487,7 @@ fn advance_animation_loop_no_events(animation: &mut SpriteAnimation, delta: f32)
         return false;
     }
 
-    let total = total_duration.max(std::f32::EPSILON);
+    let total = total_duration.max(f32::EPSILON);
     let current_duration = animation.current_duration.max(0.0);
     let current_elapsed = animation.elapsed_in_frame;
     let current_offset = animation.current_frame_offset;
@@ -3511,7 +3511,7 @@ fn advance_animation_loop_no_events(animation: &mut SpriteAnimation, delta: f32)
     if normalized.is_nan() {
         normalized = 0.0;
     } else if normalized >= total {
-        normalized = total - std::f32::EPSILON;
+        normalized = total - f32::EPSILON;
     } else if normalized < 0.0 {
         normalized = 0.0;
     }
@@ -3582,7 +3582,7 @@ fn advance_animation_loop_no_events_slot(runtime: &mut SpriteAnimatorSoa, slot: 
         return false;
     }
 
-    let total = total_duration.max(std::f32::EPSILON);
+    let total = total_duration.max(f32::EPSILON);
     let current_duration = runtime.current_duration[slot].max(0.0);
     let current_elapsed = runtime.elapsed_in_frame[slot];
     let current_offset = runtime.current_frame_offset[slot];
@@ -3606,7 +3606,7 @@ fn advance_animation_loop_no_events_slot(runtime: &mut SpriteAnimatorSoa, slot: 
     if normalized.is_nan() {
         normalized = 0.0;
     } else if normalized >= total {
-        normalized = total - std::f32::EPSILON;
+        normalized = total - f32::EPSILON;
     } else if normalized < 0.0 {
         normalized = 0.0;
     }
@@ -3680,7 +3680,7 @@ fn advance_animation_fast_loop(animation: &mut SpriteAnimation, delta: f32) -> b
     #[cfg(feature = "anim_stats")]
     record_fast_loop_call(1);
 
-    let total_duration = animation.total_duration.max(std::f32::EPSILON);
+    let total_duration = animation.total_duration.max(f32::EPSILON);
     if delta.abs() >= total_duration * 4.0 {
         perf_record_mod_or_div();
         return advance_animation_loop_no_events(animation, delta);
@@ -4317,7 +4317,7 @@ fn advance_animation_fast_loop_slot(runtime: &mut SpriteAnimatorSoa, slot: usize
     #[cfg(feature = "anim_stats")]
     record_fast_loop_call(1);
 
-    let total_duration = runtime.total_duration[slot].max(std::f32::EPSILON);
+    let total_duration = runtime.total_duration[slot].max(f32::EPSILON);
     if delta.abs() >= total_duration * 4.0 {
         perf_record_mod_or_div();
         return advance_animation_loop_no_events_slot(runtime, slot, delta);
@@ -4406,7 +4406,7 @@ fn advance_animation_fast_loop_slot(runtime: &mut SpriteAnimatorSoa, slot: usize
     #[cfg(feature = "anim_stats")]
     record_fast_loop_call(1);
 
-    let total_duration = runtime.total_duration[slot].max(std::f32::EPSILON);
+    let total_duration = runtime.total_duration[slot].max(f32::EPSILON);
     if delta.abs() >= total_duration * 4.0 {
         perf_record_mod_or_div();
         return advance_animation_loop_no_events_slot(runtime, slot, delta);

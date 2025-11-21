@@ -247,7 +247,7 @@ fn sprite_animation_hot_reload_preserves_frame() {
     assert_eq!(anim.current_region_name(), Some("bluebox"));
     assert_eq!(anim.frame_index, 2, "frame should track region by name");
     let expected_elapsed = {
-        let prev_duration = prev_duration.max(std::f32::EPSILON);
+        let prev_duration = prev_duration.max(f32::EPSILON);
         let progress = (prev_elapsed / prev_duration).clamp(0.0, 1.0);
         let new_duration = anim.frames[anim.frame_index].duration;
         progress * new_duration

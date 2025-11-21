@@ -758,7 +758,7 @@ impl ClipInstance {
         let duration = self.duration();
         if duration > 0.0 {
             if self.looped {
-                let step = duration.max(std::f32::EPSILON);
+                let step = duration.max(f32::EPSILON);
                 if time.is_finite() && time >= 0.0 && (time - duration).abs() <= CLIP_TIME_EPSILON {
                     self.time = duration;
                 } else {
@@ -1118,7 +1118,7 @@ impl ClipInstance {
         }
 
         if looped && track.duration > 0.0 && delta >= track.duration {
-            let duration_eps = track.duration.max(std::f32::EPSILON);
+            let duration_eps = track.duration.max(f32::EPSILON);
             delta = delta.rem_euclid(duration_eps);
             if delta <= 0.0 {
                 *segment_time = offset;
@@ -1274,7 +1274,7 @@ impl ClipInstance {
         }
 
         if looped && track.duration > 0.0 && delta >= track.duration {
-            let duration_eps = track.duration.max(std::f32::EPSILON);
+            let duration_eps = track.duration.max(f32::EPSILON);
             delta = delta.rem_euclid(duration_eps);
             if delta <= 0.0 {
                 *segment_time = offset;
@@ -1430,7 +1430,7 @@ impl ClipInstance {
         }
 
         if looped && track.duration > 0.0 && delta >= track.duration {
-            let duration_eps = track.duration.max(std::f32::EPSILON);
+            let duration_eps = track.duration.max(f32::EPSILON);
             delta = delta.rem_euclid(duration_eps);
             if delta <= 0.0 {
                 *segment_time = offset;
@@ -2550,7 +2550,7 @@ fn wrap_time_looped(time: f32, duration: f32, duration_inv: f32) -> f32 {
     if !time.is_finite() || duration <= 0.0 {
         return 0.0;
     }
-    let duration_eps = duration.max(std::f32::EPSILON);
+    let duration_eps = duration.max(f32::EPSILON);
     let mut wrapped = if duration_inv > 0.0 {
         let scaled = time * duration_inv;
         if scaled.is_finite() {
@@ -2628,7 +2628,7 @@ where
         let start = &window[0];
         let end = &window[1];
         if time <= end.time {
-            let span = (end.time - start.time).max(std::f32::EPSILON);
+            let span = (end.time - start.time).max(f32::EPSILON);
             let alpha = ((time - start.time) / span).clamp(0.0, 1.0);
             return lerp(start.value, end.value, alpha);
         }
@@ -2730,7 +2730,7 @@ mod tests {
                 vec![ClipKeyframe { time: 0.0, value: 0.0 }, ClipKeyframe { time: 0.5, value: TAU }]
                     .into_boxed_slice(),
             );
-            let span = (keyframes[1].time - keyframes[0].time).max(std::f32::EPSILON);
+            let span = (keyframes[1].time - keyframes[0].time).max(f32::EPSILON);
             let inv_span = 1.0 / span;
             let delta = keyframes[1].value - keyframes[0].value;
             let segments =
@@ -2929,7 +2929,7 @@ impl SkeletonInstance {
             if duration <= 0.0 {
                 clamped = 0.0;
             } else if self.looped {
-                let step = duration.max(std::f32::EPSILON);
+                let step = duration.max(f32::EPSILON);
                 clamped = time.rem_euclid(step);
                 if (step - clamped).abs() <= CLIP_TIME_EPSILON {
                     clamped = duration;

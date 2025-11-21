@@ -46,18 +46,15 @@ pub enum AnimationTrackKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Default)]
 pub enum KeyframeValue {
+    #[default]
     None,
     Scalar(f32),
     Vec2([f32; 2]),
     Vec4([f32; 4]),
 }
 
-impl Default for KeyframeValue {
-    fn default() -> Self {
-        KeyframeValue::None
-    }
-}
 
 impl KeyframeValue {
     pub fn as_scalar(self) -> Option<f32> {

@@ -255,18 +255,18 @@ fn transform_clip_set_time_handles_extremes() {
     assert!(duration > 0.0, "fixture clip should have positive duration");
 
     instance.set_time(-0.125);
-    let expected_neg = (-0.125_f32).rem_euclid(duration.max(std::f32::EPSILON));
+    let expected_neg = (-0.125_f32).rem_euclid(duration.max(f32::EPSILON));
     assert!(approx_scalar(instance.time, expected_neg), "negative time should wrap inside clip duration");
 
     instance.set_time(duration);
     assert!(approx_scalar(instance.time, duration), "exact duration should be preserved");
 
     instance.set_time(duration + 0.001);
-    let wrap_back = (duration + 0.001).rem_euclid(duration.max(std::f32::EPSILON));
+    let wrap_back = (duration + 0.001).rem_euclid(duration.max(f32::EPSILON));
     assert!(approx_scalar(instance.time, wrap_back));
 
     instance.set_time(42.25);
-    let expected = 42.25_f32.rem_euclid(duration.max(std::f32::EPSILON));
+    let expected = 42.25_f32.rem_euclid(duration.max(f32::EPSILON));
     assert!(approx_scalar(instance.time, expected));
 
     instance.set_time(f32::MAX);

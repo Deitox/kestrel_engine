@@ -3852,7 +3852,7 @@ impl App {
             self.ecs.set_animation_time_paused(animation_paused);
         }
         let desired_fixed_step =
-            if animation_fixed_enabled { Some(animation_fixed_step.max(std::f32::EPSILON)) } else { None };
+            if animation_fixed_enabled { Some(animation_fixed_step.max(f32::EPSILON)) } else { None };
         let fixed_changed = match (animation_snapshot.fixed_step, desired_fixed_step) {
             (Some(prev), Some(next)) => !approx_eq(prev, next),
             (None, Some(_)) | (Some(_), None) => true,

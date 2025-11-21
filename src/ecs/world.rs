@@ -650,9 +650,8 @@ impl EcsWorld {
     }
     pub fn adjust_root_spin(&mut self, delta: f32) {
         let mut q = self.world.query::<&mut Spin>();
-        for mut s in q.iter_mut(&mut self.world) {
+        if let Some(mut s) = q.iter_mut(&mut self.world).next() {
             s.speed += delta;
-            break;
         }
     }
     pub fn spawn_scripted_sprite(
@@ -1617,12 +1616,12 @@ impl EcsWorld {
             }
             animation.frame_index = target_index;
             animation.refresh_current_duration();
-            let new_duration = animation.current_duration.max(std::f32::EPSILON);
+            let new_duration = animation.current_duration.max(f32::EPSILON);
             let prev_duration = prev_frames
                 .get(prev_index)
                 .map(|frame| frame.duration)
-                .unwrap_or(std::f32::EPSILON)
-                .max(std::f32::EPSILON);
+                .unwrap_or(f32::EPSILON)
+                .max(f32::EPSILON);
             let progress = (prev_elapsed / prev_duration).clamp(0.0, 1.0);
             animation.elapsed_in_frame = (progress * new_duration).min(new_duration);
             animation.playing = prev_playing && !animation.frames.is_empty();
@@ -2180,9 +2179,8 @@ impl EcsWorld {
     }
     pub fn set_root_spin(&mut self, speed: f32) {
         let mut query = self.world.query::<&mut Spin>();
-        for mut spin in query.iter_mut(&mut self.world) {
+        if let Some(mut spin) = query.iter_mut(&mut self.world).next() {
             spin.speed = speed;
-            break;
         }
     }
 }

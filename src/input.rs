@@ -147,10 +147,10 @@ impl Input {
         was
     }
 
-    pub fn right_held(&self) -> bool {
+    pub fn right_mouse_held(&self) -> bool {
         self.right_pressed
     }
-    pub fn left_held(&self) -> bool {
+    pub fn left_mouse_held(&self) -> bool {
         self.left_pressed
     }
     pub fn cursor_position(&self) -> Option<(f32, f32)> {

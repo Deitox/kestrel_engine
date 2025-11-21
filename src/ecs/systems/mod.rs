@@ -62,7 +62,7 @@ impl AnimationTime {
     }
 
     pub fn set_fixed_step(&mut self, value: Option<f32>) {
-        self.fixed_step = value.map(|step| step.max(std::f32::EPSILON));
+        self.fixed_step = value.map(|step| step.max(f32::EPSILON));
         if self.fixed_step.is_none() {
             self.remainder = 0.0;
         }
@@ -77,7 +77,7 @@ impl AnimationTime {
             return AnimationDelta::None;
         }
         if let Some(step) = self.fixed_step {
-            let step = step.max(std::f32::EPSILON);
+            let step = step.max(f32::EPSILON);
             self.remainder += scaled;
             let produced = if scaled > 0.0 {
                 (self.remainder / step).floor() as i32

@@ -39,7 +39,7 @@ impl App {
                 self.camera.apply_scroll_zoom(delta);
             }
 
-            if self.input.right_held() {
+            if self.input.right_mouse_held() {
                 let (dx, dy) = self.input.mouse_delta;
                 if dx.abs() > f32::EPSILON || dy.abs() > f32::EPSILON {
                     self.camera.pan_screen_delta(Vec2::new(dx, dy), viewport_size);
@@ -326,7 +326,7 @@ impl App {
                     start_pointer,
                     axis_lock,
                 } => {
-                    if !self.input.left_held() {
+                    if !self.input.left_mouse_held() {
                         keep_active = false;
                     } else if let Some(pointer_world) = cursor_world_2d {
                         if self.ecs.entity_exists(*entity) {
@@ -380,7 +380,7 @@ impl App {
                     }
                 }
                 GizmoInteraction::Translate3D { entity, offset, plane_origin, plane_normal } => {
-                    if !self.input.left_held() {
+                    if !self.input.left_mouse_held() {
                         keep_active = false;
                     } else if let Some((ray_origin, ray_dir)) = cursor_ray {
                         if let Some(hit) =
@@ -409,7 +409,7 @@ impl App {
                     }
                 }
                 GizmoInteraction::Rotate { entity, start_rotation, start_angle } => {
-                    if !self.input.left_held() {
+                    if !self.input.left_mouse_held() {
                         keep_active = false;
                     } else if let Some(pointer_world) = cursor_world_2d {
                         if let Some(info) = self.ecs.entity_info(*entity) {
@@ -431,7 +431,7 @@ impl App {
                     }
                 }
                 GizmoInteraction::Rotate3D { entity, axis, start_rotation, start_vector } => {
-                    if !self.input.left_held() {
+                    if !self.input.left_mouse_held() {
                         keep_active = false;
                     } else if let Some((ray_origin, ray_dir)) = cursor_ray {
                         if let Some(info) = self.ecs.entity_info(*entity) {
@@ -473,7 +473,7 @@ impl App {
                     }
                 }
                 GizmoInteraction::Scale { entity, start_scale, handle } => {
-                    if !self.input.left_held() {
+                    if !self.input.left_mouse_held() {
                         keep_active = false;
                     } else if let Some(pointer_world) = cursor_world_2d {
                         if let Some(info) = self.ecs.entity_info(*entity) {
@@ -527,7 +527,7 @@ impl App {
                     }
                 }
                 GizmoInteraction::Scale3D { entity, start_scale, start_distance, plane_normal } => {
-                    if !self.input.left_held() {
+                    if !self.input.left_mouse_held() {
                         keep_active = false;
                     } else if let Some((ray_origin, ray_dir)) = cursor_ray {
                         if let Some(info) = self.ecs.entity_info(*entity) {

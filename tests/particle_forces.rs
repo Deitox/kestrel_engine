@@ -1,7 +1,6 @@
 use glam::{Vec2, Vec4};
 use kestrel_engine::ecs::{
-    EcsWorld, Force, ForceFalloff, ForceFieldKind, Mass, Particle, ParticleAttractor, ParticleTrail, Transform,
-    Velocity,
+    EcsWorld, Force, ForceFalloff, ForceFieldKind, Mass, Particle, ParticleTrail, Transform, Velocity,
 };
 
 fn step(world: &mut EcsWorld, dt: f32) {

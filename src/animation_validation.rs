@@ -358,10 +358,10 @@ impl AnimationValidator {
     }
 
     fn classify_json_asset(path: &Path, bytes: &[u8]) -> JsonAssetKind {
-        if path_contains_segment(path, "images") || path_contains_segment(path, "atlases") {
-            if looks_like_atlas_json(bytes) {
-                return JsonAssetKind::Atlas;
-            }
+        if (path_contains_segment(path, "images") || path_contains_segment(path, "atlases"))
+            && looks_like_atlas_json(bytes)
+        {
+            return JsonAssetKind::Atlas;
         }
         if path_contains_segment(path, "graphs") {
             return JsonAssetKind::Graph;
