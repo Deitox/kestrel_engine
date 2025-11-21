@@ -2,7 +2,6 @@ use crate::mesh::{ImportedMaterial, ImportedTexture, MaterialTextureBinding};
 use crate::renderer::Renderer;
 use anyhow::{anyhow, Result};
 use bytemuck::{Pod, Zeroable};
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
@@ -38,6 +37,7 @@ pub struct MaterialRegistry {
     default_material: String,
     default_textures: Option<DefaultTextures>,
     sampler: Option<Arc<wgpu::Sampler>>,
+    texture_upload_scratch: Vec<u8>,
 }
 
 #[allow(dead_code)]
@@ -90,6 +90,7 @@ impl MaterialRegistry {
             default_material: default_material.clone(),
             default_textures: None,
             sampler: None,
+            texture_upload_scratch: Vec::new(),
         };
         let default_definition = MaterialDefinition {
             key: default_material.clone(),
@@ -353,43 +354,48 @@ impl MaterialRegistry {
         if self.default_textures.is_some() {
             return Ok(());
         }
-        let make_texture = |data: [u8; 4],
-                            format: wgpu::TextureFormat|
-         -> (wgpu::Texture, wgpu::TextureView) {
-            let (pixel_data, padded_row_bytes) = Self::prepare_texture_upload(&data, 1, 1);
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("Material Default Texture"),
-                size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            });
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                pixel_data.as_ref(),
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(padded_row_bytes),
-                    rows_per_image: Some(1),
-                },
-                wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
-            );
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            (texture, view)
-        };
+        let mut scratch = std::mem::take(&mut self.texture_upload_scratch);
+        let make_texture =
+            |data: [u8; 4], format: wgpu::TextureFormat, scratch: &mut Vec<u8>| -> (wgpu::Texture, wgpu::TextureView) {
+                let (pixel_data, padded_row_bytes) = Self::prepare_texture_upload(&data, 1, 1, scratch);
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("Material Default Texture"),
+                    size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    pixel_data,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(padded_row_bytes),
+                        rows_per_image: Some(1),
+                    },
+                    wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                );
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                (texture, view)
+            };
 
-        let (base_tex, base_view) = make_texture([255, 255, 255, 255], wgpu::TextureFormat::Rgba8UnormSrgb);
-        let (metal_tex, metal_view) = make_texture([255, 255, 255, 255], wgpu::TextureFormat::Rgba8Unorm);
-        let (normal_tex, normal_view) = make_texture([128, 128, 255, 255], wgpu::TextureFormat::Rgba8Unorm);
-        let (emissive_tex, emissive_view) = make_texture([0, 0, 0, 255], wgpu::TextureFormat::Rgba8UnormSrgb);
+        let (base_tex, base_view) =
+            make_texture([255, 255, 255, 255], wgpu::TextureFormat::Rgba8UnormSrgb, &mut scratch);
+        let (metal_tex, metal_view) =
+            make_texture([255, 255, 255, 255], wgpu::TextureFormat::Rgba8Unorm, &mut scratch);
+        let (normal_tex, normal_view) =
+            make_texture([128, 128, 255, 255], wgpu::TextureFormat::Rgba8Unorm, &mut scratch);
+        let (emissive_tex, emissive_view) =
+            make_texture([0, 0, 0, 255], wgpu::TextureFormat::Rgba8UnormSrgb, &mut scratch);
+        self.texture_upload_scratch = scratch;
 
         self.default_textures = Some(DefaultTextures {
             base_color: Arc::new(GpuTexture::new(base_tex, base_view, true)),
@@ -416,10 +422,13 @@ impl MaterialRegistry {
             return Ok(texture.clone());
         }
 
+        let data_owned = std::mem::take(&mut entry.data);
+        let width = entry.width;
+        let height = entry.height;
         let format = if srgb { wgpu::TextureFormat::Rgba8UnormSrgb } else { wgpu::TextureFormat::Rgba8Unorm };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Material Texture"),
-            size: wgpu::Extent3d { width: entry.width, height: entry.height, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -427,8 +436,8 @@ impl MaterialRegistry {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        let (pixel_data, padded_row_bytes) =
-            Self::prepare_texture_upload(&entry.data, entry.width, entry.height);
+        let mut scratch = std::mem::take(&mut self.texture_upload_scratch);
+        let (pixel_data, padded_row_bytes) = Self::prepare_texture_upload(&data_owned, width, height, &mut scratch);
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &texture,
@@ -436,17 +445,19 @@ impl MaterialRegistry {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            pixel_data.as_ref(),
+            pixel_data,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(padded_row_bytes),
-                rows_per_image: Some(entry.height),
+                rows_per_image: Some(height),
             },
-            wgpu::Extent3d { width: entry.width, height: entry.height, depth_or_array_layers: 1 },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let gpu_texture = Arc::new(GpuTexture::new(texture, view, srgb));
         *cache = Some(gpu_texture.clone());
+        entry.data = data_owned;
+        self.texture_upload_scratch = scratch;
         Ok(gpu_texture)
     }
 
@@ -505,23 +516,27 @@ impl MaterialRegistry {
         data: &'a [u8],
         width: u32,
         height: u32,
-    ) -> (Cow<'a, [u8]>, u32) {
+        scratch: &'a mut Vec<u8>,
+    ) -> (&'a [u8], u32) {
         let row_bytes = width.saturating_mul(4);
         let padded_row_bytes = Self::padded_bytes_per_row(width);
         if padded_row_bytes == row_bytes {
-            (Cow::Borrowed(data), row_bytes)
+            (data, row_bytes)
         } else {
-            let mut padded = vec![0u8; (padded_row_bytes.saturating_mul(height)) as usize];
+            let required = (padded_row_bytes.saturating_mul(height)) as usize;
+            if scratch.len() < required {
+                scratch.resize(required, 0);
+            }
             for row in 0..height {
                 let src_start = (row_bytes * row) as usize;
                 let dst_start = (padded_row_bytes * row) as usize;
                 let src_end = src_start + row_bytes as usize;
-                if src_end <= data.len() && dst_start + row_bytes as usize <= padded.len() {
-                    padded[dst_start..dst_start + row_bytes as usize]
+                if src_end <= data.len() && dst_start + row_bytes as usize <= scratch.len() {
+                    scratch[dst_start..dst_start + row_bytes as usize]
                         .copy_from_slice(&data[src_start..src_end]);
                 }
             }
-            (Cow::Owned(padded), padded_row_bytes)
+            (&scratch[..required], padded_row_bytes)
         }
     }
 }
