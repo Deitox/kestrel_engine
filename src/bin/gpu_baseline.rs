@@ -290,7 +290,7 @@ impl BaselineScene {
     }
 
     fn build_sprite_batches(&mut self) -> Result<(Vec<InstanceData>, Vec<SpriteBatch>)> {
-        let sprites = self.ecs.collect_sprite_instances(&mut self.assets)?;
+        let sprites = self.ecs.collect_sprite_instances(&self.assets)?;
         let mut grouped: HashMap<Arc<str>, Vec<InstanceData>> = HashMap::new();
         for sprite in sprites {
             let (atlas, data) = sprite.into_gpu();

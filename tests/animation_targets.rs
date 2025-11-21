@@ -314,7 +314,7 @@ fn seed_world(case: &BudgetCase, world: &mut EcsWorld) {
         CaseKind::Sprite => seed_sprite_animators(world, case.count, true),
         CaseKind::Transform => seed_transform_clips(world, case.count, true),
         CaseKind::Skeletal { bones_per_rig } => {
-            let rigs = ((case.count + bones_per_rig - 1) / bones_per_rig).max(1);
+            let rigs = case.count.div_ceil(bones_per_rig).max(1);
             seed_skeletal_clips(world, rigs, bones_per_rig, true);
         }
     }
@@ -501,7 +501,7 @@ fn detect_target_cpu() -> String {
 fn target_cpu_from_config() -> Option<String> {
     let path = Path::new(".cargo").join("config.toml");
     let contents = std::fs::read_to_string(path).ok()?;
-    let sanitized = contents.replace('[', " ").replace(']', " ").replace('"', " ").replace(',', " ");
+    let sanitized = contents.replace(['[', ']', '"', ','], " ");
     parse_target_cpu(&sanitized)
 }
 

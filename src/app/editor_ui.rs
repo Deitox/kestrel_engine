@@ -2212,7 +2212,7 @@ impl App {
                                 if index == history_len {
                                     index = history_len.saturating_sub(1);
                                 } else if index > 0 {
-                                    index -= 1;
+                                    index = index.saturating_sub(1);
                                 }
                                 if index < history_len {
                                     script_debugger.repl_history_index = Some(index);

@@ -161,10 +161,10 @@ fn add_target(path: PathBuf, seen: &mut HashSet<PathBuf>, files: &mut Vec<PathBu
 }
 
 fn should_validate(path: &Path) -> bool {
-    match path.extension().and_then(|ext| ext.to_str()).map(|ext| ext.to_lowercase()) {
-        Some(ext) if matches!(ext.as_str(), "json" | "gltf" | "glb" | "clip") => true,
-        _ => false,
-    }
+    matches!(
+        path.extension().and_then(|ext| ext.to_str()).map(|ext| ext.to_lowercase()),
+        Some(ext) if matches!(ext.as_str(), "json" | "gltf" | "glb" | "clip")
+    )
 }
 
 fn normalize_path(path: &Path) -> Result<PathBuf> {

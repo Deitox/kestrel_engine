@@ -30,6 +30,7 @@ pub(super) struct InspectorContext<'a> {
     pub mesh_subsets: &'a HashMap<String, Arc<[MeshSubsetEntry]>>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn show_entity_inspector(
     ctx: InspectorContext<'_>,
     ui: &mut Ui,
@@ -1151,10 +1152,8 @@ pub(super) fn show_entity_inspector(
                     if ui.checkbox(&mut emissive_enabled, "Emissive").changed() {
                         emissive_changed = true;
                     }
-                    if emissive_enabled {
-                        if ui.color_edit_button_rgb(&mut emissive_arr).changed() {
-                            emissive_changed = true;
-                        }
+                    if emissive_enabled && ui.color_edit_button_rgb(&mut emissive_arr).changed() {
+                        emissive_changed = true;
                     }
                 });
 

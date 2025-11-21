@@ -3,8 +3,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum PrefabFormat {
+    #[default]
     Json,
     Binary,
 }
@@ -37,12 +38,6 @@ impl PrefabFormat {
             "kscene" => Some(PrefabFormat::Binary),
             _ => None,
         }
-    }
-}
-
-impl Default for PrefabFormat {
-    fn default() -> Self {
-        PrefabFormat::Json
     }
 }
 

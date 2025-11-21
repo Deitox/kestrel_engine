@@ -66,7 +66,7 @@ pub struct ShadowConfig {
     pub pcf_radius: f32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct AppConfig {
     pub window: WindowConfig,
     #[serde(default)]
@@ -172,16 +172,6 @@ impl Default for ShadowConfig {
     }
 }
 
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            window: WindowConfig::default(),
-            particles: ParticleConfig::default(),
-            shadow: ShadowConfig::default(),
-            editor: EditorConfig::default(),
-        }
-    }
-}
 
 impl AppConfig {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {

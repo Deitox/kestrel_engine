@@ -857,7 +857,7 @@ fn parse_timelines(
             let frame_name_arc = frame.name.map(Arc::<str>::from).unwrap_or_else(|| Arc::clone(region_key));
             let duration = (frame.duration_ms.max(1) as f32) / 1000.0;
             let event_names = event_map.remove(&frame_index).unwrap_or_default();
-            let events: Vec<Arc<str>> = event_names.into_iter().map(|name| Arc::<str>::from(name)).collect();
+            let events: Vec<Arc<str>> = event_names.into_iter().map(Arc::<str>::from).collect();
             offsets.push(accumulated);
             frames.push(SpriteAnimationFrame {
                 name: frame_name_arc,
@@ -1307,6 +1307,7 @@ impl AssetManager {
     pub fn atlas_texture_view(&mut self, key: &str) -> Result<wgpu::TextureView> {
         self.load_or_reload_view(key, false)
     }
+    #[allow(clippy::manual_is_multiple_of)]
     fn load_or_reload_view(&mut self, key: &str, force: bool) -> Result<wgpu::TextureView> {
         let atlas = self.atlases.get(key).ok_or_else(|| anyhow!("atlas '{key}' not loaded"))?;
         let image_path = atlas.image_path.clone();
@@ -1324,7 +1325,7 @@ impl AssetManager {
         let (upload_slice, padded_stride) = if row_stride % alignment == 0 {
             (rgba_slice, row_stride)
         } else {
-            let padded_stride = ((row_stride + alignment - 1) / alignment) * alignment;
+            let padded_stride = row_stride.div_ceil(alignment) * alignment;
             let required = padded_stride * h as usize;
             if self.atlas_upload_scratch.len() < required {
                 self.atlas_upload_scratch.resize(required, 0);

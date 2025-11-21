@@ -17,6 +17,7 @@ pub(crate) struct GizmoUpdate {
 }
 
 impl App {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn update_gizmo_interactions(
         &mut self,
         viewport_size: PhysicalSize<u32>,

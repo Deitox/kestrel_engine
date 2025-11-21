@@ -1232,7 +1232,7 @@ impl SceneDependencies {
                 }
             }
         }
-        self.atlases = map.into_iter().map(|(_, dep)| AtlasDependencyRepr::from(dep)).collect();
+        self.atlases = map.into_values().map(AtlasDependencyRepr::from).collect();
 
         let mut clip_map: BTreeMap<String, ClipDependency> = BTreeMap::new();
         for repr in std::mem::take(&mut self.clips) {
@@ -1251,7 +1251,7 @@ impl SceneDependencies {
                 }
             }
         }
-        self.clips = clip_map.into_iter().map(|(_, dep)| ClipDependencyRepr::from(dep)).collect();
+        self.clips = clip_map.into_values().map(ClipDependencyRepr::from).collect();
 
         let mut skeleton_map: BTreeMap<String, SkeletonDependency> = BTreeMap::new();
         for repr in std::mem::take(&mut self.skeletons) {
@@ -1270,7 +1270,7 @@ impl SceneDependencies {
                 }
             }
         }
-        self.skeletons = skeleton_map.into_iter().map(|(_, dep)| SkeletonDependencyRepr::from(dep)).collect();
+        self.skeletons = skeleton_map.into_values().map(SkeletonDependencyRepr::from).collect();
 
         let mut mesh_map: BTreeMap<String, MeshDependency> = BTreeMap::new();
         for repr in std::mem::take(&mut self.meshes) {
@@ -1289,7 +1289,7 @@ impl SceneDependencies {
                 }
             }
         }
-        self.meshes = mesh_map.into_iter().map(|(_, dep)| MeshDependencyRepr::from(dep)).collect();
+        self.meshes = mesh_map.into_values().map(MeshDependencyRepr::from).collect();
 
         let mut material_map: BTreeMap<String, MaterialDependency> = BTreeMap::new();
         for repr in std::mem::take(&mut self.materials) {
@@ -1308,7 +1308,7 @@ impl SceneDependencies {
                 }
             }
         }
-        self.materials = material_map.into_iter().map(|(_, dep)| MaterialDependencyRepr::from(dep)).collect();
+        self.materials = material_map.into_values().map(MaterialDependencyRepr::from).collect();
 
         let mut environment_map: BTreeMap<String, EnvironmentDependency> = BTreeMap::new();
         for repr in std::mem::take(&mut self.environments) {
@@ -1328,7 +1328,7 @@ impl SceneDependencies {
             }
         }
         self.environments =
-            environment_map.into_iter().map(|(_, dep)| EnvironmentDependencyRepr::from(dep)).collect();
+            environment_map.into_values().map(EnvironmentDependencyRepr::from).collect();
     }
 }
 
@@ -2120,7 +2120,7 @@ mod tests {
     fn dependencies_include_emitter_atlases() {
         let entity = entity_with_emitter();
         let assets = AssetManager::new();
-        let deps = SceneDependencies::from_entities(&[entity.clone()], &assets, |_| None, |_| None);
+        let deps = SceneDependencies::from_entities(std::slice::from_ref(&entity), &assets, |_| None, |_| None);
         assert!(
             deps.contains_atlas("fx_atlas"),
             "particle emitter atlases should be recorded as dependencies"

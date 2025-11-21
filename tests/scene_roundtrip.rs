@@ -115,7 +115,7 @@ fn scene_roundtrip_preserves_entity_count() {
     assert!((emissive_vec.z - 0.3).abs() < f32::EPSILON);
 
     let path = std::path::Path::new("target/test_scene_roundtrip.json");
-    scene.save_to_path(&path).expect("scene save should succeed");
+    scene.save_to_path(path).expect("scene save should succeed");
 
     let loaded = Scene::load_from_path(path).expect("scene load should succeed");
     assert_eq!(loaded.entities.len(), scene.entities.len());

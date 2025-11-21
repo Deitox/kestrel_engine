@@ -55,6 +55,7 @@ impl ScriptWorld {
         Self { state }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn spawn_sprite(
         &mut self,
         atlas: &str,
@@ -280,8 +281,7 @@ impl ScriptHost {
         let mut engine = Engine::new();
         engine.set_fast_operators(true);
         register_api(&mut engine);
-        let mut shared = SharedState::default();
-        shared.next_handle = 1;
+        let shared = SharedState { next_handle: 1, ..Default::default() };
         Self {
             engine,
             ast: None,
@@ -438,7 +438,7 @@ impl ScriptHost {
             }
         };
         let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        if self.ast.is_none() || self.last_modified.map_or(true, |prev| modified > prev) {
+        if self.ast.is_none() || self.last_modified.is_none_or(|prev| modified > prev) {
             self.load_script()?;
         }
         Ok(())

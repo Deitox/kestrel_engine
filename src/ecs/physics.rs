@@ -200,7 +200,7 @@ impl RapierState {
         let collider_handles: Vec<ColliderHandle> = self
             .bodies
             .get(handle)
-            .map(|body| body.colliders().iter().copied().collect())
+            .map(|body| body.colliders().to_vec())
             .unwrap_or_default();
         for collider in collider_handles {
             self.collider_entities.remove(&collider);
@@ -369,16 +369,11 @@ impl Default for SpatialIndexConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum SpatialMode {
+    #[default]
     Grid,
     Quadtree,
-}
-
-impl Default for SpatialMode {
-    fn default() -> Self {
-        SpatialMode::Grid
-    }
 }
 
 #[derive(Resource, Clone, Copy, Debug)]

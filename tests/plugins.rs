@@ -321,7 +321,7 @@ fn plugins_can_publish_features() {
             manager.capability_tracker_handle(),
         );
         manager
-            .register(Box::new(FeaturePublishingPlugin::default()), &mut ctx)
+            .register(Box::new(FeaturePublishingPlugin), &mut ctx)
             .expect("feature plugin registers");
     }
 
@@ -361,7 +361,7 @@ fn capability_gating_blocks_unlisted_access() {
         );
         manager
             .register_with_capabilities(
-                Box::new(RendererAccessPlugin::default()),
+                Box::new(RendererAccessPlugin),
                 Vec::new(),
                 vec![PluginCapability::Ecs],
                 &mut ctx,
@@ -597,7 +597,7 @@ fn capability_violations_emit_events() {
 
     manager
         .register_with_capabilities(
-            Box::new(UnauthorizedRendererPlugin::default()),
+            Box::new(UnauthorizedRendererPlugin),
             Vec::new(),
             vec![PluginCapability::Ecs, PluginCapability::Assets],
             &mut ctx,
@@ -825,7 +825,7 @@ fn isolated_plugin_telemetry_pipeline() {
 
     manager
         .register_with_capabilities(
-            Box::new(UnauthorizedRendererPlugin::default()),
+            Box::new(UnauthorizedRendererPlugin),
             Vec::new(),
             vec![PluginCapability::Ecs],
             &mut ctx,
@@ -1081,7 +1081,7 @@ fn plugin_status_snapshot_updates_on_change() {
         "snapshot should reuse cached Arc when no state changes"
     );
 
-    manager.register(Box::new(FeaturePublishingPlugin::default()), &mut ctx).expect("register second plugin");
+    manager.register(Box::new(FeaturePublishingPlugin), &mut ctx).expect("register second plugin");
     let snapshot_after_second = manager.status_snapshot();
     assert_eq!(snapshot_after_second.len(), 2, "two plugins should be reported after second registration");
     assert!(

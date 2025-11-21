@@ -580,6 +580,7 @@ impl AnimationKeyframePanel {
         base_time
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_keyframe(
         &mut self,
         ui: &mut Ui,

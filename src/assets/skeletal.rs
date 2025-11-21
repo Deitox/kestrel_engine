@@ -207,7 +207,7 @@ pub fn load_skeleton_from_gltf(path: impl AsRef<Path>) -> Result<SkeletonImport>
             let builder = curve_builders.entry(joint_index).or_default();
             match (channel.target().property(), outputs) {
                 (Property::Translation, ReadOutputs::Translations(values)) => {
-                    let vec_values: Vec<Vec3> = values.map(|v| Vec3::from_array(v)).collect();
+                    let vec_values: Vec<Vec3> = values.map(Vec3::from_array).collect();
                     if vec_values.len() != times.len() {
                         return Err(anyhow!(
                             "Animation '{}' translation channel count mismatch (node {})",
@@ -219,7 +219,7 @@ pub fn load_skeleton_from_gltf(path: impl AsRef<Path>) -> Result<SkeletonImport>
                     builder.translation = Some(track);
                 }
                 (Property::Scale, ReadOutputs::Scales(values)) => {
-                    let vec_values: Vec<Vec3> = values.map(|v| Vec3::from_array(v)).collect();
+                    let vec_values: Vec<Vec3> = values.map(Vec3::from_array).collect();
                     if vec_values.len() != times.len() {
                         return Err(anyhow!(
                             "Animation '{}' scale channel count mismatch (node {})",

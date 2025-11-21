@@ -138,17 +138,12 @@ impl From<&[PluginCapability]> for CapabilityFlags {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PluginTrust {
+    #[default]
     Full,
     Isolated,
-}
-
-impl Default for PluginTrust {
-    fn default() -> Self {
-        PluginTrust::Full
-    }
 }
 
 impl PluginTrust {
@@ -230,7 +225,7 @@ fn describe_panic(payload: Box<dyn Any + Send>) -> String {
         Ok(message) => *message,
         Err(payload) => match payload.downcast::<&'static str>() {
             Ok(message) => (*message).to_string(),
-            Err(payload) => format!("unknown panic (type_id {:?})", payload.type_id()),
+            Err(payload) => format!("unknown panic (type_id {:?})", (*payload).type_id()),
         },
     }
 }
@@ -1177,7 +1172,7 @@ impl PluginManager {
     }
 
     fn log_ecs_entities(&mut self, plugin_name: &str, entities: impl IntoIterator<Item = Entity>) {
-        let log = self.ecs_query_history.entry(plugin_name.to_string()).or_insert_with(VecDeque::new);
+        let log = self.ecs_query_history.entry(plugin_name.to_string()).or_default();
         for entity in entities {
             log.push_front(entity.to_bits());
         }
@@ -1189,7 +1184,7 @@ impl PluginManager {
     }
 
     fn log_watchdog_event(&mut self, event: PluginWatchdogEvent) {
-        let log = self.watchdog_events.entry(event.plugin.clone()).or_insert_with(VecDeque::new);
+        let log = self.watchdog_events.entry(event.plugin.clone()).or_default();
         log.push_front(event.clone());
         const MAX_EVENTS: usize = 10;
         while log.len() > MAX_EVENTS {
@@ -1618,7 +1613,7 @@ impl PluginManager {
         {
             let mut registry = self.features.borrow_mut();
             for feature in removed_unique {
-                if DEFAULT_ENGINE_FEATURES.iter().any(|default| *default == feature.as_str()) {
+                if DEFAULT_ENGINE_FEATURES.contains(&feature.as_str()) {
                     continue;
                 }
                 if !still_provided.contains(&feature) {

@@ -150,6 +150,7 @@ pub fn sys_world_bounds_bounce(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn sys_build_spatial_hash(
     mut profiler: ResMut<SystemProfiler>,
     mut grid: ResMut<SpatialHash>,
@@ -198,6 +199,7 @@ pub fn sys_build_spatial_hash(
     };
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn sys_collide_spatial(
     mut profiler: ResMut<SystemProfiler>,
     grid: Res<SpatialHash>,

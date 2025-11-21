@@ -250,8 +250,8 @@ fn build_light_cluster_data<'a>(
 ) -> LightClusterBuildData<'a> {
     let width = viewport.width.max(1);
     let height = viewport.height.max(1);
-    let grid_x = ((width + LIGHT_CLUSTER_TILE_SIZE - 1) / LIGHT_CLUSTER_TILE_SIZE).max(1);
-    let grid_y = ((height + LIGHT_CLUSTER_TILE_SIZE - 1) / LIGHT_CLUSTER_TILE_SIZE).max(1);
+    let grid_x = width.div_ceil(LIGHT_CLUSTER_TILE_SIZE).max(1);
+    let grid_y = height.div_ceil(LIGHT_CLUSTER_TILE_SIZE).max(1);
     let grid_z = LIGHT_CLUSTER_Z_SLICES.max(1);
     let total_clusters = grid_x.saturating_mul(grid_y).saturating_mul(grid_z).max(1);
     let aspect = if height > 0 { width as f32 / height as f32 } else { 1.0 };
@@ -275,7 +275,7 @@ fn build_light_cluster_data<'a>(
         config: ClusterConfigUniform {
             viewport: [width as f32, height as f32, viewport_inv_width, viewport_inv_height],
             depth_params: [near, far, inv_depth_range, 0.0],
-            grid_dims: [grid_x, grid_y, grid_z, total_clusters as u32],
+        grid_dims: [grid_x, grid_y, grid_z, total_clusters],
             stats: [0, LIGHT_CLUSTER_MAX_LIGHTS_PER_CLUSTER as u32, LIGHT_CLUSTER_TILE_SIZE, 0],
             data_meta: [0, LIGHT_CLUSTER_RECORD_STRIDE_WORDS, 0, 0],
         },
@@ -450,7 +450,7 @@ fn build_light_cluster_data<'a>(
         visible_lights: scratch.gpu_lights.len() as u32,
         grid_dims: [grid_x, grid_y, grid_z],
         active_clusters: scratch.cluster_counts.iter().filter(|count| **count > 0).count() as u32,
-        total_clusters: total_clusters as u32,
+        total_clusters,
         average_lights_per_cluster: if total_clusters > 0 {
             scratch.spans.len() as f32 / total_clusters as f32
         } else {

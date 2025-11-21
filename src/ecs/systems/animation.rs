@@ -1200,6 +1200,7 @@ fn record_transform_apply_time(duration: Duration) {
 #[allow(dead_code)]
 fn record_transform_apply_time(_duration: std::time::Duration) {}
 
+#[allow(clippy::too_many_arguments)]
 pub fn sys_drive_sprite_animations(
     mut profiler: ResMut<SystemProfiler>,
     animation_plan: Res<AnimationPlan>,

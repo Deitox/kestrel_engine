@@ -275,7 +275,7 @@ impl SpritePass {
             return Ok(());
         }
         let instance_buffer = self.instance_buffer.as_ref().context("Instance buffer missing")?;
-        let byte_len = (instances.len() * std::mem::size_of::<InstanceData>()) as wgpu::BufferAddress;
+        let byte_len = std::mem::size_of_val(instances) as wgpu::BufferAddress;
         let capacity_bytes = self.instance_capacity_bytes();
         let alignment = wgpu::COPY_BUFFER_ALIGNMENT;
         let mut write_offset = align_to(self.instance_cursor, alignment);
@@ -428,6 +428,6 @@ fn align_to(value: wgpu::BufferAddress, alignment: wgpu::BufferAddress) -> wgpu:
     if alignment == 0 {
         value
     } else {
-        ((value + alignment - 1) / alignment) * alignment
+        value.div_ceil(alignment) * alignment
     }
 }

@@ -33,7 +33,7 @@ fn particle_budget_metrics_reports_counts() {
     assert_eq!(metrics.active_particles, 12);
     assert_eq!(metrics.max_total, 100);
     assert_eq!(metrics.max_spawn_per_frame, 8);
-    assert_eq!(metrics.available_spawn_this_frame, 8.min(100 - 12));
+    assert_eq!(metrics.available_spawn_this_frame, 8);
     assert_eq!(metrics.total_emitters, 2);
     assert!((metrics.emitter_backlog_total - 16.0).abs() < f32::EPSILON);
     assert!((metrics.average_backlog() - 8.0).abs() < f32::EPSILON);

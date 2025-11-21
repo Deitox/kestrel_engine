@@ -154,7 +154,7 @@ fn cmd_validate(scene_path: &str) -> Result<()> {
 
 fn cmd_list(scene_path: &str) -> Result<()> {
     let scene = load_scene(scene_path)?;
-    println!("{:<5} {:<38} {:<38} {}", "Idx", "Entity ID", "Parent ID", "Name/Sprite");
+    println!("{:<5} {:<38} {:<38} {:<}", "Idx", "Entity ID", "Parent ID", "Name/Sprite");
     println!("{}", "-".repeat(128));
     for (index, entity) in scene.entities.iter().enumerate() {
         let parent = entity.parent_id.as_ref().map(SceneEntityId::as_str).unwrap_or("-");

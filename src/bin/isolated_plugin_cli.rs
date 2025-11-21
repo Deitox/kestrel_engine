@@ -116,9 +116,9 @@ fn run_cli() -> Result<()> {
             match manager.asset_readback(&opts.plugin, payload.clone()) {
                 Ok(response) => {
                     println!(
-                        "[isolated-cli] asset readback {} -> {} ({})",
+                        "[isolated-cli] asset readback {} -> {} bytes ({})",
                         format_asset_payload(payload),
-                        format!("{} bytes", response.byte_length),
+                        response.byte_length,
                         response.content_type
                     );
                 }

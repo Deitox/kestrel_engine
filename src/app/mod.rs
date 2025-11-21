@@ -1341,7 +1341,7 @@ impl App {
     }
 
     fn take_sprite_batch_buffer(&mut self) -> Vec<InstanceData> {
-        self.sprite_batch_pool.pop().unwrap_or_else(Vec::new)
+        self.sprite_batch_pool.pop().unwrap_or_default()
     }
 
     fn recycle_sprite_batch_buffers(&mut self) {
@@ -1858,19 +1858,19 @@ impl App {
         let fingerprint = deps.fingerprints();
         let cached_fingerprint = {
             let state = self.editor_ui_state();
-            state.scene_dependency_fingerprints.clone()
+            state.scene_dependency_fingerprints
         };
         if cached_fingerprint.as_ref() == Some(&fingerprint) {
             self.with_editor_ui_state_mut(|state| state.scene_dependencies = Some(deps.clone()));
             return Ok(());
         }
-        let atlas_dirty = cached_fingerprint.as_ref().map_or(true, |fp| fp.atlases != fingerprint.atlases);
-        let clip_dirty = cached_fingerprint.as_ref().map_or(true, |fp| fp.clips != fingerprint.clips);
-        let mesh_dirty = cached_fingerprint.as_ref().map_or(true, |fp| fp.meshes != fingerprint.meshes);
+        let atlas_dirty = cached_fingerprint.as_ref().is_none_or(|fp| fp.atlases != fingerprint.atlases);
+        let clip_dirty = cached_fingerprint.as_ref().is_none_or(|fp| fp.clips != fingerprint.clips);
+        let mesh_dirty = cached_fingerprint.as_ref().is_none_or(|fp| fp.meshes != fingerprint.meshes);
         let material_dirty =
-            cached_fingerprint.as_ref().map_or(true, |fp| fp.materials != fingerprint.materials);
+            cached_fingerprint.as_ref().is_none_or(|fp| fp.materials != fingerprint.materials);
         let environment_dirty =
-            cached_fingerprint.as_ref().map_or(true, |fp| fp.environments != fingerprint.environments);
+            cached_fingerprint.as_ref().is_none_or(|fp| fp.environments != fingerprint.environments);
 
         if atlas_dirty {
             let previous = self.scene_atlas_refs.clone();
@@ -1967,12 +1967,10 @@ impl App {
             let mut next_materials = persistent_materials.clone();
             for dep in deps.material_dependencies() {
                 let key = dep.key().to_string();
-                if next_materials.insert(key.clone()) {
-                    if !previous_materials.contains(&key) {
-                        self.material_registry
-                            .retain(&key)
-                            .with_context(|| format!("Failed to retain material '{key}'"))?;
-                    }
+                if next_materials.insert(key.clone()) && !previous_materials.contains(&key) {
+                    self.material_registry
+                        .retain(&key)
+                        .with_context(|| format!("Failed to retain material '{key}'"))?;
                 }
             }
             for key in previous_materials {
@@ -2007,7 +2005,7 @@ impl App {
         }
 
         let deps_clone = deps.clone();
-        let fingerprint_clone = fingerprint.clone();
+        let fingerprint_clone = fingerprint;
         self.with_editor_ui_state_mut(|state| {
             state.scene_dependencies = Some(deps_clone);
             state.scene_dependency_fingerprints = Some(fingerprint_clone);
@@ -2016,10 +2014,14 @@ impl App {
     }
 
     fn capture_scene_metadata(&self) -> SceneMetadata {
-        let mut metadata = SceneMetadata::default();
-        metadata.viewport = SceneViewportMode::from(self.viewport_camera_mode);
-        metadata.camera2d =
-            Some(SceneCamera2D { position: Vec2Data::from(self.camera.position), zoom: self.camera.zoom });
+        let mut metadata = SceneMetadata {
+            viewport: SceneViewportMode::from(self.viewport_camera_mode),
+            camera2d: Some(SceneCamera2D {
+                position: Vec2Data::from(self.camera.position),
+                zoom: self.camera.zoom,
+            }),
+            ..SceneMetadata::default()
+        };
         let camera_bookmarks = self.camera_bookmarks();
         metadata.camera_bookmarks = camera_bookmarks.iter().map(CameraBookmark::to_scene).collect();
         metadata.active_camera_bookmark =
@@ -2294,10 +2296,8 @@ impl ApplicationHandler for App {
                 .entity_info(emitter)
                 .and_then(|info| info.sprite.and_then(|sprite| sprite.animation))
                 .is_some();
-            if !has_animation {
-                if self.ecs.set_sprite_timeline(emitter, &self.assets, Some("demo_cycle")) {
-                    self.ecs.set_sprite_animation_speed(emitter, 0.85);
-                }
+            if !has_animation && self.ecs.set_sprite_timeline(emitter, &self.assets, Some("demo_cycle")) {
+                self.ecs.set_sprite_animation_speed(emitter, 0.85);
             }
         }
         let atlas_view = match self.assets.atlas_texture_view("main") {
@@ -2390,11 +2390,9 @@ impl ApplicationHandler for App {
                     sd.pixels_per_point = self.renderer.pixels_per_point() * ui_scale;
                 }
             }
-            WindowEvent::KeyboardInput { event: KeyEvent { logical_key, state, .. }, .. } => {
-                if let Key::Named(NamedKey::Escape) = logical_key {
-                    if *state == ElementState::Pressed {
-                        self.should_close = true;
-                    }
+            WindowEvent::KeyboardInput { event: KeyEvent { logical_key: Key::Named(NamedKey::Escape), state, .. }, .. } => {
+                if *state == ElementState::Pressed {
+                    self.should_close = true;
                 }
             }
             _ => {}

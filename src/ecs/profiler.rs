@@ -36,7 +36,7 @@ impl SystemProfiler {
     }
 
     fn record(&mut self, name: &'static str, duration: f32) {
-        let entry = self.timings.entry(name).or_insert_with(SystemTiming::default);
+        let entry = self.timings.entry(name).or_default();
         entry.last_ms = duration;
         entry.max_ms = entry.max_ms.max(duration);
         entry.total_ms += duration;

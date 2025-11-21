@@ -654,7 +654,7 @@ fn frustum_corners(camera: &Camera3D, aspect: f32, near: f32, far: f32) -> [Vec3
             for &z in &[-1.0, 1.0] {
                 let clip = Vec4::new(x, y, z, 1.0);
                 let world = inv * clip;
-                corners[idx] = (world.truncate() / world.w).into();
+                corners[idx] = world.truncate() / world.w;
                 idx += 1;
             }
         }
