@@ -2947,7 +2947,10 @@ impl ApplicationHandler for App {
             })
         });
 
+        let editor_state = self.editor_ui_state();
         let editor_params = editor_ui::EditorUiParams {
+            show_start_screen: editor_state.start_screen_open,
+            recent_projects: Arc::from(editor_state.recent_projects.clone().into_boxed_slice()),
             raw_input,
             base_pixels_per_point,
             hist_points,
@@ -3127,11 +3130,13 @@ impl ApplicationHandler for App {
             gpu_timing_enabled: self.renderer.gpu_timing_enabled(),
             gizmo_mode: gizmo_mode_state,
         };
+        drop(editor_state);
 
         let ui_build_start = Instant::now();
         let editor_output = self.render_editor_ui(editor_params);
         ui_time_ms += ui_build_start.elapsed().as_secs_f32() * 1000.0;
         let editor_ui::EditorUiOutput {
+            start_screen_selection: _,
             full_output,
             mut actions,
             pending_viewport,

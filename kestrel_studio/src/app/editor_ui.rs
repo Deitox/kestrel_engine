@@ -41,6 +41,7 @@ use egui::{Checkbox, DragAndDrop, Key, SliderClamping};
 use egui_plot as eplot;
 use glam::{Vec2, Vec3, Vec4};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 use winit::dpi::PhysicalSize;
 
@@ -907,6 +908,8 @@ pub(super) struct ScriptDebuggerOutput {
 }
 
 pub(super) struct EditorUiParams {
+    pub show_start_screen: bool,
+    pub recent_projects: Arc<[PathBuf]>,
     pub raw_input: egui::RawInput,
     pub base_pixels_per_point: f32,
     pub hist_points: Arc<[eplot::PlotPoint]>,
@@ -1074,6 +1077,7 @@ pub(super) struct EditorUiParams {
 }
 
 pub(super) struct EditorUiOutput {
+    pub start_screen_selection: Option<PathBuf>,
     pub full_output: egui::FullOutput,
     pub actions: UiActions,
     pub pending_viewport: Option<(Vec2, Vec2)>,
@@ -1157,6 +1161,8 @@ pub(super) struct EditorUiOutput {
 impl App {
     pub(super) fn render_editor_ui(&mut self, params: EditorUiParams) -> EditorUiOutput {
         let EditorUiParams {
+            show_start_screen,
+            recent_projects,
             raw_input,
             base_pixels_per_point,
             hist_points,
@@ -1322,6 +1328,8 @@ impl App {
             gizmo_mode: mut gizmo_mode_state,
             audio_spatial_config,
         } = params;
+        let _ = show_start_screen;
+        let _ = recent_projects;
 
         fn show_script_handle_table(ui: &mut egui::Ui, handles: &[ScriptHandleBinding], id_suffix: &str) {
             if handles.is_empty() {
@@ -4013,6 +4021,7 @@ impl App {
         actions.play_step = play_step;
 
         EditorUiOutput {
+            start_screen_selection: None,
             full_output,
             actions,
             pending_viewport,
