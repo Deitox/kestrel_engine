@@ -10,6 +10,7 @@ mod editor_shell;
 mod editor_ui;
 mod gizmo_interaction;
 mod inspector_tooling;
+mod mesh_reload;
 mod mesh_preview_tooling;
 mod mesh_watch;
 mod plugin_host;
@@ -32,6 +33,7 @@ use self::editor_shell::{
     EditorShell, EditorUiState, EditorUiStateParams, EmitterUiDefaults, ScriptDebuggerStatus,
     ScriptHandleBinding,
 };
+use self::mesh_reload::{MeshReloadJob, MeshReloadWorker};
 use self::mesh_watch::MeshHotReload;
 use self::plugin_host::{BuiltinPluginFactory, PluginHost};
 use self::plugin_runtime::{PluginContextInputs, PluginRuntime};
@@ -83,7 +85,7 @@ use glam::{Mat4, Vec2, Vec3, Vec4};
 
 use anyhow::{anyhow, Context, Result};
 use std::cell::{Ref, RefMut};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 #[cfg(feature = "alloc_profiler")]
 use std::env;
 use std::fs;
@@ -268,6 +270,10 @@ pub struct App {
     sprite_atlas_views: HashMap<String, Arc<wgpu::TextureView>>,
     atlas_hot_reload: Option<AtlasHotReload>,
     mesh_hot_reload: Option<MeshHotReload>,
+    mesh_reload_worker: Option<MeshReloadWorker>,
+    mesh_reload_inflight: HashSet<String>,
+    mesh_hot_reload_pending: VecDeque<String>,
+    mesh_hot_reload_pending_set: HashSet<String>,
     animation_asset_watcher: Option<AnimationAssetWatcher>,
     animation_watch_roots_queue: Vec<(PathBuf, AnimationAssetKind)>,
     animation_watch_roots_pending: HashSet<(PathBuf, AnimationAssetKind)>,
@@ -420,6 +426,22 @@ impl App {
         }
     }
     pub async fn new(config: AppConfig) -> Self {
+        let mut config = config;
+        if let Ok(val) = std::env::var("KESTREL_GPU_TIMING") {
+            let parsed = match val.to_lowercase().as_str() {
+                "1" | "true" | "yes" | "on" => Some(true),
+                "0" | "false" | "no" | "off" => Some(false),
+                _ => None,
+            };
+            if let Some(enabled) = parsed {
+                config.editor.gpu_timing = enabled;
+                println!(
+                    "[config] KESTREL_GPU_TIMING={} => GPU timing {}",
+                    val,
+                    if enabled { "enabled" } else { "disabled" }
+                );
+            }
+        }
         let mut renderer = Renderer::new(&config.window).await;
         {
             let shadow_cfg = &config.shadow;
@@ -430,6 +452,7 @@ impl App {
             lighting.shadow_pcf_radius = shadow_cfg.pcf_radius.clamp(0.0, 10.0);
         }
         renderer.mark_shadow_settings_dirty();
+        renderer.set_gpu_timing_enabled(config.editor.gpu_timing);
         let lighting_state = renderer.lighting().clone();
         let editor_lighting_state = lighting_state.clone();
         let particle_config = config.particles.clone();
@@ -595,6 +618,7 @@ impl App {
                 None
             }
         };
+        let mesh_reload_worker = MeshReloadWorker::new(ANIMATION_RELOAD_WORKER_QUEUE_DEPTH);
         let animation_asset_watcher = Self::init_animation_asset_watcher();
         let animation_reload = AnimationReloadController::new(
             MAX_PENDING_ANIMATION_RELOADS_PER_KIND,
@@ -642,6 +666,10 @@ impl App {
             sprite_atlas_views: HashMap::new(),
             atlas_hot_reload,
             mesh_hot_reload,
+            mesh_reload_worker,
+            mesh_reload_inflight: HashSet::new(),
+            mesh_hot_reload_pending: VecDeque::new(),
+            mesh_hot_reload_pending_set: HashSet::new(),
             animation_asset_watcher,
             animation_watch_roots_queue: Vec::new(),
             animation_watch_roots_pending: HashSet::new(),
@@ -662,6 +690,12 @@ impl App {
         app.sync_mesh_hot_reload();
         app.apply_particle_caps();
         app.apply_editor_camera_settings();
+        if !app.config.editor.gpu_timing {
+            app.with_editor_ui_state_mut(|state| {
+                state.gpu_metrics_status =
+                    Some("GPU timing disabled (editor.gpu_timing = false)".to_string());
+            });
+        }
         app.report_audio_startup_status();
         app
     }
@@ -2365,14 +2399,10 @@ impl ApplicationHandler for App {
             .iter()
             .find(|timing| timing.name == "sys_apply_sprite_frame_states")
             .map(|timing| timing.last_ms);
-        let sprite_upload_ms = {
-            let state = self.editor_ui_state();
-            state
-                .gpu_timings
-                .iter()
-                .find(|timing| timing.label == "Sprite pass")
-                .map(|timing| timing.duration_ms)
-        };
+        let sprite_upload_ms = self
+            .analytics_plugin_mut()
+            .map(|plugin| plugin.gpu_timings_snapshot())
+            .and_then(|timings| timings.get("Sprite pass").and_then(|samples| samples.last().copied()));
         let entity_count = self.ecs.entity_count();
         let instances_drawn = instances.len();
         let orbit_target =
@@ -2417,6 +2447,10 @@ impl ApplicationHandler for App {
             let prefabs = state.telemetry_cache.prefab_entries(&self.prefab_library);
             (mesh, env, prefabs)
         });
+        let _gpu_timings = self
+            .analytics_plugin_mut()
+            .map(|plugin| plugin.gpu_timings_snapshot())
+            .unwrap_or_else(|| Arc::new(HashMap::new()));
         let (clip_keys, clip_assets) =
             self.with_editor_ui_state_mut(|state| state.telemetry_cache.clip_assets(&self.assets));
         let (skeleton_keys, skeleton_assets) =
@@ -2972,6 +3006,7 @@ impl ApplicationHandler for App {
             gpu_history_empty,
             gpu_timing_averages,
             gpu_timing_supported: self.renderer.gpu_timing_supported(),
+            gpu_timing_enabled: self.renderer.gpu_timing_enabled(),
             gizmo_mode: gizmo_mode_state,
         };
 
@@ -3640,6 +3675,16 @@ impl ApplicationHandler for App {
                     self.set_ui_scene_status("Audio plugin unavailable; cannot clear audio log.");
                 }
             }
+        }
+        if let Some(enabled) = actions.gpu_timing_enable {
+            self.renderer.set_gpu_timing_enabled(enabled);
+            self.config.editor.gpu_timing = enabled;
+            let status = if enabled {
+                "GPU timing enabled (may add a small stall when capturing)."
+            } else {
+                "GPU timing disabled."
+            };
+            self.with_editor_ui_state_mut(|state| state.gpu_metrics_status = Some(status.to_string()));
         }
         if !actions.plugin_toggles.is_empty() {
             self.apply_plugin_toggles(&actions.plugin_toggles);

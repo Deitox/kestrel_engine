@@ -104,6 +104,7 @@ async fn run_baseline(args: BaselineArgs) -> Result<()> {
     })
     .await;
     renderer.init_headless_for_test().await?;
+    renderer.set_gpu_timing_enabled(true);
     if !renderer.gpu_timing_supported() {
         return Err(anyhow!(
             "GPU timestamp queries unavailable on the selected adapter/backend.\n\

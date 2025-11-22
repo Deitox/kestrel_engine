@@ -15,3 +15,39 @@ Snapshots:
 Notes:
   - Automatic capture waits ~3 s before recording the idle baseline and another ~4 s after forcing all optional panels (Keyframe Editor, Script Debugger, Entity Lookup) to remain open.
   - Allocation deltas stay within tens of kilobytes per frame and remain net-neutral even with every panel visible; UI work adds ~1.2 ms but total frame time stays well below the 16 ms goal.
+
+Editor frame-budget capture (all panels) - post caching refresh (averaged over 2 runs)
+Timestamp: 2025-11-21
+Command: cargo run --release --features alloc_profiler
+Environment:
+  - KESTREL_FRAME_BUDGET_CAPTURE=all_panels
+Artifacts:
+  - perf/editor_all_panels.log (latest runs)
+
+Run A:
+  - Idle  (panels collapsed): frame=11.01 ms | update=0.03 ms | fixed=0.28 ms | render=8.02 ms | ui=1.96 ms | alloc=+3,310,278 B / -3,315,962 B (net -5,684 B)
+  - Panels (keyframe window + script debugger + lookup forced open): frame=9.53 ms | update=0.02 ms | fixed=0.17 ms | render=6.68 ms | ui=2.09 ms | alloc=+3,645,540 B / -3,635,094 B (net +10,446 B)
+
+Run B:
+  - Idle  (panels collapsed): frame=8.99 ms | update=0.03 ms | fixed=0.17 ms | render=6.79 ms | ui=1.51 ms | alloc=+3,302,872 B / -3,324,110 B (net -21,238 B)
+  - Panels (keyframe window + script debugger + lookup forced open): frame=8.83 ms | update=0.02 ms | fixed=0.00 ms | render=6.27 ms | ui=1.98 ms | alloc=+3,625,851 B / -3,633,009 B (net -7,158 B)
+
+Averages (Runs A/B):
+  - Idle: frame=10.00 ms | ui=1.74 ms | net alloc ~ -13,461 B
+  - Panels: frame=9.18 ms | ui=2.04 ms | net alloc ~ +1,644 B
+  - Delta (panel - idle): delta_ui=+0.30 ms | delta_alloc ~ +15.1 KB
+
+Notes:
+  - Both runs keep per-frame allocation churn in the tens-of-kilobytes range with panels open; UI overhead is roughly +0.3 ms.
+
+Run C (post snapshot caching):
+  - Idle  (panels collapsed): frame=10.34 ms | update=0.03 ms | fixed=0.19 ms | render=7.62 ms | ui=1.81 ms | alloc=+3,313,524 B / -3,312,953 B (net +571 B)
+  - Panels (keyframe window + script debugger + lookup forced open): frame=9.88 ms | update=0.02 ms | fixed=0.19 ms | render=6.86 ms | ui=2.17 ms | alloc=+3,632,780 B / -3,637,296 B (net -4,516 B)
+
+Updated averages (Runs A/B/C):
+  - Idle: frame≈10.11 ms | ui≈1.77 ms | net alloc ~ -8,450 B
+  - Panels: frame≈9.41 ms | ui≈2.08 ms | net alloc ~ -409 B
+  - Delta (panel - idle): delta_ui≈+0.31 ms | delta_alloc ~ +8.0 KB
+
+Notes:
+  - The additional run stays in the same low-churn range; net alloc with panels is now slightly negative on average.

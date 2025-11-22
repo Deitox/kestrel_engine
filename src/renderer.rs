@@ -118,6 +118,8 @@ struct GpuTimestampMark {
 #[derive(Clone)]
 struct GpuTimer {
     supported: bool,
+    requested_enabled: bool,
+    enabled: bool,
     timestamp_period: f32,
     max_queries: u32,
     query_set: Option<wgpu::QuerySet>,
@@ -134,6 +136,8 @@ impl Default for GpuTimer {
     fn default() -> Self {
         Self {
             supported: false,
+            requested_enabled: false,
+            enabled: false,
             timestamp_period: 0.0,
             max_queries: 32,
             query_set: None,
@@ -152,6 +156,7 @@ impl GpuTimer {
     fn configure(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, supported: bool) {
         self.supported = supported;
         if !supported {
+            self.enabled = false;
             self.timestamp_period = 0.0;
             self.query_set = None;
             self.query_buffer = None;
@@ -186,10 +191,23 @@ impl GpuTimer {
                 mapped_at_creation: false,
             }));
         }
+        self.enabled = self.requested_enabled && self.supported;
+    }
+
+    fn set_enabled(&mut self, enabled: bool) {
+        self.requested_enabled = enabled;
+        self.enabled = enabled && self.supported;
+        if !self.enabled {
+            self.marks.clear();
+            self.pending_query_count = 0;
+            self.latest.clear();
+            self.frame_active = false;
+            self.next_query = 0;
+        }
     }
 
     fn begin_frame(&mut self) {
-        if !self.supported {
+        if !self.supported || !self.enabled {
             return;
         }
         self.next_query = 0;
@@ -199,7 +217,7 @@ impl GpuTimer {
     }
 
     fn write_timestamp(&mut self, encoder: &mut wgpu::CommandEncoder, label: GpuTimestampLabel) {
-        if !self.supported || !self.frame_active {
+        if !self.supported || !self.enabled || !self.frame_active {
             return;
         }
         if self.next_query >= self.max_queries {
@@ -213,7 +231,7 @@ impl GpuTimer {
     }
 
     fn finish_frame(&mut self, encoder: &mut wgpu::CommandEncoder) {
-        if !self.supported || !self.frame_active {
+        if !self.supported || !self.enabled || !self.frame_active {
             return;
         }
         if self.next_query == 0 {
@@ -232,7 +250,7 @@ impl GpuTimer {
     }
 
     fn collect_results(&mut self, device: &wgpu::Device) {
-        if !self.supported || self.pending_query_count == 0 {
+        if !self.supported || !self.enabled || self.pending_query_count == 0 {
             return;
         }
         let buffer = match self.readback_buffer.as_ref() {
@@ -294,7 +312,7 @@ impl GpuTimer {
     }
 
     fn take_latest(&mut self) -> Vec<GpuPassTiming> {
-        if self.latest.is_empty() {
+        if self.latest.is_empty() || !self.enabled {
             Vec::new()
         } else {
             std::mem::take(&mut self.latest)
@@ -1405,6 +1423,14 @@ impl Renderer {
         self.gpu_timer.supported
     }
 
+    pub fn set_gpu_timing_enabled(&mut self, enabled: bool) {
+        self.gpu_timer.set_enabled(enabled);
+    }
+
+    pub fn gpu_timing_enabled(&self) -> bool {
+        self.gpu_timer.enabled
+    }
+
     pub fn take_gpu_timings(&mut self) -> Vec<GpuPassTiming> {
         self.gpu_timer.take_latest()
     }
@@ -1570,6 +1596,7 @@ mod pass_tests {
     #[test]
     fn headless_render_collects_gpu_timings() {
         let mut renderer = create_headless_renderer();
+        renderer.set_gpu_timing_enabled(true);
         renderer.prepare_headless_render_target().expect("headless target");
         let device = renderer.device().expect("device").clone();
         let queue = renderer.queue().expect("queue").clone();

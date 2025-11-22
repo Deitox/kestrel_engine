@@ -127,6 +127,7 @@ pub struct AnalyticsPlugin {
     light_cluster_metrics: Option<LightClusterMetrics>,
     gpu_capacity: usize,
     gpu_timings: BTreeMap<&'static str, VecDeque<f32>>,
+    gpu_timings_snapshot: Option<Arc<HashMap<&'static str, Vec<f32>>>>,
     plugin_capability_metrics: Arc<HashMap<String, CapabilityViolationLog>>,
     plugin_capability_events: VecDeque<PluginCapabilityEvent>,
     plugin_asset_readbacks: VecDeque<PluginAssetReadbackEvent>,
@@ -161,6 +162,7 @@ impl AnalyticsPlugin {
             light_cluster_metrics: None,
             gpu_capacity: 120,
             gpu_timings: BTreeMap::new(),
+            gpu_timings_snapshot: None,
             plugin_capability_metrics: Arc::new(HashMap::new()),
             plugin_capability_events: VecDeque::with_capacity(SECURITY_EVENT_CAPACITY),
             plugin_asset_readbacks: VecDeque::with_capacity(32),
@@ -234,6 +236,7 @@ impl AnalyticsPlugin {
         if timings.is_empty() {
             return;
         }
+        self.gpu_timings_snapshot = None;
         for timing in timings {
             let entry = self
                 .gpu_timings
@@ -289,6 +292,20 @@ impl AnalyticsPlugin {
             }
         }
         self.plugin_capability_snapshot = None;
+    }
+
+    pub fn gpu_timings_snapshot(&mut self) -> Arc<HashMap<&'static str, Vec<f32>>> {
+        if let Some(cache) = &self.gpu_timings_snapshot {
+            return Arc::clone(cache);
+        }
+        let map: HashMap<&'static str, Vec<f32>> = self
+            .gpu_timings
+            .iter()
+            .map(|(label, samples)| (*label, samples.iter().copied().collect()))
+            .collect();
+        let arc = Arc::new(map);
+        self.gpu_timings_snapshot = Some(Arc::clone(&arc));
+        arc
     }
 
     pub fn plugin_capability_events_arc(&mut self) -> Arc<[PluginCapabilityEvent]> {

@@ -12,7 +12,7 @@ use anyhow::{anyhow, Result};
 
 use crate::config::MeshHashAlgorithm;
 use crate::material_registry::MaterialRegistry;
-use crate::mesh::{Mesh, MeshBounds, MeshSubset};
+use crate::mesh::{Mesh, MeshBounds, MeshImport, MeshSubset};
 use crate::renderer::{GpuMesh, Renderer};
 
 pub struct MeshRegistry {
@@ -259,6 +259,64 @@ impl MeshRegistry {
         }
 
         self.bump_revision();
+        Ok(())
+    }
+
+    pub fn apply_import(
+        &mut self,
+        key: &str,
+        import: MeshImport,
+        source: PathBuf,
+        fingerprint: Option<u128>,
+        materials: &mut MaterialRegistry,
+    ) -> Result<()> {
+        let (ref_count, permanent, old_materials, previous_fingerprint) = if let Some(entry) =
+            self.entries.get(key)
+        {
+            (entry.ref_count, entry.permanent, entry.material_keys.clone(), entry.fingerprint)
+        } else {
+            (0, false, Vec::new(), None)
+        };
+
+        let snapshot = materials.register_gltf_import_with_snapshot(&import.materials, &import.textures);
+        let material_keys: Vec<String> = import.materials.iter().map(|mat| mat.key.clone()).collect();
+        let mut retained: Vec<String> = Vec::new();
+        for mat_key in &material_keys {
+            if let Err(err) = materials.retain(mat_key) {
+                for retained_key in retained {
+                    materials.release(&retained_key);
+                }
+                snapshot.rollback(materials);
+                return Err(err);
+            }
+            retained.push(mat_key.clone());
+        }
+
+        let new_fingerprint =
+            fingerprint.or_else(|| self.mesh_source_fingerprint(&source)).or(previous_fingerprint);
+        if let Some(entry) = self.entries.get_mut(key) {
+            entry.mesh = import.mesh;
+            entry.gpu = None;
+            entry.source = Some(source);
+            entry.fingerprint = new_fingerprint;
+            entry.material_keys = material_keys;
+            entry.ref_count = ref_count;
+            entry.permanent = permanent;
+            self.bump_revision();
+        } else if let Err(err) =
+            self.insert_entry(key.to_string(), import.mesh, Some(source), new_fingerprint, material_keys, false)
+        {
+            for retained_key in retained {
+                materials.release(&retained_key);
+            }
+            snapshot.rollback(materials);
+            return Err(err);
+        }
+
+        for mat_key in old_materials {
+            materials.release(&mat_key);
+        }
+
         Ok(())
     }
 

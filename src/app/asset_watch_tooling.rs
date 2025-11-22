@@ -4,10 +4,14 @@ use std::path::{Path, PathBuf};
 use super::{
     animation_watch::{AnimationAssetKind, AnimationAssetWatcher},
     atlas_watch::normalize_path_for_watch,
+    mesh_reload::{MeshReloadJob, MeshReloadRequest, MeshReloadResult},
+    mesh_reload::run_mesh_reload_job,
     App,
 };
 use crate::assets::TextureAtlasDiagnostics;
 use anyhow::Result;
+
+const MAX_MESH_RELOADS_PER_FRAME: usize = 1;
 
 impl App {
     pub fn hot_reload_atlas(&mut self, key: &str) -> Result<(usize, TextureAtlasDiagnostics)> {
@@ -204,22 +208,92 @@ impl App {
     pub(super) fn process_mesh_hot_reload_events(&mut self) {
         let keys =
             if let Some(watcher) = self.mesh_hot_reload.as_mut() { watcher.drain_keys() } else { Vec::new() };
-        if keys.is_empty() {
-            return;
-        }
         let mut unique = keys;
         unique.sort();
         unique.dedup();
         for key in unique {
+            if self.mesh_reload_inflight.contains(&key) {
+                continue;
+            }
+            if self.mesh_hot_reload_pending_set.insert(key.clone()) {
+                self.mesh_hot_reload_pending.push_back(key);
+            }
+        }
+        self.dispatch_mesh_reload_jobs();
+        self.drain_mesh_reload_results();
+    }
+
+    fn dispatch_mesh_reload_jobs(&mut self) {
+        let mut submitted = 0usize;
+        while submitted < MAX_MESH_RELOADS_PER_FRAME {
+            let Some(key) = self.mesh_hot_reload_pending.pop_front() else { break };
+            self.mesh_hot_reload_pending_set.remove(&key);
+            if self.mesh_reload_inflight.contains(&key) {
+                continue;
+            }
             let source = self.mesh_registry.mesh_source(&key).and_then(|p| p.to_str().map(|s| s.to_string()));
-            if let Some(path) = source {
-                match self.mesh_registry.ensure_mesh(&key, Some(&path), &mut self.material_registry) {
-                    Ok(()) => println!("[mesh] Hot reloaded '{key}' from {path}"),
-                    Err(err) => eprintln!("[mesh] Failed to hot reload mesh '{key}': {err}"),
+            let path = match source {
+                Some(path) => path,
+                None => {
+                    eprintln!("[mesh] Hot reload skipped for '{key}': no source path recorded");
+                    continue;
+                }
+            };
+            let request = MeshReloadRequest { key: key.clone(), path: PathBuf::from(&path) };
+            let job = MeshReloadJob { request };
+            if let Some(worker) = self.mesh_reload_worker.as_ref() {
+                match worker.submit(job) {
+                    Ok(()) => {
+                        self.mesh_reload_inflight.insert(key);
+                        submitted += 1;
+                    }
+                    Err(returned) => {
+                        let returned_key = returned.request.key.clone();
+                        if self.mesh_hot_reload_pending_set.insert(returned_key.clone()) {
+                            self.mesh_hot_reload_pending.push_front(returned_key);
+                        }
+                        break;
+                    }
                 }
             } else {
-                eprintln!("[mesh] Hot reload skipped for '{key}': no source path recorded");
+                let result = run_mesh_reload_job(job);
+                self.apply_mesh_reload_result(result);
+                submitted += 1;
             }
+        }
+    }
+
+    fn drain_mesh_reload_results(&mut self) {
+        if let Some(worker) = self.mesh_reload_worker.as_ref() {
+            for result in worker.drain() {
+                self.apply_mesh_reload_result(result);
+            }
+        }
+    }
+
+    fn apply_mesh_reload_result(&mut self, result: MeshReloadResult) {
+        self.mesh_reload_inflight.remove(&result.key);
+        match result.data {
+            Ok(import) => {
+                let fingerprint = self.mesh_registry.fingerprint_for_path(&result.path);
+                let outcome = self.mesh_registry.apply_import(
+                    &result.key,
+                    import,
+                    result.path.clone(),
+                    fingerprint,
+                    &mut self.material_registry,
+                );
+                match outcome {
+                    Ok(()) => println!("[mesh] Hot reloaded '{}' from {}", result.key, result.path.display()),
+                    Err(err) => eprintln!("[mesh] Failed to apply reload for '{}': {err}", result.key),
+                }
+            }
+            Err(err) => eprintln!(
+                "[mesh] Reload failed for '{}': {} (from {})",
+                result.key,
+                err,
+                result.path.display()
+            ),
         }
     }
 }

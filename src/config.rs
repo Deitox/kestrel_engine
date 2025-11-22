@@ -52,6 +52,8 @@ pub struct EditorConfig {
     pub sprite_guard_max_pixels: f32,
     #[serde(default = "EditorConfig::default_guardrail_mode")]
     pub sprite_guardrail_mode: SpriteGuardrailMode,
+    #[serde(default)]
+    pub gpu_timing: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
@@ -209,6 +211,7 @@ impl Default for EditorConfig {
             camera_zoom_max: Self::default_zoom_max(),
             sprite_guard_max_pixels: Self::default_sprite_guard_max_pixels(),
             sprite_guardrail_mode: Self::default_guardrail_mode(),
+            gpu_timing: false,
         }
     }
 }

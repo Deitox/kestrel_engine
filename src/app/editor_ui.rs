@@ -853,6 +853,7 @@ pub(super) struct UiActions {
     pub audio_spatial_min_distance: Option<f32>,
     pub audio_spatial_max_distance: Option<f32>,
     pub audio_spatial_pan_width: Option<f32>,
+    pub gpu_timing_enable: Option<bool>,
     pub frame_budget_action: Option<FrameBudgetAction>,
     pub save_prefab: Option<PrefabSaveRequest>,
     pub instantiate_prefab: Option<PrefabInstantiateRequest>,
@@ -1061,6 +1062,7 @@ pub(super) struct EditorUiParams {
     pub gpu_history_empty: bool,
     pub gpu_timing_averages: BTreeMap<&'static str, (f32, usize)>,
     pub gpu_timing_supported: bool,
+    pub gpu_timing_enabled: bool,
     pub gizmo_mode: GizmoMode,
 }
 
@@ -1303,6 +1305,7 @@ impl App {
             gpu_history_empty,
             gpu_timing_averages,
             gpu_timing_supported,
+            gpu_timing_enabled,
             gizmo_mode: mut gizmo_mode_state,
             audio_spatial_config,
         } = params;
@@ -3176,9 +3179,29 @@ impl App {
                     ui.heading("GPU Timings");
                     if !gpu_timing_supported {
                         ui.small("Device does not support GPU timestamp queries.");
+                    } else if !gpu_timing_enabled {
+                        let mut toggle = false;
+                        if ui.checkbox(&mut toggle, "Enable GPU timing").changed() {
+                            actions.gpu_timing_enable = Some(true);
+                        }
+                        ui.small("GPU timing disabled (editor.gpu_timing = false). Enable it to capture samples.");
+                        if let Some(status) = gpu_metrics_status.as_ref() {
+                            ui.small(status.as_str());
+                        }
                     } else if gpu_history_empty {
+                        let mut toggle = true;
+                        if ui.checkbox(&mut toggle, "Enable GPU timing").changed() {
+                            actions.gpu_timing_enable = Some(toggle);
+                        }
                         ui.small("No GPU timing samples captured yet.");
+                        if let Some(status) = gpu_metrics_status.as_ref() {
+                            ui.small(status.as_str());
+                        }
                     } else {
+                        let mut toggle = true;
+                        if ui.checkbox(&mut toggle, "Enable GPU timing").changed() {
+                            actions.gpu_timing_enable = Some(toggle);
+                        }
                         if !gpu_timing_snapshot.is_empty() {
                             for timing in gpu_timing_snapshot.iter() {
                                 let average = gpu_timing_averages
