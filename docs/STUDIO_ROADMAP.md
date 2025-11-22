@@ -30,7 +30,7 @@ Milestones are labeled **S0–S7** to distinguish them from core engine mileston
 
 - [x] **Move editor-only UI into Studio**
   - [x] Relocate viewport UI, docking layout, inspector panels, analytics overlays, mesh preview UI, etc. from `kestrel_engine` into `kestrel_studio`.
-  - [ ] Keep only minimal debug hooks / stats APIs inside `kestrel_engine` (e.g., `SystemProfiler`, frame stats exporters).
+  - [x] Keep only minimal debug hooks / stats APIs inside `kestrel_engine` (e.g., `SystemProfiler`, frame stats exporters).
 
 - [x] **Define a runtime host interface**
   - [x] Introduce an `EngineHost` or `RuntimeHost` abstraction used by Studio:
@@ -40,23 +40,23 @@ Milestones are labeled **S0–S7** to distinguish them from core engine mileston
     - [x] Access ECS snapshots for inspection where appropriate.
   - [x] Ensure Studio talks to the engine through this host abstraction.
 
-- [ ] **Maintain engine-only builds**
+- [x] **Maintain engine-only builds**
   - [x] Confirm `kestrel_engine` can still:
     - [x] Build as a pure library with no `egui` / editor dependencies.
     - [x] Ship a "game-only" binary that links `kestrel_engine` but not `kestrel_studio`.
-  - [ ] Add CI checks (if practical) to ensure `kestrel_engine` remains editor-agnostic. (Script: `scripts/ci/check_engine_no_editor.ps1`)
+  - [x] Add CI checks (if practical) to ensure `kestrel_engine` remains editor-agnostic. (Script: `scripts/ci/check_engine_no_editor.ps1`)
 
 ### Exit Criteria
 
-- [ ] Running `cargo run -p kestrel_studio` launches a Studio app with:
-  - [ ] A main window.
-  - [ ] A viewport rendering a test scene using `kestrel_engine`.
-- [ ] `kestrel_engine` can be built and used without pulling in Studio/editor dependencies.
-- [ ] Existing game/demo code still compiles, with upgraded paths to use the new host/Studio structure.
+- [x] Running `cargo run -p kestrel_studio` launches a Studio app with:
+  - [x] A main window.
+  - [x] A viewport rendering a test scene using `kestrel_engine`.
+- [x] `kestrel_engine` can be built and used without pulling in Studio/editor dependencies.
+- [x] Existing game/demo code still compiles, with upgraded paths to use the new host/Studio structure.
 
 ---
 
-## S1 — Project Model & Workspace UX
+## S1 – Project Model & Workspace UX
 
 **Goal:** Move from “engine repo demo” to **project-centric** workflow.
 
@@ -67,18 +67,18 @@ Milestones are labeled **S0–S7** to distinguish them from core engine mileston
 
 ### Tasks
 
-- [ ] **Define `.kestrelproj` project format**
+- [x] **Define `.kestrelproj` project format**
   - [x] Project name / ID.
   - [x] Asset root path(s).
   - [x] Default startup scene.
-  - [ ] Enabled plugins, trust levels, capabilities.
-  - [ ] Default build targets and configurations.
+  - [x] Enabled plugins, trust levels, capabilities.
+  - [x] Default build targets and configurations.
 
-- [ ] **Start screen / project browser**
-  - [ ] Implement Studio start screen with:
-    - [ ] “New Project”
-    - [ ] “Open Project”
-    - [ ] “Recent Projects”
+- [x] **Start screen / project browser**
+  - [x] Implement Studio start screen with:
+    - [x] “New Project”
+    - [x] “Open Project”
+    - [x] “Recent Projects”
   - [ ] New project templates:
     - [ ] Empty 2D project.
     - [ ] Empty 3D project.
@@ -87,6 +87,7 @@ Milestones are labeled **S0–S7** to distinguish them from core engine mileston
 - [ ] **Per-project configuration**
   - [x] Move `config/app.json` / `config/plugins.json` semantics into project-local equivalents.
   - [x] Ensure each project carries its own config instead of relying on engine repo defaults.
+  - [x] Surface active project metadata in the Studio UI (name/root/manifest path).
 
 - [ ] **Workspace layout persistence**
   - [ ] Save/restore editor layout per project:

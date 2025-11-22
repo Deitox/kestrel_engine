@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use super::{
     animation_watch::{AnimationAssetKind, AnimationAssetWatcher},
     atlas_watch::normalize_path_for_watch,
-    mesh_reload::{MeshReloadJob, MeshReloadRequest, MeshReloadResult},
     mesh_reload::run_mesh_reload_job,
+    mesh_reload::{MeshReloadJob, MeshReloadRequest, MeshReloadResult},
     App,
 };
 use crate::assets::TextureAtlasDiagnostics;

@@ -10,8 +10,8 @@ mod editor_shell;
 mod editor_ui;
 mod gizmo_interaction;
 mod inspector_tooling;
-mod mesh_reload;
 mod mesh_preview_tooling;
+mod mesh_reload;
 mod mesh_watch;
 mod plugin_host;
 mod plugin_runtime;
@@ -70,16 +70,16 @@ use crate::plugins::{
     PluginContext, PluginManager, PluginWatchdogEvent,
 };
 use crate::prefab::{PrefabFormat, PrefabLibrary};
+use crate::project::Project;
 use crate::renderer::{
     MeshDraw, RenderViewport, Renderer, ScenePointLight, SpriteBatch, MAX_SHADOW_CASCADES,
 };
+use crate::runtime_host::{PlayState, RuntimeHost};
 use crate::scene::{
     EnvironmentDependency, Scene, SceneCamera2D, SceneCameraBookmark, SceneDependencies, SceneEntityId,
     SceneEnvironment, SceneLightingData, SceneMetadata, ScenePointLightData, SceneShadowData,
     SceneViewportMode, Vec2Data,
 };
-use crate::project::Project;
-use crate::runtime_host::{PlayState, RuntimeHost};
 use crate::scripts::{ScriptCommand, ScriptHandle, ScriptPlugin};
 use crate::time::Time;
 use bevy_ecs::prelude::Entity;
@@ -208,6 +208,17 @@ pub async fn run_with_overrides(overrides: AppConfigOverrides) -> Result<()> {
 }
 
 pub async fn run_with_project(project: Project, overrides: AppConfigOverrides) -> Result<()> {
+    let mut project = project;
+    loop {
+        match run_single(project, overrides.clone()).await? {
+            Some(next) => project = next,
+            None => break,
+        }
+    }
+    Ok(())
+}
+
+async fn run_single(project: Project, overrides: AppConfigOverrides) -> Result<Option<Project>> {
     let mut config = AppConfig::load_or_default(project.config_app_path());
     let precedence_note = "Precedence: CLI overrides > config/app.json > defaults.";
     if overrides.is_empty() {
@@ -222,7 +233,7 @@ pub async fn run_with_project(project: Project, overrides: AppConfigOverrides) -
     let event_loop = EventLoop::new().context("Failed to create winit event loop")?;
     let mut app = App::new(config, project).await;
     event_loop.run_app(&mut app).context("Event loop execution failed")?;
-    Ok(())
+    Ok(app.next_project.take())
 }
 
 pub struct App {
@@ -255,6 +266,7 @@ pub struct App {
     // Configuration
     config: AppConfig,
     project: Project,
+    next_project: Option<Project>,
 
     scene_atlas_refs: HashSet<String>,
     persistent_atlases: HashSet<String>,
@@ -291,6 +303,12 @@ pub struct App {
     sprite_batch_map: HashMap<Arc<str>, Vec<InstanceData>>,
     sprite_batch_pool: Vec<Vec<InstanceData>>,
     sprite_batch_order: Vec<Arc<str>>,
+    start_screen_open: bool,
+    start_screen_status: Option<String>,
+    start_screen_new_name: String,
+    start_screen_new_path: String,
+    start_screen_open_path: String,
+    recent_projects: Vec<PathBuf>,
 }
 
 impl App {
@@ -656,6 +674,11 @@ impl App {
 
         #[cfg(feature = "alloc_profiler")]
         let frame_budget_capture = FrameBudgetCaptureScript::from_env();
+        let start_screen_open = true;
+        let start_screen_new_name = project.name().unwrap_or("").to_string();
+        let start_screen_new_path = project.root().join("NewProject").display().to_string();
+        let start_screen_open_path = project.manifest_path_or_default().display().to_string();
+        let recent_projects = Project::recent_projects();
 
         let mut app = Self {
             renderer,
@@ -690,6 +713,7 @@ impl App {
             ),
             config,
             project,
+            next_project: None,
             emitter_entity: Some(emitter),
             sprite_atlas_views: HashMap::new(),
             atlas_hot_reload,
@@ -712,6 +736,12 @@ impl App {
             sprite_batch_map: HashMap::new(),
             sprite_batch_pool: Vec::new(),
             sprite_batch_order: Vec::new(),
+            start_screen_open,
+            start_screen_status: None,
+            start_screen_new_name,
+            start_screen_new_path,
+            start_screen_open_path,
+            recent_projects,
         };
         app.seed_animation_watch_roots();
         app.sync_animation_asset_watch_roots();
@@ -740,6 +770,64 @@ impl App {
             return;
         }
         self.with_plugins(|plugins, ctx| plugins.handle_events(ctx, &events));
+    }
+
+    fn handle_project_action(&mut self, action: editor_ui::ProjectAction) {
+        match action {
+            editor_ui::ProjectAction::OpenExisting { path } => {
+                let trimmed = path.trim();
+                if trimmed.is_empty() {
+                    self.start_screen_status = Some("Enter a manifest path to open.".to_string());
+                    return;
+                }
+                let target = PathBuf::from(trimmed);
+                let current = self.project.manifest_path_or_default();
+                let is_same = target.canonicalize().ok() == current.canonicalize().ok();
+                if is_same {
+                    self.start_screen_status = Some("That project is already open.".to_string());
+                    self.start_screen_open = false;
+                    return;
+                }
+                match Project::load(&target) {
+                    Ok(project) => {
+                        Project::record_recent(&project.manifest_path_or_default());
+                        self.recent_projects = Project::recent_projects();
+                        self.next_project = Some(project);
+                        self.should_close = true;
+                        self.start_screen_status = None;
+                    }
+                    Err(err) => {
+                        self.start_screen_status = Some(format!("Failed to open project: {err}"));
+                    }
+                }
+            }
+            editor_ui::ProjectAction::CreateNew { name, path } => {
+                let trimmed_path = path.trim();
+                if trimmed_path.is_empty() {
+                    self.start_screen_status = Some("Enter a project folder to create.".to_string());
+                    return;
+                }
+                let project = match Project::create_new(trimmed_path, {
+                    let trimmed_name = name.trim();
+                    if trimmed_name.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed_name.to_string())
+                    }
+                }) {
+                    Ok(project) => project,
+                    Err(err) => {
+                        self.start_screen_status = Some(format!("Failed to create project: {err}"));
+                        return;
+                    }
+                };
+                Project::record_recent(&project.manifest_path_or_default());
+                self.recent_projects = Project::recent_projects();
+                self.next_project = Some(project);
+                self.should_close = true;
+                self.start_screen_status = None;
+            }
+        }
     }
 
     fn current_audio_listener_state(&self) -> AudioListenerState {
@@ -1722,9 +1810,7 @@ impl App {
             .material_registry
             .keys()
             .filter_map(|key| {
-                self.material_registry
-                    .material_source(key)
-                    .map(|path| (key.to_string(), path.to_string()))
+                self.material_registry.material_source(key).map(|path| (key.to_string(), path.to_string()))
             })
             .collect();
         let mut scene = self.ecs.export_scene_with_sources(
@@ -1733,14 +1819,9 @@ impl App {
             |key| material_source_map.get(key).cloned(),
         );
         let environment_dependency =
-            self.environment_registry
-                .definition(&self.active_environment_key)
-                .map(|def| {
-                    EnvironmentDependency::new(
-                        def.key().to_string(),
-                        def.source().map(|path| path.to_string()),
-                    )
-                });
+            self.environment_registry.definition(&self.active_environment_key).map(|def| {
+                EnvironmentDependency::new(def.key().to_string(), def.source().map(|path| path.to_string()))
+            });
         scene.dependencies.set_environment_dependency(environment_dependency);
         scene.metadata = self.capture_scene_metadata();
         scene.save_to_path(scene_path)?;
@@ -2050,8 +2131,7 @@ impl ApplicationHandler for App {
         if step_once {
             self.step_pending = false;
         }
-        let paused =
-            matches!(self.play_state, PlayState::Playing { paused: true }) && !step_once;
+        let paused = matches!(self.play_state, PlayState::Playing { paused: true }) && !step_once;
         let RuntimeTick { dt, dropped_backlog, .. } =
             if paused { self.runtime_loop.tick_paused() } else { self.runtime_loop.tick() };
         if step_once {
@@ -2947,10 +3027,7 @@ impl ApplicationHandler for App {
             })
         });
 
-        let editor_state = self.editor_ui_state();
         let editor_params = editor_ui::EditorUiParams {
-            show_start_screen: editor_state.start_screen_open,
-            recent_projects: Arc::from(editor_state.recent_projects.clone().into_boxed_slice()),
             raw_input,
             base_pixels_per_point,
             hist_points,
@@ -2979,6 +3056,21 @@ impl ApplicationHandler for App {
             animation_budget_sample,
             animation_time: self.ecs.world.resource::<AnimationTime>().clone(),
             play_state: self.play_state,
+            project_name: self.project.name().map(|s| s.to_string()),
+            project_root: self.project.root().display().to_string(),
+            project_manifest: self.project.manifest_path().map(|p| p.display().to_string()),
+            start_screen_open: self.start_screen_open,
+            start_screen_status: self.start_screen_status.clone(),
+            start_screen_new_name: self.start_screen_new_name.clone(),
+            start_screen_new_path: self.start_screen_new_path.clone(),
+            start_screen_open_path: self.start_screen_open_path.clone(),
+            recent_projects: Arc::from(
+                self.recent_projects
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            ),
             light_cluster_metrics_overlay,
             light_cluster_metrics: light_cluster_snapshot,
             point_lights: self.renderer.lighting().point_lights.clone(),
@@ -3130,13 +3222,11 @@ impl ApplicationHandler for App {
             gpu_timing_enabled: self.renderer.gpu_timing_enabled(),
             gizmo_mode: gizmo_mode_state,
         };
-        drop(editor_state);
 
         let ui_build_start = Instant::now();
         let editor_output = self.render_editor_ui(editor_params);
         ui_time_ms += ui_build_start.elapsed().as_secs_f32() * 1000.0;
         let editor_ui::EditorUiOutput {
-            start_screen_selection: _,
             full_output,
             mut actions,
             pending_viewport,
@@ -3214,6 +3304,12 @@ impl ApplicationHandler for App {
             clear_scene_history,
             keyframe_panel_open,
             gpu_metrics_status,
+            project_action,
+            start_screen_open,
+            start_screen_status,
+            start_screen_new_name,
+            start_screen_new_path,
+            start_screen_open_path,
             editor_settings_dirty,
         } = editor_output;
 
@@ -3283,6 +3379,14 @@ impl ApplicationHandler for App {
             }
             state.id_lookup_input = id_lookup_input;
             state.id_lookup_active = id_lookup_active;
+        }
+        self.start_screen_open = start_screen_open;
+        self.start_screen_status = start_screen_status;
+        self.start_screen_new_name = start_screen_new_name;
+        self.start_screen_new_path = start_screen_new_path;
+        self.start_screen_open_path = start_screen_open_path;
+        if let Some(action) = project_action {
+            self.handle_project_action(action);
         }
         if editor_settings_dirty {
             self.apply_editor_camera_settings();

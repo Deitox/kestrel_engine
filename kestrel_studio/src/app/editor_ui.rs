@@ -32,8 +32,8 @@ use crate::prefab::{PrefabFormat, PrefabStatusKind, PrefabStatusMessage};
 use crate::renderer::{
     GpuPassTiming, LightClusterMetrics, ScenePointLight, LIGHT_CLUSTER_MAX_LIGHTS, MAX_SHADOW_CASCADES,
 };
-use crate::scene::SceneShadowData;
 use crate::runtime_host::PlayState;
+use crate::scene::SceneShadowData;
 
 use crate::config::SpriteGuardrailMode;
 use bevy_ecs::prelude::Entity;
@@ -41,7 +41,7 @@ use egui::{Checkbox, DragAndDrop, Key, SliderClamping};
 use egui_plot as eplot;
 use glam::{Vec2, Vec3, Vec4};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 use winit::dpi::PhysicalSize;
 
@@ -88,6 +88,12 @@ pub(super) struct PrefabInstantiateRequest {
     pub name: String,
     pub format: PrefabFormat,
     pub drop_target: Option<PrefabDropTarget>,
+}
+
+#[derive(Clone)]
+pub(super) enum ProjectAction {
+    OpenExisting { path: String },
+    CreateNew { name: String, path: String },
 }
 
 #[derive(Clone, Debug)]
@@ -908,8 +914,6 @@ pub(super) struct ScriptDebuggerOutput {
 }
 
 pub(super) struct EditorUiParams {
-    pub show_start_screen: bool,
-    pub recent_projects: Arc<[PathBuf]>,
     pub raw_input: egui::RawInput,
     pub base_pixels_per_point: f32,
     pub hist_points: Arc<[eplot::PlotPoint]>,
@@ -938,6 +942,15 @@ pub(super) struct EditorUiParams {
     pub animation_budget_sample: Option<AnimationBudgetSample>,
     pub animation_time: AnimationTime,
     pub play_state: PlayState,
+    pub project_name: Option<String>,
+    pub project_root: String,
+    pub project_manifest: Option<String>,
+    pub start_screen_open: bool,
+    pub start_screen_status: Option<String>,
+    pub start_screen_new_name: String,
+    pub start_screen_new_path: String,
+    pub start_screen_open_path: String,
+    pub recent_projects: Arc<[String]>,
     pub light_cluster_metrics_overlay: Option<LightClusterMetrics>,
     pub light_cluster_metrics: LightClusterMetrics,
     pub point_lights: Vec<ScenePointLight>,
@@ -1077,7 +1090,6 @@ pub(super) struct EditorUiParams {
 }
 
 pub(super) struct EditorUiOutput {
-    pub start_screen_selection: Option<PathBuf>,
     pub full_output: egui::FullOutput,
     pub actions: UiActions,
     pub pending_viewport: Option<(Vec2, Vec2)>,
@@ -1155,14 +1167,18 @@ pub(super) struct EditorUiOutput {
     pub clear_scene_history: bool,
     pub keyframe_panel_open: bool,
     pub gpu_metrics_status: Option<String>,
+    pub project_action: Option<ProjectAction>,
+    pub start_screen_open: bool,
+    pub start_screen_status: Option<String>,
+    pub start_screen_new_name: String,
+    pub start_screen_new_path: String,
+    pub start_screen_open_path: String,
     pub editor_settings_dirty: bool,
 }
 
 impl App {
     pub(super) fn render_editor_ui(&mut self, params: EditorUiParams) -> EditorUiOutput {
         let EditorUiParams {
-            show_start_screen,
-            recent_projects,
             raw_input,
             base_pixels_per_point,
             hist_points,
@@ -1191,6 +1207,15 @@ impl App {
             animation_budget_sample,
             animation_time: animation_snapshot,
             play_state,
+            project_name,
+            project_root,
+            project_manifest,
+            start_screen_open: mut start_screen_open_state,
+            start_screen_status: mut start_screen_status_state,
+            start_screen_new_name: mut start_screen_new_name_state,
+            start_screen_new_path: mut start_screen_new_path_state,
+            start_screen_open_path: mut start_screen_open_path_state,
+            recent_projects,
             light_cluster_metrics_overlay,
             light_cluster_metrics,
             mut point_lights,
@@ -1328,8 +1353,8 @@ impl App {
             gizmo_mode: mut gizmo_mode_state,
             audio_spatial_config,
         } = params;
-        let _ = show_start_screen;
-        let _ = recent_projects;
+
+        let mut project_action: Option<ProjectAction> = None;
 
         fn show_script_handle_table(ui: &mut egui::Ui, handles: &[ScriptHandleBinding], id_suffix: &str) {
             if handles.is_empty() {
@@ -1416,11 +1441,40 @@ impl App {
         let mut point_lights_dirty = false;
         let keyframe_panel_ctx = self.editor_shell.egui_ctx.clone();
         let full_output = self.editor_shell.egui_ctx.run(raw_input, |ctx| {
+            if start_screen_open_state {
+                if let Some(action) = render_start_screen(
+                    ctx,
+                    project_name.as_ref(),
+                    &project_root,
+                    &project_manifest,
+                    recent_projects.as_ref(),
+                    &mut start_screen_open_path_state,
+                    &mut start_screen_new_name_state,
+                    &mut start_screen_new_path_state,
+                    &mut start_screen_status_state,
+                    &mut start_screen_open_state,
+                ) {
+                    project_action = Some(action);
+                }
+            }
             let left_panel =
                 egui::SidePanel::left("kestrel_left_panel").default_width(340.0).show(ctx, |ui| {
                     egui::CollapsingHeader::new("Stats").default_open(true).show(ui, |ui| {
                         ui.label(format!("Entities: {}", entity_count));
                         ui.label(format!("Instances drawn: {}", instances_drawn));
+                        ui.horizontal(|ui| {
+                            ui.label(format!(
+                                "Project: {} ({})",
+                                project_name.as_deref().unwrap_or("<unnamed>"),
+                                project_root
+                            ));
+                            if ui.button("Start screen").clicked() {
+                                start_screen_open_state = true;
+                            }
+                        });
+                        if let Some(path) = project_manifest.as_ref() {
+                            ui.label(format!("Manifest: {path}"));
+                        }
                         let mut checkbox_state = vsync_enabled;
                         if ui.checkbox(&mut checkbox_state, "Enable VSync").changed() {
                             vsync_enabled = checkbox_state;
@@ -4021,7 +4075,6 @@ impl App {
         actions.play_step = play_step;
 
         EditorUiOutput {
-            start_screen_selection: None,
             full_output,
             actions,
             pending_viewport,
@@ -4099,6 +4152,12 @@ impl App {
             clear_scene_history,
             keyframe_panel_open,
             gpu_metrics_status,
+            project_action,
+            start_screen_open: start_screen_open_state,
+            start_screen_status: start_screen_status_state,
+            start_screen_new_name: start_screen_new_name_state,
+            start_screen_new_path: start_screen_new_path_state,
+            start_screen_open_path: start_screen_open_path_state,
             editor_settings_dirty,
         }
     }
@@ -4152,6 +4211,136 @@ fn sprite_stage_bar(ui: &mut egui::Ui, label: &str, value_ms: Option<f32>, budge
             }
         }
     }
+}
+
+fn render_start_screen(
+    ctx: &egui::Context,
+    project_name: Option<&String>,
+    project_root: &str,
+    project_manifest: &Option<String>,
+    recent_projects: &[String],
+    open_path: &mut String,
+    new_name: &mut String,
+    new_path: &mut String,
+    status: &mut Option<String>,
+    open_flag: &mut bool,
+) -> Option<ProjectAction> {
+    let mut action = None;
+    #[allow(deprecated)]
+    let screen_rect = ctx.input(|i| i.screen_rect());
+    let overlay_rect = egui::Rect::from_min_size(screen_rect.min, screen_rect.size());
+    let scrim = egui::Color32::from_rgba_unmultiplied(12, 16, 24, 235);
+    let card = egui::Color32::from_rgb(28, 34, 46);
+    egui::Area::new(egui::Id::new("kestrel_start_screen_overlay"))
+        .order(egui::Order::Tooltip)
+        .fixed_pos(screen_rect.min)
+        .show(ctx, |ui| {
+            ui.set_min_size(overlay_rect.size());
+            ui.painter().rect_filled(overlay_rect, 0.0, scrim);
+            ui.centered_and_justified(|ui| {
+                egui::Frame::new().fill(card).corner_radius(8.0).show(ui, |ui| {
+                    ui.set_min_width(520.0);
+                    ui.set_max_width(620.0);
+                    ui.vertical(|ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.heading("Kestrel Studio");
+                            ui.label("Pick a project to open or create a new one.");
+                        });
+                        if let Some(msg) = status.as_ref() {
+                            ui.add_space(8.0);
+                            ui.colored_label(egui::Color32::from_rgb(230, 150, 120), msg);
+                        }
+                        ui.add_space(8.0);
+                        egui::Grid::new("start_screen_meta").num_columns(2).spacing([12.0, 8.0]).show(
+                            ui,
+                            |ui| {
+                                ui.label("Current project:");
+                                ui.label(project_name.cloned().unwrap_or_else(|| "<unnamed>".to_string()));
+                                ui.end_row();
+                                ui.label("Root:");
+                                ui.label(project_root);
+                                ui.end_row();
+                                ui.label("Manifest:");
+                                ui.label(project_manifest.as_deref().unwrap_or("N/A"));
+                                ui.end_row();
+                            },
+                        );
+                        ui.add_space(12.0);
+                        ui.heading("Recent projects");
+                        egui::ScrollArea::vertical().max_height(140.0).show(ui, |ui| {
+                            if recent_projects.is_empty() {
+                                ui.small("No recent projects found.");
+                            }
+                            for path in recent_projects {
+                                let exists = Path::new(path).exists();
+                                let label = if exists { path.clone() } else { format!("{path} (missing)") };
+                                let mut button = egui::Button::new(label);
+                                if !exists {
+                                    button = button.fill(egui::Color32::from_rgb(60, 40, 40));
+                                }
+                                if ui.add(button).clicked() {
+                                    *open_path = path.clone();
+                                    status.take();
+                                    action = Some(ProjectAction::OpenExisting { path: path.clone() });
+                                }
+                            }
+                        });
+                        ui.add_space(12.0);
+                        ui.heading("Open project");
+                        ui.horizontal(|ui| {
+                            ui.label("Manifest path");
+                            let edited = ui.text_edit_singleline(open_path).changed();
+                            if edited {
+                                status.take();
+                            }
+                            if ui.button("Open").clicked() {
+                                if open_path.trim().is_empty() {
+                                    *status = Some("Enter a manifest path to open.".to_string());
+                                } else {
+                                    let path = open_path.trim().to_string();
+                                    status.take();
+                                    action = Some(ProjectAction::OpenExisting { path });
+                                }
+                            }
+                        });
+                        ui.add_space(12.0);
+                        ui.heading("Create new project");
+                        ui.horizontal(|ui| {
+                            ui.label("Project name");
+                            if ui.text_edit_singleline(new_name).changed() {
+                                status.take();
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Project folder");
+                            if ui.text_edit_singleline(new_path).changed() {
+                                status.take();
+                            }
+                            if ui.button("Create").clicked() {
+                                if new_path.trim().is_empty() {
+                                    *status = Some("Enter a project folder to create.".to_string());
+                                } else {
+                                    let path = new_path.trim().to_string();
+                                    let name = new_name.trim().to_string();
+                                    status.take();
+                                    action = Some(ProjectAction::CreateNew { name, path });
+                                }
+                            }
+                        });
+                        ui.small("Manifests are saved as 'project.kestrelproj' in the chosen folder.");
+                        ui.add_space(12.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Hide start screen").clicked() {
+                                *open_flag = false;
+                                status.take();
+                            }
+                            ui.small("You can reopen this via the Stats panel.");
+                        });
+                    });
+                });
+            });
+        });
+    action
 }
 
 fn draw_animation_budget_overlay(

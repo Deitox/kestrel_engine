@@ -8,6 +8,10 @@
 
 # Local overrides
 /config/*.local.json
+/config/recent_projects.json
+
+# Local test/stub data
+/Test/
 
 # Plugin build artifacts
 /plugins/**/target/

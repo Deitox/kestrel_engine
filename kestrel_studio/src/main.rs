@@ -14,7 +14,7 @@ fn main() {
         }
     };
     let project = load_project(project_path);
-    Project::record_recent(project.root());
+    Project::record_recent(&project.manifest_path_or_default());
     if let Err(err) = pollster::block_on(run_with_project(project, cli_overrides)) {
         eprintln!("Application error: {err:?}");
     }

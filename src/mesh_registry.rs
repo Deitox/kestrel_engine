@@ -270,13 +270,12 @@ impl MeshRegistry {
         fingerprint: Option<u128>,
         materials: &mut MaterialRegistry,
     ) -> Result<()> {
-        let (ref_count, permanent, old_materials, previous_fingerprint) = if let Some(entry) =
-            self.entries.get(key)
-        {
-            (entry.ref_count, entry.permanent, entry.material_keys.clone(), entry.fingerprint)
-        } else {
-            (0, false, Vec::new(), None)
-        };
+        let (ref_count, permanent, old_materials, previous_fingerprint) =
+            if let Some(entry) = self.entries.get(key) {
+                (entry.ref_count, entry.permanent, entry.material_keys.clone(), entry.fingerprint)
+            } else {
+                (0, false, Vec::new(), None)
+            };
 
         let snapshot = materials.register_gltf_import_with_snapshot(&import.materials, &import.textures);
         let material_keys: Vec<String> = import.materials.iter().map(|mat| mat.key.clone()).collect();
@@ -303,9 +302,14 @@ impl MeshRegistry {
             entry.ref_count = ref_count;
             entry.permanent = permanent;
             self.bump_revision();
-        } else if let Err(err) =
-            self.insert_entry(key.to_string(), import.mesh, Some(source), new_fingerprint, material_keys, false)
-        {
+        } else if let Err(err) = self.insert_entry(
+            key.to_string(),
+            import.mesh,
+            Some(source),
+            new_fingerprint,
+            material_keys,
+            false,
+        ) {
             for retained_key in retained {
                 materials.release(&retained_key);
             }

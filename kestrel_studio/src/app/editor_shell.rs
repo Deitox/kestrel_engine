@@ -74,10 +74,6 @@ pub(crate) struct ScriptHandleBinding {
 }
 
 pub(crate) struct EditorUiState {
-    pub start_screen_open: bool,
-    pub recent_projects: Vec<PathBuf>,
-    pub selected_project: Option<PathBuf>,
-    pub project_load_error: Option<String>,
     pub ui_spawn_per_press: i32,
     pub ui_auto_spawn_rate: f32,
     pub ui_cell_size: f32,
@@ -217,10 +213,6 @@ impl EditorUiState {
         let default_scene_path = params.default_scene_path.display().to_string();
         scene_history.push_back(default_scene_path.clone());
         Self {
-            start_screen_open: true,
-            recent_projects: Vec::new(),
-            selected_project: None,
-            project_load_error: None,
             ui_spawn_per_press: 200,
             ui_auto_spawn_rate: 0.0,
             ui_cell_size: 0.25,

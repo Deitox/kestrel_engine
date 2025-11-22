@@ -89,6 +89,7 @@
 - If a dynamic plugin's path is missing or invalid, the loader logs it and automatically marks it disabled (the app will proceed without crashing).
 - Point Studio at a project manifest (`.kestrelproj`) to override roots/configs/startup scene:  
   `cargo run -p kestrel_studio -- --project path/to/MyGame.kestrelproj`
+  The Stats panel shows the active project name and root to confirm which manifest is loaded.
 
 ## Documentation
 - docs/ARCHITECTURE.md - subsystem responsibilities, frame flow, and notes on the hybrid transform pipeline.
