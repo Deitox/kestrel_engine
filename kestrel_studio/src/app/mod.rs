@@ -2967,6 +2967,7 @@ impl ApplicationHandler for App {
             animation_validation_log,
             animation_budget_sample,
             animation_time: self.ecs.world.resource::<AnimationTime>().clone(),
+            play_state: self.play_state,
             light_cluster_metrics_overlay,
             light_cluster_metrics: light_cluster_snapshot,
             point_lights: self.renderer.lighting().point_lights.clone(),
@@ -3174,6 +3175,11 @@ impl ApplicationHandler for App {
             mesh_selection_request,
             environment_selection_request,
             frame_selection_request,
+            play_enter,
+            play_pause,
+            play_resume,
+            play_stop,
+            play_step,
             id_lookup_request,
             id_lookup_input,
             id_lookup_active,
@@ -3197,6 +3203,12 @@ impl ApplicationHandler for App {
             gpu_metrics_status,
             editor_settings_dirty,
         } = editor_output;
+
+        actions.play_enter = play_enter;
+        actions.play_pause = play_pause;
+        actions.play_resume = play_resume;
+        actions.play_stop = play_stop;
+        actions.play_step = play_step;
 
         let frame_budget_action = actions.frame_budget_action;
         self.handle_frame_budget_action(frame_budget_action);
@@ -3366,6 +3378,24 @@ impl ApplicationHandler for App {
                 Err(err) => {
                     self.set_ui_scene_status(format!("Environment '{}' unavailable: {err}", environment_key));
                 }
+            }
+        }
+        if actions.play_stop {
+            self.exit_play_mode();
+        } else {
+            if actions.play_enter {
+                self.enter_play_mode();
+            }
+            if actions.play_pause {
+                self.pause_play_mode();
+            }
+            if actions.play_resume {
+                self.resume_play_mode();
+            }
+        }
+        if actions.play_step {
+            if let Err(err) = self.step_frame() {
+                eprintln!("Play-step request failed: {err:?}");
             }
         }
         if let Some(point_lights) = actions.point_light_update {
@@ -3936,6 +3966,11 @@ impl RuntimeHost for App {
     fn enter_play_mode(&mut self) {
         self.step_pending = false;
         self.set_play_state(PlayState::Playing { paused: false });
+    }
+
+    fn exit_play_mode(&mut self) {
+        self.step_pending = false;
+        self.set_play_state(PlayState::Editing);
     }
 
     fn pause_play_mode(&mut self) {

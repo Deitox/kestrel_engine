@@ -21,6 +21,9 @@ pub trait RuntimeHost {
     /// Enter play mode (unpaused).
     fn enter_play_mode(&mut self);
 
+    /// Exit play mode and return to editing.
+    fn exit_play_mode(&mut self);
+
     /// Pause the active play session.
     fn pause_play_mode(&mut self);
 

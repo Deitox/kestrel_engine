@@ -24,21 +24,21 @@ Milestones are labeled **S0–S7** to distinguish them from core engine mileston
 
 ### Tasks
 
-- [ ] **Create `kestrel_studio` crate**
-  - [ ] Add a new `kestrel_studio` binary crate to the workspace.
-  - [ ] Wire up window creation, main loop, and egui/docking from here instead of the engine crate.
+- [x] **Create `kestrel_studio` crate**
+  - [x] Add a new `kestrel_studio` binary crate to the workspace.
+  - [x] Wire up window creation, main loop, and egui/docking from here instead of the engine crate.
 
-- [ ] **Move editor-only UI into Studio**
-  - [ ] Relocate viewport UI, docking layout, inspector panels, analytics overlays, mesh preview UI, etc. from `kestrel_engine` into `kestrel_studio`.
+- [x] **Move editor-only UI into Studio**
+  - [x] Relocate viewport UI, docking layout, inspector panels, analytics overlays, mesh preview UI, etc. from `kestrel_engine` into `kestrel_studio`.
   - [ ] Keep only minimal debug hooks / stats APIs inside `kestrel_engine` (e.g., `SystemProfiler`, frame stats exporters).
 
-- [ ] **Define a runtime host interface**
-  - [ ] Introduce an `EngineHost` or `RuntimeHost` abstraction used by Studio:
-    - [ ] Load/unload scenes.
-    - [ ] Start/stop play mode.
-    - [ ] Step frames in paused mode.
-    - [ ] Access ECS snapshots for inspection where appropriate.
-  - [ ] Ensure Studio talks to the engine through this host abstraction.
+- [x] **Define a runtime host interface**
+  - [x] Introduce an `EngineHost` or `RuntimeHost` abstraction used by Studio:
+    - [x] Load/unload scenes.
+    - [x] Start/stop play mode.
+    - [x] Step frames in paused mode.
+    - [x] Access ECS snapshots for inspection where appropriate.
+  - [x] Ensure Studio talks to the engine through this host abstraction.
 
 - [ ] **Maintain engine-only builds**
   - [ ] Confirm `kestrel_engine` can still:
@@ -122,12 +122,12 @@ Milestones are labeled **S0–S7** to distinguish them from core engine mileston
   - [ ] Entity renaming in-panel.
   - [ ] Multi-selection support.
 
-- [ ] **Prefab / blueprint system**
-  - [ ] Define `Prefab` asset format (e.g., `.kprefab`) representing ECS snapshots.
-  - [ ] Ability to instantiate prefabs into scenes.
-  - [ ] Basic workflow for:
-    - [ ] “Create prefab from selection.”
-    - [ ] “Apply changes to prefab” (for simple, non-destructive edits).
+- [x] **Prefab / blueprint system**
+  - [x] Define `Prefab` asset format (e.g., `.kprefab`) representing ECS snapshots.
+  - [x] Ability to instantiate prefabs into scenes.
+  - [x] Basic workflow for:
+    - [x] “Create prefab from selection.”
+    - [x] “Apply changes to prefab” (for simple, non-destructive edits).
 
 - [ ] **Undo/Redo infrastructure**
   - [ ] Introduce a generic command stack for editor actions:
@@ -172,10 +172,10 @@ Milestones are labeled **S0–S7** to distinguish them from core engine mileston
 
 #### S3.1 Sprite Timeline Editor
 
-- [ ] Add a dedicated **Sprite Animation** panel:
-  - [ ] Timeline view of clips and frames.
-  - [ ] Per-frame duration editing.
-  - [ ] Loop modes: Loop, PingPong, OnceHold, OnceStop.
+- [x] Add a dedicated **Sprite Animation** panel:
+  - [x] Timeline view of clips and frames.
+  - [x] Per-frame duration editing.
+  - [x] Loop modes: Loop, PingPong, OnceHold, OnceStop.
 - [ ] Add event tracks:
   - [ ] Insert events at specific frames/times.
   - [ ] Event name + simple payload (string or JSON).
@@ -185,11 +185,11 @@ Milestones are labeled **S0–S7** to distinguish them from core engine mileston
 
 #### S3.2 Transform & Property Animation
 
-- [ ] Support authoring of `AnimationClip` for transforms:
-  - [ ] Keyframes for position, rotation, scale.
-  - [ ] Simple interpolation modes (step/linear; curves later).
+- [x] Support authoring of `AnimationClip` for transforms:
+  - [x] Keyframes for position, rotation, scale.
+  - [x] Simple interpolation modes (step/linear; curves later).
 - [ ] Timeline scrubbing:
-  - [ ] Scrub to a time and see scene update.
+  - [x] Scrub to a time and see scene update.
   - [ ] Optional “preview mode” where time is decoupled from the main simulation.
 
 #### S3.3 Skeletal Animation Preview
@@ -234,10 +234,10 @@ Milestones are labeled **S0–S7** to distinguish them from core engine mileston
 
 ### Tasks
 
-- [ ] **Profiler panel**
-  - [ ] Frame-time history graph.
-  - [ ] Breakdown chart (per system or per system-group).
-  - [ ] Ability to pin a system and watch its cost over time.
+- [x] **Profiler panel**
+  - [x] Frame-time history graph.
+  - [x] Breakdown chart (per system or per system-group).
+  - [x] Ability to pin a system and watch its cost over time.
 
 - [ ] **ECS inspector**
   - [ ] Entity search:
@@ -251,10 +251,10 @@ Milestones are labeled **S0–S7** to distinguish them from core engine mileston
   - [ ] Visualize system execution order.
   - [ ] Show which systems run in which phase (update, late_update, render, etc.).
 
-- [ ] **Plugin health UI**
-  - [ ] Per-plugin:
-    - [ ] Error counters.
-    - [ ] Capability violations.
+- [x] **Plugin health UI**
+  - [x] Per-plugin:
+    - [x] Error counters.
+    - [x] Capability violations.
     - [ ] Optional: rough CPU time or event counts.
   - [ ] Controls to disable/enable plugins at edit-time for debugging.
 
@@ -283,19 +283,19 @@ Milestones are labeled **S0–S7** to distinguish them from core engine mileston
     - [ ] Register custom panels/windows.
     - [ ] Register custom overlays in the main viewport.
 
-- [ ] **Plugin Manager panel**
-  - [ ] List all discovered plugins from project config.
-  - [ ] Show:
-    - [ ] Plugin name, description, version.
-    - [ ] Declared capabilities.
-    - [ ] Trust level (e.g., `Full`, `Isolated`).
-  - [ ] Allow per-project enable/disable toggles.
+- [x] **Plugin Manager panel**
+  - [x] List all discovered plugins from project config.
+  - [x] Show:
+    - [x] Plugin name, description, version.
+    - [x] Declared capabilities.
+    - [x] Trust level (e.g., `Full`, `Isolated`).
+  - [x] Allow per-project enable/disable toggles.
 
-- [ ] **Isolated plugin host (optional, advanced)**
-  - [ ] Implement `kestrel_plugin_host` helper process for `trust = "isolated"`.
-  - [ ] IPC to:
-    - [ ] Send events / ECS snapshots.
-    - [ ] Receive plugin outputs / commands.
+- [x] **Isolated plugin host (optional, advanced)**
+  - [x] Implement `kestrel_plugin_host` helper process for `trust = "isolated"`.
+  - [x] IPC to:
+    - [x] Send events / ECS snapshots.
+    - [x] Receive plugin outputs / commands.
   - [ ] Add controls to terminate/restart isolated plugins without crashing Studio.
 
 ### Exit Criteria

@@ -33,6 +33,7 @@ use crate::renderer::{
     GpuPassTiming, LightClusterMetrics, ScenePointLight, LIGHT_CLUSTER_MAX_LIGHTS, MAX_SHADOW_CASCADES,
 };
 use crate::scene::SceneShadowData;
+use crate::runtime_host::PlayState;
 
 use crate::config::SpriteGuardrailMode;
 use bevy_ecs::prelude::Entity;
@@ -837,6 +838,11 @@ pub(super) struct UiActions {
     pub reset_world: bool,
     pub save_scene: bool,
     pub load_scene: bool,
+    pub play_enter: bool,
+    pub play_pause: bool,
+    pub play_resume: bool,
+    pub play_stop: bool,
+    pub play_step: bool,
     pub spawn_mesh: Option<String>,
     pub retain_atlases: Vec<(String, Option<String>)>,
     pub retain_clips: Vec<(String, Option<String>)>,
@@ -928,6 +934,7 @@ pub(super) struct EditorUiParams {
     pub animation_validation_log: Arc<[AnimationValidationEvent]>,
     pub animation_budget_sample: Option<AnimationBudgetSample>,
     pub animation_time: AnimationTime,
+    pub play_state: PlayState,
     pub light_cluster_metrics_overlay: Option<LightClusterMetrics>,
     pub light_cluster_metrics: LightClusterMetrics,
     pub point_lights: Vec<ScenePointLight>,
@@ -1118,6 +1125,11 @@ pub(super) struct EditorUiOutput {
     pub mesh_selection_request: Option<String>,
     pub environment_selection_request: Option<String>,
     pub frame_selection_request: bool,
+    pub play_enter: bool,
+    pub play_pause: bool,
+    pub play_resume: bool,
+    pub play_stop: bool,
+    pub play_step: bool,
     pub id_lookup_request: Option<String>,
     pub id_lookup_input: String,
     pub id_lookup_active: bool,
@@ -1172,6 +1184,7 @@ impl App {
             animation_validation_log,
             animation_budget_sample,
             animation_time: animation_snapshot,
+            play_state,
             light_cluster_metrics_overlay,
             light_cluster_metrics,
             mut point_lights,
@@ -1349,6 +1362,11 @@ impl App {
         let mut mesh_selection_request: Option<String> = None;
         let mut environment_selection_request: Option<String> = None;
         let mut frame_selection_request = false;
+        let mut play_enter = false;
+        let mut play_pause = false;
+        let mut play_resume = false;
+        let mut play_stop = false;
+        let mut play_step = false;
         let mut id_lookup_request: Option<String> = None;
         let mut pending_viewport: Option<(Vec2, Vec2)> = None;
         let mut left_panel_width_px = 0.0;
@@ -1400,6 +1418,100 @@ impl App {
                             vsync_enabled = checkbox_state;
                             vsync_toggle_request = Some(checkbox_state);
                         }
+                        let (shortcut_play_enter, shortcut_play_pause, shortcut_play_resume, shortcut_play_stop, shortcut_play_step) =
+                            ctx.input(|input| {
+                                let f5 = input.key_pressed(egui::Key::F5);
+                                let f6 = input.key_pressed(egui::Key::F6);
+                                let shift = input.modifiers.shift;
+                                let mut enter = false;
+                                let mut pause = false;
+                                let mut resume = false;
+                                let mut stop = false;
+                                let mut step = false;
+                                if f5 {
+                                    if shift {
+                                        stop = true;
+                                    } else {
+                                        match play_state {
+                                            PlayState::Editing => enter = true,
+                                            PlayState::Playing { paused: false } => pause = true,
+                                            PlayState::Playing { paused: true } => resume = true,
+                                        }
+                                    }
+                                }
+                                if f6 {
+                                    match play_state {
+                                        PlayState::Editing => {
+                                            enter = true;
+                                            pause = true;
+                                            step = true;
+                                        }
+                                        PlayState::Playing { paused: false } => {
+                                            pause = true;
+                                            step = true;
+                                        }
+                                        PlayState::Playing { paused: true } => {
+                                            step = true;
+                                        }
+                                    }
+                                }
+                                (enter, pause, resume, stop, step)
+                            });
+                        play_enter |= shortcut_play_enter;
+                        play_pause |= shortcut_play_pause;
+                        play_resume |= shortcut_play_resume;
+                        play_stop |= shortcut_play_stop;
+                        play_step |= shortcut_play_step;
+                        ui.separator();
+                        ui.label("Play Controls");
+                        let (state_label, paused_label) = match play_state {
+                            PlayState::Editing => ("Editing", None),
+                            PlayState::Playing { paused: false } => ("Playing", Some("running")),
+                            PlayState::Playing { paused: true } => ("Playing", Some("paused")),
+                        };
+                        ui.horizontal(|ui| {
+                            ui.label(format!(
+                                "State: {}{}",
+                                state_label,
+                                paused_label.map(|p| format!(" ({p})")).unwrap_or_default()
+                            ));
+                            match play_state {
+                                PlayState::Editing => {
+                                    if ui.button("Play").clicked() {
+                                        play_enter = true;
+                                    }
+                                    if ui.button("Step").clicked() {
+                                        play_enter = true;
+                                        play_pause = true;
+                                        play_step = true;
+                                    }
+                                }
+                                PlayState::Playing { paused: false } => {
+                                    if ui.button("Pause").clicked() {
+                                        play_pause = true;
+                                    }
+                                    if ui.button("Stop").clicked() {
+                                        play_stop = true;
+                                    }
+                                    if ui.button("Step").clicked() {
+                                        play_pause = true;
+                                        play_step = true;
+                                    }
+                                }
+                                PlayState::Playing { paused: true } => {
+                                    if ui.button("Resume").clicked() {
+                                        play_resume = true;
+                                    }
+                                    if ui.button("Stop").clicked() {
+                                        play_stop = true;
+                                    }
+                                    if ui.button("Step").clicked() {
+                                        play_step = true;
+                                    }
+                                }
+                            }
+                        });
+                        ui.small("Shortcuts: F5 play/pause/resume, Shift+F5 stop, F6 step");
                         ui.separator();
                         ui.label("Frame time (ms)");
                         let hist = eplot::Plot::new("fps_plot").height(120.0).include_y(0.0).include_y(40.0);
@@ -3894,6 +4006,11 @@ impl App {
         if point_lights_dirty {
             actions.point_light_update = Some(point_lights);
         }
+        actions.play_enter = play_enter;
+        actions.play_pause = play_pause;
+        actions.play_resume = play_resume;
+        actions.play_stop = play_stop;
+        actions.play_step = play_step;
 
         EditorUiOutput {
             full_output,
@@ -3946,6 +4063,11 @@ impl App {
             mesh_reset_request,
             mesh_selection_request,
             environment_selection_request,
+            play_enter,
+            play_pause,
+            play_resume,
+            play_stop,
+            play_step,
             frame_selection_request,
             id_lookup_request,
             id_lookup_input,
