@@ -33,7 +33,7 @@ use self::editor_shell::{
     EditorShell, EditorUiState, EditorUiStateParams, EmitterUiDefaults, ScriptDebuggerStatus,
     ScriptHandleBinding,
 };
-use self::mesh_reload::{MeshReloadJob, MeshReloadWorker};
+use self::mesh_reload::MeshReloadWorker;
 use self::mesh_watch::MeshHotReload;
 use self::plugin_host::{BuiltinPluginFactory, PluginHost};
 use self::plugin_runtime::{PluginContextInputs, PluginRuntime};
@@ -78,6 +78,7 @@ use crate::scene::{
     SceneEnvironment, SceneLightingData, SceneMetadata, ScenePointLightData, SceneShadowData,
     SceneViewportMode, Vec2Data,
 };
+use crate::runtime_host::{PlayState, RuntimeHost};
 use crate::scripts::{ScriptCommand, ScriptHandle, ScriptPlugin};
 use crate::time::Time;
 use bevy_ecs::prelude::Entity;
@@ -233,6 +234,7 @@ pub struct App {
     scene_environment_ref: Option<String>,
     active_environment_key: String,
     environment_intensity: f32,
+    play_state: PlayState,
     should_close: bool,
 
     // egui
@@ -644,6 +646,7 @@ impl App {
             scene_environment_ref: None,
             active_environment_key: default_environment_key.clone(),
             environment_intensity,
+            play_state: PlayState::Editing,
             should_close: false,
             editor_shell,
             plugin_runtime,
@@ -1677,6 +1680,83 @@ impl App {
                 eprintln!("[environment] failed to restore default environment: {err:?}");
             }
         }
+    }
+
+    fn save_scene_to_path(&mut self, scene_path: &str) -> Result<()> {
+        let mesh_source_map: HashMap<String, String> = self
+            .mesh_registry
+            .keys()
+            .filter_map(|key| {
+                self.mesh_registry
+                    .mesh_source(key)
+                    .map(|path| (key.to_string(), path.to_string_lossy().into_owned()))
+            })
+            .collect();
+        let material_source_map: HashMap<String, String> = self
+            .material_registry
+            .keys()
+            .filter_map(|key| {
+                self.material_registry
+                    .material_source(key)
+                    .map(|path| (key.to_string(), path.to_string()))
+            })
+            .collect();
+        let mut scene = self.ecs.export_scene_with_sources(
+            &self.assets,
+            |key| mesh_source_map.get(key).cloned(),
+            |key| material_source_map.get(key).cloned(),
+        );
+        let environment_dependency =
+            self.environment_registry
+                .definition(&self.active_environment_key)
+                .map(|def| {
+                    EnvironmentDependency::new(
+                        def.key().to_string(),
+                        def.source().map(|path| path.to_string()),
+                    )
+                });
+        scene.dependencies.set_environment_dependency(environment_dependency);
+        scene.metadata = self.capture_scene_metadata();
+        scene.save_to_path(scene_path)?;
+        self.remember_scene_path(scene_path);
+        Ok(())
+    }
+
+    fn load_scene_from_path(&mut self, scene_path: &str) -> Result<()> {
+        let scene = Scene::load_from_path(scene_path)?;
+        if let Err(err) = self.update_scene_dependencies(&scene.dependencies) {
+            self.ecs.clear_world();
+            self.clear_scene_atlases();
+            self.clear_scene_clips();
+            self.set_selected_entity(None);
+            self.set_gizmo_interaction(None);
+            if let Some(plugin) = self.script_plugin_mut() {
+                plugin.clear_handles();
+            }
+            self.sync_emitter_ui();
+            self.set_inspector_status(None);
+            return Err(err);
+        }
+        self.ecs.load_scene_with_dependencies(
+            &scene,
+            &self.assets,
+            |_, _| Ok(()),
+            |_, _| Ok(()),
+            |_, _| Ok(()),
+        )?;
+        self.remember_scene_path(scene_path);
+        self.apply_scene_metadata(&scene.metadata);
+        self.set_selected_entity(None);
+        self.set_gizmo_interaction(None);
+        if let Some(plugin) = self.script_plugin_mut() {
+            plugin.clear_handles();
+        }
+        if let Some(analytics) = self.analytics_plugin_mut() {
+            analytics.clear_frame_history();
+        }
+        self.sync_emitter_ui();
+        self.set_inspector_status(None);
+        Ok(())
     }
 
     fn clear_scene_atlases(&mut self) {
@@ -3429,93 +3509,17 @@ impl ApplicationHandler for App {
         }
 
         if actions.save_scene {
-            let mesh_source_map: HashMap<String, String> = self
-                .mesh_registry
-                .keys()
-                .filter_map(|key| {
-                    self.mesh_registry
-                        .mesh_source(key)
-                        .map(|path| (key.to_string(), path.to_string_lossy().into_owned()))
-                })
-                .collect();
-            let material_source_map: HashMap<String, String> = self
-                .material_registry
-                .keys()
-                .filter_map(|key| {
-                    self.material_registry
-                        .material_source(key)
-                        .map(|path| (key.to_string(), path.to_string()))
-                })
-                .collect();
-            let mut scene = self.ecs.export_scene_with_sources(
-                &self.assets,
-                |key| mesh_source_map.get(key).cloned(),
-                |key| material_source_map.get(key).cloned(),
-            );
-            let environment_dependency =
-                self.environment_registry.definition(&self.active_environment_key).map(|def| {
-                    EnvironmentDependency::new(
-                        def.key().to_string(),
-                        def.source().map(|path| path.to_string()),
-                    )
-                });
-            scene.dependencies.set_environment_dependency(environment_dependency);
-            scene.metadata = self.capture_scene_metadata();
             let scene_path = self.editor_ui_state().ui_scene_path.clone();
-            match scene.save_to_path(&scene_path) {
-                Ok(_) => {
-                    self.set_ui_scene_status(format!("Saved {}", scene_path));
-                    self.remember_scene_path(&scene_path);
-                }
+            match self.save_scene_to_path(&scene_path) {
+                Ok(()) => self.set_ui_scene_status(format!("Saved {}", scene_path)),
                 Err(err) => self.set_ui_scene_status(format!("Save failed: {err}")),
             }
         }
         if actions.load_scene {
             let scene_path = self.editor_ui_state().ui_scene_path.clone();
-            match Scene::load_from_path(&scene_path) {
-                Ok(scene) => match self.update_scene_dependencies(&scene.dependencies) {
-                    Ok(()) => {
-                        if let Err(err) = self.ecs.load_scene_with_dependencies(
-                            &scene,
-                            &self.assets,
-                            |_, _| Ok(()),
-                            |_, _| Ok(()),
-                            |_, _| Ok(()),
-                        ) {
-                            self.set_ui_scene_status(format!("Load failed: {err}"));
-                        } else {
-                            self.set_ui_scene_status(format!("Loaded {}", scene_path));
-                            self.remember_scene_path(&scene_path);
-                            self.apply_scene_metadata(&scene.metadata);
-                            self.set_selected_entity(None);
-                            self.set_gizmo_interaction(None);
-                            if let Some(plugin) = self.script_plugin_mut() {
-                                plugin.clear_handles();
-                            }
-                            if let Some(analytics) = self.analytics_plugin_mut() {
-                                analytics.clear_frame_history();
-                            }
-                            self.sync_emitter_ui();
-                            self.set_inspector_status(None);
-                        }
-                    }
-                    Err(err) => {
-                        self.set_ui_scene_status(format!("Load failed: {err}"));
-                        self.ecs.clear_world();
-                        self.clear_scene_atlases();
-                        self.clear_scene_clips();
-                        self.set_selected_entity(None);
-                        self.set_gizmo_interaction(None);
-                        if let Some(plugin) = self.script_plugin_mut() {
-                            plugin.clear_handles();
-                        }
-                        self.sync_emitter_ui();
-                        self.set_inspector_status(None);
-                    }
-                },
-                Err(err) => {
-                    self.set_ui_scene_status(format!("Load failed: {err}"));
-                }
+            match self.load_scene_from_path(&scene_path) {
+                Ok(()) => self.set_ui_scene_status(format!("Loaded {}", scene_path)),
+                Err(err) => self.set_ui_scene_status(format!("Load failed: {err}")),
             }
         }
         if let Some(request) = actions.save_prefab {
@@ -3892,6 +3896,71 @@ impl SpriteGuardrailProjection {
 impl Drop for App {
     fn drop(&mut self) {
         self.with_plugins(|plugins, ctx| plugins.shutdown(ctx));
+    }
+}
+
+impl RuntimeHost for App {
+    fn play_state(&self) -> PlayState {
+        self.play_state
+    }
+
+    fn enter_play_mode(&mut self) {
+        self.play_state = PlayState::Playing { paused: false };
+    }
+
+    fn pause_play_mode(&mut self) {
+        self.play_state = PlayState::Playing { paused: true };
+    }
+
+    fn resume_play_mode(&mut self) {
+        self.play_state = PlayState::Playing { paused: false };
+    }
+
+    fn step_frame(&mut self) -> Result<()> {
+        if let Some(window) = self.renderer.window() {
+            window.request_redraw();
+        }
+        Ok(())
+    }
+
+    fn set_scene_path(&mut self, path: PathBuf) {
+        let path_string = path.to_string_lossy().into_owned();
+        self.with_editor_ui_state_mut(|state| state.ui_scene_path = path_string.clone());
+        self.remember_scene_path(&path_string);
+    }
+
+    fn scene_path(&self) -> Option<PathBuf> {
+        let state = self.editor_ui_state();
+        let current = state.ui_scene_path.trim();
+        if current.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(current))
+        }
+    }
+
+    fn load_scene(&mut self, path: &Path) -> Result<()> {
+        let path_str = path.to_string_lossy();
+        self.with_editor_ui_state_mut(|state| state.ui_scene_path = path_str.to_string());
+        self.load_scene_from_path(path_str.as_ref())
+    }
+
+    fn save_scene(&mut self, path: &Path) -> Result<()> {
+        let path_str = path.to_string_lossy();
+        self.with_editor_ui_state_mut(|state| state.ui_scene_path = path_str.to_string());
+        self.save_scene_to_path(path_str.as_ref())
+    }
+
+    fn renderer(&mut self) -> &mut Renderer {
+        &mut self.renderer
+    }
+
+    fn ecs(&self) -> &EcsWorld {
+        &self.ecs
+    }
+
+    fn ecs_mut(&mut self) -> &mut EcsWorld {
+        &mut self.ecs
     }
 }
 

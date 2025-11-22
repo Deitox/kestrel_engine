@@ -1,22 +1,19 @@
 [package]
-name = "kestrel_engine"
+name = "kestrel_studio"
 version = "0.7.0"
 edition = "2021"
 
-[workspace]
-resolver = "2"
-members = [".", "kestrel_studio"]
-
 [features]
 default = []
-binary_scene = ["lz4_flex"]
-anim_stats = []
-sprite_anim_soa = []
-sprite_anim_fixed_point = ["sprite_anim_soa"]
-sprite_anim_simd = ["sprite_anim_soa", "sprite_anim_fixed_point"]
-alloc_profiler = []
+binary_scene = ["kestrel_engine/binary_scene", "lz4_flex"]
+anim_stats = ["kestrel_engine/anim_stats"]
+sprite_anim_soa = ["kestrel_engine/sprite_anim_soa"]
+sprite_anim_fixed_point = ["sprite_anim_soa", "kestrel_engine/sprite_anim_fixed_point"]
+sprite_anim_simd = ["sprite_anim_fixed_point", "kestrel_engine/sprite_anim_simd"]
+alloc_profiler = ["kestrel_engine/alloc_profiler"]
 
 [dependencies]
+kestrel_engine = { path = ".." }
 winit = { version = "0.30.12", features = ["rwh_06"] }
 wgpu = "27.0.1"
 pollster = "0.3"
@@ -50,22 +47,3 @@ blake3 = "1.5"
 
 [dev-dependencies]
 tempfile = "3.10"
-rustc_version_runtime = "0.3"
-
-[profile.dev]
-opt-level = 1
-
-[profile.release]
-opt-level = 3
-codegen-units = 8
-lto = "thin"
-panic = "abort"
-incremental = false
-debug = false
-
-[profile.release-fat]
-inherits = "release"
-codegen-units = 1
-lto = "fat"
-incremental = false
-debug = true

@@ -23,7 +23,8 @@
                                         +-----------+
 ```
 
-- `src/lib.rs` drives Winit's `EventLoop`, advances the simulation, runs scripts, renders, and feeds egui.
+- `kestrel_studio/src/app/mod.rs` drives Winit's `EventLoop`, advances the simulation, runs scripts, renders, and feeds egui while the runtime lives in the `kestrel_engine` crate.
+- `src/runtime_host.rs` defines the `RuntimeHost`/`PlayState` boundary Studio uses to load scenes, toggle play/pause, and inspect the runtime without depending on `App` internals.
 - `src/input.rs` accumulates keyboard/mouse state and tracks held keys used by both the 2D camera and the mesh preview's orbit/free-fly controls.
 - `src/time.rs` tracks elapsed time and maintains the fixed 60 Hz timestep.
 - `src/ecs.rs` hosts the Bevy ECS world: sprites, meshes, transforms, Rapier physics, particle emitters, and utility resources.
@@ -39,11 +40,11 @@
 - `src/events.rs` defines `GameEvent` plus the `EventBus` resource that records gameplay signals for tooling and audio.
 - `src/scene.rs` describes the JSON scene format, tracks atlas/mesh dependencies, and handles serialization/deserialization of entity hierarchies for save/load operations.
 - `src/audio.rs` exposes `AudioManager` plus an `AudioPlugin` wrapper so rodio-backed cues react to `GameEvent`s through the shared plugin system.
-- `src/app/editor_shell.rs` defines `EditorShell`, which owns `EditorUiState`, wraps the egui context/renderer handles, and exposes `EditorUiParams`/`EditorUiOutput` so UI panels consume snapshot data while `App` applies queued actions after each frame.
-- `src/app/script_console.rs` owns the editor REPL plumbing (history snapshots, console log buffering, and command evaluation) so `EditorShell` feeds stable data to egui while `App` only applies emitted script commands.
-- `src/app/inspector_tooling.rs` maintains inspector-specific status messaging plus the cached scene/atlas/mesh/clip lists that populate the inspector panels, and exposes helpers (e.g., focus selection) so gizmo workflows live outside the core loop and flow through `EditorUiOutput`.
-- `src/app/asset_watch_tooling.rs` centralizes atlas/animation file-watcher glue, syncing hot-reload watchers and queueing new roots so `App` only forwards reload requests.
-- `src/app/telemetry_tooling.rs` keeps the editor telemetry caches, frame profiler, and frame-budget helpers bundled together so `EditorShell` can emit immutable snapshots to the UI without bloating `App`.
+- `kestrel_studio/src/app/editor_shell.rs` defines `EditorShell`, which owns `EditorUiState`, wraps the egui context/renderer handles, and exposes `EditorUiParams`/`EditorUiOutput` so UI panels consume snapshot data while `App` applies queued actions after each frame.
+- `kestrel_studio/src/app/script_console.rs` owns the editor REPL plumbing (history snapshots, console log buffering, and command evaluation) so `EditorShell` feeds stable data to egui while `App` only applies emitted script commands.
+- `kestrel_studio/src/app/inspector_tooling.rs` maintains inspector-specific status messaging plus the cached scene/atlas/mesh/clip lists that populate the inspector panels, and exposes helpers (e.g., focus selection) so gizmo workflows live outside the core loop and flow through `EditorUiOutput`.
+- `kestrel_studio/src/app/asset_watch_tooling.rs` centralizes atlas/animation file-watcher glue, syncing hot-reload watchers and queueing new roots so `App` only forwards reload requests.
+- `kestrel_studio/src/app/telemetry_tooling.rs` keeps the editor telemetry caches, frame profiler, and frame-budget helpers bundled together so `EditorShell` can emit immutable snapshots to the UI without bloating `App`.
 - `src/renderer/sprite_pass.rs` encapsulates the sprite pipeline setup, globals buffer, instancing buffer management (including the persistent staging belt used for uploads), and atlas bind-group cache so the main renderer only orchestrates pass sequencing.
 - `src/renderer/mesh_pass.rs` holds the mesh pass state (pipeline resources, uniform buffers, skinning palette cache, and palette upload stats) so the renderer can manage mesh/shadow coordination without a monolithic struct.
 - `src/renderer/shadow_pass.rs` manages the cascaded shadow map (uniform buffers, depth atlas, palette uploads, and render pass encoding) so the main renderer only forwards mesh draw calls and lighting settings.

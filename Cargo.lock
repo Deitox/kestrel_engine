@@ -1722,6 +1722,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "kestrel_studio"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "bevy_ecs",
+ "bincode",
+ "bitflags 2.9.4",
+ "blake3",
+ "bytemuck",
+ "cpal",
+ "egui",
+ "egui-wgpu",
+ "egui-winit",
+ "egui_plot",
+ "glam",
+ "gltf",
+ "half",
+ "image",
+ "kestrel_engine",
+ "libloading",
+ "lz4_flex",
+ "notify",
+ "pollster",
+ "rand",
+ "rapier2d",
+ "rhai",
+ "rodio",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "tempfile",
+ "uuid",
+ "wgpu",
+ "wide",
+ "winit",
+]
+
+[[package]]
 name = "khronos-egl"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

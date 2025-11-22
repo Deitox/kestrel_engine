@@ -95,7 +95,7 @@ cargo run
 - docs/animation_workflows.md - End-to-End Authoring Tutorial, CLI validation steps (`animation_check`, `migrate_atlas`), and Troubleshooting/Scripting guides that mirror the Milestone 5 plan + CI expectations.
 
 ## Keyframe Editor
-- Launch the editor (`cargo run`), select an entity driven by a sprite timeline or transform clip (the animation showcase scenes make this easy), and open the Stats panel.
+- Launch the editor (`cargo run -p kestrel_studio`), select an entity driven by a sprite timeline or transform clip (the animation showcase scenes make this easy), and open the Stats panel.
 - Click **Open Keyframe Editor** to toggle the panel; it stays docked even while playing the scene so you can iterate without losing context.
 - The panel lists active tracks plus per-key metadata, and supports inserting, deleting, dragging, copy/paste, and undo/redo for Translation/Rotation/Scale/Tint tracks. Double-click empty timeline space (or press `Insert Key at Scrub`) to add a key, drag keys to retime, and hold Shift while dragging/scrubbing to snap to the time grid. Use Ctrl/Cmd+C and Ctrl/Cmd+V to duplicate selections, Delete to remove, Ctrl/Cmd+Z to undo, and Ctrl/Cmd+Y (or Shift+Ctrl/Cmd+Z) to redo.
 - Scrub playback either with the slider or by dragging the time axis in the panel header to preview edits in real time; scrubbing records analytics events so the Stats panel usage metrics stay up to date.

@@ -1,5 +1,5 @@
 use kestrel_engine::cli::CliOverrides;
-use kestrel_engine::run_with_overrides;
+use kestrel_studio::run_with_overrides;
 
 fn main() {
     let cli_overrides = match CliOverrides::parse_from_env() {

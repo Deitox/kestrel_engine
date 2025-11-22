@@ -20,7 +20,7 @@ pub(crate) const MESH_CAMERA_NEAR: f32 = 0.1;
 pub(crate) const MESH_CAMERA_FAR: f32 = 100.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum MeshControlMode {
+pub enum MeshControlMode {
     #[default]
     Disabled,
     Orbit,

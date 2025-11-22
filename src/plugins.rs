@@ -1571,7 +1571,7 @@ impl PluginManager {
         self.invalidate_status_cache();
     }
 
-    pub(crate) fn unload_dynamic_plugins(&mut self, ctx: &mut PluginContext<'_>) {
+    pub fn unload_dynamic_plugins(&mut self, ctx: &mut PluginContext<'_>) {
         if self.plugins.iter().all(|slot| !slot.dynamic) {
             self.clear_dynamic_statuses();
             return;
