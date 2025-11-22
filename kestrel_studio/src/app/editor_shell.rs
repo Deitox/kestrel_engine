@@ -27,8 +27,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::SCRIPT_CONSOLE_CAPACITY;
-
-pub(crate) const DEFAULT_SCENE_PATH: &str = "assets/scenes/quick_save.json";
 pub(crate) const SCENE_HISTORY_CAPACITY: usize = 8;
 
 pub(crate) struct EditorShell {
@@ -194,6 +192,7 @@ pub(crate) struct EditorUiStateParams {
     pub lighting_state: SceneLightingState,
     pub environment_intensity: f32,
     pub editor_config: EditorConfig,
+    pub default_scene_path: PathBuf,
 }
 
 #[derive(Clone, Copy)]
@@ -211,7 +210,7 @@ pub(crate) struct EmitterUiDefaults {
 impl EditorUiState {
     pub fn new(params: EditorUiStateParams) -> Self {
         let mut scene_history = VecDeque::with_capacity(SCENE_HISTORY_CAPACITY);
-        let default_scene_path = DEFAULT_SCENE_PATH.to_string();
+        let default_scene_path = params.default_scene_path.display().to_string();
         scene_history.push_back(default_scene_path.clone());
         Self {
             ui_spawn_per_press: 200,

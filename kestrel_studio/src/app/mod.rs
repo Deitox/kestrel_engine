@@ -78,6 +78,7 @@ use crate::scene::{
     SceneEnvironment, SceneLightingData, SceneMetadata, ScenePointLightData, SceneShadowData,
     SceneViewportMode, Vec2Data,
 };
+use crate::project::Project;
 use crate::runtime_host::{PlayState, RuntimeHost};
 use crate::scripts::{ScriptCommand, ScriptHandle, ScriptPlugin};
 use crate::time::Time;
@@ -107,8 +108,6 @@ use egui_winit::State as EguiWinit;
 const CAMERA_BASE_HALF_HEIGHT: f32 = 1.2;
 const MAX_PENDING_ANIMATION_RELOADS_PER_KIND: usize = 32;
 const ANIMATION_RELOAD_WORKER_QUEUE_DEPTH: usize = 8;
-const PLUGIN_MANIFEST_PATH: &str = "config/plugins.json";
-const INPUT_CONFIG_PATH: &str = "config/input.json";
 const SCRIPT_CONSOLE_CAPACITY: usize = 200;
 const SCRIPT_HISTORY_CAPACITY: usize = 64;
 const BINARY_PREFABS_ENABLED: bool = cfg!(feature = "binary_scene");
@@ -201,11 +200,15 @@ pub struct FrameTimingSample {
 }
 
 pub async fn run() -> Result<()> {
-    run_with_overrides(AppConfigOverrides::default()).await
+    run_with_project(Project::default()?, AppConfigOverrides::default()).await
 }
 
 pub async fn run_with_overrides(overrides: AppConfigOverrides) -> Result<()> {
-    let mut config = AppConfig::load_or_default("config/app.json");
+    run_with_project(Project::default()?, overrides).await
+}
+
+pub async fn run_with_project(project: Project, overrides: AppConfigOverrides) -> Result<()> {
+    let mut config = AppConfig::load_or_default(project.config_app_path());
     let precedence_note = "Precedence: CLI overrides > config/app.json > defaults.";
     if overrides.is_empty() {
         println!("[config] {precedence_note} No CLI overrides supplied.");
@@ -217,7 +220,7 @@ pub async fn run_with_overrides(overrides: AppConfigOverrides) -> Result<()> {
     }
     config.apply_overrides(&overrides);
     let event_loop = EventLoop::new().context("Failed to create winit event loop")?;
-    let mut app = App::new(config).await;
+    let mut app = App::new(config, project).await;
     event_loop.run_app(&mut app).context("Event loop execution failed")?;
     Ok(())
 }
@@ -251,6 +254,7 @@ pub struct App {
 
     // Configuration
     config: AppConfig,
+    project: Project,
 
     scene_atlas_refs: HashSet<String>,
     persistent_atlases: HashSet<String>,
@@ -444,7 +448,7 @@ impl App {
             self.set_ui_scene_status(format!("Plugin manifest {}", parts.join("; ")));
         }
     }
-    pub async fn new(config: AppConfig) -> Self {
+    pub async fn new(config: AppConfig, project: Project) -> Self {
         let mut config = config;
         if let Ok(val) = std::env::var("KESTREL_GPU_TIMING") {
             let parsed = match val.to_lowercase().as_str() {
@@ -534,9 +538,10 @@ impl App {
             timing_cfg.max_backlog_seconds,
             timing_cfg.smoothing_half_life_seconds(),
         );
-        let mut input = Input::from_config(INPUT_CONFIG_PATH);
+        let mut input = Input::from_config(project.config_input_path());
         let mut assets = AssetManager::new();
-        let mut prefab_library = PrefabLibrary::new("assets/prefabs");
+        let prefab_root = project.prefab_root();
+        let mut prefab_library = PrefabLibrary::new(prefab_root);
         if let Err(err) = prefab_library.refresh() {
             eprintln!("[prefab] failed to scan prefabs: {err:?}");
         }
@@ -545,7 +550,7 @@ impl App {
         let default_environment_intensity = 1.0;
         let mut persistent_environments = HashSet::new();
         persistent_environments.insert(default_environment_key.clone());
-        match environment_registry.load_directory("assets/environments") {
+        match environment_registry.load_directory(project.environments_root()) {
             Ok(keys) => {
                 for key in keys {
                     persistent_environments.insert(key);
@@ -568,13 +573,14 @@ impl App {
             lighting_state: editor_lighting_state,
             environment_intensity,
             editor_config: editor_cfg.clone(),
+            default_scene_path: project.startup_scene_path().to_path_buf(),
         });
         let editor_shell = EditorShell::new(ui_state);
 
-        let plugin_host = PluginHost::new(PLUGIN_MANIFEST_PATH);
+        let plugin_host = PluginHost::new(project.config_plugins_path());
         let plugin_manager = PluginManager::default();
         let mut plugin_runtime = PluginRuntime::new(plugin_host, plugin_manager);
-        let script_path = PathBuf::from("assets/scripts/main.rhai");
+        let script_path = project.scripts_entry_path().to_path_buf();
         let mut builtin_plugins = Vec::new();
         builtin_plugins
             .push(BuiltinPluginFactory::new("mesh_preview", || Box::new(MeshPreviewPlugin::new())));
@@ -638,7 +644,7 @@ impl App {
             }
         };
         let mesh_reload_worker = MeshReloadWorker::new(ANIMATION_RELOAD_WORKER_QUEUE_DEPTH);
-        let animation_asset_watcher = Self::init_animation_asset_watcher();
+        let animation_asset_watcher = Self::init_animation_asset_watcher(project.assets_root());
         let animation_reload = AnimationReloadController::new(
             MAX_PENDING_ANIMATION_RELOADS_PER_KIND,
             AnimationReloadWorker::new(),
@@ -683,6 +689,7 @@ impl App {
                 Vec2::new(config.window.width as f32, config.window.height as f32),
             ),
             config,
+            project,
             emitter_entity: Some(emitter),
             sprite_atlas_views: HashMap::new(),
             atlas_hot_reload,
@@ -1905,7 +1912,8 @@ impl ApplicationHandler for App {
             );
         }
         if !self.scene_atlas_refs.contains("main") {
-            match self.assets.retain_atlas("main", Some("assets/images/atlas.json")) {
+            let main_atlas_path = Project::display_path(self.project.main_atlas_path());
+            match self.assets.retain_atlas("main", Some(main_atlas_path.as_str())) {
                 Ok(()) => {
                     self.scene_atlas_refs.insert("main".to_string());
                     self.persistent_atlases.insert("main".to_string());

@@ -107,7 +107,7 @@ impl App {
         }
     }
 
-    pub(super) fn init_animation_asset_watcher() -> Option<AnimationAssetWatcher> {
+    pub(super) fn init_animation_asset_watcher(asset_root: &Path) -> Option<AnimationAssetWatcher> {
         let mut watcher = match AnimationAssetWatcher::new() {
             Ok(watcher) => watcher,
             Err(err) => {
@@ -116,12 +116,12 @@ impl App {
             }
         };
         let watch_roots = [
-            ("assets/animations/clips", AnimationAssetKind::Clip),
-            ("assets/animations/graphs", AnimationAssetKind::Graph),
-            ("assets/animations/skeletal", AnimationAssetKind::Skeletal),
+            (asset_root.join("animations/clips"), AnimationAssetKind::Clip),
+            (asset_root.join("animations/graphs"), AnimationAssetKind::Graph),
+            (asset_root.join("animations/skeletal"), AnimationAssetKind::Skeletal),
         ];
-        for (root, kind) in watch_roots {
-            let path = Path::new(root);
+        for (path, kind) in watch_roots {
+            let path = path.as_path();
             if !path.exists() {
                 continue;
             }

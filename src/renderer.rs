@@ -1,3 +1,4 @@
+#[cfg(feature = "editor")]
 mod egui_pass;
 mod light_clusters;
 mod mesh_pass;
@@ -13,7 +14,9 @@ use crate::material_registry::MaterialGpu;
 use crate::mesh::{Mesh, MeshBounds, MeshVertex};
 use anyhow::{Context, Result};
 use glam::{Mat4, Vec3, Vec4};
-use std::collections::{HashMap, HashSet};
+#[cfg(feature = "editor")]
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::Arc;
 use std::time::Instant;
@@ -30,6 +33,7 @@ use self::shadow_pass::{ShadowPass, ShadowPassParams};
 use self::sprite_pass::SpritePass;
 pub use self::window_surface::SurfaceFrame;
 use self::window_surface::WindowSurface;
+#[cfg(feature = "editor")]
 use egui_wgpu::{Renderer as EguiRenderer, ScreenDescriptor};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -105,11 +109,14 @@ enum GpuTimestampLabel {
     SpriteStart,
     SpriteEnd,
     FrameEnd,
+    #[cfg(feature = "editor")]
     EguiStart,
+    #[cfg(feature = "editor")]
     EguiEnd,
 }
 
 #[derive(Copy, Clone, Debug)]
+#[cfg_attr(not(feature = "editor"), allow(dead_code))]
 struct GpuTimestampMark {
     label: GpuTimestampLabel,
     index: u32,
@@ -230,6 +237,7 @@ impl GpuTimer {
         }
     }
 
+    #[cfg(feature = "editor")]
     fn finish_frame(&mut self, encoder: &mut wgpu::CommandEncoder) {
         if !self.supported || !self.enabled || !self.frame_active {
             return;
@@ -249,6 +257,7 @@ impl GpuTimer {
         self.frame_active = false;
     }
 
+    #[cfg(feature = "editor")]
     fn collect_results(&mut self, device: &wgpu::Device) {
         if !self.supported || !self.enabled || self.pending_query_count == 0 {
             return;
@@ -302,9 +311,12 @@ impl GpuTimer {
         push_pass("Mesh pass", GpuTimestampLabel::MeshStart, GpuTimestampLabel::MeshEnd);
         push_pass("Sprite pass", GpuTimestampLabel::SpriteStart, GpuTimestampLabel::SpriteEnd);
         push_pass("Frame (pre-egui)", GpuTimestampLabel::FrameStart, GpuTimestampLabel::FrameEnd);
-        push_pass("Egui pass", GpuTimestampLabel::EguiStart, GpuTimestampLabel::EguiEnd);
-        if value_map.contains_key(&GpuTimestampLabel::EguiEnd) {
-            push_pass("Frame (with egui)", GpuTimestampLabel::FrameStart, GpuTimestampLabel::EguiEnd);
+        #[cfg(feature = "editor")]
+        {
+            push_pass("Egui pass", GpuTimestampLabel::EguiStart, GpuTimestampLabel::EguiEnd);
+            if value_map.contains_key(&GpuTimestampLabel::EguiEnd) {
+                push_pass("Frame (with egui)", GpuTimestampLabel::FrameStart, GpuTimestampLabel::EguiEnd);
+            }
         }
 
         self.pending_query_count = 0;
@@ -1407,6 +1419,7 @@ impl Renderer {
         Ok(frame)
     }
 
+    #[cfg(feature = "editor")]
     pub fn render_egui(
         &mut self,
         painter: &mut EguiRenderer,
@@ -1506,7 +1519,7 @@ mod surface_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "editor"))]
 mod pass_tests {
     use super::*;
     use crate::ecs::MeshLightingInfo;

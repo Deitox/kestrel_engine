@@ -61,9 +61,10 @@
 - Binary scenes cannot be opened without the feature flag; the loader emits a clear error if you try to open a `.kscene` from a build that lacks `binary_scene`.
 
 ## Build
-`
-cargo run
-`
+- Editor build (default features on):  
+  `cargo run -p kestrel_studio`
+- Game-only build (no editor deps):  
+  `cargo run --bin game_stub --no-default-features`
 
 ## Benchmarks
 - `pwsh scripts/ci/run_animation_targets.ps1 [-OutputDirectory artifacts]` runs `cargo test --profile release-fat animation_targets_measure -- --ignored --exact --nocapture` (matching the CI configuration) and captures the results in `target/animation_targets_report.json` (copied to `artifacts` when provided). Each report now includes `{mean, median, p95, p99}` timing stats, `{warmup_frames, measured_frames, samples_per_case, dt, profile, lto_mode, rustc_version, target_cpu, feature_flags, commit_sha}` metadata, and a `sprite_perf` payload so CI can diff both budgets and slow-path mix.
@@ -86,6 +87,8 @@ cargo run
 - Disable built-in plugins by listing their names in `config/plugins.json` -> `disable_builtins`.
 - The engine falls back to built-in defaults and logs a warning if the file is missing or malformed.
 - If a dynamic plugin's path is missing or invalid, the loader logs it and automatically marks it disabled (the app will proceed without crashing).
+- Point Studio at a project manifest (`.kestrelproj`) to override roots/configs/startup scene:  
+  `cargo run -p kestrel_studio -- --project path/to/MyGame.kestrelproj`
 
 ## Documentation
 - docs/ARCHITECTURE.md - subsystem responsibilities, frame flow, and notes on the hybrid transform pipeline.

@@ -41,10 +41,10 @@ Milestones are labeled **S0–S7** to distinguish them from core engine mileston
   - [x] Ensure Studio talks to the engine through this host abstraction.
 
 - [ ] **Maintain engine-only builds**
-  - [ ] Confirm `kestrel_engine` can still:
-    - [ ] Build as a pure library with no `egui` / editor dependencies.
-    - [ ] Ship a "game-only" binary that links `kestrel_engine` but not `kestrel_studio`.
-  - [ ] Add CI checks (if practical) to ensure `kestrel_engine` remains editor-agnostic.
+  - [x] Confirm `kestrel_engine` can still:
+    - [x] Build as a pure library with no `egui` / editor dependencies.
+    - [x] Ship a "game-only" binary that links `kestrel_engine` but not `kestrel_studio`.
+  - [ ] Add CI checks (if practical) to ensure `kestrel_engine` remains editor-agnostic. (Script: `scripts/ci/check_engine_no_editor.ps1`)
 
 ### Exit Criteria
 
@@ -68,9 +68,9 @@ Milestones are labeled **S0–S7** to distinguish them from core engine mileston
 ### Tasks
 
 - [ ] **Define `.kestrelproj` project format**
-  - [ ] Project name / ID.
-  - [ ] Asset root path(s).
-  - [ ] Default startup scene.
+  - [x] Project name / ID.
+  - [x] Asset root path(s).
+  - [x] Default startup scene.
   - [ ] Enabled plugins, trust levels, capabilities.
   - [ ] Default build targets and configurations.
 
@@ -85,8 +85,8 @@ Milestones are labeled **S0–S7** to distinguish them from core engine mileston
     - [ ] Minimal example project (optional).
 
 - [ ] **Per-project configuration**
-  - [ ] Move `config/app.json` / `config/plugins.json` semantics into project-local equivalents.
-  - [ ] Ensure each project carries its own config instead of relying on engine repo defaults.
+  - [x] Move `config/app.json` / `config/plugins.json` semantics into project-local equivalents.
+  - [x] Ensure each project carries its own config instead of relying on engine repo defaults.
 
 - [ ] **Workspace layout persistence**
   - [ ] Save/restore editor layout per project:
