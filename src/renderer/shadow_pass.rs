@@ -45,6 +45,7 @@ pub struct ShadowPass {
 pub struct ShadowPassParams<'a> {
     pub encoder: &'a mut wgpu::CommandEncoder,
     pub draws: &'a [MeshDraw<'a>],
+    pub visible_indices: Option<&'a [usize]>,
     pub camera: &'a Camera3D,
     pub viewport: RenderViewport,
     pub lighting: &'a SceneLightingState,
@@ -97,7 +98,14 @@ impl ShadowPass {
         self.sync_config(params.lighting, params.device)?;
 
         let shadow_strength = params.lighting.shadow_strength.clamp(0.0, 1.0);
-        let casters: Vec<&MeshDraw> = params.draws.iter().filter(|draw| draw.casts_shadows).collect();
+        let casters: Vec<&MeshDraw> = match params.visible_indices {
+            Some(indices) => indices
+                .iter()
+                .filter_map(|&idx| params.draws.get(idx))
+                .filter(|draw| draw.casts_shadows)
+                .collect(),
+            None => params.draws.iter().filter(|draw| draw.casts_shadows).collect(),
+        };
         if casters.is_empty() || shadow_strength <= 0.0 {
             self.cascade_matrices = [Mat4::IDENTITY; MAX_SHADOW_CASCADES];
             self.cascade_splits = [0.0; MAX_SHADOW_CASCADES];

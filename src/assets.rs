@@ -37,6 +37,7 @@ pub struct AssetManager {
     skeleton_refs: HashMap<String, usize>,
     skeletal_clip_sources: HashMap<String, String>,
     skeleton_clip_index: HashMap<String, Vec<String>>,
+    atlas_view_fingerprints: HashMap<PathBuf, (SystemTime, Option<u64>)>,
 }
 
 struct CachedAtlasImage {
@@ -978,6 +979,7 @@ impl AssetManager {
             skeleton_refs: HashMap::new(),
             skeletal_clip_sources: HashMap::new(),
             skeleton_clip_index: HashMap::new(),
+            atlas_view_fingerprints: HashMap::new(),
         }
     }
     pub fn set_device(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
@@ -996,6 +998,7 @@ impl AssetManager {
         self.texture_cache.clear();
         self.atlas_image_cache.clear();
         self.atlas_image_cache_order.clear();
+        self.atlas_view_fingerprints.clear();
     }
     pub fn default_sampler(&self) -> &wgpu::Sampler {
         self.sampler.as_ref().expect("sampler")
@@ -1381,6 +1384,7 @@ impl AssetManager {
                     self.atlas_refs.remove(key);
                     if let Some(atlas) = self.atlases.remove(key) {
                         self.texture_cache.remove(&atlas.image_path);
+                        self.atlas_view_fingerprints.remove(&atlas.image_path);
                         self.remove_cached_atlas_image(&atlas.image_path);
                     }
                     self.atlas_sources.remove(key);
@@ -1400,9 +1404,17 @@ impl AssetManager {
     fn load_or_reload_view(&mut self, key: &str, force: bool) -> Result<wgpu::TextureView> {
         let atlas = self.atlases.get(key).ok_or_else(|| anyhow!("atlas '{key}' not loaded"))?;
         let image_path = atlas.image_path.clone();
-        if !force {
-            if let Some((view, _)) = self.texture_cache.get(&image_path) {
+        let metadata = fs::metadata(&image_path).with_context(|| format!("read metadata for '{}'", image_path.display()))?;
+        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let sample = quick_file_sample_hash(&image_path);
+        if let Some((view, _)) = self.texture_cache.get(&image_path) {
+            if !force {
                 return Ok(view.clone());
+            }
+            if let Some((cached_modified, cached_sample)) = self.atlas_view_fingerprints.get(&image_path) {
+                if *cached_modified == modified && samples_match(*cached_sample, sample) {
+                    return Ok(view.clone());
+                }
             }
         }
         let (rgba, w, h) = self.cached_atlas_pixels(&image_path)?;
@@ -1455,6 +1467,7 @@ impl AssetManager {
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.atlas_view_fingerprints.insert(image_path.clone(), (modified, sample));
         self.texture_cache.insert(image_path, (view.clone(), (w, h)));
         Ok(view)
     }

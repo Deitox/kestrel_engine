@@ -390,6 +390,7 @@ pub struct Renderer {
     skinning_limit_warnings: HashSet<usize>,
     sprite_bind_groups: Vec<(Range<u32>, Arc<wgpu::BindGroup>)>,
     palette_stats_frame: PaletteUploadStats,
+    culled_mesh_indices: Vec<usize>,
 }
 
 impl Renderer {
@@ -407,6 +408,7 @@ impl Renderer {
             skinning_limit_warnings: HashSet::new(),
             sprite_bind_groups: Vec::new(),
             palette_stats_frame: PaletteUploadStats::default(),
+            culled_mesh_indices: Vec::new(),
         }
     }
 
@@ -817,10 +819,12 @@ impl Renderer {
         color_target: &wgpu::TextureView,
         viewport: RenderViewport,
         draws: &[MeshDraw],
+        visible_indices: Option<&[usize]>,
         camera: &Camera3D,
         clear_color: wgpu::Color,
     ) -> Result<()> {
-        if draws.is_empty() {
+        let visible_count = visible_indices.map(|idx| idx.len()).unwrap_or(draws.len());
+        if visible_count == 0 {
             return Ok(());
         }
         if self.mesh_pass.resources.is_none() {
@@ -1007,7 +1011,12 @@ impl Renderer {
             self.mesh_pass.palette_staging.clear();
             self.mesh_pass.palette_staging.resize(MAX_SKIN_JOINTS, identity_cols);
         }
-        for draw in draws {
+        let draw_iter: Box<dyn Iterator<Item = &MeshDraw>> = if let Some(indices) = visible_indices {
+            Box::new(indices.iter().filter_map(move |&idx| draws.get(idx)))
+        } else {
+            Box::new(draws.iter())
+        };
+        for draw in draw_iter {
             let base_color = draw.lighting.base_color;
             let emissive = draw.lighting.emissive.unwrap_or(Vec3::ZERO);
             let metallic = draw.lighting.metallic.clamp(0.0, 1.0);
@@ -1123,6 +1132,7 @@ impl Renderer {
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         draws: &[MeshDraw],
+        indices: Option<&[usize]>,
         camera: &Camera3D,
         viewport: RenderViewport,
     ) -> Result<()> {
@@ -1132,6 +1142,7 @@ impl Renderer {
         self.shadow_pass.prepare(ShadowPassParams {
             encoder,
             draws,
+            visible_indices: indices,
             camera,
             viewport,
             lighting: &self.lighting,
@@ -1208,14 +1219,15 @@ impl Renderer {
         }
     }
 
-    fn cull_mesh_draws<'a>(
-        &self,
-        draws: &[MeshDraw<'a>],
+    fn cull_mesh_draw_indices(
+        &mut self,
+        draws: &[MeshDraw<'_>],
         camera: &Camera3D,
         viewport: RenderViewport,
-    ) -> Vec<MeshDraw<'a>> {
+    ) -> usize {
+        self.culled_mesh_indices.clear();
         if draws.is_empty() {
-            return Vec::new();
+            return 0;
         }
         let vp_size = PhysicalSize::new(
             viewport.size.0.max(1.0).round() as u32,
@@ -1223,14 +1235,13 @@ impl Renderer {
         );
         let view_proj = camera.view_projection(vp_size);
         let planes = Self::extract_frustum_planes(view_proj);
-        let mut visible = Vec::with_capacity(draws.len());
-        for draw in draws {
+        for (idx, draw) in draws.iter().enumerate() {
             let (center, radius) = Self::transform_bounds(draw.model, &draw.mesh.bounds);
             if radius <= 0.0 || Self::sphere_in_frustum(center, radius, &planes) {
-                visible.push(draw.clone());
+                self.culled_mesh_indices.push(idx);
             }
         }
-        visible
+        self.culled_mesh_indices.len()
     }
 
     fn transform_bounds(model: Mat4, bounds: &MeshBounds) -> (Vec3, f32) {
@@ -1312,20 +1323,37 @@ impl Renderer {
         }
 
         let clear_color = wgpu::Color { r: 0.05, g: 0.06, b: 0.1, a: 1.0 };
-        let mut culled_mesh_draws: Vec<MeshDraw> = Vec::new();
-        let mut mesh_draw_slice: &[MeshDraw] = culled_mesh_draws.as_slice();
+        let mut visible_mesh_count = mesh_draws.len();
+        let mut mesh_indices: Option<&[usize]> = None;
         if let Some(camera) = mesh_camera {
-            culled_mesh_draws = self.cull_mesh_draws(mesh_draws, camera, viewport);
-            mesh_draw_slice = culled_mesh_draws.as_slice();
+            visible_mesh_count = self.cull_mesh_draw_indices(mesh_draws, camera, viewport);
+            if visible_mesh_count > 0 {
+                mesh_indices = Some(&self.culled_mesh_indices);
+            }
         }
+        let mesh_indices_owned: Option<Vec<usize>> = mesh_indices.map(|idx| idx.to_vec());
         let mut sprite_load_op = wgpu::LoadOp::Clear(clear_color);
         if let Some(camera) = mesh_camera {
-            if !mesh_draw_slice.is_empty() {
+            if visible_mesh_count > 0 {
                 self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::ShadowStart);
-                self.prepare_shadow_map(&mut encoder, mesh_draw_slice, camera, viewport)?;
+                self.prepare_shadow_map(
+                    &mut encoder,
+                    mesh_draws,
+                    mesh_indices_owned.as_deref(),
+                    camera,
+                    viewport,
+                )?;
                 self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::ShadowEnd);
                 self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::MeshStart);
-                self.encode_mesh_pass(&mut encoder, view, viewport, mesh_draw_slice, camera, clear_color)?;
+                self.encode_mesh_pass(
+                    &mut encoder,
+                    view,
+                    viewport,
+                    mesh_draws,
+                    mesh_indices_owned.as_deref(),
+                    camera,
+                    clear_color,
+                )?;
                 self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::MeshEnd);
                 sprite_load_op = wgpu::LoadOp::Load;
             }
@@ -1532,9 +1560,14 @@ mod pass_tests {
         let draws = vec![visible_draw.clone(), hidden_draw];
         let camera = Camera3D::new(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, 60f32.to_radians(), 0.1, 500.0);
         let viewport = RenderViewport { origin: (0.0, 0.0), size: (96.0, 64.0) };
-        let culled = renderer.cull_mesh_draws(&draws, &camera, viewport);
-        assert_eq!(culled.len(), 1);
-        assert!(culled.first().is_some_and(|draw| draw.model == visible_draw.model));
+        let count = renderer.cull_mesh_draw_indices(&draws, &camera, viewport);
+        assert_eq!(count, 1);
+        let first = renderer
+            .culled_mesh_indices
+            .get(0)
+            .and_then(|&idx| draws.get(idx))
+            .map(|draw| draw.model);
+        assert!(first.is_some_and(|model| model == visible_draw.model));
     }
 
     #[test]
