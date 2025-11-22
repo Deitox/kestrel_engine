@@ -39,7 +39,7 @@ pub fn render(
     timer.write_timestamp(&mut encoder, super::GpuTimestampLabel::EguiEnd);
     timer.finish_frame(&mut encoder);
     extra_cmd.push(encoder.finish());
-        queue.submit(extra_cmd);
+    queue.submit(extra_cmd);
     timer.collect_results(device);
     frame.present();
     Ok(())

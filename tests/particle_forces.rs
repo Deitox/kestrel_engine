@@ -63,8 +63,5 @@ fn trail_scales_with_velocity() {
     step(&mut world, 0.5);
 
     let transform = world.world.get::<Transform>(particle).unwrap();
-    assert!(
-        transform.scale.y > transform.scale.x,
-        "trail should stretch along velocity, length > width"
-    );
+    assert!(transform.scale.y > transform.scale.x, "trail should stretch along velocity, length > width");
 }

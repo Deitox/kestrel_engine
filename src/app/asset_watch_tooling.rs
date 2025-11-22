@@ -6,8 +6,17 @@ use super::{
     atlas_watch::normalize_path_for_watch,
     App,
 };
+use crate::assets::TextureAtlasDiagnostics;
+use anyhow::Result;
 
 impl App {
+    pub fn hot_reload_atlas(&mut self, key: &str) -> Result<(usize, TextureAtlasDiagnostics)> {
+        let diagnostics = self.assets.reload_atlas(key)?;
+        self.invalidate_atlas_view(key);
+        let refreshed = self.ecs.refresh_sprite_animations_for_atlas(key, &self.assets);
+        Ok((refreshed, diagnostics))
+    }
+
     pub(super) fn sync_atlas_hot_reload(&mut self) {
         let Some(watcher) = self.atlas_hot_reload.as_mut() else {
             return;
@@ -145,5 +154,72 @@ impl App {
         self.dispatch_animation_reload_queue();
         self.drain_animation_reload_results();
         self.drain_animation_validation_results();
+    }
+
+    pub(super) fn process_atlas_hot_reload_events(&mut self) {
+        let keys = if let Some(watcher) = self.atlas_hot_reload.as_mut() {
+            watcher.drain_keys()
+        } else {
+            Vec::new()
+        };
+        if keys.is_empty() {
+            return;
+        }
+        let mut unique = keys;
+        unique.sort();
+        unique.dedup();
+        for key in unique {
+            match self.hot_reload_atlas(&key) {
+                Ok((updated, diagnostics)) => {
+                    println!(
+                        "[assets] Hot reloaded atlas '{key}' ({updated} animation component{} refreshed)",
+                        if updated == 1 { "" } else { "s" }
+                    );
+                    self.record_atlas_validation_results(&key, diagnostics);
+                }
+                Err(err) => {
+                    eprintln!("[assets] Failed to hot reload atlas '{key}': {err}");
+                }
+            }
+        }
+    }
+
+    pub(super) fn sync_mesh_hot_reload(&mut self) {
+        let Some(watcher) = self.mesh_hot_reload.as_mut() else {
+            return;
+        };
+        let mut desired: Vec<(PathBuf, PathBuf, String)> = Vec::new();
+        for key in self.mesh_registry.keys() {
+            if let Some(path) = self.mesh_registry.mesh_source(key) {
+                if let Some((original, normalized)) = normalize_path_for_watch(path) {
+                    desired.push((original, normalized, key.to_string()));
+                }
+            }
+        }
+        if let Err(err) = watcher.sync(&desired) {
+            eprintln!("[mesh] mesh hot-reload sync failed: {err}");
+        }
+    }
+
+    pub(super) fn process_mesh_hot_reload_events(&mut self) {
+        let keys =
+            if let Some(watcher) = self.mesh_hot_reload.as_mut() { watcher.drain_keys() } else { Vec::new() };
+        if keys.is_empty() {
+            return;
+        }
+        let mut unique = keys;
+        unique.sort();
+        unique.dedup();
+        for key in unique {
+            let source = self.mesh_registry.mesh_source(&key).and_then(|p| p.to_str().map(|s| s.to_string()));
+            if let Some(path) = source {
+                match self.mesh_registry.ensure_mesh(&key, Some(&path), &mut self.material_registry) {
+                    Ok(()) => println!("[mesh] Hot reloaded '{key}' from {path}"),
+                    Err(err) => eprintln!("[mesh] Failed to hot reload mesh '{key}': {err}"),
+                }
+            } else {
+                eprintln!("[mesh] Hot reload skipped for '{key}': no source path recorded");
+            }
+        }
     }
 }

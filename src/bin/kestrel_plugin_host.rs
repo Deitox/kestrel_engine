@@ -17,12 +17,11 @@ use kestrel_engine::plugin_rpc::{
     RpcAssetReadbackRequest, RpcAssetReadbackResponse, RpcCapabilityEvent, RpcComponentKind,
     RpcComponentSnapshot, RpcEntityFilter, RpcEntityInfo, RpcEntitySnapshot, RpcGameEvent,
     RpcHierarchySnapshot, RpcIterEntitiesRequest, RpcIterEntitiesResponse, RpcIteratorCursor,
-    RpcReadComponentsRequest, RpcReadComponentsResponse, RpcResponseData, RpcSnapshotFormat,
-    RpcSpriteInfo, RpcSpriteSnapshot, RpcTintSnapshot, RpcTransformSnapshot, RpcVelocitySnapshot,
-    RpcWorldTransformSnapshot,
+    RpcReadComponentsRequest, RpcReadComponentsResponse, RpcResponseData, RpcSnapshotFormat, RpcSpriteInfo,
+    RpcSpriteSnapshot, RpcTintSnapshot, RpcTransformSnapshot, RpcVelocitySnapshot, RpcWorldTransformSnapshot,
 };
 use kestrel_engine::plugins::{
-    CapabilityTrackerHandle, CapabilityFlags, EnginePlugin, FeatureRegistryHandle, PluginCapability,
+    CapabilityFlags, CapabilityTrackerHandle, EnginePlugin, FeatureRegistryHandle, PluginCapability,
     PluginCapabilityEvent, PluginContext, PluginEntryFn, PluginTrust, ENGINE_PLUGIN_API_VERSION,
     PLUGIN_ENTRY_SYMBOL,
 };
@@ -151,11 +150,7 @@ impl PluginHostService {
         events: Vec<RpcGameEvent>,
         data: Option<RpcResponseData>,
     ) -> PluginHostResponse {
-        PluginHostResponse::Ok {
-            events,
-            capability_violations: self.capability_events(),
-            data,
-        }
+        PluginHostResponse::Ok { events, capability_violations: self.capability_events(), data }
     }
 
     fn error_response(&mut self, message: String) -> PluginHostResponse {
@@ -213,14 +208,12 @@ impl PluginHostService {
             }
             PluginHostRequest::ReadComponents(request) => {
                 let payload = self.engine.read_components(request);
-                let response =
-                    self.ok_response(Vec::new(), Some(RpcResponseData::ReadComponents(payload)));
+                let response = self.ok_response(Vec::new(), Some(RpcResponseData::ReadComponents(payload)));
                 return (response, false);
             }
             PluginHostRequest::IterEntities(request) => {
                 let payload = self.engine.iter_entities(request);
-                let response =
-                    self.ok_response(Vec::new(), Some(RpcResponseData::IterEntities(payload)));
+                let response = self.ok_response(Vec::new(), Some(RpcResponseData::IterEntities(payload)));
                 return (response, false);
             }
             PluginHostRequest::AssetReadback(request) => match self.engine.asset_readback(request) {
@@ -254,9 +247,7 @@ impl PluginHostService {
         };
         let captured_events = self.engine.drain_captured_events();
         let response = match result {
-            Ok(()) => {
-                self.ok_response(captured_events.into_iter().map(RpcGameEvent::from).collect(), None)
-            }
+            Ok(()) => self.ok_response(captured_events.into_iter().map(RpcGameEvent::from).collect(), None),
             Err(err) => {
                 eprintln!("[isolated-host] plugin call failed: {err:?}");
                 self.error_response(err.to_string())
@@ -460,8 +451,8 @@ impl EngineState {
                         byte_length
                     );
                 }
-                let mut file =
-                    fs::File::open(&path).with_context(|| format!("opening atlas image '{}'", path.display()))?;
+                let mut file = fs::File::open(&path)
+                    .with_context(|| format!("opening atlas image '{}'", path.display()))?;
                 let mut bytes = Vec::with_capacity(byte_length as usize);
                 file.read_to_end(&mut bytes)
                     .with_context(|| format!("reading atlas image '{}'", path.display()))?;
@@ -493,10 +484,9 @@ impl EngineState {
                     .with_context(|| format!("seeking blob '{}' to offset {}", path.display(), start))?;
                 let reader = BufReader::new(file);
                 let mut slice = Vec::with_capacity(requested as usize);
-                reader
-                    .take(requested)
-                    .read_to_end(&mut slice)
-                    .with_context(|| format!("reading blob '{}' range {}..{}", path.display(), start, start + requested))?;
+                reader.take(requested).read_to_end(&mut slice).with_context(|| {
+                    format!("reading blob '{}' range {}..{}", path.display(), start, start + requested)
+                })?;
                 Ok(RpcAssetReadbackResponse {
                     request_id: request.request_id,
                     content_type: "application/octet-stream".to_string(),

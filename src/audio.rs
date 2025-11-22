@@ -66,8 +66,10 @@ impl AudioManager {
     pub fn new(capacity: usize) -> Self {
         let capacity = capacity.max(1);
         let device_info = AudioDeviceInfo::detect();
-        let listener = AudioListenerState { position: Vec3::ZERO, forward: Vec3::new(0.0, 0.0, -1.0), up: Vec3::Y };
-        let spatial = AudioSpatialConfig { enabled: true, min_distance: 0.1, max_distance: 25.0, pan_width: 10.0 };
+        let listener =
+            AudioListenerState { position: Vec3::ZERO, forward: Vec3::new(0.0, 0.0, -1.0), up: Vec3::Y };
+        let spatial =
+            AudioSpatialConfig { enabled: true, min_distance: 0.1, max_distance: 25.0, pan_width: 10.0 };
         match OutputStream::try_default() {
             Ok((stream, handle)) => Self {
                 enabled: false,
@@ -178,10 +180,9 @@ impl AudioManager {
             self.try_reinit_output();
         }
         if self.enabled && self.playback_available {
-            let (spatial, distance_gain) =
-                emitter.and_then(|em| self.compute_spatial(em)).map_or((None, 1.0), |(spatial, gain)| {
-                    (Some(spatial), gain)
-                });
+            let (spatial, distance_gain) = emitter
+                .and_then(|em| self.compute_spatial(em))
+                .map_or((None, 1.0), |(spatial, gain)| (Some(spatial), gain));
             self.play_label(&label, base_amp, spatial, distance_gain);
         }
     }
@@ -193,7 +194,13 @@ impl AudioManager {
         self.triggers.push_back(trigger);
     }
 
-    fn play_label(&mut self, label: &str, base_amplitude: f32, spatial: Option<SpatialParams>, distance_gain: f32) {
+    fn play_label(
+        &mut self,
+        label: &str,
+        base_amplitude: f32,
+        spatial: Option<SpatialParams>,
+        distance_gain: f32,
+    ) {
         if self.handle.is_none() && !self.try_reinit_output() {
             return;
         }
@@ -226,9 +233,8 @@ impl AudioManager {
                 spatial.left_ear.to_array(),
                 spatial.right_ear.to_array(),
             ) {
-                let source = SineWave::new(frequency_hz)
-                    .take_duration(Duration::from_millis(140))
-                    .amplify(amplitude);
+                let source =
+                    SineWave::new(frequency_hz).take_duration(Duration::from_millis(140)).amplify(amplitude);
                 sink.append(source);
                 sink.detach();
                 self.last_error = None;
@@ -237,9 +243,8 @@ impl AudioManager {
         }
         match Sink::try_new(handle) {
             Ok(sink) => {
-                let source = SineWave::new(frequency_hz)
-                    .take_duration(Duration::from_millis(140))
-                    .amplify(amplitude);
+                let source =
+                    SineWave::new(frequency_hz).take_duration(Duration::from_millis(140)).amplify(amplitude);
                 sink.append(source);
                 sink.detach();
                 self.last_error = None;
@@ -296,20 +301,15 @@ impl AudioManager {
         }
         let rel = emitter.position - self.listener.position;
         let distance = rel.length();
-        let max_distance = self
-            .spatial
-            .max_distance
-            .min(emitter.max_distance.max(self.spatial.min_distance + 0.001));
+        let max_distance =
+            self.spatial.max_distance.min(emitter.max_distance.max(self.spatial.min_distance + 0.001));
         let range = (max_distance - self.spatial.min_distance).max(0.001);
         let t = ((distance - self.spatial.min_distance) / range).clamp(0.0, 1.0);
         let gain = (1.0 - t).powi(2);
         let pan_scale = (self.spatial.pan_width / 10.0).max(0.01);
         let head_width = 0.3 * pan_scale;
         let half = right * (head_width * 0.5);
-        Some((
-            SpatialParams { emitter: rel, left_ear: -half, right_ear: half },
-            gain,
-        ))
+        Some((SpatialParams { emitter: rel, left_ear: -half, right_ear: half }, gain))
     }
 }
 

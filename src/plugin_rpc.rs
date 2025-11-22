@@ -246,14 +246,12 @@ impl From<RpcEntity> for Entity {
 impl From<GameEvent> for RpcGameEvent {
     fn from(event: GameEvent) -> Self {
         match event {
-            GameEvent::SpriteSpawned { entity, atlas, region, audio } => {
-                RpcGameEvent::SpriteSpawned {
-                    entity: entity.into(),
-                    atlas,
-                    region,
-                    audio: audio.map(RpcAudioEmitter::from),
-                }
-            }
+            GameEvent::SpriteSpawned { entity, atlas, region, audio } => RpcGameEvent::SpriteSpawned {
+                entity: entity.into(),
+                atlas,
+                region,
+                audio: audio.map(RpcAudioEmitter::from),
+            },
             GameEvent::SpriteAnimationEvent { entity, timeline, event } => {
                 RpcGameEvent::SpriteAnimationEvent {
                     entity: entity.into(),
@@ -262,20 +260,22 @@ impl From<GameEvent> for RpcGameEvent {
                 }
             }
             GameEvent::EntityDespawned { entity } => RpcGameEvent::EntityDespawned { entity: entity.into() },
-            GameEvent::CollisionStarted { a, b, audio } => {
-                RpcGameEvent::CollisionStarted { a: a.into(), b: b.into(), audio: audio.map(RpcAudioEmitter::from) }
-            }
-            GameEvent::CollisionEnded { a, b, audio } => {
-                RpcGameEvent::CollisionEnded { a: a.into(), b: b.into(), audio: audio.map(RpcAudioEmitter::from) }
-            }
-            GameEvent::CollisionForce { a, b, force, audio } => {
-                RpcGameEvent::CollisionForce {
-                    a: a.into(),
-                    b: b.into(),
-                    force,
-                    audio: audio.map(RpcAudioEmitter::from),
-                }
-            }
+            GameEvent::CollisionStarted { a, b, audio } => RpcGameEvent::CollisionStarted {
+                a: a.into(),
+                b: b.into(),
+                audio: audio.map(RpcAudioEmitter::from),
+            },
+            GameEvent::CollisionEnded { a, b, audio } => RpcGameEvent::CollisionEnded {
+                a: a.into(),
+                b: b.into(),
+                audio: audio.map(RpcAudioEmitter::from),
+            },
+            GameEvent::CollisionForce { a, b, force, audio } => RpcGameEvent::CollisionForce {
+                a: a.into(),
+                b: b.into(),
+                force,
+                audio: audio.map(RpcAudioEmitter::from),
+            },
             GameEvent::ScriptMessage { message } => RpcGameEvent::ScriptMessage { message },
         }
     }
@@ -284,9 +284,12 @@ impl From<GameEvent> for RpcGameEvent {
 impl From<RpcGameEvent> for GameEvent {
     fn from(event: RpcGameEvent) -> Self {
         match event {
-            RpcGameEvent::SpriteSpawned { entity, atlas, region, audio } => {
-                GameEvent::SpriteSpawned { entity: entity.into(), atlas, region, audio: audio.map(AudioEmitter::from) }
-            }
+            RpcGameEvent::SpriteSpawned { entity, atlas, region, audio } => GameEvent::SpriteSpawned {
+                entity: entity.into(),
+                atlas,
+                region,
+                audio: audio.map(AudioEmitter::from),
+            },
             RpcGameEvent::SpriteAnimationEvent { entity, timeline, event } => {
                 GameEvent::SpriteAnimationEvent {
                     entity: entity.into(),
@@ -301,9 +304,12 @@ impl From<RpcGameEvent> for GameEvent {
             RpcGameEvent::CollisionEnded { a, b, audio } => {
                 GameEvent::CollisionEnded { a: a.into(), b: b.into(), audio: audio.map(AudioEmitter::from) }
             }
-            RpcGameEvent::CollisionForce { a, b, force, audio } => {
-                GameEvent::CollisionForce { a: a.into(), b: b.into(), force, audio: audio.map(AudioEmitter::from) }
-            }
+            RpcGameEvent::CollisionForce { a, b, force, audio } => GameEvent::CollisionForce {
+                a: a.into(),
+                b: b.into(),
+                force,
+                audio: audio.map(AudioEmitter::from),
+            },
             RpcGameEvent::ScriptMessage { message } => GameEvent::ScriptMessage { message },
         }
     }

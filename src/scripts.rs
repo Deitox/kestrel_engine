@@ -478,12 +478,7 @@ impl ScriptHost {
         self.load_script_from_source(source, modified, len)
     }
 
-    fn load_script_from_source(
-        &mut self,
-        source: String,
-        modified: SystemTime,
-        len: u64,
-    ) -> Result<&AST> {
+    fn load_script_from_source(&mut self, source: String, modified: SystemTime, len: u64) -> Result<&AST> {
         let ast = self.engine.compile(&source).with_context(|| "Compiling Rhai script")?;
         self.scope = Scope::new();
         self.engine

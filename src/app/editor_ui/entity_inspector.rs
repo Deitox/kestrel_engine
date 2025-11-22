@@ -4,8 +4,8 @@ use super::{
     UiActions,
 };
 use crate::ecs::{
-    EntityInfo, ForceFalloff, ForceFieldKind, ParticleAttractor, ParticleTrail, PropertyTrackPlayer, SkeletonInfo,
-    TransformClipInfo, TransformTrackPlayer,
+    EntityInfo, ForceFalloff, ForceFieldKind, ParticleAttractor, ParticleTrail, PropertyTrackPlayer,
+    SkeletonInfo, TransformClipInfo, TransformTrackPlayer,
 };
 use crate::gizmo::{GizmoInteraction, GizmoMode, ScaleHandle};
 use bevy_ecs::prelude::Entity;
@@ -219,10 +219,9 @@ pub(super) fn show_entity_inspector(
                     });
                     let desired_trail = if trail_enabled { Some(trail) } else { None };
                     if desired_trail != emitter.trail {
-                        actions.inspector_actions.push(InspectorAction::SetEmitterTrail {
-                            entity,
-                            trail: desired_trail,
-                        });
+                        actions
+                            .inspector_actions
+                            .push(InspectorAction::SetEmitterTrail { entity, trail: desired_trail });
                         emitter.trail = desired_trail;
                         info.particle_emitter = Some(emitter);
                         _inspector_refresh = true;
@@ -240,13 +239,13 @@ pub(super) fn show_entity_inspector(
                     ForceFieldKind::Directional => "Directional",
                 }
                 .to_string();
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut field_enabled, "Enabled");
-                        ui.label("Strength");
-                        ui.add(egui::DragValue::new(&mut field.strength).speed(0.05));
-                        ui.label("Radius");
-                        ui.add(egui::DragValue::new(&mut field.radius).range(0.0..=10.0).speed(0.05));
-                    });
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut field_enabled, "Enabled");
+                    ui.label("Strength");
+                    ui.add(egui::DragValue::new(&mut field.strength).speed(0.05));
+                    ui.label("Radius");
+                    ui.add(egui::DragValue::new(&mut field.radius).range(0.0..=10.0).speed(0.05));
+                });
                 egui::ComboBox::from_id_salt(("force_field_kind", entity.index()))
                     .selected_text(kind_label.clone())
                     .show_ui(ui, |ui| {

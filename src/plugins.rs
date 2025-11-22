@@ -709,12 +709,7 @@ impl<'a> PluginContext<'a> {
         Ok(AssetApi { assets })
     }
 
-    pub fn set_active_plugin(
-        &mut self,
-        name: &str,
-        capabilities: CapabilityFlags,
-        trust: PluginTrust,
-    ) {
+    pub fn set_active_plugin(&mut self, name: &str, capabilities: CapabilityFlags, trust: PluginTrust) {
         self.active_plugin = Some(name.to_string());
         self.active_capabilities = capabilities;
         self.active_trust = trust;
@@ -1159,13 +1154,7 @@ impl PluginManager {
                 stats.bytes += response.byte_length;
                 self.asset_metrics_snapshot = None;
                 self.asset_cache.insert(key, response.clone());
-                self.record_asset_readback_event(
-                    plugin_name,
-                    &payload,
-                    response.byte_length,
-                    elapsed,
-                    false,
-                );
+                self.record_asset_readback_event(plugin_name, &payload, response.byte_length, elapsed, false);
                 Ok(response)
             }
             Err(err) => {
@@ -1202,11 +1191,7 @@ impl PluginManager {
         self.watchdog_snapshot = None;
     }
 
-    fn log_isolated_capability_violations(
-        &mut self,
-        plugin_name: &str,
-        caps: Vec<PluginCapability>,
-    ) {
+    fn log_isolated_capability_violations(&mut self, plugin_name: &str, caps: Vec<PluginCapability>) {
         if caps.is_empty() {
             return;
         }

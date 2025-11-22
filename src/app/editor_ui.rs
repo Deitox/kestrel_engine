@@ -14,7 +14,8 @@ use crate::camera::Camera2D;
 use crate::camera3d::Camera3D;
 use crate::ecs::{
     AnimationTime, EntityInfo, ForceFalloff, ForceFieldKind, ParticleBudgetMetrics, ParticleTrail,
-    PropertyTrackPlayer, SpatialMetrics, SpatialMode, SpriteAnimPerfSample, SystemTimingSummary, TransformTrackPlayer,
+    PropertyTrackPlayer, SpatialMetrics, SpatialMode, SpriteAnimPerfSample, SystemTimingSummary,
+    TransformTrackPlayer,
 };
 use crate::events::GameEvent;
 use crate::gizmo::{

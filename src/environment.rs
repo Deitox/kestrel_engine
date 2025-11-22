@@ -375,8 +375,12 @@ impl EnvironmentGpu {
         for face in 0..6 {
             let face_data = &maps.diffuse.faces[face];
             let face_half = f32_to_f16_bits(face_data);
-            let (pixel_bytes, padded_stride) =
-                padded_upload_bytes(bytemuck::cast_slice(&face_half), maps.diffuse.size, maps.diffuse.size, 8);
+            let (pixel_bytes, padded_stride) = padded_upload_bytes(
+                bytemuck::cast_slice(&face_half),
+                maps.diffuse.size,
+                maps.diffuse.size,
+                8,
+            );
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &diffuse_texture,

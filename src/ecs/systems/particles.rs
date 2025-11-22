@@ -70,18 +70,8 @@ pub fn sys_update_emitters(
                 },
             );
             if let Some(trail) = emitter.trail {
-                batch_with_trail.push((
-                    base.0,
-                    base.1,
-                    base.2,
-                    base.3,
-                    base.4,
-                    base.5,
-                    base.6,
-                    base.7,
-                    base.8,
-                    trail,
-                ));
+                batch_with_trail
+                    .push((base.0, base.1, base.2, base.3, base.4, base.5, base.6, base.7, base.8, trail));
             } else {
                 batch_plain.push(base);
             }

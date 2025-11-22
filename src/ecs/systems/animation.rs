@@ -14,8 +14,6 @@ use bevy_ecs::prelude::{
     Added, Changed, Commands, Entity, Mut, Or, Query, Res, ResMut, Resource, With, Without,
 };
 use glam::{Mat4, Quat, Vec3};
-#[cfg(feature = "sprite_anim_simd")]
-use wide::f32x8;
 use std::cell::Cell;
 #[cfg(feature = "sprite_anim_soa")]
 use std::collections::HashMap;
@@ -26,6 +24,8 @@ use std::sync::Arc;
 use std::time::Duration;
 #[cfg(any(feature = "anim_stats", feature = "sprite_anim_simd"))]
 use std::time::Instant;
+#[cfg(feature = "sprite_anim_simd")]
+use wide::f32x8;
 
 #[derive(Default, Resource)]
 pub struct SpriteFrameApplyQueue {
@@ -1302,13 +1302,7 @@ pub fn sys_drive_sprite_animations(
                 }
                 #[cfg(not(feature = "sprite_anim_soa"))]
                 {
-                    drive_fast_fixed(
-                        step,
-                        steps,
-                        has_group_scales,
-                        animation_time_ref,
-                        &mut fast_animations,
-                    );
+                    drive_fast_fixed(step, steps, has_group_scales, animation_time_ref, &mut fast_animations);
                 }
                 drive_general_fixed(
                     step,
@@ -1646,7 +1640,10 @@ mod tests {
             ResMut<EventBus>,
             ResMut<SpriteFrameApplyQueue>,
             ResMut<SpriteAnimPerfTelemetry>,
-            Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState, &mut Sprite), With<FastSpriteAnimator>>,
+            Query<
+                (Entity, &mut SpriteAnimation, &mut SpriteFrameState, &mut Sprite),
+                With<FastSpriteAnimator>,
+            >,
             Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState), Without<FastSpriteAnimator>>,
         )>::new(&mut world);
         #[cfg(feature = "sprite_anim_soa")]
@@ -2371,7 +2368,10 @@ mod tests {
             ResMut<EventBus>,
             ResMut<SpriteFrameApplyQueue>,
             ResMut<SpriteAnimPerfTelemetry>,
-            Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState, &mut Sprite), With<FastSpriteAnimator>>,
+            Query<
+                (Entity, &mut SpriteAnimation, &mut SpriteFrameState, &mut Sprite),
+                With<FastSpriteAnimator>,
+            >,
             Query<(Entity, &mut SpriteAnimation, &mut SpriteFrameState), Without<FastSpriteAnimator>>,
         )>::new(&mut world);
 

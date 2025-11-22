@@ -242,7 +242,6 @@ impl Default for ShadowConfig {
     }
 }
 
-
 impl AppConfig {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();

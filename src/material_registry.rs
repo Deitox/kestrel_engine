@@ -378,37 +378,39 @@ impl MaterialRegistry {
             return Ok(());
         }
         let mut scratch = std::mem::take(&mut self.texture_upload_scratch);
-        let make_texture =
-            |data: [u8; 4], format: wgpu::TextureFormat, scratch: &mut Vec<u8>| -> (wgpu::Texture, wgpu::TextureView) {
-                let (pixel_data, padded_row_bytes) = Self::prepare_texture_upload(&data, 1, 1, scratch);
-                let texture = device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("Material Default Texture"),
-                    size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                    view_formats: &[],
-                });
-                queue.write_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture: &texture,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d::ZERO,
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    pixel_data,
-                    wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(padded_row_bytes),
-                        rows_per_image: Some(1),
-                    },
-                    wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
-                );
-                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-                (texture, view)
-            };
+        let make_texture = |data: [u8; 4],
+                            format: wgpu::TextureFormat,
+                            scratch: &mut Vec<u8>|
+         -> (wgpu::Texture, wgpu::TextureView) {
+            let (pixel_data, padded_row_bytes) = Self::prepare_texture_upload(&data, 1, 1, scratch);
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Material Default Texture"),
+                size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                pixel_data,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_row_bytes),
+                    rows_per_image: Some(1),
+                },
+                wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            );
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            (texture, view)
+        };
 
         let (base_tex, base_view) =
             make_texture([255, 255, 255, 255], wgpu::TextureFormat::Rgba8UnormSrgb, &mut scratch);
@@ -460,7 +462,8 @@ impl MaterialRegistry {
             view_formats: &[],
         });
         let mut scratch = std::mem::take(&mut self.texture_upload_scratch);
-        let (pixel_data, padded_row_bytes) = Self::prepare_texture_upload(&data_owned, width, height, &mut scratch);
+        let (pixel_data, padded_row_bytes) =
+            Self::prepare_texture_upload(&data_owned, width, height, &mut scratch);
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &texture,
@@ -532,7 +535,11 @@ impl MaterialRegistry {
         let unpadded = width.saturating_mul(4);
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let remainder = unpadded % align;
-        if remainder == 0 { unpadded } else { unpadded + align - remainder }
+        if remainder == 0 {
+            unpadded
+        } else {
+            unpadded + align - remainder
+        }
     }
 
     fn prepare_texture_upload<'a>(

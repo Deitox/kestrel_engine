@@ -131,7 +131,8 @@ pub(crate) fn detect_scale_handle(
     let mut kind = None;
     if rel_view.x.abs() >= deadzone && rel_view.x.abs() <= axis_length && rel_view.y.abs() <= axis_half {
         kind = Some(if shift { ScaleHandleKind::Uniform } else { ScaleHandleKind::Axis(Axis2::X) });
-    } else if rel_view.y.abs() >= deadzone && rel_view.y.abs() <= axis_length && rel_view.x.abs() <= axis_half {
+    } else if rel_view.y.abs() >= deadzone && rel_view.y.abs() <= axis_length && rel_view.x.abs() <= axis_half
+    {
         kind = Some(if shift { ScaleHandleKind::Uniform } else { ScaleHandleKind::Axis(Axis2::Y) });
     } else if (GIZMO_SCALE_INNER_RADIUS_PX..=GIZMO_SCALE_OUTER_RADIUS_PX).contains(&dist) {
         kind = Some(ScaleHandleKind::Uniform);

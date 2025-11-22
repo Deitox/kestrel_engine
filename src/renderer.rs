@@ -1562,11 +1562,8 @@ mod pass_tests {
         let viewport = RenderViewport { origin: (0.0, 0.0), size: (96.0, 64.0) };
         let count = renderer.cull_mesh_draw_indices(&draws, &camera, viewport);
         assert_eq!(count, 1);
-        let first = renderer
-            .culled_mesh_indices
-            .get(0)
-            .and_then(|&idx| draws.get(idx))
-            .map(|draw| draw.model);
+        let first =
+            renderer.culled_mesh_indices.get(0).and_then(|&idx| draws.get(idx)).map(|draw| draw.model);
         assert!(first.is_some_and(|model| model == visible_draw.model));
     }
 

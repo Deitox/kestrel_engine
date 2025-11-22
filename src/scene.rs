@@ -1,11 +1,11 @@
 use crate::assets::AssetManager;
+use crate::ecs::{ForceFalloff, ForceField, ForceFieldKind, ParticleAttractor, ParticleTrail};
 #[cfg(feature = "binary_scene")]
 use anyhow::anyhow;
 use anyhow::{bail, Context, Result};
-use crate::ecs::{ForceFalloff, ForceField, ForceFieldKind, ParticleAttractor, ParticleTrail};
+use blake3::Hasher as Blake3Hasher;
 use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
-use blake3::Hasher as Blake3Hasher;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
@@ -901,9 +901,7 @@ impl SceneDependencies {
     }
 
     pub fn fingerprints(&self) -> SceneDependencyFingerprints {
-        self.fingerprints_with(|dep| {
-            dep.path().and_then(|p| dependency_path_fingerprint(Path::new(p)))
-        })
+        self.fingerprints_with(|dep| dep.path().and_then(|p| dependency_path_fingerprint(Path::new(p))))
     }
 
     pub fn fingerprints_with<F>(&self, mut mesh_fingerprint: F) -> SceneDependencyFingerprints
@@ -1360,8 +1358,7 @@ impl SceneDependencies {
                 }
             }
         }
-        self.environments =
-            environment_map.into_values().map(EnvironmentDependencyRepr::from).collect();
+        self.environments = environment_map.into_values().map(EnvironmentDependencyRepr::from).collect();
     }
 }
 
@@ -2153,7 +2150,8 @@ mod tests {
     fn dependencies_include_emitter_atlases() {
         let entity = entity_with_emitter();
         let assets = AssetManager::new();
-        let deps = SceneDependencies::from_entities(std::slice::from_ref(&entity), &assets, |_| None, |_| None);
+        let deps =
+            SceneDependencies::from_entities(std::slice::from_ref(&entity), &assets, |_| None, |_| None);
         assert!(
             deps.contains_atlas("fx_atlas"),
             "particle emitter atlases should be recorded as dependencies"

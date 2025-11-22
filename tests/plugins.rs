@@ -320,9 +320,7 @@ fn plugins_can_publish_features() {
             None,
             manager.capability_tracker_handle(),
         );
-        manager
-            .register(Box::new(FeaturePublishingPlugin), &mut ctx)
-            .expect("feature plugin registers");
+        manager.register(Box::new(FeaturePublishingPlugin), &mut ctx).expect("feature plugin registers");
     }
 
     let features: Vec<String> = manager.feature_handle().borrow().all().cloned().collect();

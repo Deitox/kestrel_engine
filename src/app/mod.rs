@@ -1,15 +1,17 @@
 mod animation_keyframe_panel;
-mod animation_tooling;
 mod animation_reload;
+mod animation_reload_tooling;
+mod animation_tooling;
 mod animation_watch;
 mod asset_watch_tooling;
 mod atlas_watch;
-mod mesh_watch;
+mod camera_tooling;
 mod editor_shell;
 mod editor_ui;
 mod gizmo_interaction;
 mod inspector_tooling;
 mod mesh_preview_tooling;
+mod mesh_watch;
 mod plugin_host;
 mod plugin_runtime;
 mod prefab_tooling;
@@ -17,47 +19,42 @@ mod runtime_loop;
 mod script_console;
 mod telemetry_tooling;
 
+pub(crate) use self::camera_tooling::CameraBookmark;
+
 use self::animation_keyframe_panel::{
     AnimationKeyframePanelState, AnimationPanelCommand, AnimationTrackBinding, AnimationTrackId,
     AnimationTrackKind, AnimationTrackSummary, KeyframeDetail, KeyframeId, KeyframeValue,
 };
-use self::animation_reload::{
-    AnimationAssetReload, AnimationReloadData, AnimationReloadJob, AnimationReloadQueue,
-    AnimationReloadRequest, AnimationReloadResult, AnimationReloadWorker, AnimationValidationJob,
-    AnimationValidationWorker, run_animation_reload_job,
-    run_animation_validation_job,
-};
+use self::animation_reload::{AnimationReloadController, AnimationReloadWorker, AnimationValidationWorker};
 use self::animation_watch::{AnimationAssetKind, AnimationAssetWatcher};
 use self::atlas_watch::AtlasHotReload;
-use self::atlas_watch::normalize_path_for_watch;
 use self::editor_shell::{
     EditorShell, EditorUiState, EditorUiStateParams, EmitterUiDefaults, ScriptDebuggerStatus,
     ScriptHandleBinding,
 };
+use self::mesh_watch::MeshHotReload;
 use self::plugin_host::{BuiltinPluginFactory, PluginHost};
 use self::plugin_runtime::{PluginContextInputs, PluginRuntime};
 use self::runtime_loop::{RuntimeLoop, RuntimeTick};
-use self::mesh_watch::MeshHotReload;
 pub(crate) use self::telemetry_tooling::FrameBudgetSnapshot;
-use self::telemetry_tooling::GpuTimingFrame;
 #[cfg(feature = "alloc_profiler")]
 use crate::alloc_profiler;
 use crate::analytics::{
     AnalyticsPlugin, AnimationBudgetSample, KeyframeEditorEvent, KeyframeEditorEventKind,
     KeyframeEditorTrackKind, KeyframeEditorUsageSnapshot,
 };
-use crate::animation_validation::{
-    AnimationValidationEvent, AnimationValidationSeverity, AnimationValidator,
+use crate::animation_validation::AnimationValidationEvent;
+use crate::assets::{
+    AnimationClip, AssetManager, ClipInterpolation, ClipKeyframe, ClipScalarTrack, ClipSegment,
+    ClipVec2Track, ClipVec4Track, SpriteTimeline,
 };
-use crate::assets::{AnimationClip, AssetManager, ClipInterpolation, ClipKeyframe, ClipScalarTrack, ClipSegment,
-                    ClipVec2Track, ClipVec4Track, SpriteTimeline, TextureAtlasDiagnostics};
 use crate::audio::{AudioHealthSnapshot, AudioListenerState, AudioPlugin, AudioSpatialConfig};
 use crate::camera::Camera2D;
 use crate::camera3d::Camera3D;
 use crate::config::{AppConfig, AppConfigOverrides, SpriteGuardrailMode};
 use crate::ecs::{
-    AnimationTime, ClipInstance, EcsWorld, EntityInfo, ForceField, InstanceData, MeshLightingInfo,
-    ParticleAttractor, ParticleCaps, SkeletonInstance, SpriteAnimation, SpriteAnimationInfo, SpriteInstance,
+    AnimationTime, ClipInstance, EcsWorld, EntityInfo, InstanceData, MeshLightingInfo, ParticleCaps,
+    SpriteAnimation, SpriteAnimationInfo, SpriteInstance,
 };
 use crate::environment::EnvironmentRegistry;
 use crate::events::{AudioEmitter, GameEvent};
@@ -72,7 +69,7 @@ use crate::plugins::{
 };
 use crate::prefab::{PrefabFormat, PrefabLibrary};
 use crate::renderer::{
-    GpuPassTiming, MeshDraw, RenderViewport, Renderer, ScenePointLight, SpriteBatch, MAX_SHADOW_CASCADES,
+    MeshDraw, RenderViewport, Renderer, ScenePointLight, SpriteBatch, MAX_SHADOW_CASCADES,
 };
 use crate::scene::{
     EnvironmentDependency, Scene, SceneCamera2D, SceneCameraBookmark, SceneDependencies, SceneEntityId,
@@ -86,7 +83,6 @@ use glam::{Mat4, Vec2, Vec3, Vec4};
 
 use anyhow::{anyhow, Context, Result};
 use std::cell::{Ref, RefMut};
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 #[cfg(feature = "alloc_profiler")]
 use std::env;
@@ -113,22 +109,6 @@ const INPUT_CONFIG_PATH: &str = "config/input.json";
 const SCRIPT_CONSOLE_CAPACITY: usize = 200;
 const SCRIPT_HISTORY_CAPACITY: usize = 64;
 const BINARY_PREFABS_ENABLED: bool = cfg!(feature = "binary_scene");
-
-struct SkeletonPlaybackSnapshot {
-    entity: Entity,
-    clip_key: Option<String>,
-    time: f32,
-    playing: bool,
-    speed: f32,
-    group: Option<String>,
-}
-
-fn default_graph_key(path: &Path) -> String {
-    path.file_stem()
-        .and_then(|stem| stem.to_str())
-        .map(|stem| stem.to_string())
-        .unwrap_or_else(|| path.display().to_string())
-}
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum ViewportCameraMode {
@@ -206,31 +186,6 @@ pub(crate) enum ScriptConsoleKind {
     Output,
     Error,
     Log,
-}
-
-#[derive(Debug, Clone)]
-struct CameraBookmark {
-    name: String,
-    position: Vec2,
-    zoom: f32,
-}
-
-impl CameraBookmark {
-    fn to_scene(&self) -> SceneCameraBookmark {
-        SceneCameraBookmark {
-            name: self.name.clone(),
-            position: Vec2Data::from(self.position),
-            zoom: self.zoom,
-        }
-    }
-
-    fn from_scene(bookmark: &SceneCameraBookmark) -> Self {
-        Self {
-            name: bookmark.name.clone(),
-            position: Vec2::from(bookmark.position.clone()),
-            zoom: bookmark.zoom,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -317,10 +272,7 @@ pub struct App {
     animation_watch_roots_queue: Vec<(PathBuf, AnimationAssetKind)>,
     animation_watch_roots_pending: HashSet<(PathBuf, AnimationAssetKind)>,
     animation_watch_roots_registered: HashSet<(PathBuf, AnimationAssetKind)>,
-    animation_reload_pending: HashSet<(PathBuf, AnimationAssetKind)>,
-    animation_reload_queue: AnimationReloadQueue,
-    animation_reload_worker: Option<AnimationReloadWorker>,
-    animation_validation_worker: Option<AnimationValidationWorker>,
+    animation_reload: AnimationReloadController,
     sprite_guardrail_mode: SpriteGuardrailMode,
     sprite_guardrail_max_pixels: f32,
     sprite_batch_map: HashMap<Arc<str>, Vec<InstanceData>>,
@@ -343,76 +295,6 @@ impl App {
     {
         let mut state = self.editor_ui_state_mut();
         f(&mut state)
-    }
-
-    fn selected_entity(&self) -> Option<Entity> {
-        self.editor_ui_state().selected_entity
-    }
-
-    fn set_selected_entity(&self, entity: Option<Entity>) {
-        self.editor_ui_state_mut().selected_entity = entity;
-    }
-
-    fn gizmo_mode(&self) -> GizmoMode {
-        self.editor_ui_state().gizmo_mode
-    }
-
-    fn set_gizmo_mode(&self, mode: GizmoMode) {
-        self.with_editor_ui_state_mut(|state| {
-            if state.gizmo_mode != mode {
-                state.gizmo_mode = mode;
-                state.gizmo_interaction = None;
-            }
-        });
-    }
-
-    fn gizmo_interaction(&self) -> Option<GizmoInteraction> {
-        self.editor_ui_state().gizmo_interaction
-    }
-
-    fn set_gizmo_interaction(&self, interaction: Option<GizmoInteraction>) {
-        self.editor_ui_state_mut().gizmo_interaction = interaction;
-    }
-
-    fn take_gizmo_interaction(&self) -> Option<GizmoInteraction> {
-        self.with_editor_ui_state_mut(|state| state.gizmo_interaction.take())
-    }
-
-    fn record_frame_timing_sample(&self, sample: FrameTimingSample) {
-        self.with_editor_ui_state_mut(|state| state.frame_profiler.push(sample));
-    }
-
-    fn latest_frame_timing(&self) -> Option<FrameTimingSample> {
-        self.editor_ui_state().frame_profiler.latest()
-    }
-
-    fn camera_bookmarks(&self) -> Vec<CameraBookmark> {
-        self.editor_ui_state().camera_bookmarks.clone()
-    }
-
-    fn active_camera_bookmark(&self) -> Option<String> {
-        self.editor_ui_state().active_camera_bookmark.clone()
-    }
-
-    fn set_active_camera_bookmark(&self, bookmark: Option<String>) {
-        self.editor_ui_state_mut().active_camera_bookmark = bookmark;
-    }
-
-    fn update_gpu_timing_snapshots(&self, timings: Vec<GpuPassTiming>) {
-        if timings.is_empty() {
-            return;
-        }
-        let arc_timings = Arc::from(timings.clone().into_boxed_slice());
-        self.with_editor_ui_state_mut(|state| {
-            state.gpu_timings = Arc::clone(&arc_timings);
-            state.gpu_frame_counter = state.gpu_frame_counter.saturating_add(1);
-            state
-                .gpu_timing_history
-                .push_back(GpuTimingFrame { frame_index: state.gpu_frame_counter, timings });
-            while state.gpu_timing_history.len() > state.gpu_timing_history_capacity {
-                state.gpu_timing_history.pop_front();
-            }
-        });
     }
 
     fn set_ui_scene_status(&self, message: impl Into<String>) {
@@ -448,472 +330,6 @@ impl App {
 
     fn set_sprite_guardrail_status(&self, status: Option<String>) {
         self.with_editor_ui_state_mut(|state| state.sprite_guardrail_status = status);
-    }
-
-    pub fn hot_reload_atlas(&mut self, key: &str) -> Result<(usize, TextureAtlasDiagnostics)> {
-        let diagnostics = self.assets.reload_atlas(key)?;
-        self.invalidate_atlas_view(key);
-        let refreshed = self.ecs.refresh_sprite_animations_for_atlas(key, &self.assets);
-        Ok((refreshed, diagnostics))
-    }
-
-    fn drain_animation_validation_results(&mut self) {
-        let Some(worker) = self.animation_validation_worker.as_ref() else {
-            return;
-        };
-        for result in worker.drain() {
-            self.handle_validation_events(result.kind.label(), result.path.as_path(), result.events);
-        }
-    }
-
-    fn prepare_animation_reload_request(
-        &self,
-        path: PathBuf,
-        kind: AnimationAssetKind,
-    ) -> Option<AnimationReloadRequest> {
-        let key = match kind {
-            AnimationAssetKind::Clip => self.assets.clip_key_for_source_path(&path)?,
-            AnimationAssetKind::Graph => {
-                self.assets.graph_key_for_source_path(&path).unwrap_or_else(|| default_graph_key(&path))
-            }
-            AnimationAssetKind::Skeletal => self.assets.skeleton_key_for_source_path(&path)?,
-        };
-        Some(AnimationReloadRequest { path, key, kind, skip_validation: false })
-    }
-
-    fn enqueue_animation_reload(&mut self, request: AnimationReloadRequest) {
-        let pending_key = (request.path.clone(), request.kind);
-        if !self.animation_reload_pending.insert(pending_key.clone()) {
-            return;
-        }
-        if let Some(evicted) = self.animation_reload_queue.enqueue(request) {
-            self.animation_reload_pending.remove(&(evicted.path.clone(), evicted.kind));
-            eprintln!(
-                "[animation] dropping stale reload for {} ({}) - superseded by newer events",
-                evicted.path.display(),
-                evicted.kind.label()
-            );
-        }
-        self.dispatch_animation_reload_queue();
-    }
-
-    fn dispatch_animation_reload_queue(&mut self) {
-        loop {
-            let Some(request) = self.animation_reload_queue.pop_next() else {
-                break;
-            };
-            match self.try_submit_animation_reload(request) {
-                Ok(()) => continue,
-                Err(request) => {
-                    if let Some(evicted) = self.animation_reload_queue.push_front(request) {
-                        self.animation_reload_pending.remove(&(evicted.path.clone(), evicted.kind));
-                        eprintln!(
-                            "[animation] dropping queued reload for {} ({}) - queue saturated",
-                            evicted.path.display(),
-                            evicted.kind.label()
-                        );
-                    }
-                    break;
-                }
-            }
-        }
-    }
-
-    fn try_submit_animation_reload(
-        &mut self,
-        request: AnimationReloadRequest,
-    ) -> Result<(), AnimationReloadRequest> {
-        if let Some(worker) = self.animation_reload_worker.as_ref() {
-            match worker.submit(AnimationReloadJob { request }) {
-                Ok(()) => Ok(()),
-                Err(job) => Err(job.request),
-            }
-        } else {
-            let result = run_animation_reload_job(AnimationReloadJob { request });
-            self.apply_animation_reload_result(result);
-            Ok(())
-        }
-    }
-
-    fn drain_animation_reload_results(&mut self) {
-        if let Some(worker) = self.animation_reload_worker.as_ref() {
-            for result in worker.drain() {
-                self.apply_animation_reload_result(result);
-            }
-        }
-    }
-
-    fn apply_animation_reload_result(&mut self, result: AnimationReloadResult) {
-        self.animation_reload_pending.remove(&(result.request.path.clone(), result.request.kind));
-        match result.data {
-            Ok(AnimationReloadData::Clip { clip, bytes }) => {
-                let key = result.request.key.clone();
-                let path_string = result.request.path.to_string_lossy().to_string();
-                self.assets.replace_clip(&key, &path_string, *clip);
-                self.queue_animation_watch_root(&result.request.path, AnimationAssetKind::Clip);
-                if let Some(updated) = self.assets.clip(&key) {
-                    let canonical = Arc::new(updated.clone());
-                    {
-                        let mut state = self.editor_ui_state_mut();
-                        state.clip_edit_overrides.remove(&key);
-                        state.clip_dirty.remove(&key);
-                        state.animation_clip_status =
-                            Some(format!("Reloaded clip '{}' from {}", key, result.request.path.display()));
-                    }
-                    self.apply_clip_override_to_instances(&key, Arc::clone(&canonical));
-                }
-                if !result.request.skip_validation {
-                    self.enqueue_animation_validation_job(AnimationAssetReload {
-                        path: result.request.path.clone(),
-                        kind: AnimationAssetKind::Clip,
-                        bytes: Some(bytes),
-                    });
-                }
-            }
-            Ok(AnimationReloadData::Graph { graph, bytes }) => {
-                let key = result.request.key.clone();
-                let path_string = result.request.path.to_string_lossy().to_string();
-                self.assets.replace_animation_graph(&key, &path_string, graph);
-                self.queue_animation_watch_root(&result.request.path, AnimationAssetKind::Graph);
-                self.with_editor_ui_state_mut(|state| {
-                    state.animation_clip_status = Some(format!(
-                        "Reloaded animation graph '{}' from {}",
-                        key,
-                        result.request.path.display()
-                    ));
-                });
-                if !result.request.skip_validation {
-                    self.enqueue_animation_validation_job(AnimationAssetReload {
-                        path: result.request.path.clone(),
-                        kind: AnimationAssetKind::Graph,
-                        bytes: Some(bytes),
-                    });
-                }
-            }
-            Ok(AnimationReloadData::Skeletal { import }) => {
-                let key = result.request.key.clone();
-                let path_string = result.request.path.to_string_lossy().to_string();
-                self.assets.replace_skeleton_from_import(&key, &path_string, import);
-                self.queue_animation_watch_root(&result.request.path, AnimationAssetKind::Skeletal);
-                let mut snapshots: Vec<SkeletonPlaybackSnapshot> = Vec::new();
-                {
-                    let mut query = self.ecs.world.query::<(Entity, &SkeletonInstance)>();
-                    for (entity, instance) in query.iter(&self.ecs.world) {
-                        if instance.skeleton_key.as_ref() == key.as_str() {
-                            snapshots.push(SkeletonPlaybackSnapshot {
-                                entity,
-                                clip_key: instance.active_clip_key.as_ref().map(|k| k.as_ref().to_string()),
-                                time: instance.time,
-                                playing: instance.playing,
-                                speed: instance.speed,
-                                group: instance.group.clone(),
-                            });
-                        }
-                    }
-                }
-                for snapshot in snapshots {
-                    self.ecs.set_skeleton(snapshot.entity, &self.assets, &key);
-                    if let Some(ref clip_key) = snapshot.clip_key {
-                        let _ = self.ecs.set_skeleton_clip(snapshot.entity, &self.assets, clip_key);
-                        let _ = self.ecs.set_skeleton_clip_time(snapshot.entity, snapshot.time);
-                        let _ = self.ecs.set_skeleton_clip_playing(snapshot.entity, snapshot.playing);
-                        let _ = self.ecs.set_skeleton_clip_speed(snapshot.entity, snapshot.speed);
-                        let _ = self.ecs.set_skeleton_clip_group(snapshot.entity, snapshot.group.as_deref());
-                    }
-                }
-                self.with_editor_ui_state_mut(|state| {
-                    state.animation_clip_status =
-                        Some(format!("Reloaded skeleton '{}' from {}", key, result.request.path.display()));
-                });
-                if !result.request.skip_validation {
-                    self.enqueue_animation_validation_job(AnimationAssetReload {
-                        path: result.request.path.clone(),
-                        kind: AnimationAssetKind::Skeletal,
-                        bytes: None,
-                    });
-                }
-            }
-            Err(err) => {
-                eprintln!("[animation] reload failed for {}: {err:?}", result.request.path.display());
-                self.with_editor_ui_state_mut(|state| {
-                    state.animation_clip_status = Some(format!(
-                        "Reload failed for {} from {}: {err}",
-                        result.request.key,
-                        result.request.path.display()
-                    ));
-                });
-            }
-        }
-    }
-
-    fn enqueue_animation_validation_job(&mut self, reload: AnimationAssetReload) {
-        let mut job = AnimationValidationJob { path: reload.path, kind: reload.kind, bytes: reload.bytes };
-        if let Some(worker) = self.animation_validation_worker.as_ref() {
-            match worker.submit(job) {
-                Ok(()) => return,
-                Err(returned) => job = returned,
-            }
-        }
-        let result = run_animation_validation_job(job);
-        self.handle_validation_events(result.kind.label(), result.path.as_path(), result.events);
-    }
-
-    fn handle_validation_events(
-        &mut self,
-        context: &str,
-        path: &Path,
-        events: Vec<AnimationValidationEvent>,
-    ) {
-        if events.is_empty() {
-            eprintln!(
-                "[animation] detected change for {} ({context}) but no validations ran",
-                path.display()
-            );
-            self.with_editor_ui_state_mut(|state| {
-                state.animation_clip_status =
-                    Some(format!("Detected {context} change but no validators ran: {}", path.display()));
-            });
-            return;
-        }
-        for event in events {
-            self.with_editor_ui_state_mut(|state| {
-                state.pending_animation_validation_events.push(event.clone())
-            });
-            self.log_animation_validation_event(event);
-        }
-    }
-
-    fn record_atlas_validation_results(&mut self, key: &str, diagnostics: TextureAtlasDiagnostics) {
-        let Some(source_path) = self.assets.atlas_source(key).map(|s| s.to_string()) else {
-            eprintln!("[animation] atlas '{key}' hot-reloaded without a recorded source path");
-            return;
-        };
-        let path_buf = PathBuf::from(&source_path);
-        if self.consume_validation_suppression(&path_buf) {
-            return;
-        }
-        let mut events = Vec::new();
-        let info_message = if let Some(snapshot) = self.assets.atlas_snapshot(key) {
-            let region_count = snapshot.regions.len();
-            let timeline_count = snapshot.animations.len();
-            let image_label = snapshot.image_path.display().to_string();
-            format!(
-                "Parsed atlas '{key}' with {region_count} region{} and {timeline_count} timeline{} (image: {image_label}).",
-                if region_count == 1 { "" } else { "s" },
-                if timeline_count == 1 { "" } else { "s" }
-            )
-        } else {
-            format!("Reloaded atlas '{key}' ({source_path})")
-        };
-        events.push(AnimationValidationEvent {
-            severity: AnimationValidationSeverity::Info,
-            path: path_buf.clone(),
-            message: info_message,
-        });
-        for warning in diagnostics.warnings {
-            events.push(AnimationValidationEvent {
-                severity: AnimationValidationSeverity::Warning,
-                path: path_buf.clone(),
-                message: warning,
-            });
-        }
-        for event in events {
-            self.with_editor_ui_state_mut(|state| {
-                state.pending_animation_validation_events.push(event.clone())
-            });
-            self.log_animation_validation_event(event);
-        }
-    }
-
-    fn suppress_validation_for_path(&mut self, path: &Path) {
-        let normalized = Self::normalize_validation_path(path);
-        self.with_editor_ui_state_mut(|state| {
-            state.suppressed_validation_paths.insert(normalized);
-        });
-    }
-
-    fn consume_validation_suppression(&mut self, path: &Path) -> bool {
-        let normalized = Self::normalize_validation_path(path);
-        self.with_editor_ui_state_mut(|state| state.suppressed_validation_paths.remove(&normalized))
-    }
-
-    fn normalize_validation_path(path: &Path) -> PathBuf {
-        fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-    }
-
-    fn log_animation_validation_event(&mut self, event: AnimationValidationEvent) {
-        let severity = event.severity.to_string();
-        let formatted =
-            format!("[animation] validation {severity} for {}: {}", event.path.display(), event.message);
-        eprintln!("{formatted}");
-        self.with_editor_ui_state_mut(|state| state.animation_clip_status = Some(formatted.clone()));
-        if matches!(event.severity, AnimationValidationSeverity::Warning | AnimationValidationSeverity::Error)
-        {
-            self.set_inspector_status(Some(formatted));
-        }
-    }
-
-    fn drain_animation_validation_events(&mut self) -> Vec<AnimationValidationEvent> {
-        self.with_editor_ui_state_mut(|state| std::mem::take(&mut state.pending_animation_validation_events))
-    }
-
-    fn process_atlas_hot_reload_events(&mut self) {
-        let keys = if let Some(watcher) = self.atlas_hot_reload.as_mut() {
-            watcher.drain_keys()
-        } else {
-            Vec::new()
-        };
-        if keys.is_empty() {
-            return;
-        }
-        let mut unique = keys;
-        unique.sort();
-        unique.dedup();
-        for key in unique {
-            match self.hot_reload_atlas(&key) {
-                Ok((updated, diagnostics)) => {
-                    println!(
-                        "[assets] Hot reloaded atlas '{key}' ({updated} animation component{} refreshed)",
-                        if updated == 1 { "" } else { "s" }
-                    );
-                    self.record_atlas_validation_results(&key, diagnostics);
-                }
-                Err(err) => {
-                    eprintln!("[assets] Failed to hot reload atlas '{key}': {err}");
-                }
-            }
-        }
-    }
-
-    fn sync_mesh_hot_reload(&mut self) {
-        let Some(watcher) = self.mesh_hot_reload.as_mut() else {
-            return;
-        };
-        let mut desired: Vec<(PathBuf, PathBuf, String)> = Vec::new();
-        for key in self.mesh_registry.keys() {
-            if let Some(path) = self.mesh_registry.mesh_source(key) {
-                if let Some((original, normalized)) = normalize_path_for_watch(path) {
-                    desired.push((original, normalized, key.to_string()));
-                }
-            }
-        }
-        if let Err(err) = watcher.sync(&desired) {
-            eprintln!("[mesh] mesh hot-reload sync failed: {err}");
-        }
-    }
-
-    fn process_mesh_hot_reload_events(&mut self) {
-        let keys = if let Some(watcher) = self.mesh_hot_reload.as_mut() {
-            watcher.drain_keys()
-        } else {
-            Vec::new()
-        };
-        if keys.is_empty() {
-            return;
-        }
-        let mut unique = keys;
-        unique.sort();
-        unique.dedup();
-        for key in unique {
-            let source = self
-                .mesh_registry
-                .mesh_source(&key)
-                .and_then(|p| p.to_str().map(|s| s.to_string()));
-            if let Some(path) = source {
-                match self.mesh_registry.ensure_mesh(&key, Some(&path), &mut self.material_registry) {
-                    Ok(()) => println!("[mesh] Hot reloaded '{key}' from {path}"),
-                    Err(err) => eprintln!("[mesh] Failed to hot reload mesh '{key}': {err}"),
-                }
-            } else {
-                eprintln!("[mesh] Hot reload skipped for '{key}': no source path recorded");
-            }
-        }
-    }
-
-    fn refresh_camera_follow(&mut self) -> bool {
-        let Some(target_id) = self.camera_follow_target.as_ref().map(|id| id.as_str().to_string()) else {
-            return false;
-        };
-        let Some(entity) = self.ecs.find_entity_by_scene_id(&target_id) else {
-            return false;
-        };
-        let Some(info) = self.ecs.entity_info(entity) else {
-            return false;
-        };
-        self.camera.position = info.translation;
-        true
-    }
-
-    fn apply_camera_bookmark_by_name(&mut self, name: &str) -> bool {
-        let bookmark = {
-            let state = self.editor_ui_state();
-            state.camera_bookmarks.iter().find(|b| b.name == name).cloned()
-        };
-        if let Some(bookmark) = bookmark {
-            self.camera.position = bookmark.position;
-            self.camera.set_zoom(bookmark.zoom);
-            self.set_active_camera_bookmark(Some(bookmark.name.clone()));
-            self.camera_follow_target = None;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn upsert_camera_bookmark(&mut self, name: &str) -> bool {
-        let trimmed = name.trim();
-        if trimmed.is_empty() {
-            return false;
-        }
-        let bookmark_name = trimmed.to_string();
-        let position = self.camera.position;
-        let zoom = self.camera.zoom;
-        self.with_editor_ui_state_mut(|state| {
-            if let Some(existing) = state.camera_bookmarks.iter_mut().find(|b| b.name == trimmed) {
-                existing.position = position;
-                existing.zoom = zoom;
-            } else {
-                state.camera_bookmarks.push(CameraBookmark { name: bookmark_name.clone(), position, zoom });
-                state.camera_bookmarks.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-            }
-            state.active_camera_bookmark = Some(bookmark_name);
-        });
-        self.camera_follow_target = None;
-        true
-    }
-
-    fn delete_camera_bookmark(&mut self, name: &str) -> bool {
-        let trimmed = name.trim();
-        if trimmed.is_empty() {
-            return false;
-        }
-        let mut removed = false;
-        self.with_editor_ui_state_mut(|state| {
-            let before = state.camera_bookmarks.len();
-            state.camera_bookmarks.retain(|bookmark| bookmark.name != trimmed);
-            if state.camera_bookmarks.len() != before {
-                if state.active_camera_bookmark.as_deref() == Some(trimmed) {
-                    state.active_camera_bookmark = None;
-                }
-                removed = true;
-            }
-        });
-        removed
-    }
-
-    fn set_camera_follow_scene_id(&mut self, scene_id: SceneEntityId) -> bool {
-        self.camera_follow_target = Some(scene_id);
-        if self.refresh_camera_follow() {
-            self.set_active_camera_bookmark(None);
-            true
-        } else {
-            self.camera_follow_target = None;
-            false
-        }
-    }
-
-    fn clear_camera_follow(&mut self) {
-        self.camera_follow_target = None;
     }
 
     fn reload_dynamic_plugins(&mut self) {
@@ -1180,9 +596,11 @@ impl App {
             }
         };
         let animation_asset_watcher = Self::init_animation_asset_watcher();
-        let animation_reload_worker = AnimationReloadWorker::new();
-        let animation_reload_queue = AnimationReloadQueue::new(MAX_PENDING_ANIMATION_RELOADS_PER_KIND);
-        let animation_validation_worker = AnimationValidationWorker::new();
+        let animation_reload = AnimationReloadController::new(
+            MAX_PENDING_ANIMATION_RELOADS_PER_KIND,
+            AnimationReloadWorker::new(),
+            AnimationValidationWorker::new(),
+        );
 
         let mut camera = Camera2D::new(CAMERA_BASE_HALF_HEIGHT);
         camera.set_zoom_limits(editor_cfg.camera_zoom_min, editor_cfg.camera_zoom_max);
@@ -1228,10 +646,7 @@ impl App {
             animation_watch_roots_queue: Vec::new(),
             animation_watch_roots_pending: HashSet::new(),
             animation_watch_roots_registered: HashSet::new(),
-            animation_reload_pending: HashSet::new(),
-            animation_reload_queue,
-            animation_reload_worker,
-            animation_validation_worker,
+            animation_reload,
             sprite_guardrail_mode: editor_cfg.sprite_guardrail_mode,
             sprite_guardrail_max_pixels: editor_cfg.sprite_guard_max_pixels,
             #[cfg(feature = "alloc_profiler")]
@@ -1256,12 +671,8 @@ impl App {
         if let Some(audio) = self.audio_plugin_mut() {
             audio.set_listener_state(listener);
         }
-        let events = self
-            .ecs
-            .drain_events()
-            .into_iter()
-            .map(|e| self.enrich_event_audio(e))
-            .collect::<Vec<_>>();
+        let events =
+            self.ecs.drain_events().into_iter().map(|e| self.enrich_event_audio(e)).collect::<Vec<_>>();
         if events.is_empty() {
             return;
         }
@@ -1280,7 +691,11 @@ impl App {
                     let forward = (cam.target - cam.position).normalize_or_zero();
                     AudioListenerState { position: cam.position, forward, up: cam.up }
                 } else {
-                    AudioListenerState { position: Vec3::new(0.0, 0.0, 5.0), forward: Vec3::new(0.0, 0.0, -1.0), up: Vec3::Y }
+                    AudioListenerState {
+                        position: Vec3::new(0.0, 0.0, 5.0),
+                        forward: Vec3::new(0.0, 0.0, -1.0),
+                        up: Vec3::Y,
+                    }
                 }
             }
         }
@@ -1298,32 +713,38 @@ impl App {
                 GameEvent::SpriteSpawned { entity, atlas, region, audio }
             }
             GameEvent::CollisionStarted { a, b, audio } => {
-                let audio = audio.or_else(|| match (self.ecs.entity_world_position3d(a), self.ecs.entity_world_position3d(b)) {
-                    (Some(pa), Some(pb)) => {
-                        let mid = (pa + pb) * 0.5;
-                        Some(AudioEmitter { position: mid, max_distance: DEFAULT_MAX_DISTANCE })
+                let audio = audio.or_else(|| {
+                    match (self.ecs.entity_world_position3d(a), self.ecs.entity_world_position3d(b)) {
+                        (Some(pa), Some(pb)) => {
+                            let mid = (pa + pb) * 0.5;
+                            Some(AudioEmitter { position: mid, max_distance: DEFAULT_MAX_DISTANCE })
+                        }
+                        _ => None,
                     }
-                    _ => None,
                 });
                 GameEvent::CollisionStarted { a, b, audio }
             }
             GameEvent::CollisionEnded { a, b, audio } => {
-                let audio = audio.or_else(|| match (self.ecs.entity_world_position3d(a), self.ecs.entity_world_position3d(b)) {
-                    (Some(pa), Some(pb)) => {
-                        let mid = (pa + pb) * 0.5;
-                        Some(AudioEmitter { position: mid, max_distance: DEFAULT_MAX_DISTANCE })
+                let audio = audio.or_else(|| {
+                    match (self.ecs.entity_world_position3d(a), self.ecs.entity_world_position3d(b)) {
+                        (Some(pa), Some(pb)) => {
+                            let mid = (pa + pb) * 0.5;
+                            Some(AudioEmitter { position: mid, max_distance: DEFAULT_MAX_DISTANCE })
+                        }
+                        _ => None,
                     }
-                    _ => None,
                 });
                 GameEvent::CollisionEnded { a, b, audio }
             }
             GameEvent::CollisionForce { a, b, force, audio } => {
-                let audio = audio.or_else(|| match (self.ecs.entity_world_position3d(a), self.ecs.entity_world_position3d(b)) {
-                    (Some(pa), Some(pb)) => {
-                        let mid = (pa + pb) * 0.5;
-                        Some(AudioEmitter { position: mid, max_distance: DEFAULT_MAX_DISTANCE })
+                let audio = audio.or_else(|| {
+                    match (self.ecs.entity_world_position3d(a), self.ecs.entity_world_position3d(b)) {
+                        (Some(pa), Some(pb)) => {
+                            let mid = (pa + pb) * 0.5;
+                            Some(AudioEmitter { position: mid, max_distance: DEFAULT_MAX_DISTANCE })
+                        }
+                        _ => None,
                     }
-                    _ => None,
                 });
                 GameEvent::CollisionForce { a, b, force, audio }
             }
@@ -1926,8 +1347,7 @@ impl App {
         let fingerprint = {
             let mesh_registry = &mut self.mesh_registry;
             deps.fingerprints_with(|dep| {
-                dep.path()
-                    .and_then(|p| mesh_registry.fingerprint_for_path(Path::new(p)))
+                dep.path().and_then(|p| mesh_registry.fingerprint_for_path(Path::new(p)))
             })
         };
         let cached_fingerprint = {
@@ -2464,7 +1884,10 @@ impl ApplicationHandler for App {
                     sd.pixels_per_point = self.renderer.pixels_per_point() * ui_scale;
                 }
             }
-            WindowEvent::KeyboardInput { event: KeyEvent { logical_key: Key::Named(NamedKey::Escape), state, .. }, .. } => {
+            WindowEvent::KeyboardInput {
+                event: KeyEvent { logical_key: Key::Named(NamedKey::Escape), state, .. },
+                ..
+            } => {
                 if *state == ElementState::Pressed {
                     self.should_close = true;
                 }
@@ -2980,7 +2403,12 @@ impl ApplicationHandler for App {
                     false,
                     AudioHealthSnapshot::default(),
                     false,
-                    AudioSpatialConfig { enabled: false, min_distance: 0.1, max_distance: 25.0, pan_width: 10.0 },
+                    AudioSpatialConfig {
+                        enabled: false,
+                        min_distance: 0.1,
+                        max_distance: 25.0,
+                        pan_width: 10.0,
+                    },
                 )
             };
         let (mesh_keys, environment_options, prefab_entries) = self.with_editor_ui_state_mut(|state| {
@@ -2989,75 +2417,12 @@ impl ApplicationHandler for App {
             let prefabs = state.telemetry_cache.prefab_entries(&self.prefab_library);
             (mesh, env, prefabs)
         });
-        let clip_keys_list = self.assets.clip_keys();
-        let clip_assets_map: HashMap<String, editor_ui::ClipAssetSummary> = clip_keys_list
-            .iter()
-            .map(|key| {
-                let source = self.assets.clip_source(key).map(|s| s.to_string());
-                let markers = self
-                    .assets
-                    .clip(key)
-                    .map(|clip| {
-                        let mut markers = Vec::new();
-                        if let Some(track) = clip.translation.as_ref() {
-                            markers.extend(track.keyframes.iter().map(|kf| kf.time));
-                        }
-                        if let Some(track) = clip.rotation.as_ref() {
-                            markers.extend(track.keyframes.iter().map(|kf| kf.time));
-                        }
-                        if let Some(track) = clip.scale.as_ref() {
-                            markers.extend(track.keyframes.iter().map(|kf| kf.time));
-                        }
-                        if let Some(track) = clip.tint.as_ref() {
-                            markers.extend(track.keyframes.iter().map(|kf| kf.time));
-                        }
-                        markers.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
-                        markers.dedup_by(|a, b| (*a - *b).abs() <= 1e-4);
-                        Arc::from(markers.into_boxed_slice())
-                    })
-                    .unwrap_or_else(|| Arc::from(Vec::<f32>::new().into_boxed_slice()));
-                (key.clone(), editor_ui::ClipAssetSummary { source, keyframe_markers: markers })
-            })
-            .collect();
-        let clip_keys: Arc<[String]> = Arc::from(clip_keys_list.clone().into_boxed_slice());
-        let clip_assets = Arc::new(clip_assets_map);
-        let skeleton_keys_list = self.assets.skeleton_keys();
-        let skeleton_assets_map: HashMap<String, editor_ui::SkeletonAssetSummary> = skeleton_keys_list
-            .iter()
-            .map(|key| {
-                let clip_keys =
-                    self.assets.skeletal_clip_keys_for(key).map(|keys| keys.to_vec()).unwrap_or_default();
-                let source = self.assets.skeleton_source(key).map(|s| s.to_string());
-                (
-                    key.clone(),
-                    editor_ui::SkeletonAssetSummary {
-                        source,
-                        clip_keys: Arc::from(clip_keys.into_boxed_slice()),
-                    },
-                )
-            })
-            .collect();
-        let skeleton_keys: Arc<[String]> = Arc::from(skeleton_keys_list.clone().into_boxed_slice());
-        let skeleton_assets = Arc::new(skeleton_assets_map);
-        let atlas_keys_list = self.assets.atlas_keys();
-        let atlas_assets_map: HashMap<String, editor_ui::AtlasAssetSummary> = atlas_keys_list
-            .iter()
-            .map(|key| {
-                let mut timelines = self.assets.atlas_timeline_names(key);
-                timelines.sort();
-                timelines.dedup();
-                let source = self.assets.atlas_source(key).map(|s| s.to_string());
-                (
-                    key.clone(),
-                    editor_ui::AtlasAssetSummary {
-                        source,
-                        timeline_names: Arc::from(timelines.into_boxed_slice()),
-                    },
-                )
-            })
-            .collect();
-        let atlas_keys: Arc<[String]> = Arc::from(atlas_keys_list.clone().into_boxed_slice());
-        let atlas_assets = Arc::new(atlas_assets_map);
+        let (clip_keys, clip_assets) =
+            self.with_editor_ui_state_mut(|state| state.telemetry_cache.clip_assets(&self.assets));
+        let (skeleton_keys, skeleton_assets) =
+            self.with_editor_ui_state_mut(|state| state.telemetry_cache.skeleton_assets(&self.assets));
+        let (atlas_keys, atlas_assets) =
+            self.with_editor_ui_state_mut(|state| state.telemetry_cache.atlas_assets(&self.assets));
         let skeleton_entities: Arc<[editor_ui::SkeletonEntityBinding]> = Arc::from(
             self.ecs
                 .skeleton_entities()
@@ -3081,25 +2446,8 @@ impl ApplicationHandler for App {
         material_options.sort_by(|a, b| a.label.cmp(&b.label).then_with(|| a.key.cmp(&b.key)));
         let material_options: Arc<[editor_ui::MaterialOption]> =
             Arc::from(material_options.into_boxed_slice());
-        let mesh_subset_map: HashMap<String, Arc<[editor_ui::MeshSubsetEntry]>> = self
-            .mesh_registry
-            .keys()
-            .filter_map(|key| {
-                self.mesh_registry.mesh_subsets(key).map(|subsets| {
-                    let entries: Vec<editor_ui::MeshSubsetEntry> = subsets
-                        .iter()
-                        .map(|subset| editor_ui::MeshSubsetEntry {
-                            name: subset.name.clone(),
-                            index_offset: subset.index_offset,
-                            index_count: subset.index_count,
-                            material: subset.material.clone(),
-                        })
-                        .collect();
-                    (key.to_string(), Arc::from(entries.into_boxed_slice()))
-                })
-            })
-            .collect();
-        let mesh_subsets = Arc::new(mesh_subset_map);
+        let mesh_subsets =
+            self.with_editor_ui_state_mut(|state| state.telemetry_cache.mesh_subsets(&self.mesh_registry));
         let input_modifiers =
             editor_ui::InputModifierState { ctrl: self.input.ctrl_held(), shift: self.input.shift_held() };
         let scene_history_list = self.scene_history_arc();
@@ -3774,466 +3122,7 @@ impl ApplicationHandler for App {
         self.environment_intensity = ui_environment_intensity;
         self.renderer.set_environment_intensity(self.environment_intensity);
 
-        for op in actions.inspector_actions.drain(..) {
-            match op {
-                editor_ui::InspectorAction::SetTranslation { entity, translation } => {
-                    if self.ecs.set_translation(entity, translation) {
-                        self.set_inspector_status(None);
-                    } else {
-                        self.set_inspector_status(Some("Failed to update position.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SetRotation { entity, rotation } => {
-                    if self.ecs.set_rotation(entity, rotation) {
-                        self.set_inspector_status(None);
-                    } else {
-                        self.set_inspector_status(Some("Failed to update rotation.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SetScale { entity, scale } => {
-                    if self.ecs.set_scale(entity, scale) {
-                        self.set_inspector_status(None);
-                    } else {
-                        self.set_inspector_status(Some("Failed to update scale.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SetVelocity { entity, velocity } => {
-                    if self.ecs.set_velocity(entity, velocity) {
-                        self.set_inspector_status(None);
-                    } else {
-                        self.set_inspector_status(Some("Failed to update velocity.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SetEmitterTrail { entity, trail } => {
-                    self.ecs.set_emitter_trail(entity, trail);
-                    self.set_inspector_status(Some("Emitter trail updated.".to_string()));
-                }
-                editor_ui::InspectorAction::SetForceField { entity, field } => {
-                    let field = field.map(|(kind, strength, radius, falloff, direction)| ForceField {
-                        kind,
-                        strength,
-                        radius,
-                        falloff,
-                        direction,
-                    });
-                    self.ecs.set_force_field(entity, field);
-                    self.set_inspector_status(Some("Force field updated.".to_string()));
-                }
-                editor_ui::InspectorAction::SetAttractor { entity, attractor } => {
-                    let attractor = attractor.map(
-                        |(strength, radius, min_distance, max_acceleration, falloff)| ParticleAttractor {
-                            strength,
-                            radius,
-                            min_distance,
-                            max_acceleration,
-                            falloff,
-                        },
-                    );
-                    self.ecs.set_attractor(entity, attractor);
-                    self.set_inspector_status(Some("Attractor updated.".to_string()));
-                }
-                editor_ui::InspectorAction::ClearTransformClip { entity } => {
-                    if self.ecs.clear_transform_clip(entity) {
-                        self.set_inspector_status(Some("Transform clip cleared.".to_string()));
-                    } else {
-                        self.set_inspector_status(Some("Failed to clear transform clip.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SetTransformClip { entity, clip_key } => {
-                    if self.ecs.set_transform_clip(entity, &self.assets, &clip_key) {
-                        self.set_inspector_status(Some(format!("Transform clip set to {}", clip_key)));
-                    } else {
-                        self.set_inspector_status(Some(format!(
-                            "Transform clip '{}' not available",
-                            clip_key
-                        )));
-                    }
-                }
-                editor_ui::InspectorAction::SetTransformClipPlaying { entity, playing } => {
-                    if self.ecs.set_transform_clip_playing(entity, playing) {
-                        self.set_inspector_status(None);
-                    } else {
-                        self.set_inspector_status(Some("Failed to update clip playback.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::ResetTransformClip { entity } => {
-                    if self.ecs.reset_transform_clip(entity) {
-                        self.set_inspector_status(Some("Transform clip reset.".to_string()));
-                    } else {
-                        self.set_inspector_status(Some("Failed to reset transform clip.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SetTransformClipSpeed { entity, speed } => {
-                    if self.ecs.set_transform_clip_speed(entity, speed) {
-                        self.set_inspector_status(None);
-                    } else {
-                        self.set_inspector_status(Some("Failed to update clip speed.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SetTransformClipGroup { entity, group } => {
-                    if self.ecs.set_transform_clip_group(entity, group.as_deref()) {
-                        self.set_inspector_status(None);
-                    } else {
-                        self.set_inspector_status(Some("Failed to update clip group.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SetTransformClipTime { entity, time } => {
-                    if self.ecs.set_transform_clip_time(entity, time) {
-                        self.set_inspector_status(None);
-                    } else {
-                        self.set_inspector_status(Some("Failed to scrub clip time.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SetTransformTrackMask { entity, mask } => {
-                    if self.ecs.set_transform_track_mask(entity, mask) {
-                        self.set_inspector_status(None);
-                    } else {
-                        self.set_inspector_status(Some("Failed to update transform track mask.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SetPropertyTrackMask { entity, mask } => {
-                    if self.ecs.set_property_track_mask(entity, mask) {
-                        self.set_inspector_status(None);
-                    } else {
-                        self.set_inspector_status(Some("Failed to update property track mask.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::ClearSkeleton { entity } => {
-                    if self.ecs.clear_skeleton(entity) {
-                        self.set_inspector_status(Some("Skeleton detached.".to_string()));
-                    } else {
-                        self.set_inspector_status(Some("Failed to detach skeleton.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SetSkeleton { entity, skeleton_key } => {
-                    if self.ecs.set_skeleton(entity, &self.assets, &skeleton_key) {
-                        self.set_inspector_status(Some(format!("Skeleton set to {}", skeleton_key)));
-                    } else {
-                        self.set_inspector_status(Some(format!("Skeleton '{}' unavailable", skeleton_key)));
-                    }
-                }
-                editor_ui::InspectorAction::ClearSkeletonClip { entity } => {
-                    if self.ecs.clear_skeleton_clip(entity) {
-                        self.set_inspector_status(Some("Skeletal clip cleared.".to_string()));
-                    } else {
-                        self.set_inspector_status(Some("Failed to clear skeletal clip.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SetSkeletonClip { entity, clip_key } => {
-                    if self.ecs.set_skeleton_clip(entity, &self.assets, &clip_key) {
-                        self.set_inspector_status(Some(format!("Skeletal clip set to {}", clip_key)));
-                    } else {
-                        self.set_inspector_status(Some(format!("Skeletal clip '{}' unavailable", clip_key)));
-                    }
-                }
-                editor_ui::InspectorAction::SetSkeletonClipPlaying { entity, playing } => {
-                    if self.ecs.set_skeleton_clip_playing(entity, playing) {
-                        self.set_inspector_status(None);
-                    } else {
-                        self.set_inspector_status(Some(
-                            "Failed to update skeletal clip playback.".to_string(),
-                        ));
-                    }
-                }
-                editor_ui::InspectorAction::ResetSkeletonPose { entity } => {
-                    if self.ecs.reset_skeleton_pose(entity) {
-                        self.set_inspector_status(Some("Skeletal pose reset.".to_string()));
-                    } else {
-                        self.set_inspector_status(Some("Failed to reset skeletal pose.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SetSkeletonClipSpeed { entity, speed } => {
-                    if self.ecs.set_skeleton_clip_speed(entity, speed) {
-                        self.set_inspector_status(None);
-                    } else {
-                        self.set_inspector_status(Some("Failed to update skeletal clip speed.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SetSkeletonClipGroup { entity, group } => {
-                    if self.ecs.set_skeleton_clip_group(entity, group.as_deref()) {
-                        self.set_inspector_status(None);
-                    } else {
-                        self.set_inspector_status(Some("Failed to update skeletal clip group.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SetSkeletonClipTime { entity, time } => {
-                    if self.ecs.set_skeleton_clip_time(entity, time) {
-                        self.set_inspector_status(None);
-                    } else {
-                        self.set_inspector_status(Some("Failed to scrub skeletal clip.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SetSpriteAtlas { entity, atlas, cleared_timeline } => {
-                    if self.ecs.set_sprite_atlas(entity, &self.assets, &atlas) {
-                        if cleared_timeline {
-                            self.set_inspector_status(Some(format!(
-                                "Sprite atlas set to {} (timeline cleared)",
-                                atlas
-                            )));
-                        } else {
-                            self.set_inspector_status(Some(format!("Sprite atlas set to {}", atlas)));
-                        }
-                    } else {
-                        self.set_inspector_status(Some(format!("Atlas '{}' unavailable", atlas)));
-                    }
-                }
-                editor_ui::InspectorAction::SetSpriteRegion { entity, atlas, region } => {
-                    if self.ecs.set_sprite_region(entity, &self.assets, &region) {
-                        self.set_inspector_status(Some(format!("Sprite region set to {}", region)));
-                    } else {
-                        self.set_inspector_status(Some(format!(
-                            "Region '{}' not found in atlas {}",
-                            region, atlas
-                        )));
-                    }
-                }
-                editor_ui::InspectorAction::SetSpriteTimeline { entity, timeline } => {
-                    if self.ecs.set_sprite_timeline(entity, &self.assets, timeline.as_deref()) {
-                        self.set_inspector_status(
-                            timeline
-                                .as_ref()
-                                .map(|name| format!("Sprite timeline set to {name}"))
-                                .or_else(|| Some("Sprite timeline cleared".to_string())),
-                        );
-                    } else if let Some(name) = timeline {
-                        self.set_inspector_status(Some(format!("Timeline '{name}' unavailable")));
-                    } else {
-                        self.set_inspector_status(Some("Failed to change sprite timeline.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SetSpriteAnimationPlaying { entity, playing } => {
-                    if self.ecs.set_sprite_animation_playing(entity, playing) {
-                        self.set_inspector_status(None);
-                    } else {
-                        self.set_inspector_status(Some("Failed to update animation playback.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::ResetSpriteAnimation { entity } => {
-                    if self.ecs.reset_sprite_animation(entity) {
-                        self.set_inspector_status(Some("Sprite animation reset.".to_string()));
-                    } else {
-                        self.set_inspector_status(Some("Failed to reset sprite animation.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SetSpriteAnimationLooped { entity, looped } => {
-                    if self.ecs.set_sprite_animation_looped(entity, looped) {
-                        self.set_inspector_status(None);
-                    } else {
-                        self.set_inspector_status(Some("Failed to update loop flag.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SetSpriteAnimationSpeed { entity, speed } => {
-                    if self.ecs.set_sprite_animation_speed(entity, speed) {
-                        self.set_inspector_status(None);
-                    } else {
-                        self.set_inspector_status(Some("Failed to update animation speed.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SetSpriteAnimationStartOffset { entity, start_offset } => {
-                    if self.ecs.set_sprite_animation_start_offset(entity, start_offset) {
-                        self.set_inspector_status(None);
-                    } else {
-                        self.set_inspector_status(Some("Failed to update start offset.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SetSpriteAnimationRandomStart { entity, random_start } => {
-                    if self.ecs.set_sprite_animation_random_start(entity, random_start) {
-                        self.set_inspector_status(None);
-                    } else {
-                        self.set_inspector_status(Some("Failed to update random start.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SetSpriteAnimationGroup { entity, group } => {
-                    if self.ecs.set_sprite_animation_group(entity, group.as_deref()) {
-                        self.set_inspector_status(None);
-                    } else {
-                        self.set_inspector_status(Some("Failed to update animation group.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SeekSpriteAnimationFrame {
-                    entity,
-                    frame,
-                    preview_events,
-                    atlas,
-                    timeline,
-                } => {
-                    if self.ecs.seek_sprite_animation_frame(entity, frame) {
-                        if preview_events {
-                            self.preview_sprite_events(&atlas, &timeline, frame);
-                        } else {
-                            self.set_inspector_status(None);
-                        }
-                    } else {
-                        self.set_inspector_status(Some("Failed to seek animation frame.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SetMeshMaterial { entity, material } => {
-                    let previous = self
-                        .ecs
-                        .entity_info(entity)
-                        .and_then(|info| info.mesh.as_ref().and_then(|mesh| mesh.material.clone()));
-                    let mut apply_change = true;
-                    if let Some(ref key) = material {
-                        if !self.material_registry.has(key) {
-                            self.set_inspector_status(Some(format!("Material '{}' not registered", key)));
-                            apply_change = false;
-                        } else if let Err(err) = self.material_registry.retain(key) {
-                            self.set_inspector_status(Some(format!(
-                                "Failed to retain material '{}': {err}",
-                                key
-                            )));
-                            apply_change = false;
-                        }
-                    }
-                    if apply_change {
-                        if self.ecs.set_mesh_material(entity, material.clone()) {
-                            if let Some(prev) = previous {
-                                if material.as_ref() != Some(&prev) {
-                                    self.material_registry.release(&prev);
-                                }
-                            }
-                            let persistent_materials: HashSet<String> = self
-                                .mesh_preview_plugin()
-                                .map(|plugin| plugin.persistent_materials().iter().cloned().collect())
-                                .unwrap_or_default();
-                            let mut refs = persistent_materials.clone();
-                            for instance in self.ecs.collect_mesh_instances() {
-                                if let Some(mat) = instance.material {
-                                    refs.insert(mat);
-                                }
-                            }
-                            self.scene_material_refs = refs;
-                            self.set_inspector_status(None);
-                        } else {
-                            if let Some(ref key) = material {
-                                self.material_registry.release(key);
-                            }
-                            self.set_inspector_status(Some("Failed to update mesh material.".to_string()));
-                        }
-                    } else if let Some(ref key) = material {
-                        if material.as_ref() != previous.as_ref() {
-                            self.material_registry.release(key);
-                        }
-                    }
-                }
-                editor_ui::InspectorAction::SetMeshShadowFlags { entity, cast, receive } => {
-                    if self.ecs.set_mesh_shadow_flags(entity, cast, receive) {
-                        self.set_inspector_status(None);
-                    } else {
-                        self.set_inspector_status(Some("Failed to update mesh shadow flags.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SetMeshMaterialParams {
-                    entity,
-                    base_color,
-                    metallic,
-                    roughness,
-                    emissive,
-                } => {
-                    if self.ecs.set_mesh_material_params(entity, base_color, metallic, roughness, emissive) {
-                        self.set_inspector_status(None);
-                    } else {
-                        self.set_inspector_status(Some(
-                            "Failed to update mesh material parameters.".to_string(),
-                        ));
-                    }
-                }
-                editor_ui::InspectorAction::SetMeshTranslation { entity, translation } => {
-                    if self.ecs.set_mesh_translation(entity, translation) {
-                        self.set_inspector_status(None);
-                    } else {
-                        self.set_inspector_status(Some("Failed to update mesh translation.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SetMeshRotationEuler { entity, rotation } => {
-                    if self.ecs.set_mesh_rotation_euler(entity, rotation) {
-                        self.set_inspector_status(None);
-                    } else {
-                        self.set_inspector_status(Some("Failed to update mesh rotation.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SetMeshScale3D { entity, scale } => {
-                    if self.ecs.set_mesh_scale(entity, scale) {
-                        self.set_inspector_status(None);
-                    } else {
-                        self.set_inspector_status(Some("Failed to update mesh scale.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SetMeshTint { entity, tint } => {
-                    if self.ecs.set_tint(entity, tint) {
-                        self.set_inspector_status(None);
-                    } else {
-                        self.set_inspector_status(Some("Failed to update tint.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SetSkinMeshJointCount { entity, joint_count } => {
-                    if self.ecs.set_skin_mesh_joint_count(entity, joint_count) {
-                        self.set_inspector_status(None);
-                    } else {
-                        self.set_inspector_status(Some(
-                            "Failed to update skin mesh joint count.".to_string(),
-                        ));
-                    }
-                }
-                editor_ui::InspectorAction::SetSkinMeshSkeleton { entity, skeleton } => {
-                    if self.ecs.set_skin_mesh_skeleton(entity, skeleton) {
-                        let status = skeleton
-                            .map(|skel| format!("Skin mesh bound to skeleton #{:04}", skel.index()))
-                            .unwrap_or_else(|| "Skin mesh skeleton cleared.".to_string());
-                        self.set_inspector_status(Some(status));
-                    } else {
-                        self.set_inspector_status(Some("Failed to update skin mesh skeleton.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::SyncSkinMeshJointCount { entity } => {
-                    let skeleton = self
-                        .ecs
-                        .entity_info(entity)
-                        .and_then(|info| info.skin_mesh.as_ref().and_then(|sm| sm.skeleton_entity));
-                    match skeleton {
-                        Some(skel_entity) => {
-                            if let Some(skeleton_info) =
-                                self.ecs.entity_info(skel_entity).and_then(|info| info.skeleton)
-                            {
-                                if self.ecs.set_skin_mesh_joint_count(entity, skeleton_info.joint_count) {
-                                    self.set_inspector_status(Some(format!(
-                                        "Skin mesh joints set to {}",
-                                        skeleton_info.joint_count
-                                    )));
-                                } else {
-                                    self.set_inspector_status(Some(
-                                        "Failed to sync joint count from skeleton.".to_string(),
-                                    ));
-                                }
-                            } else {
-                                self.set_inspector_status(Some(
-                                    "Selected skeleton is missing SkeletonInstance.".to_string(),
-                                ));
-                            }
-                        }
-                        None => {
-                            self.set_inspector_status(Some(
-                                "Assign a skeleton before syncing joints.".to_string(),
-                            ));
-                        }
-                    }
-                }
-                editor_ui::InspectorAction::DetachSkinMesh { entity } => {
-                    if self.ecs.detach_skin_mesh(entity) {
-                        self.set_inspector_status(Some("Skin mesh component removed.".to_string()));
-                    } else {
-                        self.set_inspector_status(Some("Failed to remove skin mesh.".to_string()));
-                    }
-                }
-                editor_ui::InspectorAction::AttachSkinMesh { entity } => {
-                    if self.ecs.attach_skin_mesh(entity, 0) {
-                        self.set_inspector_status(Some("Skin mesh component added.".to_string()));
-                    } else {
-                        self.set_inspector_status(Some("Failed to add skin mesh component.".to_string()));
-                    }
-                }
-            }
-        }
+        self.handle_inspector_actions(&mut actions.inspector_actions);
 
         if let Some(request) = id_lookup_request {
             let trimmed = request.trim();
@@ -5118,4 +4007,3 @@ impl App {
         }
     }
 }
-

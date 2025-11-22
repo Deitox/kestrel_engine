@@ -21,6 +21,7 @@ pub struct AssetManager {
     animation_graphs: HashMap<String, AnimationGraphAsset>,
     skeletons: HashMap<String, Arc<skeletal::SkeletonAsset>>,
     skeletal_clips: HashMap<String, Arc<skeletal::SkeletalClip>>,
+    revision: u64,
     sampler: Option<wgpu::Sampler>,
     device: Option<wgpu::Device>,
     queue: Option<wgpu::Queue>,
@@ -132,9 +133,7 @@ fn build_vec4_track(raw: ClipVec4TrackFile) -> Result<(ClipVec4Track, f32)> {
     ))
 }
 
-fn build_segment_cache_vec2(
-    frames: &[ClipKeyframe<Vec2>],
-) -> Vec2SegmentCache {
+fn build_segment_cache_vec2(frames: &[ClipKeyframe<Vec2>]) -> Vec2SegmentCache {
     if frames.len() < 2 {
         return (Arc::from([]), Arc::from([]), Arc::from([]));
     }
@@ -158,9 +157,7 @@ fn build_segment_cache_vec2(
     )
 }
 
-fn build_segment_cache_scalar(
-    frames: &[ClipKeyframe<f32>],
-) -> ScalarSegmentCache {
+fn build_segment_cache_scalar(frames: &[ClipKeyframe<f32>]) -> ScalarSegmentCache {
     if frames.len() < 2 {
         return (Arc::from([]), Arc::from([]), Arc::from([]));
     }
@@ -184,9 +181,7 @@ fn build_segment_cache_scalar(
     )
 }
 
-fn build_segment_cache_vec4(
-    frames: &[ClipKeyframe<Vec4>],
-) -> Vec4SegmentCache {
+fn build_segment_cache_vec4(frames: &[ClipKeyframe<Vec4>]) -> Vec4SegmentCache {
     if frames.len() < 2 {
         return (Arc::from([]), Arc::from([]), Arc::from([]));
     }
@@ -963,6 +958,7 @@ impl AssetManager {
             animation_graphs: HashMap::new(),
             skeletons: HashMap::new(),
             skeletal_clips: HashMap::new(),
+            revision: 0,
             sampler: None,
             device: None,
             queue: None,
@@ -982,6 +978,15 @@ impl AssetManager {
             atlas_view_fingerprints: HashMap::new(),
         }
     }
+
+    fn bump_revision(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
     pub fn set_device(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         self.device = Some(device.clone());
         self.queue = Some(queue.clone());
@@ -1016,6 +1021,7 @@ impl AssetManager {
         }
         self.atlases.insert(key.to_string(), atlas);
         self.atlas_sources.insert(key.to_string(), json_path.to_string());
+        self.bump_revision();
         Ok(diagnostics)
     }
 
@@ -1037,6 +1043,7 @@ impl AssetManager {
     pub fn replace_clip(&mut self, key: &str, json_path: &str, clip: AnimationClip) {
         self.clips.insert(key.to_string(), clip);
         self.clip_sources.insert(key.to_string(), json_path.to_string());
+        self.bump_revision();
     }
     pub fn retain_atlas(&mut self, key: &str, json_path: Option<&str>) -> Result<()> {
         self.retain_atlas_with_reload(key, json_path, false)
@@ -1145,6 +1152,7 @@ impl AssetManager {
                     self.clip_refs.remove(key);
                     self.clips.remove(key);
                     self.clip_sources.remove(key);
+                    self.bump_revision();
                 }
                 return true;
             }
@@ -1208,6 +1216,7 @@ impl AssetManager {
     pub fn replace_animation_graph(&mut self, key: &str, json_path: &str, graph: AnimationGraphAsset) {
         self.animation_graphs.insert(key.to_string(), graph);
         self.animation_graph_sources.insert(key.to_string(), json_path.to_string());
+        self.bump_revision();
     }
 
     pub fn animation_graph(&self, key: &str) -> Option<&AnimationGraphAsset> {
@@ -1258,6 +1267,7 @@ impl AssetManager {
             clip_keys.push(clip_key);
         }
         self.skeleton_clip_index.insert(key.to_string(), clip_keys);
+        self.bump_revision();
     }
 
     pub fn replace_skeleton_from_import(
@@ -1334,6 +1344,7 @@ impl AssetManager {
                             self.skeletal_clip_sources.remove(&clip_key);
                         }
                     }
+                    self.bump_revision();
                 }
                 return true;
             }
@@ -1388,6 +1399,7 @@ impl AssetManager {
                         self.remove_cached_atlas_image(&atlas.image_path);
                     }
                     self.atlas_sources.remove(key);
+                    self.bump_revision();
                 }
                 return true;
             }
@@ -1404,7 +1416,8 @@ impl AssetManager {
     fn load_or_reload_view(&mut self, key: &str, force: bool) -> Result<wgpu::TextureView> {
         let atlas = self.atlases.get(key).ok_or_else(|| anyhow!("atlas '{key}' not loaded"))?;
         let image_path = atlas.image_path.clone();
-        let metadata = fs::metadata(&image_path).with_context(|| format!("read metadata for '{}'", image_path.display()))?;
+        let metadata = fs::metadata(&image_path)
+            .with_context(|| format!("read metadata for '{}'", image_path.display()))?;
         let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
         let sample = quick_file_sample_hash(&image_path);
         if let Some((view, _)) = self.texture_cache.get(&image_path) {
@@ -1595,6 +1608,7 @@ impl AssetManager {
             }
         }
         self.atlas_sources.insert(key.to_string(), json_path.to_string());
+        self.bump_revision();
         Ok(diagnostics)
     }
 }
@@ -1685,9 +1699,9 @@ fn samples_match(expected: Option<u64>, actual: Option<u64>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::{Rgba, RgbaImage};
     use std::path::PathBuf;
     use tempfile::tempdir;
-    use image::{Rgba, RgbaImage};
 
     #[test]
     fn clip_key_for_source_path_handles_equivalent_paths() {
@@ -1797,9 +1811,8 @@ mod tests {
         let duration_a = assets.clip("clip").expect("clip loaded").duration;
         assert!((duration_a - 1.0).abs() < f32::EPSILON);
 
-        let err = assets
-            .retain_clip("clip", clip_b.to_str())
-            .expect_err("path swap should be rejected by default");
+        let err =
+            assets.retain_clip("clip", clip_b.to_str()).expect_err("path swap should be rejected by default");
         assert!(err.to_string().contains("refusing to swap"), "unexpected error: {err}");
 
         assets
@@ -1843,10 +1856,7 @@ mod tests {
             .retain_skeleton(key, Some("path/b.gltf"))
             .expect_err("path swap should be rejected by default for skeletons");
         assert!(err.to_string().contains("refusing to swap"), "unexpected error: {err}");
-        assert_eq!(
-            assets.skeleton_sources.get(key).map(|s| s.as_str()),
-            Some("path/a.gltf")
-        );
+        assert_eq!(assets.skeleton_sources.get(key).map(|s| s.as_str()), Some("path/a.gltf"));
     }
 }
 const ATLAS_IMAGE_CACHE_LIMIT: usize = 16;

@@ -1,8 +1,7 @@
 use crate::assets::skeletal;
 use crate::assets::{
     parse_animation_clip_bytes, parse_animation_graph_bytes, parse_texture_atlas_bytes, AnimationClip,
-    AnimationGraphAsset, TextureAtlasParseResult,
-    ClipKeyframe,
+    AnimationGraphAsset, ClipKeyframe, TextureAtlasParseResult,
 };
 use serde_json::Value;
 use std::collections::HashSet;
@@ -486,7 +485,11 @@ fn min_keyframe_span<T>(keyframes: &[ClipKeyframe<T>]) -> Option<f32> {
             min_span = span;
         }
     }
-    if min_span.is_finite() { Some(min_span) } else { None }
+    if min_span.is_finite() {
+        Some(min_span)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]

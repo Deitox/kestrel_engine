@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
@@ -97,6 +97,112 @@ pub(super) struct AnimationValidationResult {
     pub(super) events: Vec<AnimationValidationEvent>,
 }
 
+pub(super) struct AnimationReloadController {
+    pending: HashSet<(PathBuf, AnimationAssetKind)>,
+    queue: AnimationReloadQueue,
+    reload_worker: Option<AnimationReloadWorker>,
+    validation_worker: Option<AnimationValidationWorker>,
+}
+
+impl AnimationReloadController {
+    pub(super) fn new(
+        max_pending_per_kind: usize,
+        reload_worker: Option<AnimationReloadWorker>,
+        validation_worker: Option<AnimationValidationWorker>,
+    ) -> Self {
+        Self {
+            pending: HashSet::new(),
+            queue: AnimationReloadQueue::new(max_pending_per_kind),
+            reload_worker,
+            validation_worker,
+        }
+    }
+
+    pub(super) fn enqueue(&mut self, request: AnimationReloadRequest) -> Vec<AnimationReloadResult> {
+        let pending_key = (request.path.clone(), request.kind);
+        if !self.pending.insert(pending_key.clone()) {
+            return Vec::new();
+        }
+        if let Some(evicted) = self.queue.enqueue(request) {
+            self.pending.remove(&(evicted.path.clone(), evicted.kind));
+        }
+        self.dispatch_queue()
+    }
+
+    pub(super) fn dispatch_queue(&mut self) -> Vec<AnimationReloadResult> {
+        let mut inline_results = Vec::new();
+        loop {
+            let Some(request) = self.queue.pop_next() else {
+                break;
+            };
+            match self.try_submit_animation_reload(request) {
+                Ok(()) => continue,
+                Err(request) => {
+                    if self.reload_worker.is_some() {
+                        if let Some(evicted) = self.queue.push_front(request) {
+                            self.pending.remove(&(evicted.path.clone(), evicted.kind));
+                        }
+                        break;
+                    } else {
+                        let result = run_animation_reload_job(AnimationReloadJob { request });
+                        self.mark_completed(&result);
+                        inline_results.push(result);
+                    }
+                }
+            }
+        }
+        inline_results
+    }
+
+    pub(super) fn drain_animation_reload_results(&mut self) -> Vec<AnimationReloadResult> {
+        let mut results = Vec::new();
+        if let Some(worker) = self.reload_worker.as_ref() {
+            for result in worker.drain() {
+                self.mark_completed(&result);
+                results.push(result);
+            }
+        }
+        results
+    }
+
+    pub(super) fn submit_validation_job(
+        &self,
+        job: AnimationValidationJob,
+    ) -> Option<AnimationValidationResult> {
+        if let Some(worker) = self.validation_worker.as_ref() {
+            match worker.submit(job) {
+                Ok(()) => None,
+                Err(returned) => Some(run_animation_validation_job(returned)),
+            }
+        } else {
+            Some(run_animation_validation_job(job))
+        }
+    }
+
+    pub(super) fn drain_validation_results(&self) -> Vec<AnimationValidationResult> {
+        if let Some(worker) = self.validation_worker.as_ref() {
+            worker.drain()
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn try_submit_animation_reload(
+        &self,
+        request: AnimationReloadRequest,
+    ) -> std::result::Result<(), AnimationReloadRequest> {
+        if let Some(worker) = self.reload_worker.as_ref() {
+            worker.submit(AnimationReloadJob { request }).map_err(|job| job.request)
+        } else {
+            Err(request)
+        }
+    }
+
+    fn mark_completed(&mut self, result: &AnimationReloadResult) {
+        self.pending.remove(&(result.request.path.clone(), result.request.kind));
+    }
+}
+
 pub(super) struct AnimationReloadWorker {
     senders: Vec<mpsc::SyncSender<AnimationReloadJob>>,
     next_sender: AtomicUsize,
@@ -143,8 +249,7 @@ impl AnimationReloadWorker {
             let idx = (start + offset) % len;
             match self.senders[idx].try_send(job) {
                 Ok(()) => return Ok(()),
-                Err(mpsc::TrySendError::Full(returned))
-                | Err(mpsc::TrySendError::Disconnected(returned)) => {
+                Err(mpsc::TrySendError::Full(returned)) | Err(mpsc::TrySendError::Disconnected(returned)) => {
                     job = returned;
                 }
             }
@@ -187,7 +292,10 @@ impl AnimationValidationWorker {
         }
     }
 
-    pub(super) fn submit(&self, job: AnimationValidationJob) -> std::result::Result<(), AnimationValidationJob> {
+    pub(super) fn submit(
+        &self,
+        job: AnimationValidationJob,
+    ) -> std::result::Result<(), AnimationValidationJob> {
         self.tx.send(job).map_err(|err| err.0)
     }
 

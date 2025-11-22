@@ -197,11 +197,8 @@ impl RapierState {
     }
 
     pub fn remove_body(&mut self, handle: RigidBodyHandle) {
-        let collider_handles: Vec<ColliderHandle> = self
-            .bodies
-            .get(handle)
-            .map(|body| body.colliders().to_vec())
-            .unwrap_or_default();
+        let collider_handles: Vec<ColliderHandle> =
+            self.bodies.get(handle).map(|body| body.colliders().to_vec()).unwrap_or_default();
         for collider in collider_handles {
             self.collider_entities.remove(&collider);
         }

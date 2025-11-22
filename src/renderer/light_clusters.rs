@@ -275,7 +275,7 @@ fn build_light_cluster_data<'a>(
         config: ClusterConfigUniform {
             viewport: [width as f32, height as f32, viewport_inv_width, viewport_inv_height],
             depth_params: [near, far, inv_depth_range, 0.0],
-        grid_dims: [grid_x, grid_y, grid_z, total_clusters],
+            grid_dims: [grid_x, grid_y, grid_z, total_clusters],
             stats: [0, LIGHT_CLUSTER_MAX_LIGHTS_PER_CLUSTER as u32, LIGHT_CLUSTER_TILE_SIZE, 0],
             data_meta: [0, LIGHT_CLUSTER_RECORD_STRIDE_WORDS, 0, 0],
         },

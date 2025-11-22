@@ -210,8 +210,7 @@ impl MeshRegistry {
             fingerprint,
             material_keys,
             false,
-        )
-        {
+        ) {
             for mat_key in retained {
                 materials.release(&mat_key);
             }
@@ -221,12 +220,7 @@ impl MeshRegistry {
         Ok(())
     }
 
-    fn reload_from_path(
-        &mut self,
-        key: &str,
-        path: &Path,
-        materials: &mut MaterialRegistry,
-    ) -> Result<()> {
+    fn reload_from_path(&mut self, key: &str, path: &Path, materials: &mut MaterialRegistry) -> Result<()> {
         let (ref_count, permanent, old_materials) = {
             let entry =
                 self.entries.get(key).ok_or_else(|| anyhow!("Mesh '{key}' not registered for reload"))?;
@@ -364,11 +358,8 @@ impl MeshRegistry {
 
     fn prune_cache_usage(&mut self) {
         while let Some(Reverse((tick, path))) = self.fingerprint_usage.peek() {
-            let up_to_date = self
-                .fingerprint_cache
-                .get(path)
-                .map(|entry| entry.last_used == *tick)
-                .unwrap_or(false);
+            let up_to_date =
+                self.fingerprint_cache.get(path).map(|entry| entry.last_used == *tick).unwrap_or(false);
             if up_to_date {
                 break;
             }
@@ -430,7 +421,9 @@ impl MeshRegistry {
                     .fingerprint_cache
                     .get(path)
                     .filter(|entry| {
-                        entry.len == len && entry.modified == modified && entry.algorithm == self.hash_algorithm
+                        entry.len == len
+                            && entry.modified == modified
+                            && entry.algorithm == self.hash_algorithm
                     })
                     .map(|entry| (entry.sample, entry.hash))
                 {
@@ -441,10 +434,8 @@ impl MeshRegistry {
                 }
 
                 if len > BLAKE3_INLINE_HASH_LIMIT_BYTES {
-                    let computed = FingerprintResult {
-                        hash: metadata_fingerprint(len, modified, sample),
-                        sample,
-                    };
+                    let computed =
+                        FingerprintResult { hash: metadata_fingerprint(len, modified, sample), sample };
                     let hash = computed.hash;
                     self.insert_fingerprint(path, len, modified, computed);
                     return Some(hash);
@@ -473,10 +464,8 @@ impl MeshRegistry {
                     }
                 }
 
-                let computed = FingerprintResult {
-                    hash: metadata_fingerprint(len, modified, sample),
-                    sample,
-                };
+                let computed =
+                    FingerprintResult { hash: metadata_fingerprint(len, modified, sample), sample };
                 let hash = computed.hash;
                 self.insert_fingerprint(path, len, modified, computed);
                 Some(hash)
@@ -498,14 +487,11 @@ fn hash_file_with_blake3(path: &Path, file_len: u64) -> Option<FingerprintResult
     let mut hasher = Blake3Hasher::new();
     let mut buf = [0u8; 131_072];
     let mut sample_hasher = DefaultHasher::new();
-        let mut head_remaining = FINGERPRINT_SAMPLE_BYTES as u64;
-        let include_tail = file_len > FINGERPRINT_SAMPLE_BYTES as u64;
-        let include_mid = file_len > (FINGERPRINT_SAMPLE_BYTES as u64 * 3);
-        let mid_window_start = if include_mid {
-            (file_len / 2).saturating_sub((FINGERPRINT_SAMPLE_BYTES as u64) / 2)
-        } else {
-            0
-        };
+    let mut head_remaining = FINGERPRINT_SAMPLE_BYTES as u64;
+    let include_tail = file_len > FINGERPRINT_SAMPLE_BYTES as u64;
+    let include_mid = file_len > (FINGERPRINT_SAMPLE_BYTES as u64 * 3);
+    let mid_window_start =
+        if include_mid { (file_len / 2).saturating_sub((FINGERPRINT_SAMPLE_BYTES as u64) / 2) } else { 0 };
     let mid_window_end = mid_window_start.saturating_add(FINGERPRINT_SAMPLE_BYTES as u64);
     let mut mid_remaining = if include_mid { FINGERPRINT_SAMPLE_BYTES as u64 } else { 0 };
     let mut tail_buf: Vec<u8> = Vec::with_capacity(FINGERPRINT_SAMPLE_BYTES);
@@ -702,9 +688,7 @@ mod tests {
         assert_eq!(registry.mesh_ref_count("cube"), Some(0));
 
         let gltf = write_temp_gltf("MatCount");
-        registry
-            .load_from_path("temp_triangle", gltf.path(), &mut materials)
-            .expect("load temp mesh");
+        registry.load_from_path("temp_triangle", gltf.path(), &mut materials).expect("load temp mesh");
         registry
             .retain_mesh("temp_triangle", gltf.path().to_str(), &mut materials)
             .expect("retain temp mesh");
@@ -802,16 +786,12 @@ mod tests {
         let gltf_b = write_temp_gltf("MatB");
         let key = "temp_reload";
 
-        registry
-            .load_from_path(key, gltf_a.path(), &mut materials)
-            .expect("first load should succeed");
+        registry.load_from_path(key, gltf_a.path(), &mut materials).expect("first load should succeed");
         let mat_a_key = format!("{}::MatA", gltf_a.path().display());
         assert!(materials.has(&mat_a_key));
         let before = registry.version();
 
-        registry
-            .ensure_mesh(key, gltf_b.path().to_str(), &mut materials)
-            .expect("reload should succeed");
+        registry.ensure_mesh(key, gltf_b.path().to_str(), &mut materials).expect("reload should succeed");
         let mat_b_key = format!("{}::MatB", gltf_b.path().display());
         assert!(materials.has(&mat_b_key), "new material should be registered");
         assert!(!materials.has(&mat_a_key), "old material should be released after reload");
@@ -829,9 +809,7 @@ mod tests {
         let gltf = write_temp_gltf("MatOriginal");
         let key = "temp_reload_same_path";
 
-        registry
-            .load_from_path(key, gltf.path(), &mut materials)
-            .expect("first load should succeed");
+        registry.load_from_path(key, gltf.path(), &mut materials).expect("first load should succeed");
         let original_mat_key = format!("{}::MatOriginal", gltf.path().display());
         assert!(materials.has(&original_mat_key));
         let before = registry.version();
@@ -844,10 +822,7 @@ mod tests {
             .expect("reload should succeed for in-place edits");
         let reloaded_mat_key = format!("{}::MatReloadedLong", gltf.path().display());
         assert!(materials.has(&reloaded_mat_key), "new material should be registered");
-        assert!(
-            !materials.has(&original_mat_key),
-            "old material should be released after same-path reload"
-        );
+        assert!(!materials.has(&original_mat_key), "old material should be released after same-path reload");
 
         let recorded_source = registry.mesh_source(key).expect("source should stay recorded");
         assert_eq!(recorded_source, gltf.path(), "source path should remain the same");
@@ -873,10 +848,7 @@ mod tests {
         registry.ensure_mesh(key, None, &mut materials).expect("reload should work without path");
         let mat_beta = format!("{}::MatBeta", gltf.path().display());
         assert!(materials.has(&mat_beta), "new material should be registered");
-        assert!(
-            !materials.has(&mat_alpha),
-            "old material should be released after same-path reload"
-        );
+        assert!(!materials.has(&mat_alpha), "old material should be released after same-path reload");
         assert!(registry.version() > before, "revision should advance when content reloads happen");
     }
 
@@ -889,21 +861,15 @@ mod tests {
         let metadata = std::fs::metadata(gltf.path()).expect("metadata should exist");
         let expected = hash_file_with_blake3(gltf.path(), metadata.len()).expect("hash should compute");
 
-        let modified = metadata
-            .modified()
-            .ok()
-            .and_then(|ts| ts.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_nanos());
+        let modified =
+            metadata.modified().ok().and_then(|ts| ts.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_nanos());
 
         let stale_hash = expected.hash ^ 0xFFFF;
         registry.insert_fingerprint(
             gltf.path(),
             metadata.len(),
             modified,
-            FingerprintResult {
-                hash: stale_hash,
-                sample: expected.sample.map(|s| s ^ 0x1234_5678),
-            },
+            FingerprintResult { hash: stale_hash, sample: expected.sample.map(|s| s ^ 0x1234_5678) },
         );
 
         let actual = registry.mesh_source_fingerprint(gltf.path()).expect("hash should recompute");
@@ -922,11 +888,8 @@ mod tests {
         let metadata = std::fs::metadata(gltf.path()).expect("metadata should exist");
         let expected = hash_file_with_blake3(gltf.path(), metadata.len()).expect("hash should compute");
 
-        let modified = metadata
-            .modified()
-            .ok()
-            .and_then(|ts| ts.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_nanos());
+        let modified =
+            metadata.modified().ok().and_then(|ts| ts.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_nanos());
 
         registry.insert_fingerprint(
             gltf.path(),
@@ -938,10 +901,7 @@ mod tests {
         let before_clock = registry.fingerprint_clock;
         let actual = registry.mesh_source_fingerprint(gltf.path()).expect("hash should come from cache");
         assert_eq!(actual, expected.hash, "cached hash should be returned when metadata and sample match");
-        assert!(
-            registry.fingerprint_clock > before_clock,
-            "cache hits should still update usage accounting"
-        );
+        assert!(registry.fingerprint_clock > before_clock, "cache hits should still update usage accounting");
     }
 
     #[test]

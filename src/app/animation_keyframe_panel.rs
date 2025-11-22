@@ -45,8 +45,7 @@ pub enum AnimationTrackKind {
     Tint,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum KeyframeValue {
     #[default]
     None,
@@ -54,7 +53,6 @@ pub enum KeyframeValue {
     Vec2([f32; 2]),
     Vec4([f32; 4]),
 }
-
 
 impl KeyframeValue {
     pub fn as_scalar(self) -> Option<f32> {
