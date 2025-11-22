@@ -28,10 +28,10 @@ use std::io::{self, BufReader};
 use std::mem;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::ptr;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant, SystemTime};
 
 const ISOLATED_RPC_TIMEOUT: Duration = Duration::from_secs(10);
@@ -1798,7 +1798,8 @@ struct IsolatedPluginProxy {
     version: String,
     child: Child,
     stdin: Option<ChildStdin>,
-    stdout: Arc<Mutex<BufReader<ChildStdout>>>,
+    response_tx: Option<mpsc::Sender<mpsc::Sender<anyhow::Result<PluginHostResponse>>>>,
+    response_thread: Option<std::thread::JoinHandle<()>>,
     terminated: bool,
     next_request_id: RpcRequestId,
     asset_budget: AssetReadbackBudget,
@@ -1878,19 +1879,29 @@ impl IsolatedPluginProxy {
             })?;
         let stdin = child.stdin.take().ok_or_else(|| anyhow!("isolated host missing stdin"))?;
         let stdout = child.stdout.take().ok_or_else(|| anyhow!("isolated host missing stdout"))?;
-        Ok(Self {
+        let (response_tx, response_rx) = mpsc::channel::<mpsc::Sender<anyhow::Result<PluginHostResponse>>>();
+        let response_thread = std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            while let Ok(sender) = response_rx.recv() {
+                let result = recv_frame(&mut reader).context("recv isolated plugin response");
+                let _ = sender.send(result);
+            }
+        });
+        let proxy = Self {
             name: entry.name.clone(),
             version,
             child,
             stdin: Some(stdin),
-            stdout: Arc::new(Mutex::new(BufReader::new(stdout))),
+            response_tx: Some(response_tx),
+            response_thread: Some(response_thread),
             terminated: false,
             next_request_id: 1,
             asset_budget: AssetReadbackBudget::new(8, 4 * 1024 * 1024, Duration::from_millis(250)),
             last_request_desc: None,
             pending_watchdog: None,
             pending_capability_violations: Vec::new(),
-        })
+        };
+        Ok(proxy)
     }
 
     fn host_binary_path() -> Result<PathBuf> {
@@ -1928,18 +1939,15 @@ impl IsolatedPluginProxy {
         self.last_request_desc = Some(summary);
         send_frame(stdin, &request).context("send isolated plugin request")?;
         let start = Instant::now();
-        let stdout = Arc::clone(&self.stdout);
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let result = {
-                let mut guard = stdout.lock().expect("stdout mutex poisoned");
-                recv_frame(&mut *guard)
-            };
-            let _ = tx.send(result);
-        });
-        let response: PluginHostResponse = match rx.recv_timeout(ISOLATED_RPC_TIMEOUT) {
+        let (resp_tx, resp_rx) = mpsc::channel();
+        self.response_tx
+            .as_ref()
+            .ok_or_else(|| anyhow!("isolated plugin '{}' response channel closed", self.name))?
+            .send(resp_tx)
+            .map_err(|err| anyhow!("isolated plugin '{}' response channel failed: {err}", self.name))?;
+        let response: PluginHostResponse = match resp_rx.recv_timeout(ISOLATED_RPC_TIMEOUT) {
             Ok(result) => result.context("recv isolated plugin response")?,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            Err(mpsc::RecvTimeoutError::Timeout) => {
                 let elapsed = start.elapsed();
                 self.record_watchdog_event(
                     format!("RPC timeout after {:.1} ms", elapsed.as_secs_f32() * 1000.0),
@@ -2031,6 +2039,10 @@ impl IsolatedPluginProxy {
         }
         self.terminated = true;
         self.stdin.take();
+        self.response_tx = None;
+        if let Some(handle) = self.response_thread.take() {
+            let _ = handle.join();
+        }
     }
 
     fn forward_with_ctx(&mut self, ctx: &mut PluginContext<'_>, request: PluginHostRequest) -> Result<()> {

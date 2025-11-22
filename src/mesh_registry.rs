@@ -425,6 +425,7 @@ impl MeshRegistry {
 
         match self.hash_algorithm {
             MeshHashAlgorithm::Blake3 => {
+                let sample = quick_sample_hash_with_len(path, len);
                 if let Some((cached_sample, cached_hash)) = self
                     .fingerprint_cache
                     .get(path)
@@ -433,11 +434,20 @@ impl MeshRegistry {
                     })
                     .map(|entry| (entry.sample, entry.hash))
                 {
-                    let sample = quick_sample_hash_with_len(path, len);
                     if samples_match(cached_sample, sample) {
                         self.mark_cache_used(path);
                         return Some(cached_hash);
                     }
+                }
+
+                if len > BLAKE3_INLINE_HASH_LIMIT_BYTES {
+                    let computed = FingerprintResult {
+                        hash: metadata_fingerprint(len, modified, sample),
+                        sample,
+                    };
+                    let hash = computed.hash;
+                    self.insert_fingerprint(path, len, modified, computed);
+                    return Some(hash);
                 }
 
                 let computed = hash_file_with_blake3(path, len)?;
@@ -476,6 +486,7 @@ impl MeshRegistry {
 }
 
 const FINGERPRINT_SAMPLE_BYTES: usize = 4_096;
+const BLAKE3_INLINE_HASH_LIMIT_BYTES: u64 = 2 * 1024 * 1024;
 
 struct FingerprintResult {
     hash: u128,
