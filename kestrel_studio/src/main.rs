@@ -13,28 +13,8 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let project = match project_path {
-        Some(path) => match Project::load(&path) {
-            Ok(project) => {
-                println!("[project] Loaded {} ({})", project.describe(), path.display());
-                project
-            }
-            Err(err) => {
-                eprintln!("[project] Failed to load {}: {err}", path.display());
-                std::process::exit(2);
-            }
-        },
-        None => match Project::default() {
-            Ok(project) => {
-                println!("[project] No manifest supplied; using default layout at {}", project.assets_root().display());
-                project
-            }
-            Err(err) => {
-                eprintln!("[project] Failed to initialize default project: {err}");
-                std::process::exit(2);
-            }
-        },
-    };
+    let project = load_project(project_path);
+    Project::record_recent(project.root());
     if let Err(err) = pollster::block_on(run_with_project(project, cli_overrides)) {
         eprintln!("Application error: {err:?}");
     }
@@ -64,4 +44,51 @@ fn parse_args() -> Result<(Option<PathBuf>, kestrel_engine::config::AppConfigOve
     }
     let cli_overrides = CliOverrides::parse(&passthrough)?.into_config_overrides();
     Ok((project_path, cli_overrides))
+}
+
+fn load_project(project_path: Option<PathBuf>) -> Project {
+    if let Some(path) = project_path {
+        match Project::load(&path) {
+            Ok(project) => {
+                println!("[project] Loaded {} ({})", project.describe(), path.display());
+                return project;
+            }
+            Err(err) => {
+                eprintln!("[project] Failed to load {}: {err}", path.display());
+                std::process::exit(2);
+            }
+        }
+    }
+    if let Ok(env_path) = env::var("KESTREL_PROJECT") {
+        let path = PathBuf::from(env_path);
+        match Project::load(&path) {
+            Ok(project) => {
+                println!("[project] Loaded {} ({}) from KESTREL_PROJECT", project.describe(), path.display());
+                return project;
+            }
+            Err(err) => eprintln!("[project] Failed to load KESTREL_PROJECT {}: {err}", path.display()),
+        }
+    }
+    if let Some(path) = Project::load_recent() {
+        match Project::load(&path) {
+            Ok(project) => {
+                println!("[project] Loaded recent project {} ({})", project.describe(), path.display());
+                return project;
+            }
+            Err(err) => eprintln!("[project] Failed to load recent project {}: {err}", path.display()),
+        }
+    }
+    match Project::default() {
+        Ok(project) => {
+            println!(
+                "[project] No manifest supplied; using default layout at {}",
+                project.assets_root().display()
+            );
+            project
+        }
+        Err(err) => {
+            eprintln!("[project] Failed to initialize default project: {err}");
+            std::process::exit(2);
+        }
+    }
 }

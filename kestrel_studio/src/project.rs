@@ -3,6 +3,9 @@ use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+const RECENT_PROJECTS_PATH: &str = "config/recent_projects.json";
+const RECENT_LIMIT: usize = 8;
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ProjectManifest {
@@ -121,6 +124,10 @@ impl Project {
         &self.assets_root
     }
 
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     pub fn config_app_path(&self) -> &Path {
         &self.config_app
     }
@@ -165,6 +172,61 @@ impl Project {
         let name = self.name().map(|n| n.to_string()).unwrap_or_else(|| "<unnamed>".to_string());
         let id = self.id().map(|i| format!(" ({i})")).unwrap_or_default();
         format!("{name}{id} @ {}", self.root.display())
+    }
+
+    /// Load the most recently opened project path, if any.
+    pub fn load_recent() -> Option<PathBuf> {
+        let recent = Self::load_recent_list();
+        recent.into_iter().next()
+    }
+
+    /// Update the recent project list, deduping and truncating.
+    pub fn record_recent(path: &Path) {
+        let mut recent = Self::load_recent_list();
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        recent.retain(|p| p != &canonical);
+        recent.insert(0, canonical);
+        if recent.len() > RECENT_LIMIT {
+            recent.truncate(RECENT_LIMIT);
+        }
+        if let Err(err) = Self::store_recent_list(&recent) {
+            eprintln!("[project] failed to persist recent projects: {err}");
+        }
+    }
+
+    fn load_recent_list() -> Vec<PathBuf> {
+        let path = Path::new(RECENT_PROJECTS_PATH);
+        if !path.exists() {
+            return Vec::new();
+        }
+        let data = match fs::read_to_string(path) {
+            Ok(data) => data,
+            Err(err) => {
+                eprintln!("[project] failed to read recent list: {err}");
+                return Vec::new();
+            }
+        };
+        match serde_json::from_str::<Vec<String>>(&data) {
+            Ok(list) => list.into_iter().map(PathBuf::from).collect(),
+            Err(err) => {
+                eprintln!("[project] failed to parse recent list: {err}");
+                Vec::new()
+            }
+        }
+    }
+
+    fn store_recent_list(paths: &[PathBuf]) -> Result<()> {
+        let path = Path::new(RECENT_PROJECTS_PATH);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create recent projects dir {}", parent.display()))?;
+        }
+        let data = serde_json::to_string_pretty(
+            &paths.iter().map(|p| Project::display_path(p.as_path())).collect::<Vec<_>>(),
+        )?;
+        fs::write(path, data)
+            .with_context(|| format!("Failed to write recent projects list {}", path.display()))?;
+        Ok(())
     }
 }
 
