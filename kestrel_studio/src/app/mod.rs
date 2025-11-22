@@ -235,6 +235,7 @@ pub struct App {
     active_environment_key: String,
     environment_intensity: f32,
     play_state: PlayState,
+    step_pending: bool,
     should_close: bool,
 
     // egui
@@ -338,6 +339,22 @@ impl App {
 
     fn set_sprite_guardrail_status(&self, status: Option<String>) {
         self.with_editor_ui_state_mut(|state| state.sprite_guardrail_status = status);
+    }
+
+    fn sync_play_state_flags(&mut self) {
+        let paused = matches!(self.play_state, PlayState::Playing { paused: true }) && !self.step_pending;
+        {
+            let mut animation_time = self.ecs.world.resource_mut::<AnimationTime>();
+            animation_time.paused = paused;
+        }
+        if let Some(plugin) = self.script_plugin_mut() {
+            plugin.set_paused(paused);
+        }
+    }
+
+    fn set_play_state(&mut self, state: PlayState) {
+        self.play_state = state;
+        self.sync_play_state_flags();
     }
 
     fn reload_dynamic_plugins(&mut self) {
@@ -647,6 +664,7 @@ impl App {
             active_environment_key: default_environment_key.clone(),
             environment_intensity,
             play_state: PlayState::Editing,
+            step_pending: false,
             should_close: false,
             editor_shell,
             plugin_runtime,
@@ -699,6 +717,7 @@ impl App {
                     Some("GPU timing disabled (editor.gpu_timing = false)".to_string());
             });
         }
+        app.sync_play_state_flags();
         app.report_audio_startup_status();
         app
     }
@@ -2019,7 +2038,17 @@ impl ApplicationHandler for App {
             event_loop.exit();
             return;
         }
-        let RuntimeTick { dt, dropped_backlog, .. } = self.runtime_loop.tick();
+        let step_once = self.step_pending;
+        if step_once {
+            self.step_pending = false;
+        }
+        let paused =
+            matches!(self.play_state, PlayState::Playing { paused: true }) && !step_once;
+        let RuntimeTick { dt, dropped_backlog, .. } =
+            if paused { self.runtime_loop.tick_paused() } else { self.runtime_loop.tick() };
+        if step_once {
+            self.sync_play_state_flags();
+        }
         if let Some(dropped) = dropped_backlog {
             eprintln!("[time] Dropping {:.3}s of fixed-step backlog to maintain responsiveness", dropped);
         }
@@ -3905,18 +3934,26 @@ impl RuntimeHost for App {
     }
 
     fn enter_play_mode(&mut self) {
-        self.play_state = PlayState::Playing { paused: false };
+        self.step_pending = false;
+        self.set_play_state(PlayState::Playing { paused: false });
     }
 
     fn pause_play_mode(&mut self) {
-        self.play_state = PlayState::Playing { paused: true };
+        self.step_pending = false;
+        self.set_play_state(PlayState::Playing { paused: true });
     }
 
     fn resume_play_mode(&mut self) {
-        self.play_state = PlayState::Playing { paused: false };
+        self.step_pending = false;
+        self.set_play_state(PlayState::Playing { paused: false });
     }
 
     fn step_frame(&mut self) -> Result<()> {
+        self.step_pending = true;
+        self.set_play_state(PlayState::Playing { paused: true });
+        if let Some(plugin) = self.script_plugin_mut() {
+            plugin.step_once();
+        }
         if let Some(window) = self.renderer.window() {
             window.request_redraw();
         }

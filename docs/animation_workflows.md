@@ -16,7 +16,7 @@
    - Run `cargo run --bin animation_check assets/images/slime_idle_atlas.json assets/animations/clips/slime_idle.json assets/animations/graphs/slime_idle_graph.json assets/animations/skeletal/slime_rig.gltf --fail-on-warn` to exercise schema validators across every asset type touched by this tutorial.
    - If the atlas schema changed recently, follow up with `cargo run --bin migrate_atlas -- assets/images/slime_idle_atlas.json --check`; CI uses the same CLI with `--fix` when migrations land.
 4. **Load the showcase scene and bind content**
-   - Launch the editor via `cargo run` and choose **File + Open Scene → assets/scenes/animation_showcase.json**.
+  - Launch the editor via `cargo run -p kestrel_studio` and choose **File + Open Scene → assets/scenes/animation_showcase.json**.
    - Select `sprite_timeline_demo`, click **Load & Assign**, enter `slime` for the atlas key plus `assets/images/slime_idle_atlas.json` for the path, and pick the `idle` timeline. The inspector log prints `Sprite atlas set to slime`, and playback starts immediately.
    - Toggle **Stats + Viewport Overlays** and confirm the Sprite Eval/Pack/Upload HUD rows reflect the new animator load. The same overlay now surfaces a **Lighting Budget** card whenever clustered point lights exceed the 256-light budget, so you can spot blown lighting caps while iterating on animation scenes without digging through logs.
 5. **Author the transform clip**

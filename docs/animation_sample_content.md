@@ -12,7 +12,7 @@ Milestone 5 requires a deterministic scene that exercises the animation stack (s
 
 ### Loading the scene
 
-1. Launch the editor (`cargo run`) and choose **File → Open Scene… → `assets/scenes/animation_showcase.json`**.
+1. Launch the editor (`cargo run -p kestrel_studio`) and choose **File → Open Scene… → `assets/scenes/animation_showcase.json`**.
 2. The dependencies section already retains the atlases/clips, so the animation panel lists both demo tracks immediately.
 3. Toggle the Animation HUD under **Stats → Viewport Overlays** to see the metrics update while editing. When the scene pushes more than 256 point lights through the clustered-light system, the overlay adds a **Lighting Budget** card so you know exactly when lights are being culled.
 

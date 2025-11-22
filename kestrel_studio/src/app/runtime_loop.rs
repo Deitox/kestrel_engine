@@ -58,6 +58,13 @@ impl RuntimeLoop {
         RuntimeTick { dt: self.smoothed_dt, raw_dt: dt_raw, dropped_backlog, interpolation }
     }
 
+    pub(crate) fn tick_paused(&mut self) -> RuntimeTick {
+        // Keep wall-clock aligned so resuming does not accumulate a huge delta, but do not
+        // advance the accumulator or smoothed dt while paused.
+        self.time.tick();
+        RuntimeTick { dt: 0.0, raw_dt: 0.0, dropped_backlog: None, interpolation: 0.0 }
+    }
+
     pub(crate) fn pop_fixed_step(&mut self) -> Option<f32> {
         if self.accumulator >= self.fixed_dt {
             self.accumulator -= self.fixed_dt;
