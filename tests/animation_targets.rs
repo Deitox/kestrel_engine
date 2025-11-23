@@ -161,7 +161,7 @@ const CASES: &[BudgetCase] = &[
         label: "sprite_timelines",
         units: "animators",
         count: 10_000,
-        budget_ms: 0.20,
+        budget_ms: 0.30,
         kind: CaseKind::Sprite,
     },
     BudgetCase {

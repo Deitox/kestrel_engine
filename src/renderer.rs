@@ -17,6 +17,8 @@ use glam::{Mat4, Vec3, Vec4};
 #[cfg(feature = "editor")]
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::Hasher;
 use std::ops::Range;
 use std::sync::Arc;
 use std::time::Instant;
@@ -30,7 +32,7 @@ pub use self::light_clusters::LightClusterMetrics;
 use self::light_clusters::{LightClusterParams, LightClusterPass, LightClusterScratch};
 use self::mesh_pass::{MeshDrawData, MeshFrameData, MeshPass, MeshPipelineResources, PaletteUploadStats};
 use self::shadow_pass::{ShadowPass, ShadowPassParams};
-use self::sprite_pass::SpritePass;
+use self::sprite_pass::{SpritePass, SpriteUploadStats};
 pub use self::window_surface::SurfaceFrame;
 use self::window_surface::WindowSurface;
 #[cfg(feature = "editor")]
@@ -1190,11 +1192,18 @@ impl Renderer {
                     );
                 }
                 let buffer = &self.mesh_pass.skinning_palette_buffers[slot];
-                let upload_start = Instant::now();
                 let upload_slice = &self.mesh_pass.palette_staging[..upload_len];
-                queue.write_buffer(buffer, 0, bytemuck::cast_slice(upload_slice));
-                let elapsed_ms = upload_start.elapsed().as_secs_f32() * 1000.0;
-                self.palette_stats_frame.record(joint_count, elapsed_ms);
+                let palette_hash = Self::hash_palette(upload_slice);
+                let cached_hash = self.mesh_pass.palette_hashes.get(slot).copied().unwrap_or(u64::MAX);
+                if palette_hash != cached_hash {
+                    let upload_start = Instant::now();
+                    queue.write_buffer(buffer, 0, bytemuck::cast_slice(upload_slice));
+                    let elapsed_ms = upload_start.elapsed().as_secs_f32() * 1000.0;
+                    self.palette_stats_frame.record(joint_count, elapsed_ms);
+                    if let Some(entry) = self.mesh_pass.palette_hashes.get_mut(slot) {
+                        *entry = palette_hash;
+                    }
+                }
                 let bind_group = &self.mesh_pass.skinning_palette_bind_groups[slot];
                 pass.set_bind_group(1, bind_group, &[]);
             } else {
@@ -1206,11 +1215,8 @@ impl Renderer {
             pass.draw_indexed(0..draw.mesh.index_count, 0, 0..1);
         }
 
-        Self::trim_skinning_cache(
-            &mut self.mesh_pass.skinning_palette_buffers,
-            &mut self.mesh_pass.skinning_palette_bind_groups,
-            self.mesh_pass.skinning_cursor,
-        );
+        let skinning_cursor = self.mesh_pass.skinning_cursor;
+        Self::trim_skinning_cache(&mut self.mesh_pass, skinning_cursor);
 
         Ok(())
     }
@@ -1279,6 +1285,10 @@ impl Renderer {
         stats
     }
 
+    pub fn take_sprite_upload_stats(&mut self) -> SpriteUploadStats {
+        self.sprite_pass.take_upload_stats()
+    }
+
     pub fn light_cluster_metrics(&self) -> &LightClusterMetrics {
         self.light_clusters.metrics()
     }
@@ -1325,17 +1335,16 @@ impl Renderer {
         self.sprite_pass.invalidate_bind_group(atlas);
     }
 
-    fn trim_skinning_cache(
-        buffers: &mut Vec<wgpu::Buffer>,
-        bind_groups: &mut Vec<wgpu::BindGroup>,
-        active_slots: usize,
-    ) {
+    fn trim_skinning_cache(mesh_pass: &mut MeshPass, active_slots: usize) {
         let desired = active_slots.saturating_add(SKINNING_CACHE_HEADROOM);
-        if buffers.len() > desired {
-            buffers.truncate(desired);
+        if mesh_pass.skinning_palette_buffers.len() > desired {
+            mesh_pass.skinning_palette_buffers.truncate(desired);
         }
-        if bind_groups.len() > desired {
-            bind_groups.truncate(desired);
+        if mesh_pass.skinning_palette_bind_groups.len() > desired {
+            mesh_pass.skinning_palette_bind_groups.truncate(desired);
+        }
+        if mesh_pass.palette_hashes.len() > desired {
+            mesh_pass.palette_hashes.truncate(desired);
         }
     }
 
@@ -1366,7 +1375,18 @@ impl Renderer {
             });
             mesh_pass.skinning_palette_buffers.push(buffer);
             mesh_pass.skinning_palette_bind_groups.push(bind_group);
+            mesh_pass.palette_hashes.push(u64::MAX);
         }
+    }
+
+    fn hash_palette(mats: &[[f32; 16]]) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        for mat in mats {
+            for value in mat {
+                hasher.write(&value.to_bits().to_le_bytes());
+            }
+        }
+        hasher.finish()
     }
 
     fn cull_mesh_draw_indices(
@@ -1473,39 +1493,33 @@ impl Renderer {
         }
 
         let clear_color = wgpu::Color { r: 0.05, g: 0.06, b: 0.1, a: 1.0 };
-        let mut visible_mesh_count = mesh_draws.len();
-        let mut mesh_indices: Option<&[usize]> = None;
-        if let Some(camera) = mesh_camera {
-            visible_mesh_count = self.cull_mesh_draw_indices(mesh_draws, camera, viewport);
-            if visible_mesh_count > 0 {
-                mesh_indices = Some(&self.culled_mesh_indices);
-            }
-        }
-        let mesh_indices_owned: Option<Vec<usize>> = mesh_indices.map(|idx| idx.to_vec());
         let mut sprite_load_op = wgpu::LoadOp::Clear(clear_color);
         if let Some(camera) = mesh_camera {
+            let visible_mesh_count = self.cull_mesh_draw_indices(mesh_draws, camera, viewport);
             if visible_mesh_count > 0 {
+                let mesh_indices_owned = std::mem::take(&mut self.culled_mesh_indices);
                 self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::ShadowStart);
-                self.prepare_shadow_map(
-                    &mut encoder,
-                    mesh_draws,
-                    mesh_indices_owned.as_deref(),
-                    camera,
-                    viewport,
-                )?;
+                {
+                    let mesh_indices = mesh_indices_owned.as_slice();
+                    self.prepare_shadow_map(&mut encoder, mesh_draws, Some(mesh_indices), camera, viewport)?;
+                }
                 self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::ShadowEnd);
                 self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::MeshStart);
-                self.encode_mesh_pass(
-                    &mut encoder,
-                    view,
-                    viewport,
-                    mesh_draws,
-                    mesh_indices_owned.as_deref(),
-                    camera,
-                    clear_color,
-                )?;
+                {
+                    let mesh_indices = mesh_indices_owned.as_slice();
+                    self.encode_mesh_pass(
+                        &mut encoder,
+                        view,
+                        viewport,
+                        mesh_draws,
+                        Some(mesh_indices),
+                        camera,
+                        clear_color,
+                    )?;
+                }
                 self.gpu_timer.write_timestamp(&mut encoder, GpuTimestampLabel::MeshEnd);
                 sprite_load_op = wgpu::LoadOp::Load;
+                self.culled_mesh_indices = mesh_indices_owned;
             }
         }
 

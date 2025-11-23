@@ -17,7 +17,7 @@ use glam::{Mat4, Quat, Vec3};
 use std::cell::Cell;
 #[cfg(feature = "sprite_anim_soa")]
 use std::collections::HashMap;
-use std::collections::{hash_map::DefaultHasher, VecDeque};
+use std::collections::{hash_map::DefaultHasher, HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 #[cfg(feature = "anim_stats")]
@@ -52,6 +52,27 @@ impl SpriteFrameApplyQueue {
     pub fn restore(&mut self, mut entities: Vec<Entity>) {
         entities.clear();
         self.entities = entities;
+    }
+}
+
+struct GroupScaleCache<'a> {
+    animation_time: &'a AnimationTime,
+    cache: HashMap<String, f32>,
+}
+
+impl<'a> GroupScaleCache<'a> {
+    fn new(animation_time: &'a AnimationTime) -> Self {
+        Self { animation_time, cache: HashMap::with_capacity(animation_time.group_scales.len()) }
+    }
+
+    fn scale(&mut self, group: Option<&str>) -> f32 {
+        let Some(name) = group else { return 1.0; };
+        if let Some(scale) = self.cache.get(name) {
+            return *scale;
+        }
+        let scale = self.animation_time.group_scale(Some(name));
+        self.cache.insert(name.to_string(), scale);
+        scale
     }
 }
 
@@ -2590,8 +2611,9 @@ fn drive_skeletal_clips(
     delta: f32,
     has_group_scales: bool,
     animation_time: &AnimationTime,
-    skeletons: &mut Query<(Entity, &mut SkeletonInstance, Option<Mut<BoneTransforms>>)>,
+    skeletons: &mut Query<(Entity, &mut SkeletonInstance, Option<Mut<BoneTransforms>>)>, 
 ) {
+    let mut group_cache = has_group_scales.then(|| GroupScaleCache::new(animation_time));
     for (_entity, mut instance, bone_transforms) in skeletons.iter_mut() {
         instance.ensure_capacity();
         let clip = match instance.active_clip.clone() {
@@ -2611,8 +2633,10 @@ fn drive_skeletal_clips(
             continue;
         }
 
-        let group_scale =
-            if has_group_scales { animation_time.group_scale(instance.group.as_deref()) } else { 1.0 };
+        let group_scale = match group_cache.as_mut() {
+            Some(cache) => cache.scale(instance.group.as_deref()),
+            None => 1.0,
+        };
         let playback_rate = if instance.playback_rate_dirty {
             instance.ensure_playback_rate(group_scale)
         } else {
@@ -2814,6 +2838,7 @@ fn drive_transform_clips(
 ) {
     #[cfg(feature = "anim_stats")]
     let mut stats = TransformClipStatAccumulator::default();
+    let mut group_cache = has_group_scales.then(|| GroupScaleCache::new(animation_time));
     for (_entity, mut instance, transform_player, property_player, mut transform, mut tint) in
         clips.iter_mut()
     {
@@ -2825,8 +2850,10 @@ fn drive_transform_clips(
             continue;
         }
 
-        let group_scale =
-            if has_group_scales { animation_time.group_scale(instance.group.as_deref()) } else { 1.0 };
+        let group_scale = match group_cache.as_mut() {
+            Some(cache) => cache.scale(instance.group.as_deref()),
+            None => 1.0,
+        };
         let playback_rate = if instance.playback_rate_dirty {
             instance.ensure_playback_rate(group_scale)
         } else {

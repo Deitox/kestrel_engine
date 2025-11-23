@@ -33,6 +33,7 @@ pub(super) struct MeshPass {
     pub skinning_palette_buffers: Vec<wgpu::Buffer>,
     pub skinning_palette_bind_groups: Vec<wgpu::BindGroup>,
     pub palette_staging: Vec<[f32; 16]>,
+    pub palette_hashes: Vec<u64>,
     pub skinning_cursor: usize,
 }
 

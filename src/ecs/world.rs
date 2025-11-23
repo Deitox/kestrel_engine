@@ -4,7 +4,7 @@ use crate::assets::AssetManager;
 use crate::ecs::systems::record_transform_looped_resume;
 use crate::ecs::systems::{
     initialize_animation_phase, sys_flag_fast_sprite_animators, AnimationDelta, AnimationPlan, AnimationTime,
-    SpriteAnimPerfSample, SpriteAnimPerfTelemetry, SpriteFrameApplyQueue, TimeDelta,
+    ParticleSpawnScratch, SpriteAnimPerfSample, SpriteAnimPerfTelemetry, SpriteFrameApplyQueue, TimeDelta,
 };
 #[cfg(feature = "sprite_anim_soa")]
 use crate::ecs::systems::{sys_cleanup_sprite_animator_soa, SpriteAnimatorSoa};
@@ -81,6 +81,7 @@ impl EcsWorld {
         world.insert_resource(ParticleCaps::default());
         world.insert_resource(ParticleState::default());
         world.insert_resource(ParticleScratch::default());
+        world.insert_resource(ParticleSpawnScratch::default());
         world.insert_resource(TransformPropagationStats::default());
         let world_bounds =
             WorldBounds { min: Vec2::new(-1.4, -1.0), max: Vec2::new(1.4, 1.0), thickness: 0.05 };

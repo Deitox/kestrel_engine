@@ -14,16 +14,26 @@ use crate::config::MeshHashAlgorithm;
 use crate::material_registry::MaterialRegistry;
 use crate::mesh::{Mesh, MeshBounds, MeshImport, MeshSubset};
 use crate::renderer::{GpuMesh, Renderer};
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
+
+const FINGERPRINT_DEBOUNCE: Duration = Duration::from_millis(250);
+const FINGERPRINT_THREAD_NAME: &str = "mesh-fingerprint";
 
 pub struct MeshRegistry {
     entries: HashMap<String, MeshEntry>,
     default: String,
     revision: u64,
     fingerprint_cache: HashMap<PathBuf, CachedFingerprint>,
+    recent_metadata: HashMap<PathBuf, (FingerprintResult, Instant, u64, Option<u128>)>,
     hash_algorithm: MeshHashAlgorithm,
     fingerprint_usage: BinaryHeap<Reverse<(u64, PathBuf)>>,
     fingerprint_clock: u64,
     fingerprint_cache_limit: usize,
+    hash_tx: Option<mpsc::Sender<HashJob>>,
+    hash_rx: Option<mpsc::Receiver<HashJobResult>>,
+    pending_hashes: HashMap<PathBuf, PendingHash>,
 }
 
 struct MeshEntry {
@@ -45,6 +55,25 @@ struct CachedFingerprint {
     last_used: u64,
 }
 
+struct HashJob {
+    path: PathBuf,
+    len: u64,
+    modified: Option<u128>,
+}
+
+struct HashJobResult {
+    path: PathBuf,
+    len: u64,
+    modified: Option<u128>,
+    fingerprint: FingerprintResult,
+}
+
+struct PendingHash {
+    len: u64,
+    modified: Option<u128>,
+    enqueued_at: Instant,
+}
+
 impl MeshRegistry {
     pub fn new(materials: &mut MaterialRegistry) -> Self {
         Self::new_with_hash(materials, MeshHashAlgorithm::default(), None)
@@ -55,15 +84,23 @@ impl MeshRegistry {
         hash_algorithm: MeshHashAlgorithm,
         cache_limit: Option<usize>,
     ) -> Self {
+        #[cfg(feature = "editor")]
+        let default_cache_limit = 2048;
+        #[cfg(not(feature = "editor"))]
+        let default_cache_limit = 512;
         let mut registry = MeshRegistry {
             entries: HashMap::new(),
             default: String::new(),
             revision: 0,
             fingerprint_cache: HashMap::new(),
+            recent_metadata: HashMap::new(),
             hash_algorithm,
             fingerprint_usage: BinaryHeap::new(),
             fingerprint_clock: 0,
-            fingerprint_cache_limit: cache_limit.unwrap_or(512).max(1),
+            fingerprint_cache_limit: cache_limit.unwrap_or(default_cache_limit).max(1),
+            hash_tx: None,
+            hash_rx: None,
+            pending_hashes: HashMap::new(),
         };
         registry
             .insert_entry("cube", Mesh::cube(1.0), None, None, Vec::new(), true)
@@ -446,6 +483,60 @@ impl MeshRegistry {
         }
     }
 
+    fn ensure_hash_worker(&mut self) {
+        if self.hash_tx.is_some() && self.hash_rx.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel::<HashJob>();
+        let (result_tx, result_rx) = mpsc::channel::<HashJobResult>();
+        let _ = thread::Builder::new()
+            .name(FINGERPRINT_THREAD_NAME.into())
+            .spawn(move || {
+                while let Ok(job) = rx.recv() {
+                    if let Some(fingerprint) = hash_file_with_blake3(&job.path, job.len) {
+                        let _ = result_tx.send(HashJobResult {
+                            path: job.path,
+                            len: job.len,
+                            modified: job.modified,
+                            fingerprint,
+                        });
+                    }
+                }
+            });
+        self.hash_tx = Some(tx);
+        self.hash_rx = Some(result_rx);
+    }
+
+    fn drain_hash_results(&mut self) {
+        while let Some(rx) = self.hash_rx.as_ref() {
+            match rx.try_recv() {
+                Ok(result) => {
+                    self.pending_hashes.remove(&result.path);
+                    self.recent_metadata.remove(&result.path);
+                    self.insert_fingerprint(&result.path, result.len, result.modified, result.fingerprint);
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.hash_rx = None;
+                    self.hash_tx = None;
+                    break;
+                }
+            }
+        }
+    }
+
+    fn queue_hash_job(&mut self, path: &Path, len: u64, modified: Option<u128>) {
+        self.ensure_hash_worker();
+        if let Some(tx) = self.hash_tx.as_ref() {
+            let _ = tx.send(HashJob { path: path.to_path_buf(), len, modified });
+        }
+        self.pending_hashes.insert(path.to_path_buf(), PendingHash {
+            len,
+            modified,
+            enqueued_at: Instant::now(),
+        });
+    }
+
     fn insert_fingerprint(
         &mut self,
         path: &Path,
@@ -471,6 +562,7 @@ impl MeshRegistry {
     }
 
     fn mesh_source_fingerprint(&mut self, path: &Path) -> Option<u128> {
+        self.drain_hash_results();
         let metadata = fs::metadata(path).ok()?;
         let len = metadata.len();
         let modified =
@@ -496,11 +588,32 @@ impl MeshRegistry {
                 }
 
                 if len > BLAKE3_INLINE_HASH_LIMIT_BYTES {
-                    let computed =
-                        FingerprintResult { hash: metadata_fingerprint(len, modified, sample), sample };
-                    let hash = computed.hash;
-                    self.insert_fingerprint(path, len, modified, computed);
-                    return Some(hash);
+                    if let Some(pending) = self.pending_hashes.get(path) {
+                        let fresh = pending.len == len
+                            && pending.modified == modified
+                            && pending.enqueued_at.elapsed() < FINGERPRINT_DEBOUNCE;
+                        if fresh {
+                            if let Some((result, _, cached_len, cached_modified)) =
+                                self.recent_metadata.get(path)
+                            {
+                                if *cached_len == len && *cached_modified == modified {
+                                    return Some(result.hash);
+                                }
+                            }
+                            let fallback_hash = metadata_fingerprint(len, modified, sample);
+                            let fallback = FingerprintResult { hash: fallback_hash, sample };
+                            self.recent_metadata
+                                .insert(path.to_path_buf(), (fallback, Instant::now(), len, modified));
+                            return Some(fallback_hash);
+                        }
+                    }
+
+                    self.queue_hash_job(path, len, modified);
+                    let fallback_hash = metadata_fingerprint(len, modified, sample);
+                    let fallback = FingerprintResult { hash: fallback_hash, sample };
+                    self.recent_metadata
+                        .insert(path.to_path_buf(), (fallback, Instant::now(), len, modified));
+                    return Some(fallback_hash);
                 }
 
                 let computed = hash_file_with_blake3(path, len)?;

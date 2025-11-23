@@ -40,6 +40,26 @@ impl CollisionEventCollector {
         Self { collision_events: Mutex::new(Vec::new()), force_events: Mutex::new(Vec::new()) }
     }
 
+    fn push_collision(&self, event: CollisionEvent) {
+        if let Ok(mut events) = self.collision_events.try_lock() {
+            events.push(event);
+            return;
+        }
+        if let Ok(mut events) = self.collision_events.lock() {
+            events.push(event);
+        }
+    }
+
+    fn push_force(&self, force: (ColliderHandle, ColliderHandle, f32)) {
+        if let Ok(mut events) = self.force_events.try_lock() {
+            events.push(force);
+            return;
+        }
+        if let Ok(mut events) = self.force_events.lock() {
+            events.push(force);
+        }
+    }
+
     fn drain(&self) -> (Vec<CollisionEvent>, Vec<(ColliderHandle, ColliderHandle, f32)>) {
         let collisions = if let Ok(mut events) = self.collision_events.lock() {
             std::mem::take(&mut *events)
@@ -63,9 +83,7 @@ impl EventHandler for CollisionEventCollector {
         event: CollisionEvent,
         _contact_pair: Option<&ContactPair>,
     ) {
-        if let Ok(mut events) = self.collision_events.lock() {
-            events.push(event);
-        }
+        self.push_collision(event);
     }
 
     fn handle_contact_force_event(
@@ -76,9 +94,7 @@ impl EventHandler for CollisionEventCollector {
         contact_pair: &ContactPair,
         total_force_magnitude: Real,
     ) {
-        if let Ok(mut events) = self.force_events.lock() {
-            events.push((contact_pair.collider1, contact_pair.collider2, total_force_magnitude));
-        }
+        self.push_force((contact_pair.collider1, contact_pair.collider2, total_force_magnitude));
     }
 }
 

@@ -4,8 +4,47 @@ use crate::ecs::types::*;
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::{Commands, Res};
 use glam::Vec2;
-use rand::Rng;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use std::sync::Arc;
+
+#[derive(Resource)]
+pub struct ParticleSpawnScratch {
+    pub rng: StdRng,
+    pub batch_plain: Vec<(
+        Transform,
+        Velocity,
+        Force,
+        Mass,
+        Sprite,
+        Tint,
+        Aabb,
+        Particle,
+        ParticleVisual,
+    )>,
+    pub batch_with_trail: Vec<(
+        Transform,
+        Velocity,
+        Force,
+        Mass,
+        Sprite,
+        Tint,
+        Aabb,
+        Particle,
+        ParticleVisual,
+        ParticleTrail,
+    )>,
+}
+
+impl Default for ParticleSpawnScratch {
+    fn default() -> Self {
+        Self {
+            rng: StdRng::from_entropy(),
+            batch_plain: Vec::new(),
+            batch_with_trail: Vec::new(),
+        }
+    }
+}
 
 pub fn sys_update_emitters(
     mut profiler: ResMut<SystemProfiler>,
@@ -14,17 +53,18 @@ pub fn sys_update_emitters(
     caps: Res<ParticleCaps>,
     mut particle_state: ResMut<ParticleState>,
     dt: Res<TimeDelta>,
+    mut spawn_scratch: ResMut<ParticleSpawnScratch>,
 ) {
     let _span = profiler.scope("sys_update_emitters");
-    let mut rng = rand::thread_rng();
+    let ParticleSpawnScratch { rng, batch_plain, batch_with_trail } = &mut *spawn_scratch;
     let max_total = caps.max_total as i32;
     let max_spawn_per_frame = caps.max_spawn_per_frame as i32;
     let mut active_particles = particle_state.active_particles.min(caps.max_total) as i32;
     active_particles = active_particles.clamp(0, max_total);
     let mut remaining_headroom = (max_total - active_particles).max(0);
     let mut frame_budget = remaining_headroom.min(max_spawn_per_frame);
-    let mut batch_plain = Vec::new();
-    let mut batch_with_trail = Vec::new();
+    batch_plain.clear();
+    batch_with_trail.clear();
 
     for (mut emitter, transform) in emitters.iter_mut() {
         let spawn_rate = emitter.rate.max(0.0);
@@ -70,8 +110,7 @@ pub fn sys_update_emitters(
                 },
             );
             if let Some(trail) = emitter.trail {
-                batch_with_trail
-                    .push((base.0, base.1, base.2, base.3, base.4, base.5, base.6, base.7, base.8, trail));
+                batch_with_trail.push((base.0, base.1, base.2, base.3, base.4, base.5, base.6, base.7, base.8, trail));
             } else {
                 batch_plain.push(base);
             }
@@ -82,12 +121,12 @@ pub fn sys_update_emitters(
     }
 
     if !batch_plain.is_empty() {
-        let batch = batch_plain.drain(..).collect::<Vec<_>>();
-        commands.spawn_batch(batch);
+        let drained: Vec<_> = batch_plain.drain(..).collect();
+        commands.spawn_batch(drained);
     }
     if !batch_with_trail.is_empty() {
-        let batch = batch_with_trail.drain(..).collect::<Vec<_>>();
-        commands.spawn_batch(batch);
+        let drained: Vec<_> = batch_with_trail.drain(..).collect();
+        commands.spawn_batch(drained);
     }
 
     particle_state.active_particles = active_particles.max(0) as u32;

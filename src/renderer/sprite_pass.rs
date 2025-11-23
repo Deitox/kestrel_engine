@@ -1,6 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use glam::Mat4;
@@ -21,6 +22,13 @@ struct SpriteBindCacheEntry {
     bind_group: Arc<wgpu::BindGroup>,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SpriteUploadStats {
+    pub frames: u32,
+    pub bytes_uploaded: u64,
+    pub total_cpu_ms: f32,
+}
+
 const SPRITE_BIND_CACHE_LIMIT: usize = 128;
 
 pub struct SpritePass {
@@ -38,6 +46,7 @@ pub struct SpritePass {
     bind_cache_order: VecDeque<String>,
     instance_span: Range<wgpu::BufferAddress>,
     instance_cursor: wgpu::BufferAddress,
+    upload_stats: SpriteUploadStats,
 }
 
 impl Default for SpritePass {
@@ -57,6 +66,7 @@ impl Default for SpritePass {
             bind_cache_order: VecDeque::new(),
             instance_span: 0..0,
             instance_cursor: 0,
+            upload_stats: SpriteUploadStats::default(),
         }
     }
 }
@@ -292,7 +302,13 @@ impl SpritePass {
         let cursor_advance = align_to(byte_len, alignment);
         self.instance_cursor = span_end + (cursor_advance - byte_len);
         self.instance_span = write_offset..span_end;
+        let upload_start = Instant::now();
         queue.write_buffer(instance_buffer, write_offset, bytemuck::cast_slice(instances));
+        let elapsed_ms = upload_start.elapsed().as_secs_f32() * 1000.0;
+        self.upload_stats.frames = self.upload_stats.frames.saturating_add(1);
+        self.upload_stats.bytes_uploaded =
+            self.upload_stats.bytes_uploaded.saturating_add(byte_len as u64);
+        self.upload_stats.total_cpu_ms += elapsed_ms;
         Ok(())
     }
 
@@ -450,6 +466,10 @@ impl SpritePass {
                 break;
             }
         }
+    }
+
+    pub fn take_upload_stats(&mut self) -> SpriteUploadStats {
+        std::mem::take(&mut self.upload_stats)
     }
 }
 
