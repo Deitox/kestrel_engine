@@ -6,17 +6,19 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::plugins::{EnginePlugin, PluginContext};
 use anyhow::{anyhow, Context, Result};
 use glam::{Vec2, Vec4};
 use rand::Rng;
-use rhai::{Dynamic, Engine, EvalAltResult, Scope, AST};
+use rhai::{Dynamic, Engine, EvalAltResult, Scope, AST, FLOAT};
 
 use bevy_ecs::prelude::Entity;
 
 pub type ScriptHandle = rhai::INT;
+
+const DIGEST_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone)]
 pub enum ScriptCommand {
@@ -62,12 +64,17 @@ impl ScriptWorld {
         &mut self,
         atlas: &str,
         region: &str,
-        x: f32,
-        y: f32,
-        scale: f32,
-        vx: f32,
-        vy: f32,
+        x: FLOAT,
+        y: FLOAT,
+        scale: FLOAT,
+        vx: FLOAT,
+        vy: FLOAT,
     ) -> ScriptHandle {
+        let x = x as f32;
+        let y = y as f32;
+        let scale = scale as f32;
+        let vx = vx as f32;
+        let vy = vy as f32;
         if !self.ensure_finite("spawn_sprite", &[x, y, scale, vx, vy]) {
             return -1;
         }
@@ -88,7 +95,9 @@ impl ScriptWorld {
         handle
     }
 
-    fn set_velocity(&mut self, handle: ScriptHandle, vx: f32, vy: f32) -> bool {
+    fn set_velocity(&mut self, handle: ScriptHandle, vx: FLOAT, vy: FLOAT) -> bool {
+        let vx = vx as f32;
+        let vy = vy as f32;
         if !self.ensure_finite("set_velocity", &[vx, vy]) {
             return false;
         }
@@ -99,7 +108,9 @@ impl ScriptWorld {
         true
     }
 
-    fn set_position(&mut self, handle: ScriptHandle, x: f32, y: f32) -> bool {
+    fn set_position(&mut self, handle: ScriptHandle, x: FLOAT, y: FLOAT) -> bool {
+        let x = x as f32;
+        let y = y as f32;
         if !self.ensure_finite("set_position", &[x, y]) {
             return false;
         }
@@ -110,7 +121,8 @@ impl ScriptWorld {
         true
     }
 
-    fn set_rotation(&mut self, handle: ScriptHandle, radians: f32) -> bool {
+    fn set_rotation(&mut self, handle: ScriptHandle, radians: FLOAT) -> bool {
+        let radians = radians as f32;
         if !self.ensure_finite("set_rotation", &[radians]) {
             return false;
         }
@@ -118,7 +130,9 @@ impl ScriptWorld {
         true
     }
 
-    fn set_scale(&mut self, handle: ScriptHandle, sx: f32, sy: f32) -> bool {
+    fn set_scale(&mut self, handle: ScriptHandle, sx: FLOAT, sy: FLOAT) -> bool {
+        let sx = sx as f32;
+        let sy = sy as f32;
         if !self.ensure_finite("set_scale", &[sx, sy]) {
             return false;
         }
@@ -127,7 +141,11 @@ impl ScriptWorld {
         true
     }
 
-    fn set_tint(&mut self, handle: ScriptHandle, r: f32, g: f32, b: f32, a: f32) -> bool {
+    fn set_tint(&mut self, handle: ScriptHandle, r: FLOAT, g: FLOAT, b: FLOAT, a: FLOAT) -> bool {
+        let r = r as f32;
+        let g = g as f32;
+        let b = b as f32;
+        let a = a as f32;
         if !self.ensure_finite("set_tint", &[r, g, b, a]) {
             return false;
         }
@@ -156,7 +174,11 @@ impl ScriptWorld {
         true
     }
 
-    fn set_auto_spawn_rate(&mut self, rate: f32) {
+    fn set_auto_spawn_rate(&mut self, rate: FLOAT) {
+        let rate = rate as f32;
+        if !self.ensure_finite("set_auto_spawn_rate", &[rate]) {
+            return;
+        }
         self.state.borrow_mut().commands.push(ScriptCommand::SetAutoSpawnRate { rate });
     }
 
@@ -165,14 +187,16 @@ impl ScriptWorld {
         self.state.borrow_mut().commands.push(ScriptCommand::SetSpawnPerPress { count: clamped });
     }
 
-    fn set_emitter_rate(&mut self, rate: f32) {
+    fn set_emitter_rate(&mut self, rate: FLOAT) {
+        let rate = rate as f32;
         if !self.ensure_finite("set_emitter_rate", &[rate]) {
             return;
         }
         self.state.borrow_mut().commands.push(ScriptCommand::SetEmitterRate { rate: rate.max(0.0) });
     }
 
-    fn set_emitter_spread(&mut self, spread: f32) {
+    fn set_emitter_spread(&mut self, spread: FLOAT) {
+        let spread = spread as f32;
         if !self.ensure_finite("set_emitter_spread", &[spread]) {
             return;
         }
@@ -180,14 +204,16 @@ impl ScriptWorld {
         self.state.borrow_mut().commands.push(ScriptCommand::SetEmitterSpread { spread: clamped });
     }
 
-    fn set_emitter_speed(&mut self, speed: f32) {
+    fn set_emitter_speed(&mut self, speed: FLOAT) {
+        let speed = speed as f32;
         if !self.ensure_finite("set_emitter_speed", &[speed]) {
             return;
         }
         self.state.borrow_mut().commands.push(ScriptCommand::SetEmitterSpeed { speed: speed.max(0.0) });
     }
 
-    fn set_emitter_lifetime(&mut self, lifetime: f32) {
+    fn set_emitter_lifetime(&mut self, lifetime: FLOAT) {
+        let lifetime = lifetime as f32;
         if !self.ensure_finite("set_emitter_lifetime", &[lifetime]) {
             return;
         }
@@ -197,7 +223,11 @@ impl ScriptWorld {
             .push(ScriptCommand::SetEmitterLifetime { lifetime: lifetime.max(0.05) });
     }
 
-    fn set_emitter_start_color(&mut self, r: f32, g: f32, b: f32, a: f32) {
+    fn set_emitter_start_color(&mut self, r: FLOAT, g: FLOAT, b: FLOAT, a: FLOAT) {
+        let r = r as f32;
+        let g = g as f32;
+        let b = b as f32;
+        let a = a as f32;
         if !self.ensure_finite("set_emitter_start_color", &[r, g, b, a]) {
             return;
         }
@@ -207,7 +237,11 @@ impl ScriptWorld {
             .push(ScriptCommand::SetEmitterStartColor { color: Vec4::new(r, g, b, a) });
     }
 
-    fn set_emitter_end_color(&mut self, r: f32, g: f32, b: f32, a: f32) {
+    fn set_emitter_end_color(&mut self, r: FLOAT, g: FLOAT, b: FLOAT, a: FLOAT) {
+        let r = r as f32;
+        let g = g as f32;
+        let b = b as f32;
+        let a = a as f32;
         if !self.ensure_finite("set_emitter_end_color", &[r, g, b, a]) {
             return;
         }
@@ -217,23 +251,25 @@ impl ScriptWorld {
             .push(ScriptCommand::SetEmitterEndColor { color: Vec4::new(r, g, b, a) });
     }
 
-    fn set_emitter_start_size(&mut self, size: f32) {
+    fn set_emitter_start_size(&mut self, size: FLOAT) {
+        let size = size as f32;
         if !self.ensure_finite("set_emitter_start_size", &[size]) {
             return;
         }
         self.state.borrow_mut().commands.push(ScriptCommand::SetEmitterStartSize { size: size.max(0.01) });
     }
 
-    fn set_emitter_end_size(&mut self, size: f32) {
+    fn set_emitter_end_size(&mut self, size: FLOAT) {
+        let size = size as f32;
         if !self.ensure_finite("set_emitter_end_size", &[size]) {
             return;
         }
         self.state.borrow_mut().commands.push(ScriptCommand::SetEmitterEndSize { size: size.max(0.01) });
     }
 
-    fn random_range(&mut self, min: f32, max: f32) -> f32 {
-        let mut lo = min;
-        let mut hi = max;
+    fn random_range(&mut self, min: FLOAT, max: FLOAT) -> FLOAT {
+        let mut lo = min as f32;
+        let mut hi = max as f32;
         if !lo.is_finite() || !hi.is_finite() {
             self.log("random_range received non-finite bounds; returning 0.0");
             return 0.0;
@@ -242,9 +278,9 @@ impl ScriptWorld {
             std::mem::swap(&mut lo, &mut hi);
         }
         if (hi - lo).abs() <= f32::EPSILON {
-            return lo;
+            return lo as FLOAT;
         }
-        rand::thread_rng().gen_range(lo..hi)
+        rand::thread_rng().gen_range(lo..hi) as FLOAT
     }
 
     fn log(&mut self, message: &str) {
@@ -273,6 +309,7 @@ pub struct ScriptHost {
     last_modified: Option<SystemTime>,
     last_len: Option<u64>,
     last_digest: Option<u64>,
+    last_digest_check: Option<Instant>,
     error: Option<String>,
     enabled: bool,
     initialized: bool,
@@ -294,6 +331,7 @@ impl ScriptHost {
             last_modified: None,
             last_len: None,
             last_digest: None,
+            last_digest_check: None,
             error: None,
             enabled: true,
             initialized: false,
@@ -338,6 +376,7 @@ impl ScriptHost {
         if !run_scripts {
             return;
         }
+        let dt_rhai: FLOAT = dt as FLOAT;
         let ast = match &self.ast {
             Some(ast) => ast,
             None => return,
@@ -356,26 +395,43 @@ impl ScriptHost {
                     self.error = None;
                 }
                 Err(err) => {
-                    if matches!(err.as_ref(), EvalAltResult::ErrorFunctionNotFound(..)) {
-                        self.initialized = true;
-                    } else {
-                        self.error = Some(err.to_string());
-                        return;
+                    if let EvalAltResult::ErrorFunctionNotFound(fn_sig, _) = err.as_ref() {
+                        if fn_sig.starts_with("init") {
+                            if self.function_exists_with_any_arity(ast, "init") {
+                                self.error = Some(
+                                    "Script function 'init' has wrong signature; expected init(world).".to_string(),
+                                );
+                                return;
+                            }
+                            self.initialized = true;
+                            return;
+                        }
                     }
+                    self.error = Some(err.to_string());
+                    return;
                 }
             }
         }
 
-        match self.engine.call_fn::<()>(&mut self.scope, ast, "update", (world, dt)) {
+        match self.engine.call_fn::<()>(&mut self.scope, ast, "update", (world, dt_rhai)) {
             Ok(_) => {
                 self.error = None;
             }
             Err(err) => {
-                if matches!(err.as_ref(), EvalAltResult::ErrorFunctionNotFound(..)) {
-                    self.error = None;
-                } else {
-                    self.error = Some(err.to_string());
+                if let EvalAltResult::ErrorFunctionNotFound(fn_sig, _) = err.as_ref() {
+                    if fn_sig.starts_with("update") {
+                        if self.function_exists_with_any_arity(ast, "update") {
+                            self.error = Some(
+                                "Script function 'update' has wrong signature; expected update(world, dt: number)."
+                                    .to_string(),
+                            );
+                        } else {
+                            self.error = None;
+                        }
+                        return;
+                    }
                 }
+                self.error = Some(err.to_string());
             }
         }
     }
@@ -458,11 +514,19 @@ impl ScriptHost {
         }
 
         if let Some(previous_digest) = self.last_digest {
-            let source = fs::read_to_string(&self.script_path)
-                .with_context(|| format!("Reading {}", self.script_path.display()))?;
-            let digest = hash_source(&source);
-            if digest != previous_digest {
-                self.load_script_from_source(source, modified, len)?;
+            let now = Instant::now();
+            let should_check_digest = self
+                .last_digest_check
+                .map(|last| now.duration_since(last) >= DIGEST_POLL_INTERVAL)
+                .unwrap_or(true);
+            if should_check_digest {
+                let source = fs::read_to_string(&self.script_path)
+                    .with_context(|| format!("Reading {}", self.script_path.display()))?;
+                let digest = hash_source(&source);
+                self.last_digest_check = Some(now);
+                if digest != previous_digest {
+                    self.load_script_from_source(source, modified, len)?;
+                }
             }
         }
         Ok(())
@@ -487,10 +551,20 @@ impl ScriptHost {
         self.last_modified = Some(modified);
         self.last_len = Some(len);
         self.last_digest = Some(hash_source(&source));
+        self.last_digest_check = Some(Instant::now());
         self.initialized = false;
         self.error = None;
         self.ast = Some(ast);
         Ok(self.ast.as_ref().expect("script AST set during load"))
+    }
+
+    fn function_exists_with_any_arity(&self, ast: &AST, name: &str) -> bool {
+        const MAX_ARITY: usize = 4;
+        (0..=MAX_ARITY).any(|arity| self.function_exists_with_arity(ast, name, arity))
+    }
+
+    fn function_exists_with_arity(&self, ast: &AST, name: &str, arity: usize) -> bool {
+        ast.iter_functions().any(|f| f.name == name && f.params.len() == arity)
     }
 }
 
@@ -672,6 +746,7 @@ mod tests {
     use std::cell::RefCell;
     use std::io::Write;
     use std::rc::Rc;
+    use std::time::{Duration, Instant};
     use tempfile::NamedTempFile;
 
     fn write_script(contents: &str) -> NamedTempFile {
@@ -731,6 +806,58 @@ mod tests {
     }
 
     #[test]
+    fn init_with_wrong_signature_reports_error() {
+        let script = write_script(
+            r#"
+                fn init() { }
+                fn update(world, dt) { }
+            "#,
+        );
+        let mut host = ScriptHost::new(script.path());
+        host.force_reload().expect("initial load");
+        host.update(0.016, true);
+        let err = host.last_error().expect("error recorded");
+        assert!(err.contains("init") && err.contains("signature"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn update_with_wrong_signature_reports_error() {
+        let script = write_script(
+            r#"
+                fn init(world) { }
+                fn update(world) { }
+            "#,
+        );
+        let mut host = ScriptHost::new(script.path());
+        host.force_reload().expect("initial load");
+        host.update(0.016, true);
+        let err = host.last_error().expect("error recorded");
+        assert!(err.contains("update") && err.contains("signature"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn digest_check_is_throttled() {
+        let script = write_script(
+            r#"
+                fn init(world) { }
+                fn update(world, dt) { }
+            "#,
+        );
+        let mut host = ScriptHost::new(script.path());
+        host.force_reload().expect("initial load");
+        let first_check = host.last_digest_check;
+        host.reload_if_needed().expect("no reload needed");
+        assert_eq!(host.last_digest_check, first_check, "digest check should not update without interval");
+        host.last_digest_check = Some(Instant::now() - DIGEST_POLL_INTERVAL - Duration::from_millis(1));
+        host.reload_if_needed().expect("reload after interval");
+        assert!(host
+            .last_digest_check
+            .expect("digest check set")
+            .duration_since(first_check.expect("initial digest check"))
+            >= DIGEST_POLL_INTERVAL);
+    }
+
+    #[test]
     fn random_range_handles_inverted_bounds() {
         let state = Rc::new(RefCell::new(SharedState::default()));
         let mut world = ScriptWorld::new(state);
@@ -744,7 +871,67 @@ mod tests {
     fn random_range_returns_value_for_equal_bounds() {
         let state = Rc::new(RefCell::new(SharedState::default()));
         let mut world = ScriptWorld::new(state);
-        let value = world.random_range(std::f32::consts::PI, std::f32::consts::PI);
-        assert_eq!(value, std::f32::consts::PI);
+        let value = world.random_range(std::f32::consts::PI as FLOAT, std::f32::consts::PI as FLOAT);
+        assert_eq!(value as f32, std::f32::consts::PI);
+    }
+
+    #[test]
+    fn set_auto_spawn_rate_accepts_float_literal() {
+        let state = Rc::new(RefCell::new(SharedState::default()));
+        let mut world = ScriptWorld::new(state.clone());
+        world.set_auto_spawn_rate(1.25 as FLOAT);
+        let cmds = &state.borrow().commands;
+        assert!(matches!(
+            cmds.as_slice(),
+            [ScriptCommand::SetAutoSpawnRate { rate }] if (*rate - 1.25).abs() < 1e-4
+        ));
+    }
+
+    #[test]
+    fn init_and_update_with_expected_signatures_run() {
+        let script = write_script(
+            r#"
+                let state = #{ count: 0 };
+                fn init(world) {
+                    world.log("hello");
+                }
+                fn update(world, dt) {
+                    if dt > 0.0 {
+                        state.count += 1;
+                    }
+                }
+            "#,
+        );
+        let mut host = ScriptHost::new(script.path());
+        host.force_reload().expect("load script");
+        let funcs: Vec<(String, usize)> = host
+            .ast
+            .as_ref()
+            .expect("ast loaded")
+            .iter_functions()
+            .map(|f| (f.name.to_string(), f.params.len()))
+            .collect();
+        assert!(funcs.iter().any(|(n, _)| n == "init"), "init missing: {:?}", funcs);
+        assert!(
+            funcs.iter().any(|(n, p)| n == "update" && *p == 2),
+            "update missing: {:?}",
+            funcs
+        );
+        host.update(0.016, true);
+        assert!(
+            host.last_error().is_none(),
+            "init should succeed, got {:?}",
+            host.last_error()
+        );
+        host.update(0.016, true);
+        assert!(
+            host.last_error().is_none(),
+            "update should succeed, got {:?}",
+            host.last_error()
+        );
+        let logs = host.drain_logs();
+        assert!(logs.iter().any(|l| l.contains("hello")), "init log missing: {:?}", logs);
+        let commands = host.drain_commands();
+        assert!(commands.is_empty(), "unexpected commands from fixture script");
     }
 }
