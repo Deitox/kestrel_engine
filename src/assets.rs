@@ -26,6 +26,7 @@ pub struct AssetManager {
     device: Option<wgpu::Device>,
     queue: Option<wgpu::Queue>,
     texture_cache: HashMap<PathBuf, (wgpu::TextureView, (u32, u32))>,
+    texture_cache_order: VecDeque<PathBuf>,
     atlas_image_cache: HashMap<PathBuf, CachedAtlasImage>,
     atlas_upload_scratch: Vec<u8>,
     atlas_image_cache_order: VecDeque<PathBuf>,
@@ -963,6 +964,7 @@ impl AssetManager {
             device: None,
             queue: None,
             texture_cache: HashMap::new(),
+            texture_cache_order: VecDeque::new(),
             atlas_image_cache: HashMap::new(),
             atlas_upload_scratch: Vec::new(),
             atlas_image_cache_order: VecDeque::new(),
@@ -1395,6 +1397,7 @@ impl AssetManager {
                     self.atlas_refs.remove(key);
                     if let Some(atlas) = self.atlases.remove(key) {
                         self.texture_cache.remove(&atlas.image_path);
+                        self.texture_cache_order.retain(|p| p != &atlas.image_path);
                         self.atlas_view_fingerprints.remove(&atlas.image_path);
                         self.remove_cached_atlas_image(&atlas.image_path);
                     }
@@ -1420,15 +1423,22 @@ impl AssetManager {
             .with_context(|| format!("read metadata for '{}'", image_path.display()))?;
         let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
         let sample = quick_file_sample_hash(&image_path);
+        let mut cached_view: Option<wgpu::TextureView> = None;
         if let Some((view, _)) = self.texture_cache.get(&image_path) {
-            if !force {
-                return Ok(view.clone());
+            let reusable = if !force {
+                true
+            } else if let Some((cached_modified, cached_sample)) = self.atlas_view_fingerprints.get(&image_path) {
+                *cached_modified == modified && samples_match(*cached_sample, sample)
+            } else {
+                false
+            };
+            if reusable {
+                cached_view = Some(view.clone());
             }
-            if let Some((cached_modified, cached_sample)) = self.atlas_view_fingerprints.get(&image_path) {
-                if *cached_modified == modified && samples_match(*cached_sample, sample) {
-                    return Ok(view.clone());
-                }
-            }
+        }
+        if let Some(view) = cached_view {
+            self.touch_texture_view(&image_path);
+            return Ok(view);
         }
         let (rgba, w, h) = self.cached_atlas_pixels(&image_path)?;
         let dev = self.device.as_ref().ok_or_else(|| anyhow!("GPU device not initialized"))?;
@@ -1481,7 +1491,8 @@ impl AssetManager {
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         self.atlas_view_fingerprints.insert(image_path.clone(), (modified, sample));
-        self.texture_cache.insert(image_path, (view.clone(), (w, h)));
+        self.texture_cache.insert(image_path.clone(), (view.clone(), (w, h)));
+        self.touch_texture_view(&image_path);
         Ok(view)
     }
 
@@ -1516,6 +1527,23 @@ impl AssetManager {
         while self.atlas_image_cache_order.len() > ATLAS_IMAGE_CACHE_LIMIT {
             if let Some(evicted) = self.atlas_image_cache_order.pop_front() {
                 self.atlas_image_cache.remove(&evicted);
+            }
+        }
+    }
+
+    fn touch_texture_view(&mut self, path: &Path) {
+        if let Some(pos) = self.texture_cache_order.iter().position(|p| p == path) {
+            self.texture_cache_order.remove(pos);
+        }
+        self.texture_cache_order.push_back(path.to_path_buf());
+        self.evict_texture_cache();
+    }
+
+    fn evict_texture_cache(&mut self) {
+        while self.texture_cache_order.len() > TEXTURE_VIEW_CACHE_LIMIT {
+            if let Some(evicted) = self.texture_cache_order.pop_front() {
+                self.texture_cache.remove(&evicted);
+                self.atlas_view_fingerprints.remove(&evicted);
             }
         }
     }
@@ -1597,10 +1625,12 @@ impl AssetManager {
 
         if let Some(image_path) = previous_image {
             self.texture_cache.remove(&image_path);
+            self.texture_cache_order.retain(|p| p != &image_path);
         }
         if let Some(current) = self.atlases.get(key) {
             let image_path = current.image_path.clone();
             self.texture_cache.remove(&image_path);
+            self.texture_cache_order.retain(|p| p != &image_path);
             if self.device.is_some() {
                 if let Err(err) = self.load_or_reload_view(key, true) {
                     eprintln!("[assets] Warning: failed to refresh GPU texture for atlas '{key}': {err}");
@@ -1857,6 +1887,7 @@ mod tests {
             .expect_err("path swap should be rejected by default for skeletons");
         assert!(err.to_string().contains("refusing to swap"), "unexpected error: {err}");
         assert_eq!(assets.skeleton_sources.get(key).map(|s| s.as_str()), Some("path/a.gltf"));
-    }
 }
+}
+const TEXTURE_VIEW_CACHE_LIMIT: usize = 32;
 const ATLAS_IMAGE_CACHE_LIMIT: usize = 16;

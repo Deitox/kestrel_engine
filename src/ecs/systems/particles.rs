@@ -113,15 +113,16 @@ pub fn sys_update_particles(
     attractors: Query<(&Transform, &ParticleAttractor), Without<Particle>>,
     dt: Res<TimeDelta>,
     mut particle_state: ResMut<ParticleState>,
+    mut scratch: ResMut<ParticleScratch>,
 ) {
     let _span = profiler.scope("sys_update_particles");
-    let mut field_cache = Vec::new();
+    scratch.force_fields.clear();
     for (transform, field) in force_fields.iter() {
-        field_cache.push((transform.translation, *field));
+        scratch.force_fields.push((transform.translation, *field));
     }
-    let mut attractor_cache = Vec::new();
+    scratch.attractors.clear();
     for (transform, attractor) in attractors.iter() {
-        attractor_cache.push((transform.translation, *attractor));
+        scratch.attractors.push((transform.translation, *attractor));
     }
 
     let mut active_particles = 0u32;
@@ -144,7 +145,7 @@ pub fn sys_update_particles(
             let mut accel = Vec2::ZERO;
             let inv_mass = mass.and_then(|m| if m.0 > 0.0 { Some(1.0 / m.0) } else { None }).unwrap_or(1.0);
 
-            for (origin, field) in field_cache.iter() {
+            for (origin, field) in scratch.force_fields.iter() {
                 let mut dir = match field.kind {
                     ForceFieldKind::Radial => transform.translation - *origin,
                     ForceFieldKind::Directional => field.direction,
@@ -170,7 +171,7 @@ pub fn sys_update_particles(
                 accel += dir * field.strength * falloff;
             }
 
-            for (origin, attractor) in attractor_cache.iter() {
+            for (origin, attractor) in scratch.attractors.iter() {
                 let to_origin = *origin - transform.translation;
                 let dist = to_origin.length();
                 if dist <= attractor.min_distance {

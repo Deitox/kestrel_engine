@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -21,6 +21,8 @@ struct SpriteBindCacheEntry {
     bind_group: Arc<wgpu::BindGroup>,
 }
 
+const SPRITE_BIND_CACHE_LIMIT: usize = 128;
+
 pub struct SpritePass {
     pipeline: Option<wgpu::RenderPipeline>,
     vertex_buffer: Option<wgpu::Buffer>,
@@ -33,6 +35,7 @@ pub struct SpritePass {
     instance_buffer: Option<wgpu::Buffer>,
     instance_capacity: usize,
     bind_cache: HashMap<String, SpriteBindCacheEntry>,
+    bind_cache_order: VecDeque<String>,
     instance_span: Range<wgpu::BufferAddress>,
     instance_cursor: wgpu::BufferAddress,
 }
@@ -51,6 +54,7 @@ impl Default for SpritePass {
             instance_buffer: None,
             instance_capacity: 0,
             bind_cache: HashMap::new(),
+            bind_cache_order: VecDeque::new(),
             instance_span: 0..0,
             instance_cursor: 0,
         }
@@ -247,10 +251,12 @@ impl SpritePass {
 
     pub fn clear_bind_cache(&mut self) {
         self.bind_cache.clear();
+        self.bind_cache_order.clear();
     }
 
     pub fn invalidate_bind_group(&mut self, atlas: &str) {
         self.bind_cache.remove(atlas);
+        self.bind_cache_order.retain(|key| key != atlas);
     }
 
     pub fn write_globals(&self, queue: &wgpu::Queue, sprite_view_proj: Mat4) -> Result<()> {
@@ -300,7 +306,9 @@ impl SpritePass {
         let sampler_id = sampler as *const wgpu::Sampler as usize as u64;
         if let Some(entry) = self.bind_cache.get(atlas) {
             if Arc::ptr_eq(&entry.view, view) && entry.sampler_id == sampler_id {
-                return Ok(entry.bind_group.clone());
+                let bind_group = entry.bind_group.clone();
+                self.touch_bind_cache(atlas);
+                return Ok(bind_group);
             }
         }
 
@@ -317,10 +325,13 @@ impl SpritePass {
             ],
         }));
 
+        let key = atlas.to_string();
         self.bind_cache.insert(
-            atlas.to_string(),
+            key.clone(),
             SpriteBindCacheEntry { view: view.clone(), sampler_id, bind_group: bind_group.clone() },
         );
+        self.bind_cache_order.push_back(key);
+        self.evict_bind_cache();
 
         Ok(bind_group)
     }
@@ -421,6 +432,24 @@ impl SpritePass {
 
     fn instance_capacity_bytes(&self) -> wgpu::BufferAddress {
         (self.instance_capacity.max(1) * std::mem::size_of::<InstanceData>()) as wgpu::BufferAddress
+    }
+
+    fn touch_bind_cache(&mut self, atlas: &str) {
+        if let Some(pos) = self.bind_cache_order.iter().position(|key| key == atlas) {
+            if let Some(key) = self.bind_cache_order.remove(pos) {
+                self.bind_cache_order.push_back(key);
+            }
+        }
+    }
+
+    fn evict_bind_cache(&mut self) {
+        while self.bind_cache.len() > SPRITE_BIND_CACHE_LIMIT {
+            if let Some(evicted) = self.bind_cache_order.pop_front() {
+                self.bind_cache.remove(&evicted);
+            } else {
+                break;
+            }
+        }
     }
 }
 

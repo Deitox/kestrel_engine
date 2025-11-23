@@ -3228,6 +3228,12 @@ pub struct ParticleState {
     pub active_particles: u32,
 }
 
+#[derive(Resource, Default)]
+pub struct ParticleScratch {
+    pub force_fields: Vec<(Vec2, ForceField)>,
+    pub attractors: Vec<(Vec2, ParticleAttractor)>,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ParticleBudgetMetrics {
     pub active_particles: u32,

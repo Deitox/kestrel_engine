@@ -202,8 +202,15 @@ impl LightClusterPass {
             self.uniform_buffer = Some(buffer);
             self.bind_group = None;
         }
-        if self.storage_buffer.is_none() || self.storage_capacity_words < data.cluster_data_words.len() {
-            let capacity = data.cluster_data_words.len().max(1);
+        let required_words = data.cluster_data_words.len().max(1);
+        if self.storage_buffer.is_none() || self.storage_capacity_words < required_words {
+            let mut capacity = self.storage_capacity_words.max(256);
+            if capacity < required_words {
+                capacity = required_words.next_power_of_two().max(capacity);
+                while capacity < required_words {
+                    capacity = capacity.saturating_mul(2);
+                }
+            }
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("Light Cluster Storage"),
                 size: (capacity * std::mem::size_of::<u32>()) as u64,

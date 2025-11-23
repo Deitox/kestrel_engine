@@ -46,6 +46,8 @@ pub const LIGHT_CLUSTER_MAX_LIGHTS: usize = 256;
 const LIGHT_CLUSTER_MAX_LIGHTS_PER_CLUSTER: usize = 64;
 const LIGHT_CLUSTER_RECORD_STRIDE_WORDS: u32 = 2;
 const LIGHT_CLUSTER_CACHE_QUANTIZE: f32 = 1e-3;
+const GPU_TIMER_MAX_QUERIES: u32 = 128;
+const GPU_TIMER_READBACK_RING: usize = 3;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable, Default)]
@@ -122,7 +124,14 @@ struct GpuTimestampMark {
     index: u32,
 }
 
-#[derive(Clone)]
+#[derive(Default)]
+struct GpuTimerReadback {
+    pending_query_count: u32,
+    marks: Vec<GpuTimestampMark>,
+    byte_len: u64,
+    receiver: Option<std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>>,
+}
+
 struct GpuTimer {
     supported: bool,
     requested_enabled: bool,
@@ -131,9 +140,12 @@ struct GpuTimer {
     max_queries: u32,
     query_set: Option<wgpu::QuerySet>,
     query_buffer: Option<wgpu::Buffer>,
-    readback_buffer: Option<wgpu::Buffer>,
+    readback_buffers: Vec<wgpu::Buffer>,
+    readback_states: Vec<GpuTimerReadback>,
+    readback_cursor: usize,
+    readback_buffer_size: u64,
     marks: Vec<GpuTimestampMark>,
-    pending_query_count: u32,
+    query_overflowed: bool,
     latest: Vec<GpuPassTiming>,
     frame_active: bool,
     next_query: u32,
@@ -146,12 +158,15 @@ impl Default for GpuTimer {
             requested_enabled: false,
             enabled: false,
             timestamp_period: 0.0,
-            max_queries: 32,
+            max_queries: GPU_TIMER_MAX_QUERIES,
             query_set: None,
             query_buffer: None,
-            readback_buffer: None,
+            readback_buffers: Vec::new(),
+            readback_states: Vec::new(),
+            readback_cursor: 0,
+            readback_buffer_size: 0,
             marks: Vec::new(),
-            pending_query_count: 0,
+            query_overflowed: false,
             latest: Vec::new(),
             frame_active: false,
             next_query: 0,
@@ -167,9 +182,12 @@ impl GpuTimer {
             self.timestamp_period = 0.0;
             self.query_set = None;
             self.query_buffer = None;
-            self.readback_buffer = None;
+            self.readback_buffers.clear();
+            self.readback_states.clear();
+            self.readback_cursor = 0;
+            self.readback_buffer_size = 0;
             self.marks.clear();
-            self.pending_query_count = 0;
+            self.query_overflowed = false;
             self.latest.clear();
             self.frame_active = false;
             self.next_query = 0;
@@ -183,20 +201,28 @@ impl GpuTimer {
                 count: self.max_queries,
             }));
         }
-        if self.query_buffer.is_none() {
-            let size = self.max_queries as u64 * std::mem::size_of::<u64>() as u64;
+        let required_size = self.max_queries as u64 * std::mem::size_of::<u64>() as u64;
+        let needs_rebuild = self.query_buffer.is_none() || self.readback_buffer_size != required_size;
+        if needs_rebuild {
             self.query_buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("gpu-timer-buffer"),
-                size,
+                size: required_size,
                 usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             }));
-            self.readback_buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("gpu-timer-readback"),
-                size,
-                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
+            self.readback_buffers.clear();
+            self.readback_states.clear();
+            for _ in 0..GPU_TIMER_READBACK_RING {
+                self.readback_buffers.push(device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("gpu-timer-readback"),
+                    size: required_size,
+                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+                self.readback_states.push(GpuTimerReadback::default());
+            }
+            self.readback_buffer_size = required_size;
+            self.readback_cursor = 0;
         }
         self.enabled = self.requested_enabled && self.supported;
     }
@@ -206,7 +232,8 @@ impl GpuTimer {
         self.enabled = enabled && self.supported;
         if !self.enabled {
             self.marks.clear();
-            self.pending_query_count = 0;
+            self.readback_states.iter_mut().for_each(|state| *state = GpuTimerReadback::default());
+            self.query_overflowed = false;
             self.latest.clear();
             self.frame_active = false;
             self.next_query = 0;
@@ -219,7 +246,7 @@ impl GpuTimer {
         }
         self.next_query = 0;
         self.marks.clear();
-        self.pending_query_count = 0;
+        self.query_overflowed = false;
         self.frame_active = true;
     }
 
@@ -228,6 +255,7 @@ impl GpuTimer {
             return;
         }
         if self.next_query >= self.max_queries {
+            self.query_overflowed = true;
             return;
         }
         if let Some(query_set) = self.query_set.as_ref() {
@@ -248,79 +276,126 @@ impl GpuTimer {
         }
         if let (Some(query_set), Some(buffer)) = (self.query_set.as_ref(), self.query_buffer.as_ref()) {
             encoder.resolve_query_set(query_set, 0..self.next_query, buffer, 0);
-            if let Some(readback) = self.readback_buffer.as_ref() {
-                let byte_len = self.next_query as u64 * std::mem::size_of::<u64>() as u64;
+            let byte_len = self.next_query as u64 * std::mem::size_of::<u64>() as u64;
+            if let (Some(readback), Some(state)) = (
+                self.readback_buffers.get(self.readback_cursor),
+                self.readback_states.get_mut(self.readback_cursor),
+            ) {
+                if state.pending_query_count > 0 || state.receiver.is_some() {
+                    state.receiver = None;
+                    state.pending_query_count = 0;
+                    state.byte_len = 0;
+                    state.marks.clear();
+                }
                 encoder.copy_buffer_to_buffer(buffer, 0, readback, 0, byte_len);
+                state.pending_query_count = self.next_query;
+                state.byte_len = byte_len;
+                state.marks = std::mem::take(&mut self.marks);
+                self.readback_cursor = (self.readback_cursor + 1) % self.readback_buffers.len().max(1);
             }
-            self.pending_query_count = self.next_query;
+        }
+        if self.query_overflowed {
+            eprintln!(
+                "[renderer] GPU timer exceeded max queries ({}); dropping extra timestamps for this frame.",
+                self.max_queries
+            );
         }
         self.frame_active = false;
     }
 
     #[cfg(feature = "editor")]
     fn collect_results(&mut self, device: &wgpu::Device) {
-        if !self.supported || !self.enabled || self.pending_query_count == 0 {
+        if !self.supported || !self.enabled {
             return;
         }
-        let buffer = match self.readback_buffer.as_ref() {
-            Some(buffer) => buffer,
-            None => return,
-        };
-        let byte_len = self.pending_query_count as usize * std::mem::size_of::<u64>();
-        let slice = buffer.slice(0..byte_len as u64);
-        let (sender, receiver) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = sender.send(result);
-        });
-        let _ = device.poll(wgpu::PollType::wait_indefinitely());
-        match receiver.recv() {
-            Ok(Ok(())) => {}
-            _ => {
-                return;
+        for idx in 0..self.readback_states.len() {
+            let state = &mut self.readback_states[idx];
+            if state.pending_query_count == 0 && state.receiver.is_none() {
+                continue;
             }
-        }
-        let data = slice.get_mapped_range();
-        let mut timestamps: Vec<u64> = Vec::with_capacity(self.pending_query_count as usize);
-        for chunk in data.chunks_exact(std::mem::size_of::<u64>()) {
-            let mut bytes = [0u8; 8];
-            bytes.copy_from_slice(chunk);
-            timestamps.push(u64::from_le_bytes(bytes));
-        }
-        drop(data);
-        buffer.unmap();
-
-        let mut value_map: HashMap<GpuTimestampLabel, u64> = HashMap::new();
-        for mark in &self.marks {
-            if let Some(value) = timestamps.get(mark.index as usize) {
-                value_map.insert(mark.label, *value);
+            if state.pending_query_count == 0 || state.byte_len == 0 {
+                state.receiver = None;
+                state.marks.clear();
+                continue;
             }
-        }
+            if state.receiver.is_none() {
+                let Some(buffer) = self.readback_buffers.get(idx) else { continue };
+                let slice = buffer.slice(0..state.byte_len);
+                let (sender, receiver) = std::sync::mpsc::channel();
+                slice.map_async(wgpu::MapMode::Read, move |result| {
+                    let _ = sender.send(result);
+                });
+                state.receiver = Some(receiver);
+            }
+            let Some(receiver) = state.receiver.as_ref() else { continue };
+            match receiver.try_recv() {
+                Ok(Ok(())) => {
+                    let Some(buffer) = self.readback_buffers.get(idx) else {
+                        state.receiver = None;
+                        state.pending_query_count = 0;
+                        state.byte_len = 0;
+                        state.marks.clear();
+                        continue;
+                    };
+                    let data = buffer.slice(0..state.byte_len).get_mapped_range();
+                    let mut timestamps: Vec<u64> = Vec::with_capacity(state.pending_query_count as usize);
+                    for chunk in data.chunks_exact(std::mem::size_of::<u64>()) {
+                        let mut bytes = [0u8; 8];
+                        bytes.copy_from_slice(chunk);
+                        timestamps.push(u64::from_le_bytes(bytes));
+                    }
+                    drop(data);
+                    buffer.unmap();
 
-        self.latest.clear();
-        let nanos_per_tick = self.timestamp_period as f64;
-        let mut push_pass = |label: &'static str, start: GpuTimestampLabel, end: GpuTimestampLabel| {
-            if let (Some(s), Some(e)) = (value_map.get(&start), value_map.get(&end)) {
-                if e > s {
-                    let duration_ms = ((*e - *s) as f64 * nanos_per_tick) / 1_000_000.0;
-                    self.latest.push(GpuPassTiming { label, duration_ms: duration_ms as f32 });
+                    let mut value_map: HashMap<GpuTimestampLabel, u64> = HashMap::new();
+                    for mark in &state.marks {
+                        if let Some(value) = timestamps.get(mark.index as usize) {
+                            value_map.insert(mark.label, *value);
+                        }
+                    }
+
+                    self.latest.clear();
+                    let nanos_per_tick = self.timestamp_period as f64;
+                    let mut push_pass = |label: &'static str, start: GpuTimestampLabel, end: GpuTimestampLabel| {
+                        if let (Some(s), Some(e)) = (value_map.get(&start), value_map.get(&end)) {
+                            if e > s {
+                                let duration_ms = ((*e - *s) as f64 * nanos_per_tick) / 1_000_000.0;
+                                self.latest.push(GpuPassTiming { label, duration_ms: duration_ms as f32 });
+                            }
+                        }
+                    };
+
+                    push_pass("Shadow pass", GpuTimestampLabel::ShadowStart, GpuTimestampLabel::ShadowEnd);
+                    push_pass("Mesh pass", GpuTimestampLabel::MeshStart, GpuTimestampLabel::MeshEnd);
+                    push_pass("Sprite pass", GpuTimestampLabel::SpriteStart, GpuTimestampLabel::SpriteEnd);
+                    push_pass("Frame (pre-egui)", GpuTimestampLabel::FrameStart, GpuTimestampLabel::FrameEnd);
+                    #[cfg(feature = "editor")]
+                    {
+                        push_pass("Egui pass", GpuTimestampLabel::EguiStart, GpuTimestampLabel::EguiEnd);
+                        if value_map.contains_key(&GpuTimestampLabel::EguiEnd) {
+                            push_pass("Frame (with egui)", GpuTimestampLabel::FrameStart, GpuTimestampLabel::EguiEnd);
+                        }
+                    }
+
+                    state.receiver = None;
+                    state.pending_query_count = 0;
+                    state.byte_len = 0;
+                    state.marks.clear();
+                }
+                Ok(Err(_)) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    if let Some(buffer) = self.readback_buffers.get(idx) {
+                        buffer.unmap();
+                    }
+                    state.receiver = None;
+                    state.pending_query_count = 0;
+                    state.byte_len = 0;
+                    state.marks.clear();
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    let _ = device.poll(wgpu::PollType::Poll);
                 }
             }
-        };
-
-        push_pass("Shadow pass", GpuTimestampLabel::ShadowStart, GpuTimestampLabel::ShadowEnd);
-        push_pass("Mesh pass", GpuTimestampLabel::MeshStart, GpuTimestampLabel::MeshEnd);
-        push_pass("Sprite pass", GpuTimestampLabel::SpriteStart, GpuTimestampLabel::SpriteEnd);
-        push_pass("Frame (pre-egui)", GpuTimestampLabel::FrameStart, GpuTimestampLabel::FrameEnd);
-        #[cfg(feature = "editor")]
-        {
-            push_pass("Egui pass", GpuTimestampLabel::EguiStart, GpuTimestampLabel::EguiEnd);
-            if value_map.contains_key(&GpuTimestampLabel::EguiEnd) {
-                push_pass("Frame (with egui)", GpuTimestampLabel::FrameStart, GpuTimestampLabel::EguiEnd);
-            }
         }
-
-        self.pending_query_count = 0;
-        self.marks.clear();
     }
 
     fn take_latest(&mut self) -> Vec<GpuPassTiming> {
@@ -874,8 +949,26 @@ impl Renderer {
         let view_matrix = camera.view_matrix();
         let lighting_dir = self.lighting.direction.normalize_or_zero();
         let mesh_resources = self.mesh_pass.resources.as_ref().context("Mesh pipeline not initialized")?;
+        let frame_draw_layout = mesh_resources.frame_draw_bgl.clone();
+        let skinning_layout = mesh_resources.skinning_bgl.clone();
+        let pipeline = mesh_resources.pipeline.clone();
         let depth_view = self.window_surface.depth_view()?;
         let queue = self.queue()?.clone();
+        let skinned_draws = if let Some(indices) = visible_indices {
+            indices
+                .iter()
+                .filter(|&&idx| draws.get(idx).map_or(false, |d| d.skin_palette.is_some()))
+                .count()
+        } else {
+            draws.iter().filter(|d| d.skin_palette.is_some()).count()
+        };
+        let palette_target = skinned_draws.saturating_add(SKINNING_CACHE_HEADROOM);
+        Self::ensure_skinning_palette_capacity(
+            &mut self.mesh_pass,
+            &device,
+            skinning_layout.as_ref(),
+            palette_target,
+        );
         self.light_clusters.prepare(LightClusterParams {
             device: &device,
             queue: &queue,
@@ -928,7 +1021,7 @@ impl Renderer {
         if self.mesh_pass.frame_draw_bind_group.is_none() {
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Mesh Frame+Draw BG"),
-                layout: mesh_resources.frame_draw_bgl.as_ref(),
+                layout: frame_draw_layout.as_ref(),
                 entries: &[
                     wgpu::BindGroupEntry { binding: 0, resource: frame_buffer.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 1, resource: draw_buffer.as_entire_binding() },
@@ -971,7 +1064,7 @@ impl Renderer {
                 .context("Mesh skinning identity buffer missing")?;
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Mesh Skinning Identity BG"),
-                layout: mesh_resources.skinning_bgl.as_ref(),
+                layout: skinning_layout.as_ref(),
                 entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
             });
             self.mesh_pass.skinning_identity_bind_group = Some(bind_group);
@@ -980,7 +1073,8 @@ impl Renderer {
             .mesh_pass
             .skinning_identity_bind_group
             .as_ref()
-            .context("Mesh skinning identity bind group missing")?;
+            .context("Mesh skinning identity bind group missing")?
+            .clone();
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Mesh Pass"),
@@ -1001,7 +1095,7 @@ impl Renderer {
             occlusion_query_set: None,
             timestamp_writes: None,
         });
-        pass.set_pipeline(&mesh_resources.pipeline);
+        pass.set_pipeline(&pipeline);
         let mut sc_x = viewport.origin.0.max(0.0).floor() as u32;
         let mut sc_y = viewport.origin.1.max(0.0).floor() as u32;
         let mut sc_w = viewport.size.0.max(1.0).floor() as u32;
@@ -1037,10 +1131,6 @@ impl Renderer {
 
         self.mesh_pass.skinning_cursor = 0;
         let identity_cols = Mat4::IDENTITY.to_cols_array();
-        if self.mesh_pass.palette_staging.len() != MAX_SKIN_JOINTS {
-            self.mesh_pass.palette_staging.clear();
-            self.mesh_pass.palette_staging.resize(MAX_SKIN_JOINTS, identity_cols);
-        }
         let draw_iter: Box<dyn Iterator<Item = &MeshDraw>> = if let Some(indices) = visible_indices {
             Box::new(indices.iter().filter_map(move |&idx| draws.get(idx)))
         } else {
@@ -1072,10 +1162,16 @@ impl Renderer {
             };
             queue.write_buffer(&draw_buffer, 0, bytemuck::bytes_of(&draw_data));
             if joint_count > 0 {
+                let upload_len = joint_count.max(1);
                 {
                     let staging = &mut self.mesh_pass.palette_staging;
-                    for slot in staging.iter_mut() {
-                        *slot = identity_cols;
+                    if staging.len() != upload_len {
+                        staging.clear();
+                        staging.resize(upload_len, identity_cols);
+                    } else {
+                        for slot in staging.iter_mut() {
+                            *slot = identity_cols;
+                        }
                     }
                     if let Some(palette) = draw.skin_palette.as_ref() {
                         for (dst, mat) in staging.iter_mut().zip(palette.iter()).take(joint_count) {
@@ -1085,30 +1181,24 @@ impl Renderer {
                 }
                 let slot = self.mesh_pass.skinning_cursor;
                 self.mesh_pass.skinning_cursor += 1;
-                while self.mesh_pass.skinning_palette_buffers.len() <= slot {
-                    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("Mesh Skinning Palette Buffer"),
-                        size: (MAX_SKIN_JOINTS * std::mem::size_of::<[f32; 16]>()) as u64,
-                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                        mapped_at_creation: false,
-                    });
-                    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("Mesh Skinning Palette BG"),
-                        layout: mesh_resources.skinning_bgl.as_ref(),
-                        entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
-                    });
-                    self.mesh_pass.skinning_palette_buffers.push(buffer);
-                    self.mesh_pass.skinning_palette_bind_groups.push(bind_group);
+                if self.mesh_pass.skinning_palette_buffers.len() <= slot {
+                    Self::ensure_skinning_palette_capacity(
+                        &mut self.mesh_pass,
+                        &device,
+                        skinning_layout.as_ref(),
+                        slot + 1,
+                    );
                 }
                 let buffer = &self.mesh_pass.skinning_palette_buffers[slot];
                 let upload_start = Instant::now();
-                queue.write_buffer(buffer, 0, bytemuck::cast_slice(&self.mesh_pass.palette_staging));
+                let upload_slice = &self.mesh_pass.palette_staging[..upload_len];
+                queue.write_buffer(buffer, 0, bytemuck::cast_slice(upload_slice));
                 let elapsed_ms = upload_start.elapsed().as_secs_f32() * 1000.0;
                 self.palette_stats_frame.record(joint_count, elapsed_ms);
                 let bind_group = &self.mesh_pass.skinning_palette_bind_groups[slot];
                 pass.set_bind_group(1, bind_group, &[]);
             } else {
-                pass.set_bind_group(1, skinning_identity_bind_group, &[]);
+                pass.set_bind_group(1, &skinning_identity_bind_group, &[]);
             }
             pass.set_bind_group(2, draw.material.bind_group(), &[]);
             pass.set_vertex_buffer(0, draw.mesh.vertex_buffer.slice(..));
@@ -1246,6 +1336,36 @@ impl Renderer {
         }
         if bind_groups.len() > desired {
             bind_groups.truncate(desired);
+        }
+    }
+
+    fn ensure_skinning_palette_capacity(
+        mesh_pass: &mut MeshPass,
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        required: usize,
+    ) {
+        if required == 0 || mesh_pass.skinning_palette_buffers.len() >= required {
+            return;
+        }
+        let mut target = mesh_pass.skinning_palette_buffers.len().max(1);
+        while target < required {
+            target = target.saturating_mul(2);
+        }
+        while mesh_pass.skinning_palette_buffers.len() < target {
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Mesh Skinning Palette Buffer"),
+                size: (MAX_SKIN_JOINTS * std::mem::size_of::<[f32; 16]>()) as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Mesh Skinning Palette BG"),
+                layout,
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
+            });
+            mesh_pass.skinning_palette_buffers.push(buffer);
+            mesh_pass.skinning_palette_bind_groups.push(bind_group);
         }
     }
 
