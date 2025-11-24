@@ -504,9 +504,8 @@ impl App {
             particle_config.max_total,
             particle_config.max_emitter_backlog,
         ));
-        let emitter = ecs.spawn_demo_scene();
         let initial_events = ecs.drain_events();
-        let emitter_snapshot = ecs.emitter_snapshot(emitter);
+        let emitter_snapshot = ecs.first_emitter().and_then(|entity| ecs.emitter_snapshot(entity));
         let (
             ui_emitter_rate,
             ui_emitter_spread,
@@ -678,6 +677,7 @@ impl App {
         let start_screen_new_name = project.name().unwrap_or("").to_string();
         let start_screen_new_path = project.root().join("NewProject").display().to_string();
         let start_screen_open_path = project.manifest_path_or_default().display().to_string();
+        let emitter_entity = ecs.first_emitter();
         let recent_projects = Project::recent_projects();
 
         let mut app = Self {
@@ -714,7 +714,7 @@ impl App {
             config,
             project,
             next_project: None,
-            emitter_entity: Some(emitter),
+            emitter_entity,
             sprite_atlas_views: HashMap::new(),
             atlas_hot_reload,
             mesh_hot_reload,
@@ -3707,6 +3707,24 @@ impl ApplicationHandler for App {
         if actions.spawn_now {
             let spawn_per_press = self.editor_ui_state().ui_spawn_per_press;
             self.ecs.spawn_burst(&self.assets, spawn_per_press as usize);
+        }
+        if actions.spawn_demo {
+            self.ecs.clear_world();
+            self.clear_scene_atlases();
+            self.clear_scene_clips();
+            self.set_selected_entity(None);
+            self.set_gizmo_interaction(None);
+            if let Some(plugin) = self.script_plugin_mut() {
+                plugin.clear_handles();
+            }
+            let emitter = self.ecs.spawn_demo_scene();
+            self.emitter_entity = Some(emitter);
+            if self.ecs.set_sprite_timeline(emitter, &self.assets, Some("demo_cycle")) {
+                self.ecs.set_sprite_animation_speed(emitter, 0.85);
+            }
+            self.sync_emitter_ui();
+            self.set_inspector_status(None);
+            self.set_ui_scene_status("Spawned demo scene".to_string());
         }
         if let Some(mesh_key) = actions.spawn_mesh {
             self.spawn_mesh_entity(&mesh_key);

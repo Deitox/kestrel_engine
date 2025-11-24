@@ -71,7 +71,7 @@ impl Default for ProjectManifest {
             id: None,
             assets: PathBuf::from("assets"),
             config: ProjectConfigPaths::default(),
-            startup_scene: PathBuf::from("assets/scenes/quick_save.json"),
+            startup_scene: PathBuf::from("assets/scenes/blank.json"),
             prefabs: PathBuf::from("assets/prefabs"),
             environments: PathBuf::from("assets/environments"),
             scripts_entry: PathBuf::from("assets/scripts/main.rhai"),
@@ -215,7 +215,7 @@ impl Project {
         }
         manifest.assets = PathBuf::from("assets");
         manifest.config = ProjectConfigPaths::default();
-        manifest.startup_scene = PathBuf::from("assets/scenes/quick_save.json");
+        manifest.startup_scene = PathBuf::from("assets/scenes/blank.json");
         manifest.prefabs = PathBuf::from("assets/prefabs");
         manifest.environments = PathBuf::from("assets/environments");
         manifest.scripts_entry = PathBuf::from("assets/scripts/main.rhai");

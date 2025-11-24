@@ -839,6 +839,7 @@ fn audio_trigger_kind_label(kind: AudioTriggerKind) -> &'static str {
 
 #[derive(Default)]
 pub(super) struct UiActions {
+    pub spawn_demo: bool,
     pub spawn_now: bool,
     pub delete_entity: Option<Entity>,
     pub clear_particles: bool,
@@ -3073,6 +3074,9 @@ impl App {
                         });
                         ui.add(egui::Slider::new(&mut ui_root_spin, -5.0..=5.0).text("Root spin speed"));
                         ui.horizontal(|ui| {
+                            if ui.button("Spawn demo").clicked() {
+                                actions.spawn_demo = true;
+                            }
                             if ui.button("Spawn now").clicked() {
                                 actions.spawn_now = true;
                             }

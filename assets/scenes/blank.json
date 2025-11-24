@@ -6,7 +6,7 @@
         "x": 0.0,
         "y": 0.0
       },
-      "zoom": 0.49658534
+      "zoom": 1.0
     },
     "camera_bookmarks": [],
     "preview_camera": {
@@ -18,16 +18,16 @@
           "z": 0.0
         },
         "radius": 5.0,
-        "yaw": 9.601523,
+        "yaw": 4.425835,
         "pitch": 1.5607964
       },
       "freefly": {
         "position": {
-          "x": -0.008791149,
-          "y": -4.99975,
-          "z": -0.049220085
+          "x": 0.0,
+          "y": -5.0,
+          "z": 0.0
         },
-        "yaw": 0.17674524,
+        "yaw": 1.2842449,
         "pitch": 1.5607964,
         "roll": 0.0,
         "speed": 4.0
@@ -60,11 +60,7 @@
       "shadow": {
         "distance": 35.0,
         "bias": 0.002,
-        "strength": 1.0,
-        "cascade_count": 4,
-        "resolution": 2048,
-        "split_lambda": 0.6,
-        "pcf_radius": 1.25
+        "strength": 1.0
       }
     },
     "environment": {
@@ -74,8 +70,6 @@
   },
   "dependencies": {
     "atlases": [],
-    "clips": [],
-    "skeletons": [],
     "meshes": [],
     "materials": [],
     "environments": [
