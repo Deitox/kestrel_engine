@@ -3554,8 +3554,11 @@ impl ApplicationHandler for App {
             }
         }
         if script_debugger.reload {
+            let assets_ptr = &self.assets as *const AssetManager;
             if let Some(plugin) = self.script_plugin_mut() {
-                if let Err(err) = plugin.force_reload() {
+                // SAFETY: assets_ptr comes from &self.assets before the plugin mutable borrow.
+                let assets = unsafe { &*assets_ptr };
+                if let Err(err) = plugin.force_reload(Some(assets)) {
                     plugin.set_error_message(err.to_string());
                 }
             }

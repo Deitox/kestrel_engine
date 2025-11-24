@@ -625,7 +625,7 @@ impl<'a> PluginContext<'a> {
         Ok(&mut *self.assets)
     }
 
-    pub fn assets(&self) -> Result<&AssetManager, CapabilityError> {
+    pub fn assets(&mut self) -> Result<&AssetManager, CapabilityError> {
         self.require_capability(PluginCapability::Assets)?;
         Ok(&*self.assets)
     }

@@ -490,8 +490,8 @@ impl ScriptHost {
         self.error = Some(msg.into());
     }
 
-    pub fn force_reload(&mut self) -> Result<()> {
-        self.load_script().map(|_| ())
+    pub fn force_reload(&mut self, assets: Option<&AssetManager>) -> Result<()> {
+        self.load_script(assets).map(|_| ())
     }
 
     fn load_external_script(&self, path: &str, assets: Option<&AssetManager>) -> Result<CompiledScript> {
@@ -603,8 +603,8 @@ impl ScriptHost {
         }
     }
 
-    pub fn update(&mut self, dt: f32, run_scripts: bool) {
-        if let Err(err) = self.reload_if_needed() {
+    pub fn update(&mut self, dt: f32, run_scripts: bool, assets: Option<&AssetManager>) {
+        if let Err(err) = self.reload_if_needed(assets) {
             self.error = Some(err.to_string());
             return;
         }
@@ -688,7 +688,7 @@ impl ScriptHost {
         if trimmed.is_empty() {
             return Ok(None);
         }
-        self.reload_if_needed()?;
+        self.reload_if_needed(None)?;
         let marker = self.scope.len();
         self.scope.push_constant("world", ScriptWorld::new(self.shared.clone()));
         let eval = self.engine.eval_with_scope::<Dynamic>(&mut self.scope, trimmed);
@@ -735,54 +735,84 @@ impl ScriptHost {
         self.instances.clear();
     }
 
-    fn reload_if_needed(&mut self) -> Result<()> {
-        let metadata = match fs::metadata(&self.script_path) {
-            Ok(meta) => meta,
-            Err(err) => {
-                return Err(anyhow!("Script file not accessible: {err}"));
-            }
-        };
-        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        let len = metadata.len();
+    fn reload_if_needed(&mut self, assets: Option<&AssetManager>) -> Result<()> {
+        match fs::metadata(&self.script_path) {
+            Ok(metadata) => {
+                let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                let len = metadata.len();
 
-        let metadata_changed = self.ast.is_none()
-            || self.last_modified.is_none_or(|prev| prev != modified)
-            || self.last_len.is_none_or(|prev| prev != len);
+                let metadata_changed = self.ast.is_none()
+                    || self.last_modified.is_none_or(|prev| prev != modified)
+                    || self.last_len.is_none_or(|prev| prev != len);
 
-        if metadata_changed {
-            let source = fs::read_to_string(&self.script_path)
-                .with_context(|| format!("Reading {}", self.script_path.display()))?;
-            self.load_script_from_source(source, modified, len)?;
-            return Ok(());
-        }
-
-        if let Some(previous_digest) = self.last_digest {
-            let now = Instant::now();
-            let should_check_digest = self
-                .last_digest_check
-                .map(|last| now.duration_since(last) >= DIGEST_POLL_INTERVAL)
-                .unwrap_or(true);
-            if should_check_digest {
-                let source = fs::read_to_string(&self.script_path)
-                    .with_context(|| format!("Reading {}", self.script_path.display()))?;
-                let digest = hash_source(&source);
-                self.last_digest_check = Some(now);
-                if digest != previous_digest {
+                if metadata_changed {
+                    let source = fs::read_to_string(&self.script_path)
+                        .with_context(|| format!("Reading {}", self.script_path.display()))?;
                     self.load_script_from_source(source, modified, len)?;
+                    return Ok(());
+                }
+
+                if let Some(previous_digest) = self.last_digest {
+                    let now = Instant::now();
+                    let should_check_digest = self
+                        .last_digest_check
+                        .map(|last| now.duration_since(last) >= DIGEST_POLL_INTERVAL)
+                        .unwrap_or(true);
+                    if should_check_digest {
+                        let source = fs::read_to_string(&self.script_path)
+                            .with_context(|| format!("Reading {}", self.script_path.display()))?;
+                        let digest = hash_source(&source);
+                        self.last_digest_check = Some(now);
+                        if digest != previous_digest {
+                            self.load_script_from_source(source, modified, len)?;
+                        }
+                    }
+                }
+                Ok(())
+            }
+            Err(fs_err) => {
+                if let Some(assets) = assets {
+                    let source = assets
+                        .read_text(&self.script_path)
+                        .with_context(|| format!("Reading script asset '{}'", self.script_path.display()))?;
+                    let len = source.len() as u64;
+                    let digest = hash_source(&source);
+                    let should_reload = self.ast.is_none()
+                        || self.last_digest.is_none_or(|prev| prev != digest)
+                        || self.last_len.is_none_or(|prev| prev != len);
+                    if should_reload {
+                        // Without filesystem metadata, fall back to epoch/length for change tracking.
+                        self.load_script_from_source(source, SystemTime::UNIX_EPOCH, len)?;
+                    }
+                    Ok(())
+                } else {
+                    Err(anyhow!("Script file not accessible: {fs_err}"))
                 }
             }
         }
-        Ok(())
     }
 
-    fn load_script(&mut self) -> Result<&AST> {
-        let source = fs::read_to_string(&self.script_path)
-            .with_context(|| format!("Reading {}", self.script_path.display()))?;
-        let metadata = fs::metadata(&self.script_path)
-            .with_context(|| format!("Reading {}", self.script_path.display()))?;
-        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        let len = metadata.len();
-        self.load_script_from_source(source, modified, len)
+    fn load_script(&mut self, assets: Option<&AssetManager>) -> Result<&AST> {
+        match fs::read_to_string(&self.script_path) {
+            Ok(source) => {
+                let metadata = fs::metadata(&self.script_path)
+                    .with_context(|| format!("Reading {}", self.script_path.display()))?;
+                let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                let len = metadata.len();
+                self.load_script_from_source(source, modified, len)
+            }
+            Err(fs_err) => {
+                if let Some(assets) = assets {
+                    let source = assets
+                        .read_text(&self.script_path)
+                        .with_context(|| format!("Reading script asset '{}'", self.script_path.display()))?;
+                    let len = source.len() as u64;
+                    self.load_script_from_source(source, SystemTime::UNIX_EPOCH, len)
+                } else {
+                    Err(anyhow!(fs_err).context(format!("Reading {}", self.script_path.display())))
+                }
+            }
+        }
     }
 
     fn load_script_from_source(&mut self, source: String, modified: SystemTime, len: u64) -> Result<&AST> {
@@ -889,9 +919,12 @@ impl ScriptPlugin {
     }
 
     fn run_behaviours(&mut self, ctx: &mut PluginContext<'_>, dt: f32, fixed_step: bool) -> Result<()> {
-        let assets_ptr = ctx.assets()? as *const AssetManager;
+        let assets_ptr = {
+            let assets = ctx.assets()?;
+            assets as *const AssetManager
+        };
         let ecs = ctx.ecs_mut()?;
-        // SAFETY: assets_ptr originates from ctx.assets() above and ctx lives for this scope.
+        // SAFETY: assets_ptr comes from ctx.assets() above; borrow ends before ecs_mut.
         let assets = unsafe { &*assets_ptr };
         let mut query = ecs.world.query::<(Entity, &mut ScriptBehaviour)>();
         for (entity, mut behaviour) in query.iter_mut(&mut ecs.world) {
@@ -959,8 +992,8 @@ impl ScriptPlugin {
         self.step_once = true;
     }
 
-    pub fn force_reload(&mut self) -> Result<()> {
-        self.host.force_reload()
+    pub fn force_reload(&mut self, assets: Option<&AssetManager>) -> Result<()> {
+        self.host.force_reload(assets)
     }
 
     pub fn set_error_message(&mut self, msg: impl Into<String>) {
@@ -999,7 +1032,13 @@ impl EnginePlugin for ScriptPlugin {
         } else {
             true
         };
-        self.host.update(dt, run_scripts);
+        let assets_ptr = {
+            let assets = ctx.assets()?;
+            assets as *const AssetManager
+        };
+        // SAFETY: assets_ptr comes from ctx.assets(); borrow ends before use.
+        let assets = unsafe { &*assets_ptr };
+        self.host.update(dt, run_scripts, Some(assets));
         if run_scripts && self.host.enabled() {
             self.run_behaviours(ctx, dt, false)?;
         }
@@ -1093,7 +1132,7 @@ mod tests {
             "#,
         );
         let mut host = ScriptHost::new(script.path());
-        host.force_reload().expect("load script");
+        host.force_reload(None).expect("load script");
 
         let out = host.eval_repl("counter += 5; counter").expect("repl result");
         assert_eq!(out.as_deref(), Some("5"));
@@ -1116,7 +1155,7 @@ mod tests {
             "#,
         );
         let mut host = ScriptHost::new(script.path());
-        host.force_reload().expect("initial load");
+        host.force_reload(None).expect("initial load");
         assert_eq!(host.eval_repl("value").expect("read value").as_deref(), Some("1"));
 
         let replacement = r#"
@@ -1129,7 +1168,7 @@ mod tests {
         host.last_modified = metadata.modified().ok();
         host.last_len = Some(metadata.len());
 
-        host.reload_if_needed().expect("reload check");
+        host.reload_if_needed(None).expect("reload check");
         assert_eq!(host.eval_repl("value").expect("read value").as_deref(), Some("2"));
     }
 
@@ -1142,8 +1181,8 @@ mod tests {
             "#,
         );
         let mut host = ScriptHost::new(script.path());
-        host.force_reload().expect("initial load");
-        host.update(0.016, true);
+        host.force_reload(None).expect("initial load");
+        host.update(0.016, true, None);
         let err = host.last_error().expect("error recorded");
         assert!(err.contains("init") && err.contains("signature"), "unexpected error: {err}");
     }
@@ -1157,8 +1196,8 @@ mod tests {
             "#,
         );
         let mut host = ScriptHost::new(script.path());
-        host.force_reload().expect("initial load");
-        host.update(0.016, true);
+        host.force_reload(None).expect("initial load");
+        host.update(0.016, true, None);
         let err = host.last_error().expect("error recorded");
         assert!(err.contains("update") && err.contains("signature"), "unexpected error: {err}");
     }
@@ -1172,12 +1211,12 @@ mod tests {
             "#,
         );
         let mut host = ScriptHost::new(script.path());
-        host.force_reload().expect("initial load");
+        host.force_reload(None).expect("initial load");
         let first_check = host.last_digest_check;
-        host.reload_if_needed().expect("no reload needed");
+        host.reload_if_needed(None).expect("no reload needed");
         assert_eq!(host.last_digest_check, first_check, "digest check should not update without interval");
         host.last_digest_check = Some(Instant::now() - DIGEST_POLL_INTERVAL - Duration::from_millis(1));
-        host.reload_if_needed().expect("reload after interval");
+        host.reload_if_needed(None).expect("reload after interval");
         assert!(host
             .last_digest_check
             .expect("digest check set")
@@ -1231,7 +1270,7 @@ mod tests {
             "#,
         );
         let mut host = ScriptHost::new(script.path());
-        host.force_reload().expect("load script");
+        host.force_reload(None).expect("load script");
         let funcs: Vec<(String, usize)> = host
             .ast
             .as_ref()
@@ -1245,13 +1284,13 @@ mod tests {
             "update missing: {:?}",
             funcs
         );
-        host.update(0.016, true);
+        host.update(0.016, true, None);
         assert!(
             host.last_error().is_none(),
             "init should succeed, got {:?}",
             host.last_error()
         );
-        host.update(0.016, true);
+        host.update(0.016, true, None);
         assert!(
             host.last_error().is_none(),
             "update should succeed, got {:?}",
