@@ -2,11 +2,10 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
-use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Instant, SystemTime};
 
 use crate::assets::AssetManager;
 use crate::plugins::{EnginePlugin, PluginContext};
@@ -18,8 +17,6 @@ use rhai::{Dynamic, Engine, EvalAltResult, Scope, AST, FLOAT};
 use bevy_ecs::prelude::{Component, Entity};
 
 pub type ScriptHandle = rhai::INT;
-
-const DIGEST_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Clone)]
 pub struct CompiledScript {
@@ -495,11 +492,8 @@ impl ScriptHost {
     }
 
     fn load_external_script(&self, path: &str, assets: Option<&AssetManager>) -> Result<CompiledScript> {
-        let source = if let Some(assets) = assets {
-            assets.read_text(path).with_context(|| format!("Reading script asset '{path}'"))?
-        } else {
-            fs::read_to_string(path).with_context(|| format!("Reading script at path '{path}'"))?
-        };
+        let assets = assets.ok_or_else(|| anyhow!("AssetManager required to load script '{path}'"))?;
+        let source = assets.read_text(path).with_context(|| format!("Reading script asset '{path}'"))?;
         let ast = self
             .engine
             .compile(&source)
@@ -723,78 +717,31 @@ impl ScriptHost {
     }
 
     fn reload_if_needed(&mut self, assets: Option<&AssetManager>) -> Result<()> {
-        if let Some(assets) = assets {
-            let source = assets
-                .read_text(&self.script_path)
-                .with_context(|| format!("Reading script asset '{}'", self.script_path.display()))?;
-            let len = source.len() as u64;
-            let digest = hash_source(&source);
-            let should_reload = self.ast.is_none()
-                || self.last_digest.is_none_or(|prev| prev != digest)
-                || self.last_len.is_none_or(|prev| prev != len);
-            if should_reload {
-                self.load_script_from_source(source, SystemTime::UNIX_EPOCH, len)?;
-                self.last_digest = Some(digest);
-            }
-            self.last_digest_check = Some(Instant::now());
-            return Ok(());
-        }
-
-        let metadata = match fs::metadata(&self.script_path) {
-            Ok(meta) => meta,
-            Err(err) => {
-                return Err(anyhow!("Script file not accessible: {err}"));
-            }
-        };
-        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        let len = metadata.len();
-
-        let metadata_changed = self.ast.is_none()
-            || self.last_modified.is_none_or(|prev| prev != modified)
+        let assets = assets.ok_or_else(|| anyhow!("AssetManager required to reload script '{}'", self.script_path.display()))?;
+        let source = assets
+            .read_text(&self.script_path)
+            .with_context(|| format!("Reading script asset '{}'", self.script_path.display()))?;
+        let len = source.len() as u64;
+        let digest = hash_source(&source);
+        let should_reload = self.ast.is_none()
+            || self.last_digest.is_none_or(|prev| prev != digest)
             || self.last_len.is_none_or(|prev| prev != len);
-
-        if metadata_changed {
-            let source = fs::read_to_string(&self.script_path)
-                .with_context(|| format!("Reading {}", self.script_path.display()))?;
-            self.load_script_from_source(source, modified, len)?;
-            return Ok(());
+        if should_reload {
+            // Without filesystem metadata, fall back to epoch/length for change tracking.
+            self.load_script_from_source(source, SystemTime::UNIX_EPOCH, len)?;
+            self.last_digest = Some(digest);
         }
-
-        if let Some(previous_digest) = self.last_digest {
-            let now = Instant::now();
-            let should_check_digest = self
-                .last_digest_check
-                .map(|last| now.duration_since(last) >= DIGEST_POLL_INTERVAL)
-                .unwrap_or(true);
-            if should_check_digest {
-                let source = fs::read_to_string(&self.script_path)
-                    .with_context(|| format!("Reading {}", self.script_path.display()))?;
-                let digest = hash_source(&source);
-                self.last_digest_check = Some(now);
-                if digest != previous_digest {
-                    self.load_script_from_source(source, modified, len)?;
-                }
-            }
-        }
+        self.last_digest_check = Some(Instant::now());
         Ok(())
     }
 
     fn load_script(&mut self, assets: Option<&AssetManager>) -> Result<&AST> {
-        if let Some(assets) = assets {
-            let source = assets
-                .read_text(&self.script_path)
-                .with_context(|| format!("Reading script asset '{}'", self.script_path.display()))?;
-            let len = source.len() as u64;
-            return self.load_script_from_source(source, SystemTime::UNIX_EPOCH, len);
-        }
-
-        let source = fs::read_to_string(&self.script_path)
-            .with_context(|| format!("Reading {}", self.script_path.display()))?;
-        let metadata = fs::metadata(&self.script_path)
-            .with_context(|| format!("Reading {}", self.script_path.display()))?;
-        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        let len = metadata.len();
-        self.load_script_from_source(source, modified, len)
+        let assets = assets.ok_or_else(|| anyhow!("AssetManager required to load script '{}'", self.script_path.display()))?;
+        let source = assets
+            .read_text(&self.script_path)
+            .with_context(|| format!("Reading script asset '{}'", self.script_path.display()))?;
+        let len = source.len() as u64;
+        self.load_script_from_source(source, SystemTime::UNIX_EPOCH, len)
     }
 
     fn load_script_from_source(&mut self, source: String, modified: SystemTime, len: u64) -> Result<&AST> {
@@ -1192,13 +1139,13 @@ mod tests {
         let first_check = host.last_digest_check;
         host.reload_if_needed(None).expect("no reload needed");
         assert_eq!(host.last_digest_check, first_check, "digest check should not update without interval");
-        host.last_digest_check = Some(Instant::now() - DIGEST_POLL_INTERVAL - Duration::from_millis(1));
+        host.last_digest_check = Some(Instant::now() - Duration::from_millis(251));
         host.reload_if_needed(None).expect("reload after interval");
         assert!(host
             .last_digest_check
             .expect("digest check set")
             .duration_since(first_check.expect("initial digest check"))
-            >= DIGEST_POLL_INTERVAL);
+            >= Duration::from_millis(250));
     }
 
     #[test]
