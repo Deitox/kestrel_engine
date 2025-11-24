@@ -18,16 +18,28 @@ Add per-entity Rhai behaviours that run `ready/world/process/physics_process` ca
 
 ## 2. Current Baseline (engine reality)
 
-- `ScriptHost` loads one entry script (`project.scripts_entry_path()`), exposes `init(world)` and `update(world, dt)`, hot-reloads from disk, and captures `last_error`.
-- `ScriptWorld` uses a command queue (`ScriptCommand`) plus handle-to-entity resolution in `App::apply_script_commands`; it already exposes spawn/move/tint/particles/log/rand helpers.
-- `ScriptPlugin` runs inside the plugin system and already has `update`/`fixed_update` hooks and pause/step support.
-- Studio has a script console/log panel but no per-entity script assignment or inspector UI.
+- `ScriptHost` now has a multi-script cache (fs-backed) with callback discovery and per-entity instances alongside the legacy entry script (`init/update` + hot reload + `last_error`).
+- `ScriptWorld` includes entity-centric commands (`entity_set_*`, `entity_despawn`) routed through `ScriptCommand` and applied in `App::apply_script_commands`, plus the existing spawn/tint/particles/log/rand helpers.
+- `ScriptPlugin` runs inside the plugin system, respects pause/step, and now iterates `ScriptBehaviour` per update/fixed_update to run `ready/process/physics_process`.
+- Studio: script console/log exists; entity inspector has a simple Script section (manual path entry, set/remove). No picker/error surfacing yet.
 
 The plan below extends this instead of throwing it away.
 
 ---
 
-## 3. High-Level Plan
+## 3. Status (2025-11-24)
+
+- ✅ Phase 1: `ScriptBehaviour` component + scene/prefab serialization with `instance_id` reset.
+- ✅ Phase 2: Multi-script cache + callback detection (fs-backed; asset loader hookup still pending).
+- ✅ Phase 3: Per-entity instances + lifecycle calls in update/fixed_update with error isolation.
+- ✅ Phase 4: Entity-centric `ScriptWorld` commands and command application in App.
+- ⏳ Phase 5: Inspector supports manual path set/remove; no picker or error display yet.
+- ✅ Phase 6: Sample scripts (`spinner`, `wanderer`, `blinker`) and demo scene `assets/scenes/script_behaviour_demo.json`.
+- Tests run: `cargo test script_compile` (smoke for host); full behaviour smoke/serialization tests still to add.
+
+---
+
+## 4. High-Level Plan
 
 - Add a `ScriptBehaviour` ECS component (script path + runtime instance id) and serialize it in scenes/prefabs.
 - Evolve `ScriptHost` into a multi-script registry (one AST per path), retaining hot-reload and `last_error`, and still keeping the legacy single-entry script running for compatibility.
@@ -39,7 +51,7 @@ The plan below extends this instead of throwing it away.
 
 ---
 
-## 4. Phase 1 — Data Model & Serialization
+## 5. Phase 1 — Data Model & Serialization
 
 **Goal:** Introduce `ScriptBehaviour` as data without changing runtime execution yet.
 
@@ -66,9 +78,11 @@ The plan below extends this instead of throwing it away.
 
 ---
 
-## 5. Phase 2 — Multi-Script Host (compatibility-friendly)
+## 6. Phase 2 — Multi-Script Host (compatibility-friendly)
 
 **Goal:** Let the host compile/cache many scripts while keeping the legacy entry script working.
+
+Status: implemented with fs-backed loading; asset-system integration still TODO.
 
 - Add a registry:
   ```rust
@@ -100,7 +114,7 @@ Exit: `ensure_script_loaded("scripts/example.rhai")` compiles once and reuses th
 
 ---
 
-## 6. Phase 3 — Per-Entity Instances & Lifecycle
+## 7. Phase 3 — Per-Entity Instances & Lifecycle
 
 **Goal:** Bind scripts to entities and run lifecycle callbacks through the plugin hooks.
 
@@ -135,7 +149,7 @@ Exit: each behaviour runs `ready` once, then `process` per frame and `physics_pr
 
 ---
 
-## 7. Phase 4 — ScriptWorld API for Behaviours
+## 8. Phase 4 — ScriptWorld API for Behaviours
 
 **Goal:** Let per-entity scripts manipulate their own entity safely while retaining the deferred-command model.
 
@@ -153,13 +167,15 @@ Exit: a behaviour can move/rotate/scale/kill its own entity and optionally spawn
 
 ---
 
-## 8. Phase 5 — Studio Integration
+## 9. Phase 5 — Studio Integration
 
 **Goal:** Make behaviours visible/editable in the UI and surface errors.
 
+Status: inspector shows a Script section with manual path set/remove; no picker or error surfacing yet.
+
 - Inspector:
   - Show a "Script" section when `ScriptBehaviour` exists.
-  - Text field for `script_path`; optional dropdown populated by scanning `assets/scripts/*.rhai`.
+  - Text field for `script_path`; optional dropdown populated by scanning `assets/scripts/*.rhai`. (picker pending)
   - Hide or mark `instance_id` as runtime-only.
 - Error surfacing:
   - Reuse `ScriptHost::last_error` and display path + message in the scripts panel.
@@ -169,7 +185,7 @@ Exit: users can assign/change script paths from the inspector and see clear scri
 
 ---
 
-## 9. Phase 6 — Samples & Tests
+## 10. Phase 6 — Samples & Tests
 
 **Example scripts (entity-centric signatures):**
 
@@ -221,7 +237,7 @@ Exit: CI fails if scripts do not compile or if behaviours break serialization/ru
 
 ---
 
-## 10. Stretch Goals
+## 11. Stretch Goals
 
 - Signals/events for scripts via the existing event bus.
 - Rhai import resolver for shared helpers under `assets/scripts/`.

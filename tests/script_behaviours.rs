@@ -1,0 +1,131 @@
+use kestrel_engine::assets::AssetManager;
+use kestrel_engine::config::WindowConfig;
+use kestrel_engine::ecs::{EcsWorld, Transform};
+use kestrel_engine::environment::EnvironmentRegistry;
+use kestrel_engine::events::GameEvent;
+use kestrel_engine::input::Input;
+use kestrel_engine::material_registry::MaterialRegistry;
+use kestrel_engine::mesh_registry::MeshRegistry;
+use kestrel_engine::plugins::{
+    CapabilityTrackerHandle, EnginePlugin, FeatureRegistryHandle, PluginContext,
+};
+use kestrel_engine::renderer::Renderer;
+use kestrel_engine::scripts::{ScriptBehaviour, ScriptPlugin};
+use kestrel_engine::time::Time;
+use pollster::block_on;
+use std::io::Write;
+use tempfile::NamedTempFile;
+
+fn write_script(contents: &str) -> NamedTempFile {
+    let mut temp = NamedTempFile::new().expect("temp script");
+    write!(temp, "{contents}").expect("write script");
+    temp
+}
+
+fn push_event_bridge(ecs: &mut EcsWorld, event: GameEvent) {
+    ecs.push_event(event);
+}
+
+#[test]
+fn script_behaviour_roundtrips_and_resets_instance_id() {
+    let mut world = EcsWorld::new();
+    world.world.spawn((
+        Transform::default(),
+        ScriptBehaviour { script_path: "assets/scripts/spinner.rhai".to_string(), instance_id: 42 },
+    ));
+    let assets = AssetManager::new();
+
+    let scene = world.export_scene(&assets);
+    assert_eq!(scene.entities.len(), 1, "expected single entity in exported scene");
+    let saved_script_path = scene
+        .entities
+        .first()
+        .and_then(|entity| entity.script.as_ref())
+        .map(|data| data.script_path.as_str())
+        .expect("export should serialize script data");
+    assert_eq!(saved_script_path, "assets/scripts/spinner.rhai");
+
+    let mut loaded_world = EcsWorld::new();
+    loaded_world.load_scene(&scene, &assets).expect("scene load should succeed");
+    let mut query = loaded_world.world.query::<&ScriptBehaviour>();
+    let behaviour = query
+        .iter(&loaded_world.world)
+        .next()
+        .expect("loaded world should contain ScriptBehaviour");
+    assert_eq!(behaviour.script_path.as_str(), "assets/scripts/spinner.rhai");
+    assert_eq!(behaviour.instance_id, 0, "instance id should reset during load");
+}
+
+#[test]
+fn behaviours_create_instances_and_run_lifecycle() {
+    let main_script = write_script(
+        r#"
+            fn init(world) { }
+            fn update(world, dt) { }
+        "#,
+    );
+    let behaviour_script = write_script(
+        r#"
+            fn ready(world, entity) {
+                world.log("ready:" + entity.to_string());
+            }
+            fn process(world, entity, dt) {
+                world.log("process:" + dt.to_string());
+            }
+        "#,
+    );
+    let behaviour_path = behaviour_script.path().to_string_lossy().into_owned();
+
+    let mut plugin = ScriptPlugin::new(main_script.path());
+    let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
+    let mut ecs = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    let mut input = Input::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+    let mut environment_registry = EnvironmentRegistry::new();
+    let time = Time::new();
+
+    let entity = ecs
+        .world
+        .spawn((Transform::default(), ScriptBehaviour::new(behaviour_path.clone())))
+        .id();
+
+    let feature_registry = FeatureRegistryHandle::isolated();
+    let capability_tracker = CapabilityTrackerHandle::isolated();
+
+    let mut ready_logs = 0usize;
+    let mut process_logs = 0usize;
+    for _ in 0..2 {
+        let mut ctx = PluginContext::new(
+            &mut renderer,
+            &mut ecs,
+            &mut assets,
+            &mut input,
+            &mut material_registry,
+            &mut mesh_registry,
+            &mut environment_registry,
+            &time,
+            push_event_bridge,
+            feature_registry.clone(),
+            None,
+            capability_tracker.clone(),
+        );
+        plugin.update(&mut ctx, 0.016).expect("script update should succeed");
+        let logs = plugin.take_logs();
+        ready_logs += logs.iter().filter(|line| line.contains("ready:")).count();
+        process_logs += logs.iter().filter(|line| line.contains("process:")).count();
+    }
+
+    let behaviour = ecs
+        .world
+        .get::<ScriptBehaviour>(entity)
+        .expect("behaviour should stay attached");
+    assert_ne!(behaviour.instance_id, 0, "instance id should be assigned after update");
+    assert_eq!(behaviour.script_path, behaviour_path);
+    assert_eq!(ready_logs, 1, "ready should run exactly once");
+    assert!(
+        process_logs >= 2,
+        "process should run on each update call (saw {process_logs})"
+    );
+}
