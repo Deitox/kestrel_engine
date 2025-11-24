@@ -496,20 +496,7 @@ impl ScriptHost {
 
     fn load_external_script(&self, path: &str, assets: Option<&AssetManager>) -> Result<CompiledScript> {
         let source = if let Some(assets) = assets {
-            match assets.read_text(path) {
-                Ok(text) => text,
-                Err(asset_err) => match fs::read_to_string(path) {
-                    Ok(text) => text,
-                    Err(fs_err) => {
-                        return Err(anyhow!(
-                            "Failed to load script '{}': asset error: {}; fs error: {}",
-                            path,
-                            asset_err,
-                            fs_err
-                        ));
-                    }
-                },
-            }
+            assets.read_text(path).with_context(|| format!("Reading script asset '{path}'"))?
         } else {
             fs::read_to_string(path).with_context(|| format!("Reading script at path '{path}'"))?
         };
@@ -736,83 +723,78 @@ impl ScriptHost {
     }
 
     fn reload_if_needed(&mut self, assets: Option<&AssetManager>) -> Result<()> {
-        match fs::metadata(&self.script_path) {
-            Ok(metadata) => {
-                let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                let len = metadata.len();
-
-                let metadata_changed = self.ast.is_none()
-                    || self.last_modified.is_none_or(|prev| prev != modified)
-                    || self.last_len.is_none_or(|prev| prev != len);
-
-                if metadata_changed {
-                    let source = fs::read_to_string(&self.script_path)
-                        .with_context(|| format!("Reading {}", self.script_path.display()))?;
-                    self.load_script_from_source(source, modified, len)?;
-                    return Ok(());
-                }
-
-                if let Some(previous_digest) = self.last_digest {
-                    let now = Instant::now();
-                    let should_check_digest = self
-                        .last_digest_check
-                        .map(|last| now.duration_since(last) >= DIGEST_POLL_INTERVAL)
-                        .unwrap_or(true);
-                    if should_check_digest {
-                        let source = fs::read_to_string(&self.script_path)
-                            .with_context(|| format!("Reading {}", self.script_path.display()))?;
-                        let digest = hash_source(&source);
-                        self.last_digest_check = Some(now);
-                        if digest != previous_digest {
-                            self.load_script_from_source(source, modified, len)?;
-                        }
-                    }
-                }
-                Ok(())
+        if let Some(assets) = assets {
+            let source = assets
+                .read_text(&self.script_path)
+                .with_context(|| format!("Reading script asset '{}'", self.script_path.display()))?;
+            let len = source.len() as u64;
+            let digest = hash_source(&source);
+            let should_reload = self.ast.is_none()
+                || self.last_digest.is_none_or(|prev| prev != digest)
+                || self.last_len.is_none_or(|prev| prev != len);
+            if should_reload {
+                self.load_script_from_source(source, SystemTime::UNIX_EPOCH, len)?;
+                self.last_digest = Some(digest);
             }
-            Err(fs_err) => {
-                if let Some(assets) = assets {
-                    let source = assets
-                        .read_text(&self.script_path)
-                        .with_context(|| format!("Reading script asset '{}'", self.script_path.display()))?;
-                    let len = source.len() as u64;
-                    let digest = hash_source(&source);
-                    let should_reload = self.ast.is_none()
-                        || self.last_digest.is_none_or(|prev| prev != digest)
-                        || self.last_len.is_none_or(|prev| prev != len);
-                    if should_reload {
-                        // Without filesystem metadata, fall back to epoch/length for change tracking.
-                        self.load_script_from_source(source, SystemTime::UNIX_EPOCH, len)?;
-                    }
-                    Ok(())
-                } else {
-                    Err(anyhow!("Script file not accessible: {fs_err}"))
+            self.last_digest_check = Some(Instant::now());
+            return Ok(());
+        }
+
+        let metadata = match fs::metadata(&self.script_path) {
+            Ok(meta) => meta,
+            Err(err) => {
+                return Err(anyhow!("Script file not accessible: {err}"));
+            }
+        };
+        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let len = metadata.len();
+
+        let metadata_changed = self.ast.is_none()
+            || self.last_modified.is_none_or(|prev| prev != modified)
+            || self.last_len.is_none_or(|prev| prev != len);
+
+        if metadata_changed {
+            let source = fs::read_to_string(&self.script_path)
+                .with_context(|| format!("Reading {}", self.script_path.display()))?;
+            self.load_script_from_source(source, modified, len)?;
+            return Ok(());
+        }
+
+        if let Some(previous_digest) = self.last_digest {
+            let now = Instant::now();
+            let should_check_digest = self
+                .last_digest_check
+                .map(|last| now.duration_since(last) >= DIGEST_POLL_INTERVAL)
+                .unwrap_or(true);
+            if should_check_digest {
+                let source = fs::read_to_string(&self.script_path)
+                    .with_context(|| format!("Reading {}", self.script_path.display()))?;
+                let digest = hash_source(&source);
+                self.last_digest_check = Some(now);
+                if digest != previous_digest {
+                    self.load_script_from_source(source, modified, len)?;
                 }
             }
         }
+        Ok(())
     }
 
     fn load_script(&mut self, assets: Option<&AssetManager>) -> Result<&AST> {
-        match fs::read_to_string(&self.script_path) {
-            Ok(source) => {
-                let metadata = fs::metadata(&self.script_path)
-                    .with_context(|| format!("Reading {}", self.script_path.display()))?;
-                let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                let len = metadata.len();
-                self.load_script_from_source(source, modified, len)
-            }
-            Err(fs_err) => {
-                if let Some(assets) = assets {
-                    let source = assets
-                        .read_text(&self.script_path)
-                        .with_context(|| format!("Reading script asset '{}'", self.script_path.display()))?;
-                    let len = source.len() as u64;
-                    self.load_script_from_source(source, SystemTime::UNIX_EPOCH, len)
-                } else {
-                    Err(anyhow!(fs_err).context(format!("Reading {}", self.script_path.display())))
-                }
-            }
+        if let Some(assets) = assets {
+            let source = assets
+                .read_text(&self.script_path)
+                .with_context(|| format!("Reading script asset '{}'", self.script_path.display()))?;
+            let len = source.len() as u64;
+            return self.load_script_from_source(source, SystemTime::UNIX_EPOCH, len);
         }
+
+        let source = fs::read_to_string(&self.script_path)
+            .with_context(|| format!("Reading {}", self.script_path.display()))?;
+        let metadata = fs::metadata(&self.script_path)
+            .with_context(|| format!("Reading {}", self.script_path.display()))?;
+        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let len = metadata.len();
+        self.load_script_from_source(source, modified, len)
     }
 
     fn load_script_from_source(&mut self, source: String, modified: SystemTime, len: u64) -> Result<&AST> {
@@ -918,14 +900,13 @@ impl ScriptPlugin {
         self.host.handles_snapshot()
     }
 
-    fn run_behaviours(&mut self, ctx: &mut PluginContext<'_>, dt: f32, fixed_step: bool) -> Result<()> {
-        let assets_ptr = {
-            let assets = ctx.assets()?;
-            assets as *const AssetManager
-        };
-        let ecs = ctx.ecs_mut()?;
-        // SAFETY: assets_ptr comes from ctx.assets() above; borrow ends before ecs_mut.
-        let assets = unsafe { &*assets_ptr };
+    fn run_behaviours(
+        &mut self,
+        ecs: &mut crate::ecs::EcsWorld,
+        assets: &AssetManager,
+        dt: f32,
+        fixed_step: bool,
+    ) -> Result<()> {
         let mut query = ecs.world.query::<(Entity, &mut ScriptBehaviour)>();
         for (entity, mut behaviour) in query.iter_mut(&mut ecs.world) {
             if behaviour.script_path.is_empty() {
@@ -1032,15 +1013,10 @@ impl EnginePlugin for ScriptPlugin {
         } else {
             true
         };
-        let assets_ptr = {
-            let assets = ctx.assets()?;
-            assets as *const AssetManager
-        };
-        // SAFETY: assets_ptr comes from ctx.assets(); borrow ends before use.
-        let assets = unsafe { &*assets_ptr };
+        let (assets, ecs) = ctx.assets_and_ecs_mut()?;
         self.host.update(dt, run_scripts, Some(assets));
         if run_scripts && self.host.enabled() {
-            self.run_behaviours(ctx, dt, false)?;
+            self.run_behaviours(ecs, assets, dt, false)?;
         }
         if !self.paused {
             self.step_once = false;
@@ -1054,8 +1030,9 @@ impl EnginePlugin for ScriptPlugin {
         if self.paused {
             return Ok(());
         }
+        let (assets, ecs) = ctx.assets_and_ecs_mut()?;
         if self.host.enabled() {
-            self.run_behaviours(ctx, dt, true)?;
+            self.run_behaviours(ecs, assets, dt, true)?;
         }
         self.commands.extend(self.host.drain_commands());
         self.logs.extend(self.host.drain_logs());

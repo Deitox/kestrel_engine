@@ -630,6 +630,12 @@ impl<'a> PluginContext<'a> {
         Ok(&*self.assets)
     }
 
+    pub fn assets_and_ecs_mut(&mut self) -> Result<(&AssetManager, &mut EcsWorld), CapabilityError> {
+        self.require_capability(PluginCapability::Assets)?;
+        self.require_capability(PluginCapability::Ecs)?;
+        Ok((&*self.assets, &mut *self.ecs))
+    }
+
     pub fn input_mut(&mut self) -> Result<&mut Input, CapabilityError> {
         self.require_capability(PluginCapability::Input)?;
         Ok(&mut *self.input)
