@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::assets::AssetManager;
 use crate::plugins::{EnginePlugin, PluginContext};
 use anyhow::{anyhow, Context, Result};
 use glam::{Vec2, Vec4};
@@ -448,11 +449,11 @@ impl ScriptHost {
         &self.script_path
     }
 
-    pub fn ensure_script_loaded(&mut self, path: &str) -> Result<()> {
+    pub fn ensure_script_loaded(&mut self, path: &str, assets: Option<&AssetManager>) -> Result<()> {
         if self.scripts.contains_key(path) {
             return Ok(());
         }
-        let compiled = self.load_external_script(path)?;
+        let compiled = self.load_external_script(path, assets)?;
         self.scripts.insert(path.to_string(), compiled);
         Ok(())
     }
@@ -461,8 +462,13 @@ impl ScriptHost {
         self.scripts.get(path)
     }
 
-    pub fn create_instance(&mut self, script_path: &str, entity: Entity) -> Result<u64> {
-        self.ensure_script_loaded(script_path)?;
+    pub fn create_instance(
+        &mut self,
+        script_path: &str,
+        entity: Entity,
+        assets: Option<&AssetManager>,
+    ) -> Result<u64> {
+        self.ensure_script_loaded(script_path, assets)?;
         let id = self.next_instance_id;
         self.next_instance_id = self.next_instance_id.saturating_add(1);
         let instance = ScriptInstance {
@@ -488,9 +494,25 @@ impl ScriptHost {
         self.load_script().map(|_| ())
     }
 
-    fn load_external_script(&self, path: &str) -> Result<CompiledScript> {
-        let source =
-            fs::read_to_string(path).with_context(|| format!("Reading script at path '{}'", path))?;
+    fn load_external_script(&self, path: &str, assets: Option<&AssetManager>) -> Result<CompiledScript> {
+        let source = if let Some(assets) = assets {
+            match assets.read_text(path) {
+                Ok(text) => text,
+                Err(asset_err) => match fs::read_to_string(path) {
+                    Ok(text) => text,
+                    Err(fs_err) => {
+                        return Err(anyhow!(
+                            "Failed to load script '{}': asset error: {}; fs error: {}",
+                            path,
+                            asset_err,
+                            fs_err
+                        ));
+                    }
+                },
+            }
+        } else {
+            fs::read_to_string(path).with_context(|| format!("Reading script at path '{path}'"))?
+        };
         let ast = self
             .engine
             .compile(&source)
@@ -867,18 +889,21 @@ impl ScriptPlugin {
     }
 
     fn run_behaviours(&mut self, ctx: &mut PluginContext<'_>, dt: f32, fixed_step: bool) -> Result<()> {
+        let assets_ptr = ctx.assets()? as *const AssetManager;
         let ecs = ctx.ecs_mut()?;
+        // SAFETY: assets_ptr originates from ctx.assets() above and ctx lives for this scope.
+        let assets = unsafe { &*assets_ptr };
         let mut query = ecs.world.query::<(Entity, &mut ScriptBehaviour)>();
         for (entity, mut behaviour) in query.iter_mut(&mut ecs.world) {
             if behaviour.script_path.is_empty() {
                 continue;
             }
-            if let Err(err) = self.host.ensure_script_loaded(&behaviour.script_path) {
+            if let Err(err) = self.host.ensure_script_loaded(&behaviour.script_path, Some(assets)) {
                 self.host.set_error_message(err.to_string());
                 continue;
             }
             if behaviour.instance_id == 0 {
-                match self.host.create_instance(&behaviour.script_path, entity) {
+                match self.host.create_instance(&behaviour.script_path, entity, Some(assets)) {
                     Ok(id) => behaviour.instance_id = id,
                     Err(err) => {
                         self.host.set_error_message(err.to_string());
@@ -1248,12 +1273,12 @@ mod tests {
         );
         let path_str = script.path().to_string_lossy().into_owned();
         let mut host = ScriptHost::new(script.path());
-        host.ensure_script_loaded(&path_str).expect("load behaviour script");
+        host.ensure_script_loaded(&path_str, None).expect("load behaviour script");
         let compiled = host.compiled_script(&path_str).expect("script cached");
         assert!(compiled.has_ready);
         assert!(compiled.has_process);
         assert!(!compiled.has_physics_process);
         // second call should be a no-op
-        host.ensure_script_loaded(&path_str).expect("cached load should succeed");
+        host.ensure_script_loaded(&path_str, None).expect("cached load should succeed");
     }
 }

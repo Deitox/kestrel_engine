@@ -129,3 +129,142 @@ fn behaviours_create_instances_and_run_lifecycle() {
         "process should run on each update call (saw {process_logs})"
     );
 }
+
+#[test]
+fn behaviours_run_physics_process_on_fixed_update() {
+    let main_script = write_script(
+        r#"
+            fn init(world) { }
+            fn update(world, dt) { }
+        "#,
+    );
+    let behaviour_script = write_script(
+        r#"
+            fn ready(world, entity) { world.log("ready:" + entity.to_string()); }
+            fn physics_process(world, entity, dt) { world.log("physics:" + dt.to_string()); }
+        "#,
+    );
+    let behaviour_path = behaviour_script.path().to_string_lossy().into_owned();
+
+    let mut plugin = ScriptPlugin::new(main_script.path());
+    let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
+    let mut ecs = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    let mut input = Input::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+    let mut environment_registry = EnvironmentRegistry::new();
+    let time = Time::new();
+
+    ecs.world.spawn((Transform::default(), ScriptBehaviour::new(behaviour_path.clone())));
+
+    let feature_registry = FeatureRegistryHandle::isolated();
+    let capability_tracker = CapabilityTrackerHandle::isolated();
+
+    let mut ready_logs = 0usize;
+    let mut physics_logs = 0usize;
+    for _ in 0..2 {
+        let mut ctx = PluginContext::new(
+            &mut renderer,
+            &mut ecs,
+            &mut assets,
+            &mut input,
+            &mut material_registry,
+            &mut mesh_registry,
+            &mut environment_registry,
+            &time,
+            push_event_bridge,
+            feature_registry.clone(),
+            None,
+            capability_tracker.clone(),
+        );
+        plugin.fixed_update(&mut ctx, 0.02).expect("fixed update should succeed");
+        let logs = plugin.take_logs();
+        ready_logs += logs.iter().filter(|line| line.contains("ready:")).count();
+        physics_logs += logs.iter().filter(|line| line.contains("physics:")).count();
+    }
+
+    assert_eq!(ready_logs, 1, "ready should run once before physics loop");
+    assert!(physics_logs >= 2, "physics_process should run each fixed_update (saw {physics_logs})");
+}
+
+#[test]
+fn behaviour_errors_stop_further_calls() {
+    let main_script = write_script(
+        r#"
+            fn init(world) { }
+            fn update(world, dt) { }
+        "#,
+    );
+    let behaviour_script = write_script(
+        r#"
+            fn ready(world, entity) { world.log("ready"); }
+            fn process(world, entity, dt) { call_unknown(); }
+        "#,
+    );
+    let behaviour_path = behaviour_script.path().to_string_lossy().into_owned();
+
+    let mut plugin = ScriptPlugin::new(main_script.path());
+    let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
+    let mut ecs = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    let mut input = Input::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+    let mut environment_registry = EnvironmentRegistry::new();
+    let time = Time::new();
+
+    ecs.world.spawn((Transform::default(), ScriptBehaviour::new(behaviour_path.clone())));
+
+    let feature_registry = FeatureRegistryHandle::isolated();
+    let capability_tracker = CapabilityTrackerHandle::isolated();
+
+    // First update: ready runs, process errors.
+    {
+        let mut ctx = PluginContext::new(
+            &mut renderer,
+            &mut ecs,
+            &mut assets,
+            &mut input,
+            &mut material_registry,
+            &mut mesh_registry,
+            &mut environment_registry,
+            &time,
+            push_event_bridge,
+            feature_registry.clone(),
+            None,
+            capability_tracker.clone(),
+        );
+        plugin.update(&mut ctx, 0.016).expect("update should not panic on script error");
+        let logs = plugin.take_logs();
+        assert_eq!(logs.iter().filter(|l| l.contains("ready")).count(), 1, "ready should run once");
+        assert!(
+            plugin.last_error().is_some(),
+            "script error should surface in last_error after failing process"
+        );
+    }
+
+    // Second update: errored instance should skip further calls.
+    {
+        let mut ctx = PluginContext::new(
+            &mut renderer,
+            &mut ecs,
+            &mut assets,
+            &mut input,
+            &mut material_registry,
+            &mut mesh_registry,
+            &mut environment_registry,
+            &time,
+            push_event_bridge,
+            feature_registry.clone(),
+            None,
+            capability_tracker.clone(),
+        );
+        plugin.update(&mut ctx, 0.016).expect("update should tolerate existing error");
+        let logs = plugin.take_logs();
+        assert!(
+            logs.is_empty(),
+            "errored instance should skip callbacks; expected no further logs, got {logs:?}"
+        );
+    }
+}

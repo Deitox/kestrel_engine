@@ -989,6 +989,12 @@ impl AssetManager {
         self.revision
     }
 
+    pub fn read_text<P: AsRef<Path>>(&self, path: P) -> Result<String> {
+        let path_ref = path.as_ref();
+        fs::read_to_string(path_ref)
+            .with_context(|| format!("Reading asset text '{}'", path_ref.display()))
+    }
+
     pub fn set_device(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         self.device = Some(device.clone());
         self.queue = Some(queue.clone());
