@@ -2440,23 +2440,24 @@ impl ApplicationHandler for App {
         #[allow(clippy::type_complexity)]
         let mut mesh_draw_infos: Vec<(String, Mat4, MeshLightingInfo, String, Option<Arc<[Mat4]>>)> =
             Vec::new();
-        if let Some((preview_key, preview_model)) = self
-            .mesh_preview_plugin()
-            .map(|plugin| (plugin.preview_mesh_key().to_string(), *plugin.mesh_model()))
-        {
-            match self.mesh_registry.ensure_gpu(&preview_key, &mut self.renderer) {
-                Ok(_) => {
-                    let material_key = self.resolve_material_for_mesh(&preview_key, None);
-                    mesh_draw_infos.push((
-                        preview_key,
-                        preview_model,
-                        MeshLightingInfo::default(),
-                        material_key,
-                        None,
-                    ));
-                }
-                Err(err) => {
-                    self.set_mesh_status(format!("Mesh upload failed: {err}"));
+        if let Some(plugin) = self.mesh_preview_plugin() {
+            if plugin.mesh_control_mode() != MeshControlMode::Disabled {
+                let preview_key = plugin.preview_mesh_key().to_string();
+                let preview_model = *plugin.mesh_model();
+                match self.mesh_registry.ensure_gpu(&preview_key, &mut self.renderer) {
+                    Ok(_) => {
+                        let material_key = self.resolve_material_for_mesh(&preview_key, None);
+                        mesh_draw_infos.push((
+                            preview_key,
+                            preview_model,
+                            MeshLightingInfo::default(),
+                            material_key,
+                            None,
+                        ));
+                    }
+                    Err(err) => {
+                        self.set_mesh_status(format!("Mesh upload failed: {err}"));
+                    }
                 }
             }
         }
