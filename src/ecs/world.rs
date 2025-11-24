@@ -11,11 +11,11 @@ use crate::ecs::systems::{sys_cleanup_sprite_animator_soa, SpriteAnimatorSoa};
 use crate::events::{EventBus, GameEvent};
 use crate::mesh_registry::MeshRegistry;
 use crate::scene::{
-    ColliderData, ColorData, ForceFieldData, MeshData, MeshLightingData, OrbitControllerData,
-    ParticleAttractorData, ParticleEmitterData, ParticleTrailData, Scene, SceneDependencies, SceneEntity,
-    SceneEntityId, SkeletonClipData, SkeletonData, SpriteAnimationData, SpriteData, Transform3DData,
-    TransformClipData, TransformData,
+    ColliderData, ColorData, ForceFieldData, MeshData, MeshLightingData, OrbitControllerData, ParticleAttractorData,
+    ParticleEmitterData, ParticleTrailData, Scene, SceneDependencies, SceneEntity, SceneEntityId, ScriptData,
+    SkeletonClipData, SkeletonData, SpriteAnimationData, SpriteData, Transform3DData, TransformClipData, TransformData,
 };
+use crate::scripts::ScriptBehaviour;
 use anyhow::{anyhow, Result};
 use bevy_ecs::prelude::{Entity, Schedule, With, World};
 use bevy_ecs::schedule::IntoSystemConfigs;
@@ -2739,6 +2739,9 @@ impl EcsWorld {
         if let Some(spin) = data.spin {
             entity.insert(Spin { speed: spin });
         }
+        if let Some(script) = data.script.as_ref() {
+            entity.insert(ScriptBehaviour::new(script.script_path.clone()));
+        }
         if let Some(tint) = data.tint.clone() {
             entity.insert(Tint(tint.into()));
         }
@@ -2973,6 +2976,10 @@ impl EcsWorld {
                 transform.rotation,
                 transform.scale,
             ),
+            script: self
+                .world
+                .get::<ScriptBehaviour>(entity)
+                .map(|beh| ScriptData { script_path: beh.script_path.clone() }),
             transform_clip,
             skeleton: skeleton_data,
             sprite: self

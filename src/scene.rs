@@ -1370,6 +1370,8 @@ pub struct SceneEntity {
     pub name: Option<String>,
     pub transform: TransformData,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<ScriptData>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transform_clip: Option<TransformClipData>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skeleton: Option<SkeletonData>,
@@ -1415,6 +1417,11 @@ pub struct Transform3DData {
     pub translation: Vec3Data,
     pub rotation: QuatData,
     pub scale: Vec3Data,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScriptData {
+    pub script_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2114,6 +2121,7 @@ mod tests {
             id: SceneEntityId::new(),
             name: None,
             transform: TransformData::from_components(Vec2::ZERO, 0.0, Vec2::ONE),
+            script: None,
             transform_clip: None,
             skeleton: None,
             sprite: None,

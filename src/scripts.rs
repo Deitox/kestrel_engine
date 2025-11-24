@@ -14,11 +14,23 @@ use glam::{Vec2, Vec4};
 use rand::Rng;
 use rhai::{Dynamic, Engine, EvalAltResult, Scope, AST, FLOAT};
 
-use bevy_ecs::prelude::Entity;
+use bevy_ecs::prelude::{Component, Entity};
 
 pub type ScriptHandle = rhai::INT;
 
 const DIGEST_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+#[derive(Component, Clone, Debug)]
+pub struct ScriptBehaviour {
+    pub script_path: String,
+    pub instance_id: u64,
+}
+
+impl ScriptBehaviour {
+    pub fn new(path: impl Into<String>) -> Self {
+        Self { script_path: path.into(), instance_id: 0 }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum ScriptCommand {
