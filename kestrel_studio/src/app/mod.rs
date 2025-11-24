@@ -4325,6 +4325,31 @@ impl App {
                         self.ecs.set_emitter_sizes(emitter, start_size, clamped);
                     }
                 }
+                ScriptCommand::EntitySetPosition { entity, position } => {
+                    if !self.ecs.set_translation(entity, position) {
+                        eprintln!("[script] entity_set_position failed for entity {:?}", entity);
+                    }
+                }
+                ScriptCommand::EntitySetRotation { entity, rotation } => {
+                    if !self.ecs.set_rotation(entity, rotation) {
+                        eprintln!("[script] entity_set_rotation failed for entity {:?}", entity);
+                    }
+                }
+                ScriptCommand::EntitySetScale { entity, scale } => {
+                    if !self.ecs.set_scale(entity, scale) {
+                        eprintln!("[script] entity_set_scale failed for entity {:?}", entity);
+                    }
+                }
+                ScriptCommand::EntitySetVelocity { entity, velocity } => {
+                    if !self.ecs.set_velocity(entity, velocity) {
+                        eprintln!("[script] entity_set_velocity failed for entity {:?}", entity);
+                    }
+                }
+                ScriptCommand::EntityDespawn { entity } => {
+                    if !self.ecs.despawn_entity(entity) {
+                        eprintln!("[script] entity_despawn failed for entity {:?}", entity);
+                    }
+                }
             }
         }
     }

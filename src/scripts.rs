@@ -20,6 +20,23 @@ pub type ScriptHandle = rhai::INT;
 
 const DIGEST_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
+#[derive(Clone)]
+pub struct CompiledScript {
+    pub ast: AST,
+    pub has_ready: bool,
+    pub has_process: bool,
+    pub has_physics_process: bool,
+}
+
+#[derive(Clone)]
+pub(crate) struct ScriptInstance {
+    pub script_path: String,
+    pub entity: Entity,
+    pub scope: Scope<'static>,
+    pub has_ready_run: bool,
+    pub errored: bool,
+}
+
 #[derive(Component, Clone, Debug)]
 pub struct ScriptBehaviour {
     pub script_path: String,
@@ -52,6 +69,11 @@ pub enum ScriptCommand {
     SetEmitterEndColor { color: Vec4 },
     SetEmitterStartSize { size: f32 },
     SetEmitterEndSize { size: f32 },
+    EntitySetPosition { entity: Entity, position: Vec2 },
+    EntitySetRotation { entity: Entity, rotation: f32 },
+    EntitySetScale { entity: Entity, scale: Vec2 },
+    EntitySetVelocity { entity: Entity, velocity: Vec2 },
+    EntityDespawn { entity: Entity },
 }
 
 #[derive(Default)]
@@ -183,6 +205,58 @@ impl ScriptWorld {
 
     fn despawn(&mut self, handle: ScriptHandle) -> bool {
         self.state.borrow_mut().commands.push(ScriptCommand::Despawn { handle });
+        true
+    }
+
+    fn entity_set_position(&mut self, entity_bits: ScriptHandle, x: FLOAT, y: FLOAT) -> bool {
+        let entity = Entity::from_bits(entity_bits as u64);
+        let pos = Vec2::new(x as f32, y as f32);
+        if !self.ensure_finite("entity_set_position", &[pos.x, pos.y]) {
+            return false;
+        }
+        self.state.borrow_mut().commands.push(ScriptCommand::EntitySetPosition { entity, position: pos });
+        true
+    }
+
+    fn entity_set_rotation(&mut self, entity_bits: ScriptHandle, radians: FLOAT) -> bool {
+        let entity = Entity::from_bits(entity_bits as u64);
+        let rot = radians as f32;
+        if !self.ensure_finite("entity_set_rotation", &[rot]) {
+            return false;
+        }
+        self.state.borrow_mut().commands.push(ScriptCommand::EntitySetRotation { entity, rotation: rot });
+        true
+    }
+
+    fn entity_set_scale(&mut self, entity_bits: ScriptHandle, sx: FLOAT, sy: FLOAT) -> bool {
+        let entity = Entity::from_bits(entity_bits as u64);
+        let sx = sx as f32;
+        let sy = sy as f32;
+        if !self.ensure_finite("entity_set_scale", &[sx, sy]) {
+            return false;
+        }
+        let clamped = Vec2::new(sx.max(0.01), sy.max(0.01));
+        self.state.borrow_mut().commands.push(ScriptCommand::EntitySetScale { entity, scale: clamped });
+        true
+    }
+
+    fn entity_set_velocity(&mut self, entity_bits: ScriptHandle, vx: FLOAT, vy: FLOAT) -> bool {
+        let entity = Entity::from_bits(entity_bits as u64);
+        let vx = vx as f32;
+        let vy = vy as f32;
+        if !self.ensure_finite("entity_set_velocity", &[vx, vy]) {
+            return false;
+        }
+        self.state.borrow_mut().commands.push(ScriptCommand::EntitySetVelocity {
+            entity,
+            velocity: Vec2::new(vx, vy),
+        });
+        true
+    }
+
+    fn entity_despawn(&mut self, entity_bits: ScriptHandle) -> bool {
+        let entity = Entity::from_bits(entity_bits as u64);
+        self.state.borrow_mut().commands.push(ScriptCommand::EntityDespawn { entity });
         true
     }
 
@@ -326,6 +400,9 @@ pub struct ScriptHost {
     enabled: bool,
     initialized: bool,
     shared: Rc<RefCell<SharedState>>,
+    scripts: HashMap<String, CompiledScript>,
+    instances: HashMap<u64, ScriptInstance>,
+    next_instance_id: u64,
     handle_map: HashMap<ScriptHandle, Entity>,
 }
 
@@ -348,6 +425,9 @@ impl ScriptHost {
             enabled: true,
             initialized: false,
             shared: Rc::new(RefCell::new(shared)),
+            scripts: HashMap::new(),
+            instances: HashMap::new(),
+            next_instance_id: 1,
             handle_map: HashMap::new(),
         }
     }
@@ -368,12 +448,145 @@ impl ScriptHost {
         &self.script_path
     }
 
+    pub fn ensure_script_loaded(&mut self, path: &str) -> Result<()> {
+        if self.scripts.contains_key(path) {
+            return Ok(());
+        }
+        let compiled = self.load_external_script(path)?;
+        self.scripts.insert(path.to_string(), compiled);
+        Ok(())
+    }
+
+    pub fn compiled_script(&self, path: &str) -> Option<&CompiledScript> {
+        self.scripts.get(path)
+    }
+
+    pub fn create_instance(&mut self, script_path: &str, entity: Entity) -> Result<u64> {
+        self.ensure_script_loaded(script_path)?;
+        let id = self.next_instance_id;
+        self.next_instance_id = self.next_instance_id.saturating_add(1);
+        let instance = ScriptInstance {
+            script_path: script_path.to_string(),
+            entity,
+            scope: Scope::new(),
+            has_ready_run: false,
+            errored: false,
+        };
+        self.instances.insert(id, instance);
+        Ok(id)
+    }
+
+    pub fn instance(&self, id: u64) -> Option<&ScriptInstance> {
+        self.instances.get(&id)
+    }
+
+    pub fn instance_mut(&mut self, id: u64) -> Option<&mut ScriptInstance> {
+        self.instances.get_mut(&id)
+    }
+
+    pub fn remove_instance(&mut self, id: u64) {
+        self.instances.remove(&id);
+    }
+
     pub fn set_error_message(&mut self, msg: impl Into<String>) {
         self.error = Some(msg.into());
     }
 
     pub fn force_reload(&mut self) -> Result<()> {
         self.load_script().map(|_| ())
+    }
+
+    fn load_external_script(&self, path: &str) -> Result<CompiledScript> {
+        let source =
+            fs::read_to_string(path).with_context(|| format!("Reading script at path '{}'", path))?;
+        let ast = self
+            .engine
+            .compile(&source)
+            .with_context(|| format!("Compiling Rhai script '{}'", path))?;
+        let (has_ready, has_process, has_physics_process) = detect_callbacks(&ast);
+        Ok(CompiledScript { ast, has_ready, has_process, has_physics_process })
+    }
+
+    fn call_instance_ready(&mut self, instance_id: u64) -> Result<()> {
+        let Some(instance) = self.instances.get_mut(&instance_id) else {
+            return Ok(());
+        };
+        let Some(compiled) = self.scripts.get(&instance.script_path) else {
+            return Ok(());
+        };
+        if !compiled.has_ready || instance.has_ready_run || instance.errored {
+            return Ok(());
+        }
+        let entity_int: FLOAT = entity_to_rhai(instance.entity) as FLOAT;
+        let world = ScriptWorld::new(self.shared.clone());
+        match self
+            .engine
+            .call_fn::<()>(&mut instance.scope, &compiled.ast, "ready", (world, entity_int))
+        {
+            Ok(_) => {
+                instance.has_ready_run = true;
+                Ok(())
+            }
+            Err(err) => {
+                instance.errored = true;
+                self.error = Some(err.to_string());
+                Err(anyhow!(err.to_string()))
+            }
+        }
+    }
+
+    fn call_instance_process(&mut self, instance_id: u64, dt: f32) -> Result<()> {
+        let Some(instance) = self.instances.get_mut(&instance_id) else {
+            return Ok(());
+        };
+        let Some(compiled) = self.scripts.get(&instance.script_path) else {
+            return Ok(());
+        };
+        if !compiled.has_process || instance.errored {
+            return Ok(());
+        }
+        let entity_int: FLOAT = entity_to_rhai(instance.entity) as FLOAT;
+        let world = ScriptWorld::new(self.shared.clone());
+        let dt_rhai: FLOAT = dt as FLOAT;
+        match self
+            .engine
+            .call_fn::<()>(&mut instance.scope, &compiled.ast, "process", (world, entity_int, dt_rhai))
+        {
+            Ok(_) => Ok(()),
+            Err(err) => {
+                instance.errored = true;
+                self.error = Some(err.to_string());
+                Err(anyhow!(err.to_string()))
+            }
+        }
+    }
+
+    fn call_instance_physics_process(&mut self, instance_id: u64, dt: f32) -> Result<()> {
+        let Some(instance) = self.instances.get_mut(&instance_id) else {
+            return Ok(());
+        };
+        let Some(compiled) = self.scripts.get(&instance.script_path) else {
+            return Ok(());
+        };
+        if !compiled.has_physics_process || instance.errored {
+            return Ok(());
+        }
+        let entity_int: FLOAT = entity_to_rhai(instance.entity) as FLOAT;
+        let world = ScriptWorld::new(self.shared.clone());
+        let dt_rhai: FLOAT = dt as FLOAT;
+        match self.engine.call_fn::<()>(
+            &mut instance.scope,
+            &compiled.ast,
+            "physics_process",
+            (world, entity_int, dt_rhai),
+        ) {
+            Ok(_) => Ok(()),
+            Err(err) => {
+                instance.errored = true;
+                self.error = Some(err.to_string());
+                Err(anyhow!(err.to_string()))
+            }
+        }
     }
 
     pub fn update(&mut self, dt: f32, run_scripts: bool) {
@@ -504,6 +717,10 @@ impl ScriptHost {
         self.handle_map.iter().map(|(handle, entity)| (*handle, *entity)).collect()
     }
 
+    pub fn clear_instances(&mut self) {
+        self.instances.clear();
+    }
+
     fn reload_if_needed(&mut self) -> Result<()> {
         let metadata = match fs::metadata(&self.script_path) {
             Ok(meta) => meta,
@@ -586,6 +803,26 @@ fn hash_source(source: &str) -> u64 {
     hasher.finish()
 }
 
+fn detect_callbacks(ast: &AST) -> (bool, bool, bool) {
+    let mut has_ready = false;
+    let mut has_process = false;
+    let mut has_physics_process = false;
+    for func in ast.iter_functions() {
+        let arity = func.params.len();
+        match func.name.as_ref() {
+            "ready" if arity == 2 => has_ready = true,
+            "process" if arity == 3 => has_process = true,
+            "physics_process" if arity == 3 => has_physics_process = true,
+            _ => {}
+        }
+    }
+    (has_ready, has_process, has_physics_process)
+}
+
+fn entity_to_rhai(entity: Entity) -> ScriptHandle {
+    entity.to_bits() as ScriptHandle
+}
+
 pub struct ScriptPlugin {
     host: ScriptHost,
     commands: Vec<ScriptCommand>,
@@ -635,6 +872,47 @@ impl ScriptPlugin {
 
     pub fn handles_snapshot(&self) -> Vec<(ScriptHandle, Entity)> {
         self.host.handles_snapshot()
+    }
+
+    fn run_behaviours(&mut self, ctx: &mut PluginContext<'_>, dt: f32, fixed_step: bool) -> Result<()> {
+        let ecs = ctx.ecs_mut()?;
+        let mut query = ecs.world.query::<(Entity, &mut ScriptBehaviour)>();
+        for (entity, mut behaviour) in query.iter_mut(&mut ecs.world) {
+            if behaviour.script_path.is_empty() {
+                continue;
+            }
+            if let Err(err) = self.host.ensure_script_loaded(&behaviour.script_path) {
+                self.host.set_error_message(err.to_string());
+                continue;
+            }
+            if behaviour.instance_id == 0 {
+                match self.host.create_instance(&behaviour.script_path, entity) {
+                    Ok(id) => behaviour.instance_id = id,
+                    Err(err) => {
+                        self.host.set_error_message(err.to_string());
+                        continue;
+                    }
+                }
+            }
+            let instance_id = behaviour.instance_id;
+            if let Err(err) = self.host.call_instance_ready(instance_id) {
+                eprintln!("[script] ready error for {}: {}", behaviour.script_path, err);
+            }
+            let call_result = if fixed_step {
+                self.host.call_instance_physics_process(instance_id, dt)
+            } else {
+                self.host.call_instance_process(instance_id, dt)
+            };
+            if let Err(err) = call_result {
+                eprintln!(
+                    "[script] {} error for {}: {}",
+                    if fixed_step { "physics_process" } else { "process" },
+                    behaviour.script_path,
+                    err
+                );
+            }
+        }
+        Ok(())
     }
 
     pub fn script_path(&self) -> &Path {
@@ -693,7 +971,7 @@ impl EnginePlugin for ScriptPlugin {
         "1.0.0"
     }
 
-    fn update(&mut self, _ctx: &mut PluginContext<'_>, dt: f32) -> Result<()> {
+    fn update(&mut self, ctx: &mut PluginContext<'_>, dt: f32) -> Result<()> {
         let run_scripts = if self.paused {
             if self.step_once {
                 self.step_once = false;
@@ -705,6 +983,9 @@ impl EnginePlugin for ScriptPlugin {
             true
         };
         self.host.update(dt, run_scripts);
+        if run_scripts && self.host.enabled() {
+            self.run_behaviours(ctx, dt, false)?;
+        }
         if !self.paused {
             self.step_once = false;
         }
@@ -713,8 +994,21 @@ impl EnginePlugin for ScriptPlugin {
         Ok(())
     }
 
+    fn fixed_update(&mut self, ctx: &mut PluginContext<'_>, dt: f32) -> Result<()> {
+        if self.paused {
+            return Ok(());
+        }
+        if self.host.enabled() {
+            self.run_behaviours(ctx, dt, true)?;
+        }
+        self.commands.extend(self.host.drain_commands());
+        self.logs.extend(self.host.drain_logs());
+        Ok(())
+    }
+
     fn shutdown(&mut self, _ctx: &mut PluginContext<'_>) -> Result<()> {
         self.host.clear_handles();
+        self.host.clear_instances();
         Ok(())
     }
 
@@ -748,6 +1042,11 @@ fn register_api(engine: &mut Engine) {
     engine.register_fn("set_emitter_end_color", ScriptWorld::set_emitter_end_color);
     engine.register_fn("set_emitter_start_size", ScriptWorld::set_emitter_start_size);
     engine.register_fn("set_emitter_end_size", ScriptWorld::set_emitter_end_size);
+    engine.register_fn("entity_set_position", ScriptWorld::entity_set_position);
+    engine.register_fn("entity_set_rotation", ScriptWorld::entity_set_rotation);
+    engine.register_fn("entity_set_scale", ScriptWorld::entity_set_scale);
+    engine.register_fn("entity_set_velocity", ScriptWorld::entity_set_velocity);
+    engine.register_fn("entity_despawn", ScriptWorld::entity_despawn);
     engine.register_fn("log", ScriptWorld::log);
     engine.register_fn("rand", ScriptWorld::random_range);
 }
@@ -945,5 +1244,24 @@ mod tests {
         assert!(logs.iter().any(|l| l.contains("hello")), "init log missing: {:?}", logs);
         let commands = host.drain_commands();
         assert!(commands.is_empty(), "unexpected commands from fixture script");
+    }
+
+    #[test]
+    fn ensure_script_loaded_caches_and_detects_callbacks() {
+        let script = write_script(
+            r#"
+                fn ready(world, entity) { }
+                fn process(world, entity, dt) { }
+            "#,
+        );
+        let path_str = script.path().to_string_lossy().into_owned();
+        let mut host = ScriptHost::new(script.path());
+        host.ensure_script_loaded(&path_str).expect("load behaviour script");
+        let compiled = host.compiled_script(&path_str).expect("script cached");
+        assert!(compiled.has_ready);
+        assert!(compiled.has_process);
+        assert!(!compiled.has_physics_process);
+        // second call should be a no-op
+        host.ensure_script_loaded(&path_str).expect("cached load should succeed");
     }
 }
