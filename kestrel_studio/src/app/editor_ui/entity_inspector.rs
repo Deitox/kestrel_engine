@@ -131,7 +131,7 @@ pub(super) fn show_entity_inspector(
         }
         let mut _inspector_refresh = false;
         let mut inspector_info = selection_details_value.clone();
-        if let Some(mut info) = inspector_info {
+    if let Some(mut info) = inspector_info {
             ui.horizontal(|ui| {
                 ui.label("Entity ID");
                 ui.monospace(info.scene_id.as_str());
@@ -194,9 +194,27 @@ pub(super) fn show_entity_inspector(
                 ui.label("Velocity: n/a");
             }
 
-            ui.separator();
-            ui.collapsing("Particles", |ui| {
-                if let Some(mut emitter) = info.particle_emitter {
+        ui.separator();
+        ui.collapsing("Script", |ui| {
+            ui.label("Assign a script to this entity:");
+            let mut path = String::new();
+            ui.horizontal(|ui| {
+                ui.label("Path");
+                ui.add(egui::TextEdit::singleline(&mut path).hint_text("assets/scripts/example.rhai"));
+                if ui.button("Set").clicked() && !path.trim().is_empty() {
+                    actions.inspector_actions.push(InspectorAction::SetScript {
+                        entity,
+                        path: path.trim().to_string(),
+                    });
+                }
+                if ui.button("Remove").clicked() {
+                    actions.inspector_actions.push(InspectorAction::RemoveScript { entity });
+                }
+            });
+            ui.small("Scripts are relative to the project root, e.g. assets/scripts/my_behaviour.rhai");
+        });
+        ui.collapsing("Particles", |ui| {
+            if let Some(mut emitter) = info.particle_emitter {
                     let mut trail_enabled = emitter.trail.is_some();
                     let mut trail: ParticleTrail = emitter.trail.unwrap_or_default();
                     ui.label("Emitter trail");

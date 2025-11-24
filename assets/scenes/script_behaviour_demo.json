@@ -1,0 +1,156 @@
+{
+  "metadata": {
+    "viewport": "Ortho2D",
+    "camera2d": {
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "zoom": 1.0
+    },
+    "camera_bookmarks": [],
+    "preview_camera": {
+      "mode": "Disabled",
+      "orbit": {
+        "target": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "radius": 5.0,
+        "yaw": 4.425835,
+        "pitch": 1.5607964
+      },
+      "freefly": {
+        "position": {
+          "x": 0.0,
+          "y": -5.0,
+          "z": 0.0
+        },
+        "yaw": 1.2842449,
+        "pitch": 1.5607964,
+        "roll": 0.0,
+        "speed": 4.0
+      },
+      "frustum_lock": false,
+      "frustum_focus": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "frustum_distance": 5.0
+    },
+    "lighting": {
+      "direction": {
+        "x": 0.41646338,
+        "y": 0.83292675,
+        "z": 0.36440545
+      },
+      "color": {
+        "x": 1.05,
+        "y": 0.98,
+        "z": 0.92
+      },
+      "ambient": {
+        "x": 0.03,
+        "y": 0.03,
+        "z": 0.03
+      },
+      "exposure": 1.0,
+      "shadow": {
+        "distance": 35.0,
+        "bias": 0.002,
+        "strength": 1.0,
+        "cascade_count": 4,
+        "resolution": 2048,
+        "split_lambda": 0.6,
+        "pcf_radius": 1.25
+      }
+    },
+    "environment": {
+      "key": "environment::default",
+      "intensity": 1.0
+    }
+  },
+  "dependencies": {
+    "atlases": [
+      {
+        "key": "main",
+        "path": "assets/images/atlas.json"
+      }
+    ],
+    "clips": [],
+    "skeletons": [],
+    "meshes": [],
+    "materials": [],
+    "environments": [
+      "environment::default"
+    ]
+  },
+  "entities": [
+    {
+      "transform": {
+        "translation": {
+          "x": -0.8,
+          "y": 0.0
+        },
+        "rotation": 0.0,
+        "scale": {
+          "x": 0.6,
+          "y": 0.6
+        }
+      },
+      "script": {
+        "script_path": "assets/scripts/spinner.rhai"
+      },
+      "sprite": {
+        "atlas": "main",
+        "region": "green"
+      }
+    },
+    {
+      "transform": {
+        "translation": {
+          "x": 0.0,
+          "y": 0.0
+        },
+        "rotation": 0.0,
+        "scale": {
+          "x": 0.6,
+          "y": 0.6
+        }
+      },
+      "script": {
+        "script_path": "assets/scripts/wanderer.rhai"
+      },
+      "sprite": {
+        "atlas": "main",
+        "region": "checker"
+      },
+      "velocity": {
+        "x": 0.0,
+        "y": 0.0
+      }
+    },
+    {
+      "transform": {
+        "translation": {
+          "x": 0.8,
+          "y": 0.0
+        },
+        "rotation": 0.0,
+        "scale": {
+          "x": 0.6,
+          "y": 0.6
+        }
+      },
+      "script": {
+        "script_path": "assets/scripts/blinker.rhai"
+      },
+      "sprite": {
+        "atlas": "main",
+        "region": "redorb"
+      }
+    }
+  ]
+}

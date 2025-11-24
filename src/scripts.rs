@@ -29,7 +29,7 @@ pub struct CompiledScript {
 }
 
 #[derive(Clone)]
-pub(crate) struct ScriptInstance {
+pub struct ScriptInstance {
     pub script_path: String,
     pub entity: Entity,
     pub scope: Scope<'static>,
@@ -474,14 +474,6 @@ impl ScriptHost {
         };
         self.instances.insert(id, instance);
         Ok(id)
-    }
-
-    pub fn instance(&self, id: u64) -> Option<&ScriptInstance> {
-        self.instances.get(&id)
-    }
-
-    pub fn instance_mut(&mut self, id: u64) -> Option<&mut ScriptInstance> {
-        self.instances.get_mut(&id)
     }
 
     pub fn remove_instance(&mut self, id: u64) {

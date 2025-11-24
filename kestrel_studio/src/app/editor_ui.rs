@@ -158,6 +158,13 @@ pub(super) enum InspectorAction {
         entity: Entity,
         velocity: Vec2,
     },
+    SetScript {
+        entity: Entity,
+        path: String,
+    },
+    RemoveScript {
+        entity: Entity,
+    },
     ClearTransformClip {
         entity: Entity,
     },

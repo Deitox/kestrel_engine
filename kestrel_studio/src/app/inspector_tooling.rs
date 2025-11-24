@@ -108,6 +108,16 @@ impl App {
                         self.set_inspector_status(Some("Failed to update velocity.".to_string()));
                     }
                 }
+                editor_ui::InspectorAction::SetScript { entity, path } => {
+                    let mut entity_ref = self.ecs.world.entity_mut(entity);
+                    entity_ref.insert(crate::scripts::ScriptBehaviour::new(path));
+                    self.set_inspector_status(Some("Script set.".to_string()));
+                }
+                editor_ui::InspectorAction::RemoveScript { entity } => {
+                    let mut entity_ref = self.ecs.world.entity_mut(entity);
+                    entity_ref.remove::<crate::scripts::ScriptBehaviour>();
+                    self.set_inspector_status(Some("Script removed.".to_string()));
+                }
                 editor_ui::InspectorAction::SetEmitterTrail { entity, trail } => {
                     self.ecs.set_emitter_trail(entity, trail);
                     self.set_inspector_status(Some("Emitter trail updated.".to_string()));
