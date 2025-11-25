@@ -519,6 +519,13 @@ impl ScriptHost {
 
     pub fn ensure_script_loaded(&mut self, path: &str, assets: Option<&AssetManager>) -> Result<()> {
         let now = Instant::now();
+        let current_revision = assets.map(|a| a.revision());
+        if let (Some(compiled), Some(revision)) = (self.scripts.get_mut(path), current_revision) {
+            if compiled.asset_revision == Some(revision) {
+                compiled.last_checked = Some(now);
+                return Ok(());
+            }
+        }
         if let Some(compiled) = self.scripts.get_mut(path) {
             if let Some(last) = compiled.last_checked {
                 if now.duration_since(last) < SCRIPT_DIGEST_CHECK_INTERVAL {
