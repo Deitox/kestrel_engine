@@ -1,11 +1,10 @@
 use std::any::Any;
 use std::cell::RefCell;
-use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::assets::AssetManager;
 use crate::plugins::{EnginePlugin, PluginContext};
@@ -19,6 +18,8 @@ use bevy_ecs::prelude::{Component, Entity};
 
 pub type ScriptHandle = rhai::INT;
 
+const SCRIPT_DIGEST_CHECK_INTERVAL: Duration = Duration::from_millis(250);
+
 #[derive(Clone)]
 pub struct CompiledScript {
     pub ast: AST,
@@ -28,6 +29,7 @@ pub struct CompiledScript {
     pub has_exit: bool,
     pub len: u64,
     pub digest: u64,
+    pub last_checked: Option<Instant>,
 }
 
 #[derive(Clone)]
@@ -436,6 +438,7 @@ pub struct ScriptHost {
     instances: HashMap<u64, ScriptInstance>,
     next_instance_id: u64,
     handle_map: HashMap<ScriptHandle, Entity>,
+    entity_errors: HashSet<Entity>,
 }
 
 impl ScriptHost {
@@ -471,6 +474,7 @@ impl ScriptHost {
             instances: HashMap::new(),
             next_instance_id: 1,
             handle_map: HashMap::new(),
+            entity_errors: HashSet::new(),
         }
     }
 
@@ -488,6 +492,22 @@ impl ScriptHost {
 
     pub fn entity_has_errored_instance(&self, entity: Entity) -> bool {
         self.instances.values().any(|instance| instance.entity == entity && instance.errored)
+            || self.entity_errors.contains(&entity)
+    }
+
+    fn mark_entity_error(&mut self, entity: Entity) {
+        self.entity_errors.insert(entity);
+    }
+
+    fn clear_entity_error(&mut self, entity: Entity) {
+        self.entity_errors.remove(&entity);
+    }
+
+    fn prune_entity_errors<F>(&mut self, mut keep: F)
+    where
+        F: FnMut(Entity) -> bool,
+    {
+        self.entity_errors.retain(|entity| keep(*entity));
     }
 
     pub fn script_path(&self) -> &Path {
@@ -495,19 +515,26 @@ impl ScriptHost {
     }
 
     pub fn ensure_script_loaded(&mut self, path: &str, assets: Option<&AssetManager>) -> Result<()> {
+        let now = Instant::now();
+        if let Some(compiled) = self.scripts.get_mut(path) {
+            if let Some(last) = compiled.last_checked {
+                if now.duration_since(last) < SCRIPT_DIGEST_CHECK_INTERVAL {
+                    return Ok(());
+                }
+            }
+        }
         let was_loaded = self.scripts.contains_key(path);
         let source = self.load_script_source(path, assets)?;
         let len = source.len() as u64;
         let digest = hash_source(&source);
-        let unchanged = self
-            .scripts
-            .get(path)
-            .map(|compiled| compiled.len == len && compiled.digest == digest)
-            .unwrap_or(false);
-        if unchanged {
-            return Ok(());
+        if let Some(compiled) = self.scripts.get_mut(path) {
+            if compiled.len == len && compiled.digest == digest {
+                compiled.last_checked = Some(now);
+                return Ok(());
+            }
         }
-        let compiled = self.compile_script_from_source(path, &source, len, digest)?;
+        let mut compiled = self.compile_script_from_source(path, &source, len, digest)?;
+        compiled.last_checked = Some(now);
         self.error = None;
         self.scripts.insert(path.to_string(), compiled);
         if was_loaded {
@@ -580,7 +607,16 @@ impl ScriptHost {
             .compile(source)
             .with_context(|| format!("Compiling Rhai script '{}'", path))?;
         let (has_ready, has_process, has_physics_process, has_exit) = detect_callbacks(&ast);
-        Ok(CompiledScript { ast, has_ready, has_process, has_physics_process, has_exit, len, digest })
+        Ok(CompiledScript {
+            ast,
+            has_ready,
+            has_process,
+            has_physics_process,
+            has_exit,
+            len,
+            digest,
+            last_checked: Some(Instant::now()),
+        })
     }
 
     fn reinitialize_instances_for_script(&mut self, script_path: &str) -> Result<()> {
@@ -854,12 +890,17 @@ impl ScriptHost {
             let _ = self.call_instance_exit(id);
         }
         self.instances.clear();
+        self.entity_errors.clear();
     }
 
     fn reload_if_needed(&mut self, assets: Option<&AssetManager>) -> Result<()> {
-        let assets = assets.ok_or_else(|| anyhow!("AssetManager required to reload script '{}'", self.script_path.display()))?;
-        let source = assets
-            .read_text(&self.script_path)
+        if let Some(last_check) = self.last_digest_check {
+            if last_check.elapsed() < SCRIPT_DIGEST_CHECK_INTERVAL {
+                return Ok(());
+            }
+        }
+        let source = self
+            .load_script_source(self.script_path.to_string_lossy().as_ref(), assets)
             .with_context(|| format!("Reading script asset '{}'", self.script_path.display()))?;
         let len = source.len() as u64;
         let digest = hash_source(&source);
@@ -876,9 +917,8 @@ impl ScriptHost {
     }
 
     fn load_script(&mut self, assets: Option<&AssetManager>) -> Result<&AST> {
-        let assets = assets.ok_or_else(|| anyhow!("AssetManager required to load script '{}'", self.script_path.display()))?;
-        let source = assets
-            .read_text(&self.script_path)
+        let source = self
+            .load_script_source(self.script_path.to_string_lossy().as_ref(), assets)
             .with_context(|| format!("Reading script asset '{}'", self.script_path.display()))?;
         let len = source.len() as u64;
         self.load_script_from_source(source, SystemTime::UNIX_EPOCH, len)
@@ -1010,14 +1050,15 @@ impl ScriptPlugin {
         dt: f32,
         fixed_step: bool,
     ) -> Result<()> {
-        self.cleanup_orphaned_instances(ecs);
         let mut query = ecs.world.query::<(Entity, &mut ScriptBehaviour)>();
         for (entity, mut behaviour) in query.iter_mut(&mut ecs.world) {
             if behaviour.script_path.is_empty() {
+                self.host.clear_entity_error(entity);
                 continue;
             }
             if let Err(err) = self.host.ensure_script_loaded(&behaviour.script_path, Some(assets)) {
                 self.host.set_error_message(err.to_string());
+                self.host.mark_entity_error(entity);
                 continue;
             }
             if behaviour.instance_id == 0 {
@@ -1025,6 +1066,7 @@ impl ScriptPlugin {
                     Ok(id) => behaviour.instance_id = id,
                     Err(err) => {
                         self.host.set_error_message(err.to_string());
+                        self.host.mark_entity_error(entity);
                         continue;
                     }
                 }
@@ -1032,25 +1074,36 @@ impl ScriptPlugin {
             let instance_id = behaviour.instance_id;
             if let Err(err) = self.host.call_instance_ready(instance_id) {
                 eprintln!("[script] ready error for {}: {}", behaviour.script_path, err);
+                self.host.mark_entity_error(entity);
             }
-        let call_result = if fixed_step {
-            self.host.call_instance_physics_process(instance_id, dt)
-        } else {
-            self.host.call_instance_process(instance_id, dt)
-        };
-        if let Err(err) = call_result {
-            eprintln!(
-                "[script] {} error for {}: {}",
-                if fixed_step { "physics_process" } else { "process" },
+            let call_result = if fixed_step {
+                self.host.call_instance_physics_process(instance_id, dt)
+            } else {
+                self.host.call_instance_process(instance_id, dt)
+            };
+            if let Err(err) = call_result {
+                eprintln!(
+                    "[script] {} error for {}: {}",
+                    if fixed_step { "physics_process" } else { "process" },
                     behaviour.script_path,
                     err
                 );
+                self.host.mark_entity_error(entity);
+            }
+            let instance_ok = self
+                .host
+                .instances
+                .get(&instance_id)
+                .map_or(false, |instance| !instance.errored);
+            if instance_ok {
+                self.host.clear_entity_error(entity);
             }
         }
         Ok(())
     }
 
     fn cleanup_orphaned_instances(&mut self, ecs: &mut crate::ecs::EcsWorld) {
+        self.host.prune_entity_errors(|entity| ecs.world.get_entity(entity).is_ok());
         let mut stale_ids = Vec::new();
         for (&id, instance) in self.host.instances.iter() {
             let Ok(entity_ref) = ecs.world.get_entity(instance.entity) else {
@@ -1065,12 +1118,16 @@ impl ScriptPlugin {
         }
         for id in stale_ids {
             let _ = self.host.call_instance_exit(id);
+            if let Some(instance) = self.host.instances.get(&id) {
+                self.host.clear_entity_error(instance.entity);
+            }
             self.host.remove_instance(id);
         }
-        let mut behaviours = ecs.world.query::<&mut ScriptBehaviour>();
-        for mut behaviour in behaviours.iter_mut(&mut ecs.world) {
+        let mut behaviours = ecs.world.query::<(Entity, &mut ScriptBehaviour)>();
+        for (entity, mut behaviour) in behaviours.iter_mut(&mut ecs.world) {
             if behaviour.instance_id != 0 && !self.host.instances.contains_key(&behaviour.instance_id) {
                 behaviour.instance_id = 0;
+                self.host.clear_entity_error(entity);
             }
         }
     }
@@ -1147,6 +1204,7 @@ impl EnginePlugin for ScriptPlugin {
             true
         };
         let (assets, ecs) = ctx.assets_and_ecs_mut()?;
+        self.cleanup_orphaned_instances(ecs);
         self.host.update(dt, run_scripts, Some(assets));
         if run_scripts && self.host.enabled() {
             self.run_behaviours(ecs, assets, dt, false)?;
@@ -1160,10 +1218,13 @@ impl EnginePlugin for ScriptPlugin {
     }
 
     fn fixed_update(&mut self, ctx: &mut PluginContext<'_>, dt: f32) -> Result<()> {
+        let (assets, ecs) = ctx.assets_and_ecs_mut()?;
+        self.cleanup_orphaned_instances(ecs);
         if self.paused {
+            self.commands.extend(self.host.drain_commands());
+            self.logs.extend(self.host.drain_logs());
             return Ok(());
         }
-        let (assets, ecs) = ctx.assets_and_ecs_mut()?;
         if self.host.enabled() {
             self.run_behaviours(ecs, assets, dt, true)?;
         }
@@ -1329,6 +1390,7 @@ mod tests {
         let first_check = host.last_digest_check;
         host.reload_if_needed(None).expect("no reload needed");
         assert_eq!(host.last_digest_check, first_check, "digest check should not update without interval");
+        std::thread::sleep(Duration::from_millis(260));
         host.last_digest_check = Some(Instant::now() - Duration::from_millis(251));
         host.reload_if_needed(None).expect("reload after interval");
         assert!(host

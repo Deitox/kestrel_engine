@@ -15,6 +15,7 @@ use kestrel_engine::scripts::{ScriptBehaviour, ScriptCommand, ScriptPlugin};
 use kestrel_engine::time::Time;
 use glam::Vec4;
 use pollster::block_on;
+use std::fs;
 use std::io::Write;
 use tempfile::NamedTempFile;
 
@@ -269,6 +270,115 @@ fn behaviour_errors_stop_further_calls() {
             "errored instance should skip callbacks; expected no further logs, got {logs:?}"
         );
     }
+}
+
+#[test]
+fn compile_errors_flag_entity_and_clear_after_fix() {
+    let main_script = write_script(
+        r#"
+            fn init(world) { }
+            fn update(world, dt) { }
+        "#,
+    );
+    let bad_behaviour = write_script(
+        r#"
+            fn ready(world, entity) { world.log("ready"); }
+            fn process(world, entity, dt) { let =; }
+        "#,
+    );
+    let behaviour_path = bad_behaviour.path().to_string_lossy().into_owned();
+
+    let mut plugin = ScriptPlugin::new(main_script.path());
+    let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
+    let mut ecs = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    let mut input = Input::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+    let mut environment_registry = EnvironmentRegistry::new();
+    let time = Time::new();
+
+    let entity = ecs
+        .world
+        .spawn((Transform::default(), ScriptBehaviour::new(behaviour_path.clone())))
+        .id();
+
+    let feature_registry = FeatureRegistryHandle::isolated();
+    let capability_tracker = CapabilityTrackerHandle::isolated();
+
+    // First update: compile fails, instance is not bound but entity is marked errored.
+    {
+        let mut ctx = PluginContext::new(
+            &mut renderer,
+            &mut ecs,
+            &mut assets,
+            &mut input,
+            &mut material_registry,
+            &mut mesh_registry,
+            &mut environment_registry,
+            &time,
+            push_event_bridge,
+            feature_registry.clone(),
+            None,
+            capability_tracker.clone(),
+        );
+        plugin.update(&mut ctx, 0.016).expect("update should surface compile error");
+        let _ = plugin.take_logs();
+    }
+
+    let behaviour = ecs
+        .world
+        .get::<ScriptBehaviour>(entity)
+        .expect("behaviour should remain attached after compile error");
+    assert_eq!(behaviour.instance_id, 0, "instance should not bind on compile error");
+    assert!(
+        plugin.last_error().is_some(),
+        "compile error should populate last_error"
+    );
+    assert!(
+        plugin.entity_has_errored_instance(entity),
+        "entity should be marked errored when compile fails"
+    );
+
+    // Fix the script and ensure the error clears and the instance binds.
+    fs::write(
+        bad_behaviour.path(),
+        r#"
+            fn ready(world, entity) { world.log("ready-fixed"); }
+            fn process(world, entity, dt) { world.log("process-fixed"); }
+        "#,
+    )
+    .expect("rewrite behaviour script");
+
+    {
+        let mut ctx = PluginContext::new(
+            &mut renderer,
+            &mut ecs,
+            &mut assets,
+            &mut input,
+            &mut material_registry,
+            &mut mesh_registry,
+            &mut environment_registry,
+            &time,
+            push_event_bridge,
+            feature_registry,
+            None,
+            capability_tracker,
+        );
+        plugin.update(&mut ctx, 0.016).expect("update should succeed after fixing script");
+        let _ = plugin.take_logs();
+    }
+
+    let behaviour = ecs
+        .world
+        .get::<ScriptBehaviour>(entity)
+        .expect("behaviour should remain attached after reload");
+    assert_ne!(behaviour.instance_id, 0, "instance should bind after successful compile");
+    assert!(
+        !plugin.entity_has_errored_instance(entity),
+        "entity error marker should clear after script is fixed"
+    );
+    assert!(plugin.last_error().is_none(), "last_error should clear after successful reload");
 }
 
 #[test]
@@ -735,4 +845,92 @@ fn exit_is_invoked_on_cleanup() {
         "expected exit log after cleanup, got {logs:?}"
     );
     assert_eq!(plugin.instance_count_for_test(), 0, "instance should be removed after exit");
+}
+
+#[test]
+fn cleanup_runs_while_paused() {
+    let main_script = write_script(
+        r#"
+            fn init(world) { }
+            fn update(world, dt) { }
+        "#,
+    );
+    let behaviour_script = write_script(
+        r#"
+            fn ready(world, entity) { world.log("ready"); }
+            fn process(world, entity, dt) { }
+            fn exit(world, entity) { world.log("exit:" + entity.to_string()); }
+        "#,
+    );
+    let behaviour_path = behaviour_script.path().to_string_lossy().into_owned();
+
+    let mut plugin = ScriptPlugin::new(main_script.path());
+    let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
+    let mut ecs = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    let mut input = Input::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+    let mut environment_registry = EnvironmentRegistry::new();
+    let time = Time::new();
+    let feature_registry = FeatureRegistryHandle::isolated();
+    let capability_tracker = CapabilityTrackerHandle::isolated();
+
+    let entity = ecs
+        .world
+        .spawn((Transform::default(), ScriptBehaviour::new(behaviour_path.clone())))
+        .id();
+
+    // Bind the instance while unpaused.
+    {
+        let mut ctx = PluginContext::new(
+            &mut renderer,
+            &mut ecs,
+            &mut assets,
+            &mut input,
+            &mut material_registry,
+            &mut mesh_registry,
+            &mut environment_registry,
+            &time,
+            push_event_bridge,
+            feature_registry.clone(),
+            None,
+            capability_tracker.clone(),
+        );
+        plugin.update(&mut ctx, 0.016).expect("initial update should bind instance");
+        let _ = plugin.take_logs();
+    }
+
+    plugin.set_paused(true);
+    assert!(ecs.world.despawn(entity), "entity should despawn");
+
+    // While paused, cleanup should still prune the instance and call exit.
+    {
+        let mut ctx = PluginContext::new(
+            &mut renderer,
+            &mut ecs,
+            &mut assets,
+            &mut input,
+            &mut material_registry,
+            &mut mesh_registry,
+            &mut environment_registry,
+            &time,
+            push_event_bridge,
+            feature_registry,
+            None,
+            capability_tracker,
+        );
+        plugin.update(&mut ctx, 0.016).expect("paused update should still cleanup instances");
+        let logs = plugin.take_logs();
+        assert!(
+            logs.iter().any(|l| l.contains("exit:")),
+            "expected exit log while paused cleanup ran, got {logs:?}"
+        );
+    }
+
+    assert_eq!(
+        plugin.instance_count_for_test(),
+        0,
+        "instance should be removed even when cleanup runs during pause"
+    );
 }
