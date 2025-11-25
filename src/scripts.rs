@@ -562,7 +562,7 @@ impl ScriptHost {
         let world = ScriptWorld::new(self.shared.clone());
         match self
             .engine
-            .call_fn::<()>(&mut instance.scope, &compiled.ast, "ready", (world, entity_int))
+            .call_fn::<Dynamic>(&mut instance.scope, &compiled.ast, "ready", (world, entity_int))
         {
             Ok(_) => {
                 instance.has_ready_run = true;

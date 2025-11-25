@@ -838,10 +838,8 @@ impl EcsWorld {
             None => {
                 if self.world.get::<Tint>(entity).is_some() {
                     self.world.entity_mut(entity).remove::<Tint>();
-                    true
-                } else {
-                    false
                 }
+                true
             }
         }
     }
