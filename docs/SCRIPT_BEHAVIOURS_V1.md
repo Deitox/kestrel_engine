@@ -18,7 +18,7 @@ Add per-entity Rhai behaviours that run `ready/world/process/physics_process` ca
 
 ## 2. Current Baseline (engine reality)
 
-- `ScriptHost` now has a multi-script cache (fs-backed) with callback discovery and per-entity instances alongside the legacy entry script (`init/update` + hot reload + `last_error`).
+- `ScriptHost` now has a multi-script cache (asset-backed) with callback discovery and per-entity instances alongside the legacy entry script (`init/update` + hot reload + `last_error`).
 - `ScriptWorld` includes entity-centric commands (`entity_set_*`, `entity_despawn`) routed through `ScriptCommand` and applied in `App::apply_script_commands`, plus the existing spawn/tint/particles/log/rand helpers.
 - `ScriptPlugin` runs inside the plugin system, respects pause/step, and now iterates `ScriptBehaviour` per update/fixed_update to run `ready/process/physics_process`.
 - Studio: script console/log exists; entity inspector has a simple Script section (manual path entry, set/remove). No picker/error surfacing yet.
@@ -30,12 +30,12 @@ The plan below extends this instead of throwing it away.
 ## 3. Status (2025-11-24)
 
 - ✅ Phase 1: `ScriptBehaviour` component + scene/prefab serialization with `instance_id` reset.
-- ✅ Phase 2: Multi-script cache + callback detection (fs-backed; asset loader hookup still pending).
+- ✅ Phase 2: Multi-script cache + callback detection (asset-backed; no fs fallback).
 - ✅ Phase 3: Per-entity instances + lifecycle calls in update/fixed_update with error isolation.
 - ✅ Phase 4: Entity-centric `ScriptWorld` commands and command application in App.
 - ⏳ Phase 5: Inspector supports manual path set/remove; no picker or error display yet.
 - ✅ Phase 6: Sample scripts (`spinner`, `wanderer`, `blinker`) and demo scene `assets/scenes/script_behaviour_demo.json`.
-- Tests run: `cargo test script_compile` (smoke for host); full behaviour smoke/serialization tests still to add.
+- Tests run: `cargo test script_compile` (smoke for host) and behaviour smoke tests (lifecycle, physics_process, error isolation, serialization reset).
 
 ---
 
@@ -82,7 +82,7 @@ The plan below extends this instead of throwing it away.
 
 **Goal:** Let the host compile/cache many scripts while keeping the legacy entry script working.
 
-Status: implemented with fs-backed loading; asset-system integration still TODO.
+Status: implemented with asset-backed loading; no fs fallback.
 
 - Add a registry:
   ```rust
@@ -104,7 +104,7 @@ Status: implemented with fs-backed loading; asset-system integration still TODO.
       pub fn ensure_script_loaded(&mut self, path: &str) -> Result<(), ScriptError>;
   }
   ```
-  - Use the asset system to read script text (fall back to fs only where necessary until assets are wired).
+  - Use the asset system to read script text (asset-only; no fs fallback).
   - Cache ASTs keyed by script path; reuse on subsequent calls.
 - Function discovery: set `has_ready/process/physics_process` flags during compile.
 - Error surfacing: keep `last_error` per host; include path + line/column in compile/runtime errors for Studio to display.

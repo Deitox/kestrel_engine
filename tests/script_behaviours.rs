@@ -1,3 +1,4 @@
+use bevy_ecs::prelude::Entity;
 use kestrel_engine::assets::AssetManager;
 use kestrel_engine::config::WindowConfig;
 use kestrel_engine::ecs::{EcsWorld, Transform};
@@ -10,8 +11,9 @@ use kestrel_engine::plugins::{
     CapabilityTrackerHandle, EnginePlugin, FeatureRegistryHandle, PluginContext,
 };
 use kestrel_engine::renderer::Renderer;
-use kestrel_engine::scripts::{ScriptBehaviour, ScriptPlugin};
+use kestrel_engine::scripts::{ScriptBehaviour, ScriptCommand, ScriptPlugin};
 use kestrel_engine::time::Time;
+use glam::Vec4;
 use pollster::block_on;
 use std::io::Write;
 use tempfile::NamedTempFile;
@@ -267,4 +269,79 @@ fn behaviour_errors_stop_further_calls() {
             "errored instance should skip callbacks; expected no further logs, got {logs:?}"
         );
     }
+}
+
+#[test]
+fn behaviours_enqueue_entity_tint_commands() {
+    let main_script = write_script(
+        r#"
+            fn init(world) { }
+            fn update(world, dt) { }
+        "#,
+    );
+    let behaviour_script = write_script(
+        r#"
+            fn ready(world, entity) { world.entity_set_tint(entity, 0.1, 0.2, 0.3, 0.4); }
+            fn process(world, entity, dt) { world.entity_clear_tint(entity); }
+        "#,
+    );
+    let behaviour_path = behaviour_script.path().to_string_lossy().into_owned();
+
+    let mut plugin = ScriptPlugin::new(main_script.path());
+    let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
+    let mut ecs = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    let mut input = Input::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+    let mut environment_registry = EnvironmentRegistry::new();
+    let time = Time::new();
+
+    let entity = ecs
+        .world
+        .spawn((Transform::default(), ScriptBehaviour::new(behaviour_path.clone())))
+        .id();
+
+    let feature_registry = FeatureRegistryHandle::isolated();
+    let capability_tracker = CapabilityTrackerHandle::isolated();
+
+    {
+        let mut ctx = PluginContext::new(
+            &mut renderer,
+            &mut ecs,
+            &mut assets,
+            &mut input,
+            &mut material_registry,
+            &mut mesh_registry,
+            &mut environment_registry,
+            &time,
+            push_event_bridge,
+            feature_registry.clone(),
+            None,
+            capability_tracker.clone(),
+        );
+        plugin.update(&mut ctx, 0.016).expect("script update should succeed");
+    }
+
+    let tint_commands: Vec<(Entity, Option<Vec4>)> = plugin
+        .take_commands()
+        .into_iter()
+        .filter_map(|cmd| match cmd {
+            ScriptCommand::EntitySetTint { entity, tint } => Some((entity, tint)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tint_commands.len(), 2, "expected tint set and clear commands");
+    assert!(
+        tint_commands.iter().any(|(target, tint)| {
+            *target == entity
+                && matches!(tint, Some(color) if (color.x - 0.1).abs() < 1e-4 && (color.y - 0.2).abs() < 1e-4
+                    && (color.z - 0.3).abs() < 1e-4 && (color.w - 0.4).abs() < 1e-4)
+        }),
+        "expected tint set command for entity {entity:?}, got {tint_commands:?}"
+    );
+    assert!(
+        tint_commands.iter().any(|(target, tint)| *target == entity && tint.is_none()),
+        "expected tint clear command for entity {entity:?}, got {tint_commands:?}"
+    );
 }

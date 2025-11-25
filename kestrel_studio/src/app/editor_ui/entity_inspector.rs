@@ -4,7 +4,7 @@ use super::{
     UiActions,
 };
 use crate::ecs::{
-    EntityInfo, ForceFalloff, ForceFieldKind, ParticleAttractor, ParticleTrail, PropertyTrackPlayer,
+    EntityInfo, ForceFalloff, ForceFieldKind, ParticleAttractor, ParticleTrail, PropertyTrackPlayer, ScriptInfo,
     SkeletonInfo, TransformClipInfo, TransformTrackPlayer,
 };
 use crate::gizmo::{GizmoInteraction, GizmoMode, ScaleHandle};
@@ -25,6 +25,8 @@ pub(super) struct InspectorContext<'a> {
     pub skeleton_assets: &'a HashMap<String, SkeletonAssetSummary>,
     pub atlas_keys: &'a [String],
     pub atlas_assets: &'a HashMap<String, AtlasAssetSummary>,
+    pub script_paths: &'a [String],
+    pub script_error: Option<&'a str>,
     pub skeleton_entities: &'a [SkeletonEntityBinding],
     pub material_options: &'a [MaterialOption],
     pub mesh_subsets: &'a HashMap<String, Arc<[MeshSubsetEntry]>>,
@@ -196,21 +198,71 @@ pub(super) fn show_entity_inspector(
 
         ui.separator();
         ui.collapsing("Script", |ui| {
+            let mut script_path = info.script.as_ref().map(|s| s.path.clone()).unwrap_or_default();
+            let instance_id = info.script.as_ref().map(|s| s.instance_id).unwrap_or(0);
+            let has_script = info.script.is_some();
+
+            if let Some(err) = ctx.script_error {
+                ui.colored_label(egui::Color32::RED, format!("Last script error: {err}"));
+            }
+
             ui.label("Assign a script to this entity:");
-            let mut path = String::new();
             ui.horizontal(|ui| {
                 ui.label("Path");
-                ui.add(egui::TextEdit::singleline(&mut path).hint_text("assets/scripts/example.rhai"));
-                if ui.button("Set").clicked() && !path.trim().is_empty() {
-                    actions.inspector_actions.push(InspectorAction::SetScript {
-                        entity,
-                        path: path.trim().to_string(),
-                    });
+                let edit_response = ui
+                    .add(egui::TextEdit::singleline(&mut script_path).hint_text("assets/scripts/example.rhai"));
+                if edit_response.changed() {
+                    if script_path.trim().is_empty() {
+                        info.script = None;
+                    } else {
+                        info.script = Some(ScriptInfo { path: script_path.clone(), instance_id });
+                    }
                 }
-                if ui.button("Remove").clicked() {
-                    actions.inspector_actions.push(InspectorAction::RemoveScript { entity });
+                if ui.button("Apply").clicked() && !script_path.trim().is_empty() {
+                    let trimmed = script_path.trim().to_string();
+                    actions.inspector_actions.push(InspectorAction::SetScript { entity, path: trimmed.clone() });
+                    info.script = Some(ScriptInfo { path: trimmed, instance_id: 0 });
+                    _inspector_refresh = true;
                 }
+                ui.add_enabled_ui(has_script, |ui| {
+                    if ui.button("Remove").clicked() {
+                        actions.inspector_actions.push(InspectorAction::RemoveScript { entity });
+                        info.script = None;
+                        script_path.clear();
+                        _inspector_refresh = true;
+                    }
+                });
             });
+
+            let mut picker_selection: Option<String> = None;
+            let selected_label = if script_path.trim().is_empty() {
+                "Select script asset".to_string()
+            } else {
+                script_path.clone()
+            };
+            egui::ComboBox::from_id_salt(("script_picker", entity.index()))
+                .selected_text(selected_label)
+                .show_ui(ui, |ui| {
+                    for path in ctx.script_paths {
+                        if ui.selectable_label(script_path == *path, path).clicked() {
+                            picker_selection = Some(path.clone());
+                        }
+                    }
+            });
+            if let Some(picked) = picker_selection {
+                let trimmed = picked.trim().to_string();
+                actions.inspector_actions.push(InspectorAction::SetScript { entity, path: trimmed.clone() });
+                info.script = Some(ScriptInfo { path: trimmed, instance_id: 0 });
+                _inspector_refresh = true;
+            }
+
+            if has_script {
+                if instance_id != 0 {
+                    ui.small(format!("Instance id (runtime): {instance_id}"));
+                } else {
+                    ui.small("Instance id will be assigned at runtime.");
+                }
+            }
             ui.small("Scripts are relative to the project root, e.g. assets/scripts/my_behaviour.rhai");
         });
         ui.collapsing("Particles", |ui| {

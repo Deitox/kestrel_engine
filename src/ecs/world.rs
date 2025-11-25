@@ -2080,6 +2080,14 @@ impl EcsWorld {
                 mesh_surface.map(|surface| MeshLightingInfo::from(&surface.lighting)).unwrap_or_default();
             MeshInfo { key: mesh_ref.key.clone(), material, lighting }
         });
+        let script = self.world.get::<ScriptBehaviour>(entity).and_then(|behaviour| {
+            let path = behaviour.script_path.trim();
+            if path.is_empty() {
+                None
+            } else {
+                Some(ScriptInfo { path: path.to_string(), instance_id: behaviour.instance_id })
+            }
+        });
         let mesh_transform = self.world.get::<Transform3D>(entity).map(|transform| Transform3DInfo {
             translation: transform.translation,
             rotation: transform.rotation,
@@ -2132,6 +2140,7 @@ impl EcsWorld {
             rotation: transform.rotation,
             scale: transform.scale,
             velocity,
+            script,
             transform_clip,
             transform_tracks,
             property_tracks,

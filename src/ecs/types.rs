@@ -3397,12 +3397,19 @@ pub struct ParticleEmitterInfo {
 }
 
 #[derive(Clone)]
+pub struct ScriptInfo {
+    pub path: String,
+    pub instance_id: u64,
+}
+
+#[derive(Clone)]
 pub struct EntityInfo {
     pub scene_id: SceneEntityId,
     pub translation: Vec2,
     pub rotation: f32,
     pub scale: Vec2,
     pub velocity: Option<Vec2>,
+    pub script: Option<ScriptInfo>,
     pub transform_clip: Option<TransformClipInfo>,
     pub transform_tracks: Option<TransformTrackPlayer>,
     pub property_tracks: Option<PropertyTrackPlayer>,

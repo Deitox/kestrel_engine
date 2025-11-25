@@ -1255,6 +1255,27 @@ impl App {
         self.script_plugin().and_then(|plugin| plugin.resolve_handle(handle))
     }
 
+    fn script_asset_paths(&self) -> Arc<[String]> {
+        let scripts_root = self.project.join_assets("scripts");
+        let mut paths = Vec::new();
+        if let Ok(entries) = fs::read_dir(&scripts_root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|ext| ext.to_str()).unwrap_or_default() != "rhai" {
+                    continue;
+                }
+                let relative = path
+                    .strip_prefix(self.project.root())
+                    .unwrap_or_else(|_| path.as_path());
+                let normalized = relative.to_string_lossy().replace('\\', "/");
+                paths.push(normalized);
+            }
+        }
+        paths.sort();
+        paths.dedup();
+        Arc::from(paths.into_boxed_slice())
+    }
+
     fn refresh_editor_analytics_state(&mut self) {
         let mut shadow_pass_metric = None;
         let mut mesh_pass_metric = None;
@@ -2655,6 +2676,7 @@ impl ApplicationHandler for App {
             self.with_editor_ui_state_mut(|state| state.telemetry_cache.skeleton_assets(&self.assets));
         let (atlas_keys, atlas_assets) =
             self.with_editor_ui_state_mut(|state| state.telemetry_cache.atlas_assets(&self.assets));
+        let script_paths = self.script_asset_paths();
         let skeleton_entities: Arc<[editor_ui::SkeletonEntityBinding]> = Arc::from(
             self.ecs
                 .skeleton_entities()
@@ -3188,6 +3210,7 @@ impl ApplicationHandler for App {
             skeleton_assets,
             atlas_keys,
             atlas_assets,
+            script_paths,
             skeleton_entities,
             material_options,
             mesh_subsets,
@@ -4341,6 +4364,11 @@ impl App {
                 ScriptCommand::EntitySetScale { entity, scale } => {
                     if !self.ecs.set_scale(entity, scale) {
                         eprintln!("[script] entity_set_scale failed for entity {:?}", entity);
+                    }
+                }
+                ScriptCommand::EntitySetTint { entity, tint } => {
+                    if !self.ecs.set_tint(entity, tint) {
+                        eprintln!("[script] entity_set_tint failed for entity {:?}", entity);
                     }
                 }
                 ScriptCommand::EntitySetVelocity { entity, velocity } => {

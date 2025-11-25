@@ -70,6 +70,7 @@ pub enum ScriptCommand {
     EntitySetPosition { entity: Entity, position: Vec2 },
     EntitySetRotation { entity: Entity, rotation: f32 },
     EntitySetScale { entity: Entity, scale: Vec2 },
+    EntitySetTint { entity: Entity, tint: Option<Vec4> },
     EntitySetVelocity { entity: Entity, velocity: Vec2 },
     EntityDespawn { entity: Entity },
 }
@@ -235,6 +236,28 @@ impl ScriptWorld {
         }
         let clamped = Vec2::new(sx.max(0.01), sy.max(0.01));
         self.state.borrow_mut().commands.push(ScriptCommand::EntitySetScale { entity, scale: clamped });
+        true
+    }
+
+    fn entity_set_tint(&mut self, entity_bits: ScriptHandle, r: FLOAT, g: FLOAT, b: FLOAT, a: FLOAT) -> bool {
+        let entity = Entity::from_bits(entity_bits as u64);
+        let r = r as f32;
+        let g = g as f32;
+        let b = b as f32;
+        let a = a as f32;
+        if !self.ensure_finite("entity_set_tint", &[r, g, b, a]) {
+            return false;
+        }
+        self.state
+            .borrow_mut()
+            .commands
+            .push(ScriptCommand::EntitySetTint { entity, tint: Some(Vec4::new(r, g, b, a)) });
+        true
+    }
+
+    fn entity_clear_tint(&mut self, entity_bits: ScriptHandle) -> bool {
+        let entity = Entity::from_bits(entity_bits as u64);
+        self.state.borrow_mut().commands.push(ScriptCommand::EntitySetTint { entity, tint: None });
         true
     }
 
@@ -1025,6 +1048,8 @@ fn register_api(engine: &mut Engine) {
     engine.register_fn("entity_set_position", ScriptWorld::entity_set_position);
     engine.register_fn("entity_set_rotation", ScriptWorld::entity_set_rotation);
     engine.register_fn("entity_set_scale", ScriptWorld::entity_set_scale);
+    engine.register_fn("entity_set_tint", ScriptWorld::entity_set_tint);
+    engine.register_fn("entity_clear_tint", ScriptWorld::entity_clear_tint);
     engine.register_fn("entity_set_velocity", ScriptWorld::entity_set_velocity);
     engine.register_fn("entity_despawn", ScriptWorld::entity_despawn);
     engine.register_fn("log", ScriptWorld::log);

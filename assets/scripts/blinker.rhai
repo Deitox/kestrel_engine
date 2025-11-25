@@ -15,9 +15,9 @@ fn process(world, entity, dt) {
         state.timer = 0.0;
         state.on = !state.on;
         if state.on {
-            world.set_tint(entity, 0.9, 0.3, 0.3, 1.0);
+            world.entity_set_tint(entity, 0.9, 0.3, 0.3, 1.0);
         } else {
-            world.clear_tint(entity);
+            world.entity_clear_tint(entity);
         }
     }
 }

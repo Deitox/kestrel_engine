@@ -109,9 +109,14 @@ impl App {
                     }
                 }
                 editor_ui::InspectorAction::SetScript { entity, path } => {
-                    let mut entity_ref = self.ecs.world.entity_mut(entity);
-                    entity_ref.insert(crate::scripts::ScriptBehaviour::new(path));
-                    self.set_inspector_status(Some("Script set.".to_string()));
+                    let trimmed = path.trim();
+                    if trimmed.is_empty() {
+                        self.set_inspector_status(Some("Script path cannot be empty.".to_string()));
+                    } else {
+                        let mut entity_ref = self.ecs.world.entity_mut(entity);
+                        entity_ref.insert(crate::scripts::ScriptBehaviour::new(trimmed.to_string()));
+                        self.set_inspector_status(Some(format!("Script set to {trimmed}.")));
+                    }
                 }
                 editor_ui::InspectorAction::RemoveScript { entity } => {
                     let mut entity_ref = self.ecs.world.entity_mut(entity);
