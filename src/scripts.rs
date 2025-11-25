@@ -1048,8 +1048,9 @@ pub struct ScriptPlugin {
     logs: Vec<String>,
     paused: bool,
     step_once: bool,
-    path_scratch: HashSet<String>,
-    failed_path_scratch: HashSet<String>,
+    path_indices: HashMap<String, usize>,
+    path_list: Vec<String>,
+    failed_path_scratch: HashSet<usize>,
     id_updates: Vec<(Entity, u64)>,
 }
 
@@ -1061,7 +1062,8 @@ impl ScriptPlugin {
             logs: Vec::new(),
             paused: false,
             step_once: false,
-            path_scratch: HashSet::new(),
+            path_indices: HashMap::new(),
+            path_list: Vec::new(),
             failed_path_scratch: HashSet::new(),
             id_updates: Vec::new(),
         }
@@ -1120,36 +1122,41 @@ impl ScriptPlugin {
         dt: f32,
         fixed_step: bool,
     ) -> Result<()> {
-        self.path_scratch.clear();
+        self.path_indices.clear();
+        self.path_list.clear();
         self.failed_path_scratch.clear();
         self.id_updates.clear();
         let mut query = ecs.world.query::<(Entity, &mut ScriptBehaviour)>();
-        let mut worklist: Vec<(Entity, String, u64)> = Vec::new();
+        let mut worklist: Vec<(Entity, usize, u64)> = Vec::new();
         for (entity, behaviour) in query.iter_mut(&mut ecs.world) {
             let path = behaviour.script_path.trim();
             if path.is_empty() {
                 continue;
             }
-            self.path_scratch.insert(path.to_string());
-            worklist.push((entity, behaviour.script_path.clone(), behaviour.instance_id));
+            let idx = if let Some(idx) = self.path_indices.get(path).copied() {
+                idx
+            } else {
+                let idx = self.path_list.len();
+                self.path_list.push(path.to_string());
+                self.path_indices.insert(path.to_string(), idx);
+                idx
+            };
+            worklist.push((entity, idx, behaviour.instance_id));
         }
-        for path in self.path_scratch.iter() {
-            if let Err(err) = self.host.ensure_script_loaded(&path, Some(assets)) {
+        for (idx, path) in self.path_list.iter().enumerate() {
+            if let Err(err) = self.host.ensure_script_loaded(path, Some(assets)) {
                 self.host.set_error_message(err.to_string());
-                self.failed_path_scratch.insert(path.clone());
+                self.failed_path_scratch.insert(idx);
             }
         }
-        for (entity, script_path, mut instance_id) in worklist.into_iter() {
-            if script_path.is_empty() {
-                self.host.clear_entity_error(entity);
-                continue;
-            }
-            if self.failed_path_scratch.contains(script_path.trim()) {
+        for (entity, path_idx, mut instance_id) in worklist.into_iter() {
+            if self.failed_path_scratch.contains(&path_idx) {
                 self.host.mark_entity_error(entity);
                 continue;
             }
+            let script_path = &self.path_list[path_idx];
             if instance_id == 0 {
-                match self.host.create_instance_preloaded(&script_path, entity) {
+                match self.host.create_instance_preloaded(script_path, entity) {
                     Ok(id) => {
                         instance_id = id;
                         self.id_updates.push((entity, id));
@@ -1174,7 +1181,7 @@ impl ScriptPlugin {
                 eprintln!(
                     "[script] {} error for {}: {}",
                     if fixed_step { "physics_process" } else { "process" },
-                    script_path,
+                    &self.path_list[path_idx],
                     err
                 );
                 self.host.mark_entity_error(entity);
