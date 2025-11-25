@@ -1050,6 +1050,7 @@ pub struct ScriptPlugin {
     step_once: bool,
     path_scratch: HashSet<String>,
     failed_path_scratch: HashSet<String>,
+    id_updates: Vec<(Entity, u64)>,
 }
 
 impl ScriptPlugin {
@@ -1062,6 +1063,7 @@ impl ScriptPlugin {
             step_once: false,
             path_scratch: HashSet::new(),
             failed_path_scratch: HashSet::new(),
+            id_updates: Vec::new(),
         }
     }
 
@@ -1120,6 +1122,7 @@ impl ScriptPlugin {
     ) -> Result<()> {
         self.path_scratch.clear();
         self.failed_path_scratch.clear();
+        self.id_updates.clear();
         let mut query = ecs.world.query::<(Entity, &mut ScriptBehaviour)>();
         let mut worklist: Vec<(Entity, String, u64)> = Vec::new();
         for (entity, behaviour) in query.iter_mut(&mut ecs.world) {
@@ -1147,7 +1150,10 @@ impl ScriptPlugin {
             }
             if instance_id == 0 {
                 match self.host.create_instance_preloaded(&script_path, entity) {
-                    Ok(id) => instance_id = id,
+                    Ok(id) => {
+                        instance_id = id;
+                        self.id_updates.push((entity, id));
+                    }
                     Err(err) => {
                         self.host.set_error_message(err.to_string());
                         self.host.mark_entity_error(entity);
@@ -1182,19 +1188,10 @@ impl ScriptPlugin {
                 self.host.clear_entity_error(entity);
             }
         }
-        let mut query = ecs.world.query::<(Entity, &mut ScriptBehaviour)>();
-        for (entity, mut behaviour) in query.iter_mut(&mut ecs.world) {
-            if behaviour.script_path.is_empty() {
-                continue;
-            }
-            if behaviour.instance_id == 0 {
-                if let Some(instance) = self
-                    .host
-                    .instances
-                    .iter()
-                    .find(|(_, inst)| inst.entity == entity && inst.script_path == behaviour.script_path)
-                {
-                    behaviour.instance_id = *instance.0;
+        for (entity, id) in self.id_updates.drain(..) {
+            if let Ok(mut entity_ref) = ecs.world.get_entity_mut(entity) {
+                if let Some(mut behaviour) = entity_ref.get_mut::<ScriptBehaviour>() {
+                    behaviour.instance_id = id;
                 }
             }
         }
