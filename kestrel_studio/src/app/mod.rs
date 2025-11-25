@@ -1258,17 +1258,27 @@ impl App {
     fn script_asset_paths(&self) -> Arc<[String]> {
         let scripts_root = self.project.join_assets("scripts");
         let mut paths = Vec::new();
-        if let Ok(entries) = fs::read_dir(&scripts_root) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|ext| ext.to_str()).unwrap_or_default() != "rhai" {
-                    continue;
+        let mut stack = vec![scripts_root];
+        while let Some(dir) = stack.pop() {
+            if let Ok(entries) = fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let Ok(ft) = entry.file_type() else {
+                        continue;
+                    };
+                    if ft.is_dir() {
+                        stack.push(path);
+                        continue;
+                    }
+                    if path.extension().and_then(|ext| ext.to_str()).unwrap_or_default() != "rhai" {
+                        continue;
+                    }
+                    let relative = path
+                        .strip_prefix(self.project.root())
+                        .unwrap_or_else(|_| path.as_path());
+                    let normalized = relative.to_string_lossy().replace('\\', "/");
+                    paths.push(normalized);
                 }
-                let relative = path
-                    .strip_prefix(self.project.root())
-                    .unwrap_or_else(|_| path.as_path());
-                let normalized = relative.to_string_lossy().replace('\\', "/");
-                paths.push(normalized);
             }
         }
         paths.sort();
@@ -3049,6 +3059,10 @@ impl ApplicationHandler for App {
                 path: dep.path().map(|p| p.to_string()),
             })
         });
+        let selected_entity_opt = self.selected_entity();
+        let selected_script_error = selected_entity_opt
+            .map(|entity| self.script_plugin().map_or(false, |plugin| plugin.entity_has_errored_instance(entity)))
+            .unwrap_or(false);
 
         let editor_params = editor_ui::EditorUiParams {
             raw_input,
@@ -3143,7 +3157,8 @@ impl ApplicationHandler for App {
             ui_camera_zoom_max: ui_camera_zoom_max_state,
             ui_sprite_guard_pixels: ui_sprite_guard_pixels_state,
             ui_sprite_guard_mode: ui_sprite_guard_mode_state,
-            selected_entity: self.selected_entity(),
+            selected_entity: selected_entity_opt,
+            selected_script_error,
             selection_details: selected_info.clone(),
             prev_selection_details: prev_selection_details.clone(),
             prev_selected_entity,

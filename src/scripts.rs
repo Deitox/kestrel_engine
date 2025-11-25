@@ -428,6 +428,16 @@ pub struct ScriptHost {
 }
 
 impl ScriptHost {
+    fn format_rhai_error(err: &EvalAltResult, script_path: &str, fn_name: &str) -> String {
+        let pos = err.position();
+        let location = match (pos.line(), pos.position()) {
+            (Some(line), Some(col)) => format!("{script_path}:{line}:{col}"),
+            (Some(line), None) => format!("{script_path}:{line}"),
+            _ => script_path.to_string(),
+        };
+        format!("{location} in {fn_name}: {err}")
+    }
+
     pub fn new(path: impl AsRef<Path>) -> Self {
         let mut engine = Engine::new();
         engine.set_fast_operators(true);
@@ -463,6 +473,10 @@ impl ScriptHost {
 
     pub fn last_error(&self) -> Option<&str> {
         self.error.as_deref()
+    }
+
+    pub fn entity_has_errored_instance(&self, entity: Entity) -> bool {
+        self.instances.values().any(|instance| instance.entity == entity && instance.errored)
     }
 
     pub fn script_path(&self) -> &Path {
@@ -556,8 +570,9 @@ impl ScriptHost {
             }
             Err(err) => {
                 instance.errored = true;
-                self.error = Some(err.to_string());
-                Err(anyhow!(err.to_string()))
+                let message = Self::format_rhai_error(err.as_ref(), &instance.script_path, "ready");
+                self.error = Some(message.clone());
+                Err(anyhow!(message))
             }
         }
     }
@@ -584,8 +599,9 @@ impl ScriptHost {
             Ok(_) => Ok(()),
             Err(err) => {
                 instance.errored = true;
-                self.error = Some(err.to_string());
-                Err(anyhow!(err.to_string()))
+                let message = Self::format_rhai_error(err.as_ref(), &instance.script_path, "process");
+                self.error = Some(message.clone());
+                Err(anyhow!(message))
             }
         }
     }
@@ -612,8 +628,9 @@ impl ScriptHost {
             Ok(_) => Ok(()),
             Err(err) => {
                 instance.errored = true;
-                self.error = Some(err.to_string());
-                Err(anyhow!(err.to_string()))
+                let message = Self::format_rhai_error(err.as_ref(), &instance.script_path, "physics_process");
+                self.error = Some(message.clone());
+                Err(anyhow!(message))
             }
         }
     }
@@ -652,16 +669,20 @@ impl ScriptHost {
                     if let EvalAltResult::ErrorFunctionNotFound(fn_sig, _) = err.as_ref() {
                         if fn_sig.starts_with("init") {
                             if self.function_exists_with_any_arity(ast, "init") {
-                                self.error = Some(
-                                    "Script function 'init' has wrong signature; expected init(world).".to_string(),
+                                let msg = format!(
+                                    "{}: Script function 'init' has wrong signature; expected init(world).",
+                                    self.script_path.display()
                                 );
+                                self.error = Some(msg);
                                 return;
                             }
                             self.initialized = true;
                             return;
                         }
                     }
-                    self.error = Some(err.to_string());
+                    let msg =
+                        Self::format_rhai_error(err.as_ref(), self.script_path.to_string_lossy().as_ref(), "init");
+                    self.error = Some(msg);
                     return;
                 }
             }
@@ -675,17 +696,23 @@ impl ScriptHost {
                 if let EvalAltResult::ErrorFunctionNotFound(fn_sig, _) = err.as_ref() {
                     if fn_sig.starts_with("update") {
                         if self.function_exists_with_any_arity(ast, "update") {
-                            self.error = Some(
-                                "Script function 'update' has wrong signature; expected update(world, dt: number)."
-                                    .to_string(),
+                            let msg = format!(
+                                "{}: Script function 'update' has wrong signature; expected update(world, dt: number).",
+                                self.script_path.display()
                             );
+                            self.error = Some(msg);
                         } else {
                             self.error = None;
                         }
                         return;
                     }
                 }
-                self.error = Some(err.to_string());
+                let msg = Self::format_rhai_error(
+                    err.as_ref(),
+                    self.script_path.to_string_lossy().as_ref(),
+                    "update",
+                );
+                self.error = Some(msg);
             }
         }
     }
@@ -964,6 +991,10 @@ impl ScriptPlugin {
 
     pub fn last_error(&self) -> Option<&str> {
         self.host.last_error()
+    }
+
+    pub fn entity_has_errored_instance(&self, entity: Entity) -> bool {
+        self.host.entity_has_errored_instance(entity)
     }
 
     pub fn eval_repl(&mut self, source: &str) -> Result<Option<String>> {

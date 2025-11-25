@@ -27,6 +27,7 @@ pub(super) struct InspectorContext<'a> {
     pub atlas_assets: &'a HashMap<String, AtlasAssetSummary>,
     pub script_paths: &'a [String],
     pub script_error: Option<&'a str>,
+    pub script_error_for_entity: bool,
     pub skeleton_entities: &'a [SkeletonEntityBinding],
     pub material_options: &'a [MaterialOption],
     pub mesh_subsets: &'a HashMap<String, Arc<[MeshSubsetEntry]>>,
@@ -206,6 +207,12 @@ pub(super) fn show_entity_inspector(
 
             if let Some(err) = ctx.script_error {
                 ui.colored_label(egui::Color32::RED, format!("Last script error: {err}"));
+            }
+            if ctx.script_error_for_entity {
+                ui.colored_label(
+                    egui::Color32::RED,
+                    "This entity's script is currently errored; callbacks are paused until it succeeds.",
+                );
             }
 
             ui.label("Assign a script to this entity:");
