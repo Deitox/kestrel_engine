@@ -1,15 +1,22 @@
+use std::io::Write;
+use std::path::Path;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{App, ScriptConsoleEntry, ScriptConsoleKind, SCRIPT_CONSOLE_CAPACITY, SCRIPT_HISTORY_CAPACITY};
 
 impl App {
     pub(super) fn push_script_console(&mut self, kind: ScriptConsoleKind, text: impl Into<String>) {
         let mut state = self.editor_ui_state_mut();
-        state.script_console.push_back(ScriptConsoleEntry { kind, text: text.into() });
+        let text = text.into();
+        state.script_console.push_back(ScriptConsoleEntry { kind, text: text.clone() });
         while state.script_console.len() > SCRIPT_CONSOLE_CAPACITY {
             state.script_console.pop_front();
         }
         state.script_console_snapshot = None;
+        if matches!(kind, ScriptConsoleKind::Error) {
+            self.append_script_error_log(&text);
+        }
     }
 
     pub(super) fn script_console_entries(&mut self) -> Arc<[ScriptConsoleEntry]> {
@@ -98,6 +105,21 @@ impl App {
             let mut state = self.editor_ui_state_mut();
             state.script_debugger_open = true;
             state.script_focus_repl = true;
+        }
+    }
+
+    fn append_script_error_log(&self, message: &str) {
+        // Best-effort append to artifacts/script_errors.log so errors are persisted outside the UI.
+        let log_path = Path::new("artifacts").join("script_errors.log");
+        if let Some(parent) = log_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| format!("{}", d.as_secs()))
+                .unwrap_or_else(|_| "0".to_string());
+            let _ = writeln!(file, "[{timestamp}] {message}");
         }
     }
 }

@@ -489,12 +489,21 @@ impl ScriptHost {
         assets: Option<&AssetManager>,
     ) -> Result<u64> {
         self.ensure_script_loaded(script_path, assets)?;
+        let compiled = self
+            .scripts
+            .get(script_path)
+            .ok_or_else(|| anyhow!("Script '{script_path}' not cached after load"))?;
         let id = self.next_instance_id;
         self.next_instance_id = self.next_instance_id.saturating_add(1);
+        let mut scope = Scope::new();
+        // Run global statements to initialize script-scoped state for this instance.
+        if let Err(err) = self.engine.run_ast_with_scope(&mut scope, &compiled.ast) {
+            return Err(anyhow!("Evaluating globals for '{script_path}': {err}"));
+        }
         let instance = ScriptInstance {
             script_path: script_path.to_string(),
             entity,
-            scope: Scope::new(),
+            scope,
             has_ready_run: false,
             errored: false,
         };
@@ -535,7 +544,7 @@ impl ScriptHost {
         if !compiled.has_ready || instance.has_ready_run || instance.errored {
             return Ok(());
         }
-        let entity_int: FLOAT = entity_to_rhai(instance.entity) as FLOAT;
+        let entity_int: ScriptHandle = entity_to_rhai(instance.entity);
         let world = ScriptWorld::new(self.shared.clone());
         match self
             .engine
@@ -563,13 +572,15 @@ impl ScriptHost {
         if !compiled.has_process || instance.errored {
             return Ok(());
         }
-        let entity_int: FLOAT = entity_to_rhai(instance.entity) as FLOAT;
+        let entity_int: ScriptHandle = entity_to_rhai(instance.entity);
         let world = ScriptWorld::new(self.shared.clone());
         let dt_rhai: FLOAT = dt as FLOAT;
-        match self
-            .engine
-            .call_fn::<()>(&mut instance.scope, &compiled.ast, "process", (world, entity_int, dt_rhai))
-        {
+        match self.engine.call_fn::<Dynamic>(
+            &mut instance.scope,
+            &compiled.ast,
+            "process",
+            (world, entity_int, dt_rhai),
+        ) {
             Ok(_) => Ok(()),
             Err(err) => {
                 instance.errored = true;
@@ -589,10 +600,10 @@ impl ScriptHost {
         if !compiled.has_physics_process || instance.errored {
             return Ok(());
         }
-        let entity_int: FLOAT = entity_to_rhai(instance.entity) as FLOAT;
+        let entity_int: ScriptHandle = entity_to_rhai(instance.entity);
         let world = ScriptWorld::new(self.shared.clone());
         let dt_rhai: FLOAT = dt as FLOAT;
-        match self.engine.call_fn::<()>(
+        match self.engine.call_fn::<Dynamic>(
             &mut instance.scope,
             &compiled.ast,
             "physics_process",
@@ -899,15 +910,15 @@ impl ScriptPlugin {
             if let Err(err) = self.host.call_instance_ready(instance_id) {
                 eprintln!("[script] ready error for {}: {}", behaviour.script_path, err);
             }
-            let call_result = if fixed_step {
-                self.host.call_instance_physics_process(instance_id, dt)
-            } else {
-                self.host.call_instance_process(instance_id, dt)
-            };
-            if let Err(err) = call_result {
-                eprintln!(
-                    "[script] {} error for {}: {}",
-                    if fixed_step { "physics_process" } else { "process" },
+        let call_result = if fixed_step {
+            self.host.call_instance_physics_process(instance_id, dt)
+        } else {
+            self.host.call_instance_process(instance_id, dt)
+        };
+        if let Err(err) = call_result {
+            eprintln!(
+                "[script] {} error for {}: {}",
+                if fixed_step { "physics_process" } else { "process" },
                     behaviour.script_path,
                     err
                 );

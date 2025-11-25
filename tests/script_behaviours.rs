@@ -272,6 +272,53 @@ fn behaviour_errors_stop_further_calls() {
 }
 
 #[test]
+fn asset_behaviours_run_without_global_state_errors() {
+    let main_script_path = "assets/scripts/main.rhai";
+    let behaviour_paths = ["assets/scripts/blinker.rhai", "assets/scripts/wanderer.rhai", "assets/scripts/spinner.rhai"];
+
+    let mut plugin = ScriptPlugin::new(main_script_path);
+    let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
+    let mut ecs = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    let mut input = Input::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+    let mut environment_registry = EnvironmentRegistry::new();
+    let time = Time::new();
+    let feature_registry = FeatureRegistryHandle::isolated();
+    let capability_tracker = CapabilityTrackerHandle::isolated();
+
+    for path in behaviour_paths {
+        ecs.world.spawn((Transform::default(), ScriptBehaviour::new(path.to_string())));
+    }
+
+    // Drive update twice to allow ready + process to run.
+    for _ in 0..2 {
+        let mut ctx = PluginContext::new(
+            &mut renderer,
+            &mut ecs,
+            &mut assets,
+            &mut input,
+            &mut material_registry,
+            &mut mesh_registry,
+            &mut environment_registry,
+            &time,
+            push_event_bridge,
+            feature_registry.clone(),
+            None,
+            capability_tracker.clone(),
+        );
+        plugin.update(&mut ctx, 0.016).expect("script update should succeed");
+        let _ = plugin.take_logs();
+    }
+
+    assert!(
+        plugin.last_error().is_none(),
+        "Asset behaviours should run without global state errors, got {:?}",
+        plugin.last_error()
+    );
+}
+#[test]
 fn behaviours_enqueue_entity_tint_commands() {
     let main_script = write_script(
         r#"
