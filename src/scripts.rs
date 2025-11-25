@@ -30,6 +30,7 @@ pub struct CompiledScript {
     pub len: u64,
     pub digest: u64,
     pub last_checked: Option<Instant>,
+    pub asset_revision: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -430,6 +431,7 @@ pub struct ScriptHost {
     last_len: Option<u64>,
     last_digest: Option<u64>,
     last_digest_check: Option<Instant>,
+    last_asset_revision: Option<u64>,
     error: Option<String>,
     enabled: bool,
     initialized: bool,
@@ -466,6 +468,7 @@ impl ScriptHost {
             last_len: None,
             last_digest: None,
             last_digest_check: None,
+            last_asset_revision: None,
             error: None,
             enabled: true,
             initialized: false,
@@ -524,16 +527,20 @@ impl ScriptHost {
             }
         }
         let was_loaded = self.scripts.contains_key(path);
-        let source = self.load_script_source(path, assets)?;
+        let (source, asset_rev) = self.load_script_source_with_revision(path, assets)?;
         let len = source.len() as u64;
         let digest = hash_source(&source);
         if let Some(compiled) = self.scripts.get_mut(path) {
-            if compiled.len == len && compiled.digest == digest {
+            let same_source = compiled.len == len && compiled.digest == digest;
+            let same_rev = asset_rev.is_some() && compiled.asset_revision == asset_rev;
+            if same_source || same_rev {
                 compiled.last_checked = Some(now);
+                compiled.asset_revision = asset_rev.or(compiled.asset_revision);
                 return Ok(());
             }
         }
         let mut compiled = self.compile_script_from_source(path, &source, len, digest)?;
+        compiled.asset_revision = asset_rev;
         compiled.last_checked = Some(now);
         self.error = None;
         self.scripts.insert(path.to_string(), compiled);
@@ -595,6 +602,20 @@ impl ScriptHost {
         std::fs::read_to_string(path).with_context(|| format!("Reading script file '{path}'"))
     }
 
+    fn load_script_source_with_revision(
+        &self,
+        path: &str,
+        assets: Option<&AssetManager>,
+    ) -> Result<(String, Option<u64>)> {
+        if let Some(assets) = assets {
+            let revision = Some(assets.revision());
+            let source = assets.read_text(path).with_context(|| format!("Reading script asset '{path}'"))?;
+            return Ok((source, revision));
+        }
+        let source = std::fs::read_to_string(path).with_context(|| format!("Reading script file '{path}'"))?;
+        Ok((source, None))
+    }
+
     fn compile_script_from_source(
         &self,
         path: &str,
@@ -616,6 +637,7 @@ impl ScriptHost {
             len,
             digest,
             last_checked: Some(Instant::now()),
+            asset_revision: None,
         })
     }
 
@@ -894,13 +916,40 @@ impl ScriptHost {
     }
 
     fn reload_if_needed(&mut self, assets: Option<&AssetManager>) -> Result<()> {
+        let now = Instant::now();
+        if let Some(assets) = assets {
+            let revision = assets.revision();
+            if self.ast.is_some() && self.last_asset_revision == Some(revision) {
+                self.last_digest_check = Some(now);
+                return Ok(());
+            }
+            let (source, _) = self
+                .load_script_source_with_revision(self.script_path.to_string_lossy().as_ref(), Some(assets))
+                .with_context(|| format!("Reading script asset '{}'", self.script_path.display()))?;
+            let len = source.len() as u64;
+            let digest = hash_source(&source);
+            let should_reload = self.ast.is_none()
+                || self.last_digest.is_none_or(|prev| prev != digest)
+                || self.last_len.is_none_or(|prev| prev != len)
+                || self.last_asset_revision.is_none_or(|prev| prev != revision);
+            if should_reload {
+                // Without filesystem metadata, fall back to epoch/length for change tracking.
+                self.load_script_from_source(source, SystemTime::UNIX_EPOCH, len, Some(revision))?;
+                self.last_digest = Some(digest);
+            } else {
+                self.last_asset_revision = Some(revision);
+            }
+            self.last_digest_check = Some(now);
+            return Ok(());
+        }
+
         if let Some(last_check) = self.last_digest_check {
             if last_check.elapsed() < SCRIPT_DIGEST_CHECK_INTERVAL {
                 return Ok(());
             }
         }
         let source = self
-            .load_script_source(self.script_path.to_string_lossy().as_ref(), assets)
+            .load_script_source(self.script_path.to_string_lossy().as_ref(), None)
             .with_context(|| format!("Reading script asset '{}'", self.script_path.display()))?;
         let len = source.len() as u64;
         let digest = hash_source(&source);
@@ -908,23 +957,28 @@ impl ScriptHost {
             || self.last_digest.is_none_or(|prev| prev != digest)
             || self.last_len.is_none_or(|prev| prev != len);
         if should_reload {
-            // Without filesystem metadata, fall back to epoch/length for change tracking.
-            self.load_script_from_source(source, SystemTime::UNIX_EPOCH, len)?;
+            self.load_script_from_source(source, SystemTime::UNIX_EPOCH, len, None)?;
             self.last_digest = Some(digest);
         }
-        self.last_digest_check = Some(Instant::now());
+        self.last_digest_check = Some(now);
         Ok(())
     }
 
     fn load_script(&mut self, assets: Option<&AssetManager>) -> Result<&AST> {
-        let source = self
-            .load_script_source(self.script_path.to_string_lossy().as_ref(), assets)
+        let (source, revision) = self
+            .load_script_source_with_revision(self.script_path.to_string_lossy().as_ref(), assets)
             .with_context(|| format!("Reading script asset '{}'", self.script_path.display()))?;
         let len = source.len() as u64;
-        self.load_script_from_source(source, SystemTime::UNIX_EPOCH, len)
+        self.load_script_from_source(source, SystemTime::UNIX_EPOCH, len, revision)
     }
 
-    fn load_script_from_source(&mut self, source: String, modified: SystemTime, len: u64) -> Result<&AST> {
+    fn load_script_from_source(
+        &mut self,
+        source: String,
+        modified: SystemTime,
+        len: u64,
+        revision: Option<u64>,
+    ) -> Result<&AST> {
         let ast = self.engine.compile(&source).with_context(|| "Compiling Rhai script")?;
         self.scope = Scope::new();
         self.engine
@@ -934,6 +988,7 @@ impl ScriptHost {
         self.last_len = Some(len);
         self.last_digest = Some(hash_source(&source));
         self.last_digest_check = Some(Instant::now());
+        self.last_asset_revision = revision;
         self.initialized = false;
         self.error = None;
         self.ast = Some(ast);
@@ -1050,6 +1105,20 @@ impl ScriptPlugin {
         dt: f32,
         fixed_step: bool,
     ) -> Result<()> {
+        let mut query = ecs.world.query::<(Entity, &mut ScriptBehaviour)>();
+        let mut unique_paths = HashSet::new();
+        for (_entity, behaviour) in query.iter_mut(&mut ecs.world) {
+            let path = behaviour.script_path.trim();
+            if path.is_empty() {
+                continue;
+            }
+            unique_paths.insert(path.to_string());
+        }
+        for path in unique_paths {
+            if let Err(err) = self.host.ensure_script_loaded(&path, Some(assets)) {
+                self.host.set_error_message(err.to_string());
+            }
+        }
         let mut query = ecs.world.query::<(Entity, &mut ScriptBehaviour)>();
         for (entity, mut behaviour) in query.iter_mut(&mut ecs.world) {
             if behaviour.script_path.is_empty() {
