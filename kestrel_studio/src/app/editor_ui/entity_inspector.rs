@@ -201,6 +201,8 @@ pub(super) fn show_entity_inspector(
             let mut script_path = info.script.as_ref().map(|s| s.path.clone()).unwrap_or_default();
             let instance_id = info.script.as_ref().map(|s| s.instance_id).unwrap_or(0);
             let has_script = info.script.is_some();
+            let path_trimmed = script_path.trim();
+            let path_known = ctx.script_paths.iter().any(|p| p == path_trimmed);
 
             if let Some(err) = ctx.script_error {
                 ui.colored_label(egui::Color32::RED, format!("Last script error: {err}"));
@@ -243,6 +245,9 @@ pub(super) fn show_entity_inspector(
             egui::ComboBox::from_id_salt(("script_picker", entity.index()))
                 .selected_text(selected_label)
                 .show_ui(ui, |ui| {
+                    if ui.selectable_label(script_path.is_empty(), "<None>").clicked() {
+                        picker_selection = Some(String::new());
+                    }
                     for path in ctx.script_paths {
                         if ui.selectable_label(script_path == *path, path).clicked() {
                             picker_selection = Some(path.clone());
@@ -251,11 +256,23 @@ pub(super) fn show_entity_inspector(
             });
             if let Some(picked) = picker_selection {
                 let trimmed = picked.trim().to_string();
-                actions.inspector_actions.push(InspectorAction::SetScript { entity, path: trimmed.clone() });
-                info.script = Some(ScriptInfo { path: trimmed, instance_id: 0 });
+                if trimmed.is_empty() {
+                    actions.inspector_actions.push(InspectorAction::RemoveScript { entity });
+                    info.script = None;
+                    script_path.clear();
+                } else {
+                    actions.inspector_actions.push(InspectorAction::SetScript { entity, path: trimmed.clone() });
+                    info.script = Some(ScriptInfo { path: trimmed, instance_id: 0 });
+                }
                 _inspector_refresh = true;
             }
 
+            if has_script && !script_path.trim().is_empty() && !path_known {
+                ui.colored_label(
+                    egui::Color32::YELLOW,
+                    "Script not found under assets/scripts; path will be kept as-is.",
+                );
+            }
             if has_script {
                 if instance_id != 0 {
                     ui.small(format!("Instance id (runtime): {instance_id}"));

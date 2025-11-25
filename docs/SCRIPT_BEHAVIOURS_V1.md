@@ -158,6 +158,7 @@ Exit: each behaviour runs `ready` once, then `process` per frame and `physics_pr
   - `world.entity_set_rotation(entity, radians)`
   - `world.entity_set_scale(entity, sx, sy)`
   - `world.entity_set_velocity(entity, vx, vy)`
+  - `world.entity_set_tint(entity, r, g, b, a)` / `world.entity_clear_tint(entity)`
   - `world.entity_despawn(entity)`
   - Optional: `world.spawn_prefab(path)` or `world.spawn_from_template(name)`
 - Map the `entity` Rhai value to `bevy_ecs::Entity` (likely `INT`).
@@ -171,7 +172,7 @@ Exit: a behaviour can move/rotate/scale/kill its own entity and optionally spawn
 
 **Goal:** Make behaviours visible/editable in the UI and surface errors.
 
-Status: inspector shows a Script section with manual path set/remove; no picker or error surfacing yet.
+Status: inspector shows a Script section with manual path set/remove, asset picker (with None), missing-path warning, and last script error surfacing.
 
 - Inspector:
   - Show a "Script" section when `ScriptBehaviour` exists.
