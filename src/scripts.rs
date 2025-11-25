@@ -568,10 +568,12 @@ impl ScriptHost {
         assets: Option<&AssetManager>,
     ) -> Result<u64> {
         self.ensure_script_loaded(script_path, assets)?;
-        let compiled = self
-            .scripts
-            .get(script_path)
-            .ok_or_else(|| anyhow!("Script '{script_path}' not cached after load"))?;
+        self.create_instance_preloaded(script_path, entity)
+    }
+
+    fn create_instance_preloaded(&mut self, script_path: &str, entity: Entity) -> Result<u64> {
+        let compiled =
+            self.scripts.get(script_path).ok_or_else(|| anyhow!("Script '{script_path}' not cached after load"))?;
         let id = self.next_instance_id;
         self.next_instance_id = self.next_instance_id.saturating_add(1);
         let mut scope = Scope::new();
@@ -1046,6 +1048,8 @@ pub struct ScriptPlugin {
     logs: Vec<String>,
     paused: bool,
     step_once: bool,
+    path_scratch: HashSet<String>,
+    failed_path_scratch: HashSet<String>,
 }
 
 impl ScriptPlugin {
@@ -1056,6 +1060,8 @@ impl ScriptPlugin {
             logs: Vec::new(),
             paused: false,
             step_once: false,
+            path_scratch: HashSet::new(),
+            failed_path_scratch: HashSet::new(),
         }
     }
 
@@ -1112,18 +1118,20 @@ impl ScriptPlugin {
         dt: f32,
         fixed_step: bool,
     ) -> Result<()> {
+        self.path_scratch.clear();
+        self.failed_path_scratch.clear();
         let mut query = ecs.world.query::<(Entity, &mut ScriptBehaviour)>();
-        let mut unique_paths = HashSet::new();
         for (_entity, behaviour) in query.iter_mut(&mut ecs.world) {
             let path = behaviour.script_path.trim();
             if path.is_empty() {
                 continue;
             }
-            unique_paths.insert(path.to_string());
+            self.path_scratch.insert(path.to_string());
         }
-        for path in unique_paths {
+        for path in self.path_scratch.iter() {
             if let Err(err) = self.host.ensure_script_loaded(&path, Some(assets)) {
                 self.host.set_error_message(err.to_string());
+                self.failed_path_scratch.insert(path.clone());
             }
         }
         let mut query = ecs.world.query::<(Entity, &mut ScriptBehaviour)>();
@@ -1132,13 +1140,12 @@ impl ScriptPlugin {
                 self.host.clear_entity_error(entity);
                 continue;
             }
-            if let Err(err) = self.host.ensure_script_loaded(&behaviour.script_path, Some(assets)) {
-                self.host.set_error_message(err.to_string());
+            if self.failed_path_scratch.contains(behaviour.script_path.trim()) {
                 self.host.mark_entity_error(entity);
                 continue;
             }
             if behaviour.instance_id == 0 {
-                match self.host.create_instance(&behaviour.script_path, entity, Some(assets)) {
+                match self.host.create_instance_preloaded(&behaviour.script_path, entity) {
                     Ok(id) => behaviour.instance_id = id,
                     Err(err) => {
                         self.host.set_error_message(err.to_string());
