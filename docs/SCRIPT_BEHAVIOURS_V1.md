@@ -139,6 +139,7 @@ Exit: `ensure_script_loaded("scripts/example.rhai")` compiles once and reuses th
 - Lifecycle wiring:
   - In `ScriptPlugin::update(dt)`: iterate behaviours, ensure script is loaded, instantiate if needed, call `ready` once, then `process` each frame if present.
   - In `ScriptPlugin::fixed_update(dt)`: call `physics_process` for scripts that define it.
+  - When behaviours are removed or entities despawn, call optional `exit(world, entity)` before dropping instances.
   - Respect pause/step flags already present on `ScriptPlugin`.
 - Error handling:
   - Catch Rhai errors, include path + fn name, set `errored = true`, and skip further calls until reload or reset.

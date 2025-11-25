@@ -673,3 +673,66 @@ fn instances_are_pruned_when_entities_change() {
     run_update(&mut plugin, &mut ecs);
     assert_eq!(plugin.instance_count_for_test(), 0, "instance should be pruned after component removal");
 }
+
+#[test]
+fn exit_is_invoked_on_cleanup() {
+    let main_script = write_script(
+        r#"
+            fn init(world) { }
+            fn update(world, dt) { }
+        "#,
+    );
+    let behaviour_script = write_script(
+        r#"
+            fn ready(world, entity) { world.log("ready"); }
+            fn process(world, entity, dt) { }
+            fn exit(world, entity) { world.log("exit:" + entity.to_string()); }
+        "#,
+    );
+    let behaviour_path = behaviour_script.path().to_string_lossy().into_owned();
+
+    let mut plugin = ScriptPlugin::new(main_script.path());
+    let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
+    let mut ecs = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    let mut input = Input::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+    let mut environment_registry = EnvironmentRegistry::new();
+    let time = Time::new();
+    let feature_registry = FeatureRegistryHandle::isolated();
+    let capability_tracker = CapabilityTrackerHandle::isolated();
+
+    let mut run_update = |plugin: &mut ScriptPlugin, ecs: &mut EcsWorld| {
+        let mut ctx = PluginContext::new(
+            &mut renderer,
+            ecs,
+            &mut assets,
+            &mut input,
+            &mut material_registry,
+            &mut mesh_registry,
+            &mut environment_registry,
+            &time,
+            push_event_bridge,
+            feature_registry.clone(),
+            None,
+            capability_tracker.clone(),
+        );
+        plugin.update(&mut ctx, 0.016).expect("script update should succeed");
+        plugin.take_logs()
+    };
+
+    let entity = ecs
+        .world
+        .spawn((Transform::default(), ScriptBehaviour::new(behaviour_path.clone())))
+        .id();
+    let _ = run_update(&mut plugin, &mut ecs); // bind instance
+
+    assert!(ecs.world.despawn(entity), "entity should despawn");
+    let logs = run_update(&mut plugin, &mut ecs);
+    assert!(
+        logs.iter().any(|l| l.contains("exit:")),
+        "expected exit log after cleanup, got {logs:?}"
+    );
+    assert_eq!(plugin.instance_count_for_test(), 0, "instance should be removed after exit");
+}

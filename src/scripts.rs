@@ -24,6 +24,7 @@ pub struct CompiledScript {
     pub has_ready: bool,
     pub has_process: bool,
     pub has_physics_process: bool,
+    pub has_exit: bool,
     pub len: u64,
     pub digest: u64,
 }
@@ -570,8 +571,8 @@ impl ScriptHost {
             .engine
             .compile(source)
             .with_context(|| format!("Compiling Rhai script '{}'", path))?;
-        let (has_ready, has_process, has_physics_process) = detect_callbacks(&ast);
-        Ok(CompiledScript { ast, has_ready, has_process, has_physics_process, len, digest })
+        let (has_ready, has_process, has_physics_process, has_exit) = detect_callbacks(&ast);
+        Ok(CompiledScript { ast, has_ready, has_process, has_physics_process, has_exit, len, digest })
     }
 
     fn reinitialize_instances_for_script(&mut self, script_path: &str) -> Result<()> {
@@ -673,6 +674,28 @@ impl ScriptHost {
             Err(err) => {
                 instance.errored = true;
                 let message = Self::format_rhai_error(err.as_ref(), &instance.script_path, "physics_process");
+                self.error = Some(message.clone());
+                Err(anyhow!(message))
+            }
+        }
+    }
+
+    fn call_instance_exit(&mut self, instance_id: u64) -> Result<()> {
+        let Some(instance) = self.instances.get_mut(&instance_id) else {
+            return Ok(());
+        };
+        let Some(compiled) = self.scripts.get(&instance.script_path) else {
+            return Ok(());
+        };
+        if !compiled.has_exit || instance.errored {
+            return Ok(());
+        }
+        let entity_int: ScriptHandle = entity_to_rhai(instance.entity);
+        let world = ScriptWorld::new(self.shared.clone());
+        match self.engine.call_fn::<Dynamic>(&mut instance.scope, &compiled.ast, "exit", (world, entity_int)) {
+            Ok(_) => Ok(()),
+            Err(err) => {
+                let message = Self::format_rhai_error(err.as_ref(), &instance.script_path, "exit");
                 self.error = Some(message.clone());
                 Err(anyhow!(message))
             }
@@ -818,6 +841,10 @@ impl ScriptHost {
     }
 
     pub fn clear_instances(&mut self) {
+        let ids: Vec<u64> = self.instances.keys().copied().collect();
+        for id in ids {
+            let _ = self.call_instance_exit(id);
+        }
         self.instances.clear();
     }
 
@@ -881,20 +908,22 @@ fn hash_source(source: &str) -> u64 {
     hasher.finish()
 }
 
-fn detect_callbacks(ast: &AST) -> (bool, bool, bool) {
+fn detect_callbacks(ast: &AST) -> (bool, bool, bool, bool) {
     let mut has_ready = false;
     let mut has_process = false;
     let mut has_physics_process = false;
+    let mut has_exit = false;
     for func in ast.iter_functions() {
         let arity = func.params.len();
         match func.name.as_ref() {
             "ready" if arity == 2 => has_ready = true,
             "process" if arity == 3 => has_process = true,
             "physics_process" if arity == 3 => has_physics_process = true,
+            "exit" if arity == 2 => has_exit = true,
             _ => {}
         }
     }
-    (has_ready, has_process, has_physics_process)
+    (has_ready, has_process, has_physics_process, has_exit)
 }
 
 fn entity_to_rhai(entity: Entity) -> ScriptHandle {
@@ -1017,6 +1046,7 @@ impl ScriptPlugin {
             }
         }
         for id in stale_ids {
+            let _ = self.host.call_instance_exit(id);
             self.host.remove_instance(id);
         }
         let mut behaviours = ecs.world.query::<&mut ScriptBehaviour>();
