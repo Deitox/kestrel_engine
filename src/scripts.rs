@@ -4,6 +4,7 @@ use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::assets::AssetManager;
@@ -1048,10 +1049,11 @@ pub struct ScriptPlugin {
     logs: Vec<String>,
     paused: bool,
     step_once: bool,
-    path_indices: HashMap<String, usize>,
-    path_list: Vec<String>,
+    path_indices: HashMap<Arc<str>, usize>,
+    path_list: Vec<Arc<str>>,
     failed_path_scratch: HashSet<usize>,
     id_updates: Vec<(Entity, u64)>,
+    behaviour_worklist: Vec<(Entity, usize, u64)>,
 }
 
 impl ScriptPlugin {
@@ -1066,6 +1068,7 @@ impl ScriptPlugin {
             path_list: Vec::new(),
             failed_path_scratch: HashSet::new(),
             id_updates: Vec::new(),
+            behaviour_worklist: Vec::new(),
         }
     }
 
@@ -1126,8 +1129,8 @@ impl ScriptPlugin {
         self.path_list.clear();
         self.failed_path_scratch.clear();
         self.id_updates.clear();
+        self.behaviour_worklist.clear();
         let mut query = ecs.world.query::<(Entity, &mut ScriptBehaviour)>();
-        let mut worklist: Vec<(Entity, usize, u64)> = Vec::new();
         for (entity, behaviour) in query.iter_mut(&mut ecs.world) {
             let path = behaviour.script_path.trim();
             if path.is_empty() {
@@ -1137,19 +1140,20 @@ impl ScriptPlugin {
                 idx
             } else {
                 let idx = self.path_list.len();
-                self.path_list.push(path.to_string());
-                self.path_indices.insert(path.to_string(), idx);
+                let arc: Arc<str> = Arc::from(path);
+                self.path_list.push(Arc::clone(&arc));
+                self.path_indices.insert(arc, idx);
                 idx
             };
-            worklist.push((entity, idx, behaviour.instance_id));
+            self.behaviour_worklist.push((entity, idx, behaviour.instance_id));
         }
         for (idx, path) in self.path_list.iter().enumerate() {
-            if let Err(err) = self.host.ensure_script_loaded(path, Some(assets)) {
+            if let Err(err) = self.host.ensure_script_loaded(path.as_ref(), Some(assets)) {
                 self.host.set_error_message(err.to_string());
                 self.failed_path_scratch.insert(idx);
             }
         }
-        for (entity, path_idx, mut instance_id) in worklist.into_iter() {
+        for (entity, path_idx, mut instance_id) in self.behaviour_worklist.drain(..) {
             if self.failed_path_scratch.contains(&path_idx) {
                 self.host.mark_entity_error(entity);
                 continue;
