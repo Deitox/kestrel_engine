@@ -11,7 +11,8 @@ use crate::assets::AssetManager;
 use crate::plugins::{EnginePlugin, PluginContext};
 use anyhow::{anyhow, Context, Result};
 use glam::{Vec2, Vec4};
-use rand::Rng;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use rhai::{Dynamic, Engine, EvalAltResult, Scope, AST, FLOAT};
 
 use bevy_ecs::prelude::{Component, Entity};
@@ -83,6 +84,7 @@ struct SharedState {
     next_handle: ScriptHandle,
     commands: Vec<ScriptCommand>,
     logs: Vec<String>,
+    rng: Option<StdRng>,
 }
 
 #[derive(Clone)]
@@ -390,7 +392,13 @@ impl ScriptWorld {
         if (hi - lo).abs() <= f32::EPSILON {
             return lo as FLOAT;
         }
-        rand::thread_rng().gen_range(lo..hi) as FLOAT
+        let mut state = self.state.borrow_mut();
+        let sample = if let Some(rng) = state.rng.as_mut() {
+            rng.gen_range(lo..hi)
+        } else {
+            rand::thread_rng().gen_range(lo..hi)
+        };
+        sample as FLOAT
     }
 
     fn log(&mut self, message: &str) {
@@ -981,6 +989,16 @@ impl ScriptPlugin {
         self.host.handles_snapshot()
     }
 
+    pub fn set_rng_seed(&mut self, seed: u64) {
+        let mut shared = self.host.shared.borrow_mut();
+        shared.rng = Some(StdRng::seed_from_u64(seed));
+    }
+
+    pub fn clear_rng_seed(&mut self) {
+        let mut shared = self.host.shared.borrow_mut();
+        shared.rng = None;
+    }
+
     pub fn instance_count_for_test(&self) -> usize {
         self.host.instances.len()
     }
@@ -1204,6 +1222,7 @@ fn register_api(engine: &mut Engine) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::SeedableRng;
     use std::cell::RefCell;
     use std::fs;
     use std::io::Write;
@@ -1335,6 +1354,17 @@ mod tests {
         let mut world = ScriptWorld::new(state);
         let value = world.random_range(std::f32::consts::PI as FLOAT, std::f32::consts::PI as FLOAT);
         assert_eq!(value as f32, std::f32::consts::PI);
+    }
+
+    #[test]
+    fn random_range_is_deterministic_with_seed() {
+        let state_a = SharedState { rng: Some(rand::rngs::StdRng::seed_from_u64(1234)), ..Default::default() };
+        let state_b = SharedState { rng: Some(rand::rngs::StdRng::seed_from_u64(1234)), ..Default::default() };
+        let mut world_a = ScriptWorld::new(Rc::new(RefCell::new(state_a)));
+        let mut world_b = ScriptWorld::new(Rc::new(RefCell::new(state_b)));
+        let samples_a = [world_a.random_range(-1.0, 1.0), world_a.random_range(0.0, 10.0)];
+        let samples_b = [world_b.random_range(-1.0, 1.0), world_b.random_range(0.0, 10.0)];
+        assert_eq!(samples_a, samples_b, "seeded RNG should be deterministic across worlds");
     }
 
     #[test]
