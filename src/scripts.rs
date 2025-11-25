@@ -13,7 +13,7 @@ use anyhow::{anyhow, Context, Result};
 use glam::{Vec2, Vec4};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use rhai::{Dynamic, Engine, EvalAltResult, Scope, AST, FLOAT};
+use rhai::{module_resolvers::FileModuleResolver, Dynamic, Engine, EvalAltResult, Scope, AST, FLOAT};
 
 use bevy_ecs::prelude::{Component, Entity};
 
@@ -405,6 +405,26 @@ impl ScriptWorld {
         sample as FLOAT
     }
 
+    fn rand_seed(&mut self, seed: rhai::INT) {
+        let seed = seed as u64;
+        self.state.borrow_mut().rng = Some(StdRng::seed_from_u64(seed));
+    }
+
+    fn move_toward(&mut self, current: FLOAT, target: FLOAT, max_delta: FLOAT) -> FLOAT {
+        let current = current as f32;
+        let target = target as f32;
+        let max_delta = max_delta.abs() as f32;
+        if !self.ensure_finite("move_toward", &[current, target, max_delta]) {
+            return current as FLOAT;
+        }
+        let delta = target - current;
+        if delta.abs() <= max_delta {
+            target as FLOAT
+        } else {
+            (current + delta.signum() * max_delta) as FLOAT
+        }
+    }
+
     fn log(&mut self, message: &str) {
         {
             let mut state = self.state.borrow_mut();
@@ -458,6 +478,8 @@ impl ScriptHost {
     pub fn new(path: impl AsRef<Path>) -> Self {
         let mut engine = Engine::new();
         engine.set_fast_operators(true);
+        let resolver = FileModuleResolver::new_with_path("assets/scripts");
+        engine.set_module_resolver(resolver);
         register_api(&mut engine);
         let shared = SharedState { next_handle: 1, ..Default::default() };
         Self {
@@ -1384,7 +1406,9 @@ fn register_api(engine: &mut Engine) {
     engine.register_fn("entity_set_velocity", ScriptWorld::entity_set_velocity);
     engine.register_fn("entity_despawn", ScriptWorld::entity_despawn);
     engine.register_fn("log", ScriptWorld::log);
+    engine.register_fn("rand_seed", ScriptWorld::rand_seed);
     engine.register_fn("rand", ScriptWorld::random_range);
+    engine.register_fn("move_toward", ScriptWorld::move_toward);
 }
 
 #[cfg(test)]
@@ -1396,7 +1420,7 @@ mod tests {
     use std::io::Write;
     use std::rc::Rc;
     use std::time::{Duration, Instant};
-    use tempfile::NamedTempFile;
+    use tempfile::{Builder, NamedTempFile};
 
     fn write_script(contents: &str) -> NamedTempFile {
         let mut temp = NamedTempFile::new().expect("temp script");
@@ -1613,6 +1637,64 @@ mod tests {
         assert!(!compiled.has_physics_process);
         // second call should be a no-op
         host.ensure_script_loaded(&path_str, None).expect("cached load should succeed");
+    }
+
+    #[test]
+    fn module_import_resolves_from_assets_scripts() {
+        let mut module = Builder::new()
+            .prefix("rhai_module_test_")
+            .suffix(".rhai")
+            .tempfile_in("assets/scripts")
+            .expect("module file");
+        write!(module.as_file_mut(), "fn value() {{ 123 }}").expect("write module");
+        let module_name = module
+            .path()
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .expect("module name");
+
+        let script = write_script(&format!(
+            r#"
+                import "{module_name}" as m;
+                fn init(world) {{ }}
+                fn update(world, dt) {{
+                    let v = m::value();
+                    world.log(v.to_string());
+                }}
+            "#
+        ));
+        let mut host = ScriptHost::new(script.path());
+        host.force_reload(None).expect("load script with import");
+        host.update(0.016, true, None);
+        let logs = host.drain_logs();
+        assert!(
+            logs.iter().any(|l| l.contains("123")),
+            "expected imported module log, got {:?}",
+            logs
+        );
+    }
+
+    #[test]
+    fn rand_seed_is_deterministic_from_scriptworld() {
+        let state_a = Rc::new(RefCell::new(SharedState::default()));
+        let state_b = Rc::new(RefCell::new(SharedState::default()));
+        let mut world_a = ScriptWorld::new(state_a);
+        let mut world_b = ScriptWorld::new(state_b);
+        world_a.rand_seed(999);
+        world_b.rand_seed(999);
+        let samples_a: Vec<_> = (0..4).map(|_| world_a.random_range(-5.0, 5.0)).collect();
+        let samples_b: Vec<_> = (0..4).map(|_| world_b.random_range(-5.0, 5.0)).collect();
+        assert_eq!(samples_a, samples_b, "seeded rand should be deterministic");
+    }
+
+    #[test]
+    fn move_toward_clamps_step() {
+        let state = Rc::new(RefCell::new(SharedState::default()));
+        let mut world = ScriptWorld::new(state);
+        let step = world.move_toward(0.0, 10.0, 2.5);
+        assert!((step as f32 - 2.5).abs() < 1e-4, "should move by max_delta");
+        let final_step = world.move_toward(9.0, 10.0, 2.5);
+        assert!((final_step as f32 - 10.0).abs() < 1e-4, "should clamp to target when within delta");
     }
 
     #[test]
