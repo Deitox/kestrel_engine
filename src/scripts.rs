@@ -1121,12 +1121,14 @@ impl ScriptPlugin {
         self.path_scratch.clear();
         self.failed_path_scratch.clear();
         let mut query = ecs.world.query::<(Entity, &mut ScriptBehaviour)>();
-        for (_entity, behaviour) in query.iter_mut(&mut ecs.world) {
+        let mut worklist: Vec<(Entity, String, u64)> = Vec::new();
+        for (entity, behaviour) in query.iter_mut(&mut ecs.world) {
             let path = behaviour.script_path.trim();
             if path.is_empty() {
                 continue;
             }
             self.path_scratch.insert(path.to_string());
+            worklist.push((entity, behaviour.script_path.clone(), behaviour.instance_id));
         }
         for path in self.path_scratch.iter() {
             if let Err(err) = self.host.ensure_script_loaded(&path, Some(assets)) {
@@ -1134,19 +1136,18 @@ impl ScriptPlugin {
                 self.failed_path_scratch.insert(path.clone());
             }
         }
-        let mut query = ecs.world.query::<(Entity, &mut ScriptBehaviour)>();
-        for (entity, mut behaviour) in query.iter_mut(&mut ecs.world) {
-            if behaviour.script_path.is_empty() {
+        for (entity, script_path, mut instance_id) in worklist.into_iter() {
+            if script_path.is_empty() {
                 self.host.clear_entity_error(entity);
                 continue;
             }
-            if self.failed_path_scratch.contains(behaviour.script_path.trim()) {
+            if self.failed_path_scratch.contains(script_path.trim()) {
                 self.host.mark_entity_error(entity);
                 continue;
             }
-            if behaviour.instance_id == 0 {
-                match self.host.create_instance_preloaded(&behaviour.script_path, entity) {
-                    Ok(id) => behaviour.instance_id = id,
+            if instance_id == 0 {
+                match self.host.create_instance_preloaded(&script_path, entity) {
+                    Ok(id) => instance_id = id,
                     Err(err) => {
                         self.host.set_error_message(err.to_string());
                         self.host.mark_entity_error(entity);
@@ -1154,9 +1155,8 @@ impl ScriptPlugin {
                     }
                 }
             }
-            let instance_id = behaviour.instance_id;
             if let Err(err) = self.host.call_instance_ready(instance_id) {
-                eprintln!("[script] ready error for {}: {}", behaviour.script_path, err);
+                eprintln!("[script] ready error for {}: {}", script_path, err);
                 self.host.mark_entity_error(entity);
             }
             let call_result = if fixed_step {
@@ -1168,7 +1168,7 @@ impl ScriptPlugin {
                 eprintln!(
                     "[script] {} error for {}: {}",
                     if fixed_step { "physics_process" } else { "process" },
-                    behaviour.script_path,
+                    script_path,
                     err
                 );
                 self.host.mark_entity_error(entity);
@@ -1180,6 +1180,22 @@ impl ScriptPlugin {
                 .map_or(false, |instance| !instance.errored);
             if instance_ok {
                 self.host.clear_entity_error(entity);
+            }
+        }
+        let mut query = ecs.world.query::<(Entity, &mut ScriptBehaviour)>();
+        for (entity, mut behaviour) in query.iter_mut(&mut ecs.world) {
+            if behaviour.script_path.is_empty() {
+                continue;
+            }
+            if behaviour.instance_id == 0 {
+                if let Some(instance) = self
+                    .host
+                    .instances
+                    .iter()
+                    .find(|(_, inst)| inst.entity == entity && inst.script_path == behaviour.script_path)
+                {
+                    behaviour.instance_id = *instance.0;
+                }
             }
         }
         Ok(())
