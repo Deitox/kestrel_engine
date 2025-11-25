@@ -253,6 +253,7 @@ Exit: CI fails if scripts do not compile or if behaviours break serialization/ru
 
 - Imports/shared lib: add a cached import resolver plus a standard helper file (math, timers, tween helpers) to cut copy/paste across scripts.
 - Performance: optional ahead-of-time compiled AST cache (hashed) for shipping builds; batch commands per instance and enforce per-frame command/time budgets to contain runaway scripts.
+- Runtime perf already in place: asset-revision short-circuiting for entry + behaviour scripts, per-frame behaviour path dedupe, and reused scratch buffers/worklists to reduce allocations during `run_behaviours`.
 - Lifecycle/state: add `exit(world, entity)` for cleanup; safely re-run `ready` on hot reload; opt-in persistent instance state (serialized blob) for checkpoints.
 - API ergonomics: prefab/template spawn helper with guardrails; built-in helpers for timers, move_toward/look_at, simple steering/cooldowns to reduce boilerplate.
 - Safety/testing: deterministic mode (seeded RNG) for reproducible runs; richer errors with call stacks and a “mute until reload” switch for noisy scripts.

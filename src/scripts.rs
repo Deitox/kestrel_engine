@@ -521,17 +521,15 @@ impl ScriptHost {
     pub fn ensure_script_loaded(&mut self, path: &str, assets: Option<&AssetManager>) -> Result<()> {
         let now = Instant::now();
         let current_revision = assets.map(|a| a.revision());
-        if let (Some(compiled), Some(revision)) = (self.scripts.get_mut(path), current_revision) {
-            if compiled.asset_revision == Some(revision) {
-                compiled.last_checked = Some(now);
+        if let Some(compiled) = self.scripts.get(path) {
+            let same_asset_rev =
+                matches!((compiled.asset_revision, current_revision), (Some(a), Some(current)) if a == current);
+            let recently_checked = compiled
+                .last_checked
+                .map(|last| now.duration_since(last) < SCRIPT_DIGEST_CHECK_INTERVAL)
+                .unwrap_or(false);
+            if recently_checked && (assets.is_none() || same_asset_rev) {
                 return Ok(());
-            }
-        }
-        if let Some(compiled) = self.scripts.get_mut(path) {
-            if let Some(last) = compiled.last_checked {
-                if now.duration_since(last) < SCRIPT_DIGEST_CHECK_INTERVAL {
-                    return Ok(());
-                }
             }
         }
         let was_loaded = self.scripts.contains_key(path);
@@ -540,8 +538,7 @@ impl ScriptHost {
         let digest = hash_source(&source);
         if let Some(compiled) = self.scripts.get_mut(path) {
             let same_source = compiled.len == len && compiled.digest == digest;
-            let same_rev = asset_rev.is_some() && compiled.asset_revision == asset_rev;
-            if same_source || same_rev {
+            if same_source {
                 compiled.last_checked = Some(now);
                 compiled.asset_revision = asset_rev.or(compiled.asset_revision);
                 return Ok(());
@@ -929,8 +926,11 @@ impl ScriptHost {
         let now = Instant::now();
         if let Some(assets) = assets {
             let revision = assets.revision();
-            if self.ast.is_some() && self.last_asset_revision == Some(revision) {
-                self.last_digest_check = Some(now);
+            let recently_checked = self
+                .last_digest_check
+                .map(|last| now.duration_since(last) < SCRIPT_DIGEST_CHECK_INTERVAL)
+                .unwrap_or(false);
+            if self.ast.is_some() && self.last_asset_revision == Some(revision) && recently_checked {
                 return Ok(());
             }
             let (source, _) = self
@@ -1613,6 +1613,63 @@ mod tests {
         assert!(!compiled.has_physics_process);
         // second call should be a no-op
         host.ensure_script_loaded(&path_str, None).expect("cached load should succeed");
+    }
+
+    #[test]
+    fn behaviour_reload_occurs_when_asset_revision_is_stable() {
+        let assets = AssetManager::new();
+        let script = write_script(
+            r#"
+                fn ready(world, entity) { world.log("first"); }
+                fn process(world, entity, dt) { }
+            "#,
+        );
+        let path_str = script.path().to_string_lossy().into_owned();
+        let mut host = ScriptHost::new(script.path());
+        host.ensure_script_loaded(&path_str, Some(&assets)).expect("initial load");
+        let first_digest = host.compiled_script(&path_str).expect("cached script").digest;
+
+        let replacement = r#"
+            fn ready(world, entity) { world.log("second"); }
+            fn process(world, entity, dt) { }
+        "#;
+        fs::write(script.path(), replacement).expect("rewrite behaviour script");
+        if let Some(compiled) = host.scripts.get_mut(&path_str) {
+            compiled.last_checked = Some(Instant::now() - Duration::from_millis(300));
+        }
+
+        host.ensure_script_loaded(&path_str, Some(&assets)).expect("reload after change");
+        let second_digest = host.compiled_script(&path_str).expect("reloaded script").digest;
+        assert_ne!(
+            first_digest, second_digest,
+            "script digest should change even if asset manager revision stays constant"
+        );
+    }
+
+    #[test]
+    fn legacy_script_reload_uses_digest_when_asset_revision_is_stable() {
+        let assets = AssetManager::new();
+        let script = write_script(
+            r#"
+                let value = 1;
+                fn init(world) { }
+                fn update(world, dt) { }
+            "#,
+        );
+        let mut host = ScriptHost::new(script.path());
+        host.force_reload(Some(&assets)).expect("initial load");
+        assert_eq!(host.eval_repl("value").expect("read value").as_deref(), Some("1"));
+
+        let replacement = r#"
+            let value = 2;
+            fn init(world) { }
+            fn update(world, dt) { }
+        "#;
+        fs::write(script.path(), replacement).expect("rewrite legacy script");
+        host.last_digest_check = Some(Instant::now() - Duration::from_millis(300));
+
+        host.reload_if_needed(Some(&assets)).expect("reload after change");
+        assert_eq!(host.eval_repl("value").expect("read value").as_deref(), Some("2"));
     }
 
     #[test]
