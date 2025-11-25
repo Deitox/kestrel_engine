@@ -1,3 +1,0 @@
-[1764032614] Runtime error: Variable not found: state (line 4, position 5)
-[1764033454] Runtime error: Function not found: entity_clear_tint (World, f64) (line 20, position 19)
-[1764033818] Runtime error: Output type incorrect: bool (expecting ())

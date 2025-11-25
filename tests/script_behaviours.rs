@@ -392,3 +392,284 @@ fn behaviours_enqueue_entity_tint_commands() {
         "expected tint clear command for entity {entity:?}, got {tint_commands:?}"
     );
 }
+
+#[test]
+fn behaviours_enqueue_entity_transform_commands() {
+    let main_script = write_script(
+        r#"
+            fn init(world) { }
+            fn update(world, dt) { }
+        "#,
+    );
+    let behaviour_script = write_script(
+        r#"
+            fn ready(world, entity) {
+                world.entity_set_position(entity, 1.0, 2.0);
+                world.entity_set_rotation(entity, 0.5);
+                world.entity_set_scale(entity, 2.0, 3.0);
+                world.entity_set_velocity(entity, 4.0, 5.0);
+            }
+            fn process(world, entity, dt) {
+                world.entity_despawn(entity);
+            }
+        "#,
+    );
+    let behaviour_path = behaviour_script.path().to_string_lossy().into_owned();
+
+    let mut plugin = ScriptPlugin::new(main_script.path());
+    let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
+    let mut ecs = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    let mut input = Input::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+    let mut environment_registry = EnvironmentRegistry::new();
+    let time = Time::new();
+
+    let entity = ecs
+        .world
+        .spawn((Transform::default(), ScriptBehaviour::new(behaviour_path.clone())))
+        .id();
+
+    let feature_registry = FeatureRegistryHandle::isolated();
+    let capability_tracker = CapabilityTrackerHandle::isolated();
+
+    {
+        let mut ctx = PluginContext::new(
+            &mut renderer,
+            &mut ecs,
+            &mut assets,
+            &mut input,
+            &mut material_registry,
+            &mut mesh_registry,
+            &mut environment_registry,
+            &time,
+            push_event_bridge,
+            feature_registry.clone(),
+            None,
+            capability_tracker.clone(),
+        );
+        plugin.update(&mut ctx, 0.016).expect("script update should succeed");
+    }
+
+    let mut saw_position = None;
+    let mut saw_rotation = None;
+    let mut saw_scale = None;
+    let mut saw_velocity = None;
+    let mut saw_despawn = false;
+    for cmd in plugin.take_commands() {
+        match cmd {
+            ScriptCommand::EntitySetPosition { entity: target, position } if target == entity => {
+                saw_position = Some(position);
+            }
+            ScriptCommand::EntitySetRotation { entity: target, rotation } if target == entity => {
+                saw_rotation = Some(rotation);
+            }
+            ScriptCommand::EntitySetScale { entity: target, scale } if target == entity => {
+                saw_scale = Some(scale);
+            }
+            ScriptCommand::EntitySetVelocity { entity: target, velocity } if target == entity => {
+                saw_velocity = Some(velocity);
+            }
+            ScriptCommand::EntityDespawn { entity: target } if target == entity => {
+                saw_despawn = true;
+            }
+            _ => {}
+        }
+    }
+
+    assert_eq!(saw_position, Some(glam::Vec2::new(1.0, 2.0)));
+    assert_eq!(saw_rotation, Some(0.5));
+    assert_eq!(saw_scale, Some(glam::Vec2::new(2.0, 3.0)));
+    assert_eq!(saw_velocity, Some(glam::Vec2::new(4.0, 5.0)));
+    assert!(saw_despawn, "expected entity_despawn command");
+}
+
+#[test]
+fn behaviours_respect_pause_and_step_once() {
+    let main_script = write_script(
+        r#"
+            fn init(world) { }
+            fn update(world, dt) { }
+        "#,
+    );
+    let behaviour_script = write_script(
+        r#"
+            let calls = 0;
+            fn ready(world, entity) { world.log("ready"); }
+            fn process(world, entity, dt) { world.log("process"); }
+        "#,
+    );
+    let behaviour_path = behaviour_script.path().to_string_lossy().into_owned();
+
+    let mut plugin = ScriptPlugin::new(main_script.path());
+    plugin.set_paused(true);
+    let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
+    let mut ecs = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    let mut input = Input::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+    let mut environment_registry = EnvironmentRegistry::new();
+    let time = Time::new();
+
+    let entity = ecs
+        .world
+        .spawn((Transform::default(), ScriptBehaviour::new(behaviour_path.clone())))
+        .id();
+
+    let feature_registry = FeatureRegistryHandle::isolated();
+    let capability_tracker = CapabilityTrackerHandle::isolated();
+
+    // Paused without step: nothing should run and instance remains unbound.
+    {
+        let mut ctx = PluginContext::new(
+            &mut renderer,
+            &mut ecs,
+            &mut assets,
+            &mut input,
+            &mut material_registry,
+            &mut mesh_registry,
+            &mut environment_registry,
+            &time,
+            push_event_bridge,
+            feature_registry.clone(),
+            None,
+            capability_tracker.clone(),
+        );
+        plugin.update(&mut ctx, 0.016).expect("paused update should succeed");
+        let logs = plugin.take_logs();
+        assert!(logs.is_empty(), "paused update should not run scripts");
+        let behaviour = ecs
+            .world
+            .get::<ScriptBehaviour>(entity)
+            .expect("behaviour should exist");
+        assert_eq!(behaviour.instance_id, 0, "paused update should not create instance");
+    }
+
+    // Single step: ready + process should run once and instance should bind.
+    plugin.step_once();
+    {
+        let mut ctx = PluginContext::new(
+            &mut renderer,
+            &mut ecs,
+            &mut assets,
+            &mut input,
+            &mut material_registry,
+            &mut mesh_registry,
+            &mut environment_registry,
+            &time,
+            push_event_bridge,
+            feature_registry.clone(),
+            None,
+            capability_tracker.clone(),
+        );
+        plugin.update(&mut ctx, 0.016).expect("step update should succeed");
+        let logs = plugin.take_logs();
+        assert_eq!(
+            logs.iter().filter(|l| l.contains("ready")).count(),
+            1,
+            "ready should run during step"
+        );
+        assert!(
+            logs.iter().any(|l| l.contains("process")),
+            "process should run during step"
+        );
+        let behaviour = ecs
+            .world
+            .get::<ScriptBehaviour>(entity)
+            .expect("behaviour should exist");
+        assert_ne!(behaviour.instance_id, 0, "step update should create instance");
+    }
+
+    // Stay paused without another step: nothing new should run.
+    {
+        let mut ctx = PluginContext::new(
+            &mut renderer,
+            &mut ecs,
+            &mut assets,
+            &mut input,
+            &mut material_registry,
+            &mut mesh_registry,
+            &mut environment_registry,
+            &time,
+            push_event_bridge,
+            feature_registry,
+            None,
+            capability_tracker,
+        );
+        plugin.update(&mut ctx, 0.016).expect("paused update should succeed");
+        let logs = plugin.take_logs();
+        assert!(logs.is_empty(), "paused update after step should not run scripts");
+    }
+}
+
+#[test]
+fn instances_are_pruned_when_entities_change() {
+    let main_script = write_script(
+        r#"
+            fn init(world) { }
+            fn update(world, dt) { }
+        "#,
+    );
+    let behaviour_script = write_script(
+        r#"
+            fn ready(world, entity) { world.log("ready"); }
+            fn process(world, entity, dt) { }
+        "#,
+    );
+    let behaviour_path = behaviour_script.path().to_string_lossy().into_owned();
+
+    let mut plugin = ScriptPlugin::new(main_script.path());
+    let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
+    let mut ecs = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    let mut input = Input::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+    let mut environment_registry = EnvironmentRegistry::new();
+    let time = Time::new();
+    let feature_registry = FeatureRegistryHandle::isolated();
+    let capability_tracker = CapabilityTrackerHandle::isolated();
+
+    let mut run_update = |plugin: &mut ScriptPlugin, ecs: &mut EcsWorld| {
+        let mut ctx = PluginContext::new(
+            &mut renderer,
+            ecs,
+            &mut assets,
+            &mut input,
+            &mut material_registry,
+            &mut mesh_registry,
+            &mut environment_registry,
+            &time,
+            push_event_bridge,
+            feature_registry.clone(),
+            None,
+            capability_tracker.clone(),
+        );
+        plugin.update(&mut ctx, 0.016).expect("script update should succeed");
+        let _ = plugin.take_logs();
+    };
+
+    let entity = ecs
+        .world
+        .spawn((Transform::default(), ScriptBehaviour::new(behaviour_path.clone())))
+        .id();
+    run_update(&mut plugin, &mut ecs);
+    assert_eq!(plugin.instance_count_for_test(), 1, "instance should be created after update");
+
+    assert!(ecs.world.despawn(entity), "entity should despawn");
+    run_update(&mut plugin, &mut ecs);
+    assert_eq!(plugin.instance_count_for_test(), 0, "instance should be pruned after despawn");
+
+    let entity = ecs
+        .world
+        .spawn((Transform::default(), ScriptBehaviour::new(behaviour_path.clone())))
+        .id();
+    run_update(&mut plugin, &mut ecs);
+    assert_eq!(plugin.instance_count_for_test(), 1, "instance should be recreated for new entity");
+
+    ecs.world.entity_mut(entity).remove::<ScriptBehaviour>();
+    run_update(&mut plugin, &mut ecs);
+    assert_eq!(plugin.instance_count_for_test(), 0, "instance should be pruned after component removal");
+}

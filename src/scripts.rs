@@ -24,6 +24,8 @@ pub struct CompiledScript {
     pub has_ready: bool,
     pub has_process: bool,
     pub has_physics_process: bool,
+    pub len: u64,
+    pub digest: u64,
 }
 
 #[derive(Clone)]
@@ -484,11 +486,24 @@ impl ScriptHost {
     }
 
     pub fn ensure_script_loaded(&mut self, path: &str, assets: Option<&AssetManager>) -> Result<()> {
-        if self.scripts.contains_key(path) {
+        let was_loaded = self.scripts.contains_key(path);
+        let source = self.load_script_source(path, assets)?;
+        let len = source.len() as u64;
+        let digest = hash_source(&source);
+        let unchanged = self
+            .scripts
+            .get(path)
+            .map(|compiled| compiled.len == len && compiled.digest == digest)
+            .unwrap_or(false);
+        if unchanged {
             return Ok(());
         }
-        let compiled = self.load_external_script(path, assets)?;
+        let compiled = self.compile_script_from_source(path, &source, len, digest)?;
+        self.error = None;
         self.scripts.insert(path.to_string(), compiled);
+        if was_loaded {
+            self.reinitialize_instances_for_script(path)?;
+        }
         Ok(())
     }
 
@@ -537,15 +552,44 @@ impl ScriptHost {
         self.load_script(assets).map(|_| ())
     }
 
-    fn load_external_script(&self, path: &str, assets: Option<&AssetManager>) -> Result<CompiledScript> {
-        let assets = assets.ok_or_else(|| anyhow!("AssetManager required to load script '{path}'"))?;
-        let source = assets.read_text(path).with_context(|| format!("Reading script asset '{path}'"))?;
+    fn load_script_source(&self, path: &str, assets: Option<&AssetManager>) -> Result<String> {
+        if let Some(assets) = assets {
+            return assets.read_text(path).with_context(|| format!("Reading script asset '{path}'"));
+        }
+        std::fs::read_to_string(path).with_context(|| format!("Reading script file '{path}'"))
+    }
+
+    fn compile_script_from_source(
+        &self,
+        path: &str,
+        source: &str,
+        len: u64,
+        digest: u64,
+    ) -> Result<CompiledScript> {
         let ast = self
             .engine
-            .compile(&source)
+            .compile(source)
             .with_context(|| format!("Compiling Rhai script '{}'", path))?;
         let (has_ready, has_process, has_physics_process) = detect_callbacks(&ast);
-        Ok(CompiledScript { ast, has_ready, has_process, has_physics_process })
+        Ok(CompiledScript { ast, has_ready, has_process, has_physics_process, len, digest })
+    }
+
+    fn reinitialize_instances_for_script(&mut self, script_path: &str) -> Result<()> {
+        let Some(compiled) = self.scripts.get(script_path).cloned() else {
+            return Ok(());
+        };
+        for instance in self.instances.values_mut().filter(|instance| instance.script_path == script_path) {
+            instance.scope = Scope::new();
+            instance.has_ready_run = false;
+            instance.errored = false;
+            if let Err(err) = self.engine.run_ast_with_scope(&mut instance.scope, &compiled.ast) {
+                instance.errored = true;
+                let message = Self::format_rhai_error(err.as_ref(), script_path, "globals");
+                self.error = Some(message.clone());
+                return Err(anyhow!(message));
+            }
+        }
+        Ok(())
     }
 
     fn call_instance_ready(&mut self, instance_id: u64) -> Result<()> {
@@ -908,6 +952,10 @@ impl ScriptPlugin {
         self.host.handles_snapshot()
     }
 
+    pub fn instance_count_for_test(&self) -> usize {
+        self.host.instances.len()
+    }
+
     fn run_behaviours(
         &mut self,
         ecs: &mut crate::ecs::EcsWorld,
@@ -915,6 +963,7 @@ impl ScriptPlugin {
         dt: f32,
         fixed_step: bool,
     ) -> Result<()> {
+        self.cleanup_orphaned_instances(ecs);
         let mut query = ecs.world.query::<(Entity, &mut ScriptBehaviour)>();
         for (entity, mut behaviour) in query.iter_mut(&mut ecs.world) {
             if behaviour.script_path.is_empty() {
@@ -952,6 +1001,30 @@ impl ScriptPlugin {
             }
         }
         Ok(())
+    }
+
+    fn cleanup_orphaned_instances(&mut self, ecs: &mut crate::ecs::EcsWorld) {
+        let mut stale_ids = Vec::new();
+        for (&id, instance) in self.host.instances.iter() {
+            let Ok(entity_ref) = ecs.world.get_entity(instance.entity) else {
+                stale_ids.push(id);
+                continue;
+            };
+            match entity_ref.get::<ScriptBehaviour>() {
+                Some(behaviour)
+                    if behaviour.instance_id == id && behaviour.script_path == instance.script_path => {}
+                _ => stale_ids.push(id),
+            }
+        }
+        for id in stale_ids {
+            self.host.remove_instance(id);
+        }
+        let mut behaviours = ecs.world.query::<&mut ScriptBehaviour>();
+        for mut behaviour in behaviours.iter_mut(&mut ecs.world) {
+            if behaviour.instance_id != 0 && !self.host.instances.contains_key(&behaviour.instance_id) {
+                behaviour.instance_id = 0;
+            }
+        }
     }
 
     pub fn script_path(&self) -> &Path {
@@ -1102,6 +1175,7 @@ fn register_api(engine: &mut Engine) {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    use std::fs;
     use std::io::Write;
     use std::rc::Rc;
     use std::time::{Duration, Instant};
@@ -1310,5 +1384,59 @@ mod tests {
         assert!(!compiled.has_physics_process);
         // second call should be a no-op
         host.ensure_script_loaded(&path_str, None).expect("cached load should succeed");
+    }
+
+    #[test]
+    fn behaviour_reload_resets_instances_and_reruns_ready() {
+        let main_script = write_script(
+            r#"
+                fn init(world) { }
+                fn update(world, dt) { }
+            "#,
+        );
+        let behaviour_script = write_script(
+            r#"
+                let counter = 0;
+                fn ready(world, entity) {
+                    counter += 1;
+                    world.log("ready v1 " + counter.to_string());
+                }
+                fn process(world, entity, dt) { }
+            "#,
+        );
+        let behaviour_path = behaviour_script.path().to_string_lossy().into_owned();
+        let mut host = ScriptHost::new(main_script.path());
+        let mut world = bevy_ecs::world::World::new();
+        let entity = world.spawn_empty().id();
+
+        host.ensure_script_loaded(&behaviour_path, None).expect("initial load");
+        let instance_id = host
+            .create_instance(&behaviour_path, entity, None)
+            .expect("create instance");
+
+        host.call_instance_ready(instance_id).expect("initial ready call");
+        let initial_logs = host.drain_logs();
+        assert!(
+            initial_logs.iter().any(|l| l.contains("ready v1 1")),
+            "expected ready log before reload, got {initial_logs:?}"
+        );
+
+        let replacement = r#"
+            let counter = 5;
+            fn ready(world, entity) {
+                counter += 1;
+                world.log("ready v2 " + counter.to_string());
+            }
+            fn process(world, entity, dt) { }
+        "#;
+        fs::write(&behaviour_path, replacement).expect("rewrite behaviour script");
+
+        host.ensure_script_loaded(&behaviour_path, None).expect("reload after change");
+        host.call_instance_ready(instance_id).expect("ready should rerun after reload");
+        let reloaded_logs = host.drain_logs();
+        assert!(
+            reloaded_logs.iter().any(|l| l.contains("ready v2 6")),
+            "expected ready to rerun new script with reset state, got {reloaded_logs:?}"
+        );
     }
 }

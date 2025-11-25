@@ -223,7 +223,7 @@ fn process(world, entity, dt) {
 }
 ```
 
-**Example scene:** `assets/scenes/script_behaviour_demo.kscene`
+**Example scene:** `assets/scenes/script_behaviour_demo.json`
 - Camera + a few sprites.
 - Three entities share a sprite but have different scripts (`spinner`, `wanderer`, `blinker`).
 - Shows distinct behaviours when run in Studio.
@@ -245,3 +245,16 @@ Exit: CI fails if scripts do not compile or if behaviours break serialization/ru
 - Per-script hot reload that refreshes instances safely.
 - Debug tools (variable inspection, call tracing).
 - Generated API docs for `ScriptWorld` exposure.
+
+---
+
+## 12. Additional Optimizations & Hardening
+
+- Imports/shared lib: add a cached import resolver plus a standard helper file (math, timers, tween helpers) to cut copy/paste across scripts.
+- Performance: optional ahead-of-time compiled AST cache (hashed) for shipping builds; batch commands per instance and enforce per-frame command/time budgets to contain runaway scripts.
+- Lifecycle/state: add `exit(world, entity)` for cleanup; safely re-run `ready` on hot reload; opt-in persistent instance state (serialized blob) for checkpoints.
+- API ergonomics: prefab/template spawn helper with guardrails; built-in helpers for timers, move_toward/look_at, simple steering/cooldowns to reduce boilerplate.
+- Safety/testing: deterministic mode (seeded RNG) for reproducible runs; richer errors with call stacks and a “mute until reload” switch for noisy scripts.
+- Observability: lightweight per-callback timing/counters surfaced in Studio; entity-level script status overlay and recent-log view.
+- Interop: event/signal bridge so scripts can emit/listen without tight coupling; expose read-only component snapshots (e.g., transform) for awareness without direct ECS access.
+- Docs: generate Studio-visible API docs from registered Rhai functions and surface tooltips in the inspector/script console.
