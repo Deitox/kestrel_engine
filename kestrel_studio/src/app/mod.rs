@@ -4300,6 +4300,33 @@ impl App {
                         eprintln!("[script] despawn unknown handle {handle}");
                     }
                 }
+                ScriptCommand::SpawnPrefab { handle, path } => {
+                    let load_result = Scene::load_from_path(&path).map(|scene| scene.with_fresh_entity_ids());
+                    match load_result {
+                        Ok(mut scene) => {
+                            match self.ecs.instantiate_prefab_with_mesh(&scene, &mut self.assets, |key, path| {
+                                self.mesh_registry.ensure_mesh(key, path, &mut self.material_registry)
+                            }) {
+                                Ok(spawned) => {
+                                    if let Some(&root) = spawned.first() {
+                                        self.register_script_spawn(handle, root);
+                                    } else {
+                                        eprintln!("[script] prefab '{path}' spawned zero entities");
+                                        self.forget_script_handle(handle);
+                                    }
+                                }
+                                Err(err) => {
+                                    eprintln!("[script] prefab instantiate failed for {path}: {err}");
+                                    self.forget_script_handle(handle);
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            eprintln!("[script] prefab load failed for {path}: {err}");
+                            self.forget_script_handle(handle);
+                        }
+                    }
+                }
                 ScriptCommand::SetAutoSpawnRate { rate } => {
                     let clamped = rate.max(0.0);
                     self.editor_ui_state_mut().ui_auto_spawn_rate = clamped;

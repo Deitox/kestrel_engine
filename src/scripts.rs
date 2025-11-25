@@ -75,6 +75,7 @@ pub enum ScriptCommand {
     SetEmitterEndColor { color: Vec4 },
     SetEmitterStartSize { size: f32 },
     SetEmitterEndSize { size: f32 },
+    SpawnPrefab { handle: ScriptHandle, path: String },
     EntitySetPosition { entity: Entity, position: Vec2 },
     EntitySetRotation { entity: Entity, rotation: f32 },
     EntitySetScale { entity: Entity, scale: Vec2 },
@@ -214,6 +215,18 @@ impl ScriptWorld {
     fn despawn(&mut self, handle: ScriptHandle) -> bool {
         self.state.borrow_mut().commands.push(ScriptCommand::Despawn { handle });
         true
+    }
+
+    fn spawn_prefab(&mut self, path: &str) -> ScriptHandle {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return -1;
+        }
+        let mut state = self.state.borrow_mut();
+        let handle = state.next_handle;
+        state.next_handle = state.next_handle.saturating_add(1);
+        state.commands.push(ScriptCommand::SpawnPrefab { handle, path: trimmed.to_string() });
+        handle
     }
 
     fn entity_set_position(&mut self, entity_bits: ScriptHandle, x: FLOAT, y: FLOAT) -> bool {
@@ -1388,6 +1401,7 @@ fn register_api(engine: &mut Engine) {
     engine.register_fn("clear_tint", ScriptWorld::clear_tint);
     engine.register_fn("set_sprite_region", ScriptWorld::set_sprite_region);
     engine.register_fn("despawn", ScriptWorld::despawn);
+    engine.register_fn("spawn_prefab", ScriptWorld::spawn_prefab);
     engine.register_fn("set_auto_spawn_rate", ScriptWorld::set_auto_spawn_rate);
     engine.register_fn("set_spawn_per_press", ScriptWorld::set_spawn_per_press);
     engine.register_fn("set_emitter_rate", ScriptWorld::set_emitter_rate);
@@ -1695,6 +1709,19 @@ mod tests {
         assert!((step as f32 - 2.5).abs() < 1e-4, "should move by max_delta");
         let final_step = world.move_toward(9.0, 10.0, 2.5);
         assert!((final_step as f32 - 10.0).abs() < 1e-4, "should clamp to target when within delta");
+    }
+
+    #[test]
+    fn spawn_prefab_enqueues_command_with_handle() {
+        let state = Rc::new(RefCell::new(SharedState::default()));
+        let mut world = ScriptWorld::new(state.clone());
+        let handle = world.spawn_prefab("assets/scenes/example.json");
+        assert!(handle >= 0);
+        let cmds = state.borrow().commands.clone();
+        assert!(matches!(
+            cmds.as_slice(),
+            [ScriptCommand::SpawnPrefab { handle: h, path }] if *h == handle && path.contains("example.json")
+        ));
     }
 
     #[test]
