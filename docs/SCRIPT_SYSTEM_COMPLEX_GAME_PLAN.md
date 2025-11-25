@@ -67,3 +67,13 @@ Goal: expand Rhai behaviours so we can comfortably build a complex, content-rich
 6) Phase 7–8 (Studio polish, packaging, test harness).  
 
 Each phase should land with tests (unit + integration) and a short Studio manual check where applicable.
+
+## Game Kit Layer (Player/Waves/Stats/Upgrades)
+- Purpose: provide a small, opinionated helper on top of `ScriptWorld` so authors don’t reimplement common “run-based” patterns.
+- Player/session: health/shield/stamina, invulnerability windows, damage application with source tags, respawn checkpoints, deterministic seed carry-through.
+- Waves/spawning: timed schedules, weighted enemy tables, pacing curves, encounter states (intro/active/cleanup), hooks for music/FX cues.
+- Economy/upgrades: currency drop/pickup helpers, stat-mod stacks (add/multiply), rarity tables, upgrade roll/choice API with reroll costs, mutators/modifiers.
+- Progression/persistence: meta progression save/load hooks, difficulty scaling over time, per-run modifiers.
+- UI hooks: events/callbacks for HUD (health, ammo, wave timer, currency) so scripts can update UI without tight coupling.
+- Safety/determinism: reuse budgets/quotas, deterministic seeds through the kit, and guardrails on spawn/damage rates.
+- Delivery: ship as `gamekit.rhai` (shared helpers) plus a few Rust-exposed functions for perf-sensitive bits (damage resolution, spawner ticking). Include docs and sample scripts using the kit.
