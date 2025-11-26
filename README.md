@@ -43,6 +43,7 @@
 - Arrow keys cycle through command history, and the History list lets you click to rehydrate older commands for editing. The input box auto-focuses whenever a script error occurs so you can fix issues quickly.
 - Errors that occur during REPL execution or regular script updates automatically reopen the debugger and highlight the failure, keeping the workflow tight during iteration.
 - Scripting helpers: the shared `assets/scripts/common.rhai` exposes timers, cooldowns, lerp/move helpers, and vector/angle math. For scripts that avoid imports, the `World` API also provides `vec2`, `vec2_len`, `vec2_normalize`, `vec2_distance`, `vec2_lerp`, `move_toward_vec2`, `angle_to_vec`, `vec_to_angle`, and `wrap_angle_pi` so you can do basic math directly from `world.*`.
+- Behaviour lifecycle: `ready/process/physics_process/exit` run per-behaviour. `exit` also fires on hot reload; `world.is_hot_reload()` flags the first `ready` after a reload. Opt-in persistence is available via `ScriptBehaviour.persist_state`; scripts can stash/reload data with `world.state_get/set/clear/keys` (cleared on reload unless persistence is enabled).
 
 ## Animation Tooling & Validation
 - The viewport HUD (toggle from **Stats -> Viewport Overlays**) surfaces sprite/transform/skeletal/GPU palette budgets so perf regressions are visible at a glance.
