@@ -116,6 +116,7 @@ pub enum ScriptCommand {
     SetEmitterStartSize { size: f32 },
     SetEmitterEndSize { size: f32 },
     SpawnPrefab { handle: ScriptHandle, path: String },
+    SpawnTemplate { handle: ScriptHandle, template: String },
     EntitySetPosition { entity: Entity, position: Vec2 },
     EntitySetRotation { entity: Entity, rotation: f32 },
     EntitySetScale { entity: Entity, scale: Vec2 },
@@ -124,7 +125,6 @@ pub enum ScriptCommand {
     EntityDespawn { entity: Entity },
 }
 
-#[derive(Default)]
 struct SharedState {
     next_handle: ScriptHandle,
     commands: Vec<ScriptCommand>,
@@ -132,12 +132,110 @@ struct SharedState {
     rng: Option<StdRng>,
     entity_snapshots: HashMap<Entity, EntitySnapshot>,
     input_snapshot: Option<InputSnapshot>,
+    time_scale: f32,
+    unscaled_time: f32,
+    scaled_time: f32,
+    last_unscaled_dt: f32,
+    last_scaled_dt: f32,
+    timers: HashMap<String, TimerState>,
+}
+
+impl Default for SharedState {
+    fn default() -> Self {
+        Self {
+            next_handle: 0,
+            commands: Vec::new(),
+            logs: Vec::new(),
+            rng: None,
+            entity_snapshots: HashMap::new(),
+            input_snapshot: None,
+            time_scale: 1.0,
+            unscaled_time: 0.0,
+            scaled_time: 0.0,
+            last_unscaled_dt: 0.0,
+            last_scaled_dt: 0.0,
+            timers: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct TimerState {
+    duration: f32,
+    elapsed: f32,
+    repeat: bool,
+    fired: bool,
+}
+
+impl TimerState {
+    fn new(duration: f32, repeat: bool) -> Self {
+        Self { duration, elapsed: 0.0, repeat, fired: false }
+    }
+
+    fn tick(&mut self, dt: f32) {
+        if !dt.is_finite() || dt <= 0.0 {
+            return;
+        }
+        if self.duration <= 0.0 {
+            self.fired = true;
+            return;
+        }
+        self.elapsed += dt;
+        while self.elapsed >= self.duration {
+            self.elapsed -= self.duration;
+            self.fired = true;
+            if !self.repeat {
+                self.elapsed = self.duration;
+                break;
+            }
+        }
+    }
+
+    fn consume_fired(&mut self) -> bool {
+        let fired = self.fired;
+        self.fired = false;
+        fired
+    }
+
+    fn remaining(&self) -> f32 {
+        if self.duration <= 0.0 {
+            0.0
+        } else {
+            (self.duration - self.elapsed).max(0.0)
+        }
+    }
+}
+
+#[derive(Default)]
+struct QueryFilters {
+    include: Option<HashSet<Entity>>,
+    exclude: HashSet<Entity>,
+}
+
+impl QueryFilters {
+    fn matches(&self, entity: Entity) -> bool {
+        if let Some(include) = &self.include {
+            if !include.contains(&entity) {
+                return false;
+            }
+        }
+        !self.exclude.contains(&entity)
+    }
 }
 
 #[derive(Default)]
 pub struct InstanceRuntimeState {
     persistent: Map,
     is_hot_reload: bool,
+    timers: HashMap<String, TimerState>,
+}
+
+impl InstanceRuntimeState {
+    fn tick_timers(&mut self, dt: f32) {
+        for timer in self.timers.values_mut() {
+            timer.tick(dt);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -327,12 +425,32 @@ impl ScriptWorld {
     }
 
     fn raycast(&mut self, ox: FLOAT, oy: FLOAT, dx: FLOAT, dy: FLOAT, max_dist: FLOAT) -> Map {
+        self.raycast_filtered(ox, oy, dx, dy, max_dist, QueryFilters::default())
+    }
+
+    fn raycast_with_filters(&mut self, ox: FLOAT, oy: FLOAT, dx: FLOAT, dy: FLOAT, max_dist: FLOAT, filters: Map) -> Map {
+        let filters = Self::parse_query_filters(filters);
+        self.raycast_filtered(ox, oy, dx, dy, max_dist, filters)
+    }
+
+    fn raycast_filtered(
+        &mut self,
+        ox: FLOAT,
+        oy: FLOAT,
+        dx: FLOAT,
+        dy: FLOAT,
+        max_dist: FLOAT,
+        filters: QueryFilters,
+    ) -> Map {
         let origin = Vec2::new(ox as f32, oy as f32);
         let dir = Vec2::new(dx as f32, dy as f32);
         let max_dist = if max_dist.is_finite() && max_dist > 0.0 { max_dist as f32 } else { f32::INFINITY };
         let mut best: Option<(Entity, f32, Vec2)> = None;
         let state = self.state.borrow();
         for (entity, snap) in state.entity_snapshots.iter() {
+            if !filters.matches(*entity) {
+                continue;
+            }
             let half = snap.half_extents.unwrap_or_else(|| snap.scale * 0.5);
             if half.x <= 0.0 || half.y <= 0.0 {
                 continue;
@@ -356,6 +474,15 @@ impl ScriptWorld {
     }
 
     fn overlap_circle(&mut self, cx: FLOAT, cy: FLOAT, radius: FLOAT) -> Array {
+        self.overlap_circle_filtered(cx, cy, radius, QueryFilters::default())
+    }
+
+    fn overlap_circle_with_filters(&mut self, cx: FLOAT, cy: FLOAT, radius: FLOAT, filters: Map) -> Array {
+        let filters = Self::parse_query_filters(filters);
+        self.overlap_circle_filtered(cx, cy, radius, filters)
+    }
+
+    fn overlap_circle_filtered(&mut self, cx: FLOAT, cy: FLOAT, radius: FLOAT, filters: QueryFilters) -> Array {
         let center = Vec2::new(cx as f32, cy as f32);
         let radius = radius.abs() as f32;
         if radius <= 0.0 || !radius.is_finite() {
@@ -365,6 +492,9 @@ impl ScriptWorld {
         let state = self.state.borrow();
         let r2 = radius * radius;
         for (entity, snap) in state.entity_snapshots.iter() {
+            if !filters.matches(*entity) {
+                continue;
+            }
             let half = snap.half_extents.unwrap_or_else(|| snap.scale * 0.5);
             if half.x <= 0.0 || half.y <= 0.0 {
                 continue;
@@ -573,6 +703,32 @@ impl ScriptWorld {
         }
     }
 
+    fn entities_from_array(arr: &Array) -> HashSet<Entity> {
+        arr.iter()
+            .filter_map(|value| value.clone().try_cast::<ScriptHandle>())
+            .filter(|handle| *handle >= 0)
+            .map(|handle| Entity::from_bits(handle as u64))
+            .collect()
+    }
+
+    fn parse_query_filters(filters: Map) -> QueryFilters {
+        let mut parsed = QueryFilters::default();
+        if let Some(include) = filters.get("include") {
+            if let Some(arr) = include.clone().try_cast::<Array>() {
+                let set = Self::entities_from_array(&arr);
+                if !set.is_empty() {
+                    parsed.include = Some(set);
+                }
+            }
+        }
+        if let Some(exclude) = filters.get("exclude") {
+            if let Some(arr) = exclude.clone().try_cast::<Array>() {
+                parsed.exclude = Self::entities_from_array(&arr);
+            }
+        }
+        parsed
+    }
+
     fn ray_aabb_2d(origin: Vec2, dir: Vec2, center: Vec2, half: Vec2) -> Option<(f32, Vec2)> {
         if dir.length_squared() <= f32::EPSILON {
             return None;
@@ -740,6 +896,18 @@ impl ScriptWorld {
         let handle = state.next_handle;
         state.next_handle = state.next_handle.saturating_add(1);
         state.commands.push(ScriptCommand::SpawnPrefab { handle, path: trimmed.to_string() });
+        handle
+    }
+
+    fn spawn_template(&mut self, name: &str) -> ScriptHandle {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return -1;
+        }
+        let mut state = self.state.borrow_mut();
+        let handle = state.next_handle;
+        state.next_handle = state.next_handle.saturating_add(1);
+        state.commands.push(ScriptCommand::SpawnTemplate { handle, template: trimmed.to_string() });
         handle
     }
 
@@ -935,6 +1103,100 @@ impl ScriptWorld {
     fn rand_seed(&mut self, seed: rhai::INT) {
         let seed = seed as u64;
         self.state.borrow_mut().rng = Some(StdRng::seed_from_u64(seed));
+    }
+
+    fn time_scale(&mut self) -> FLOAT {
+        let scale = self.state.borrow().time_scale;
+        if scale.is_finite() { scale as FLOAT } else { 1.0 }
+    }
+
+    fn set_time_scale(&mut self, scale: FLOAT) -> bool {
+        let scale = scale as f32;
+        if !scale.is_finite() || scale < 0.0 {
+            return false;
+        }
+        self.state.borrow_mut().time_scale = scale;
+        true
+    }
+
+    fn delta_seconds(&mut self) -> FLOAT {
+        let dt = self.state.borrow().last_scaled_dt;
+        if dt.is_finite() { dt as FLOAT } else { 0.0 }
+    }
+
+    fn unscaled_delta_seconds(&mut self) -> FLOAT {
+        let dt = self.state.borrow().last_unscaled_dt;
+        if dt.is_finite() { dt as FLOAT } else { 0.0 }
+    }
+
+    fn time_seconds(&mut self) -> FLOAT {
+        let t = self.state.borrow().scaled_time;
+        if t.is_finite() { t as FLOAT } else { 0.0 }
+    }
+
+    fn unscaled_time_seconds(&mut self) -> FLOAT {
+        let t = self.state.borrow().unscaled_time;
+        if t.is_finite() { t as FLOAT } else { 0.0 }
+    }
+
+    fn timer_start(&mut self, name: &str, seconds: FLOAT) -> bool {
+        self.timer_start_internal(name, seconds, false)
+    }
+
+    fn timer_start_repeat(&mut self, name: &str, seconds: FLOAT) -> bool {
+        self.timer_start_internal(name, seconds, true)
+    }
+
+    fn timer_fired(&mut self, name: &str) -> bool {
+        let key = name.trim();
+        if key.is_empty() {
+            return false;
+        }
+        self.with_timer_store(|timers| timers.get_mut(key).map(|t| t.consume_fired()).unwrap_or(false))
+    }
+
+    fn timer_remaining(&mut self, name: &str) -> FLOAT {
+        let key = name.trim();
+        if key.is_empty() {
+            return 0.0;
+        }
+        self.with_timer_store(|timers| timers.get(key).map(|t| t.remaining() as FLOAT).unwrap_or(0.0))
+    }
+
+    fn timer_clear(&mut self, name: &str) -> bool {
+        let key = name.trim();
+        if key.is_empty() {
+            return false;
+        }
+        self.with_timer_store(|timers| timers.remove(key).is_some())
+    }
+
+    fn timer_start_internal(&mut self, name: &str, seconds: FLOAT, repeat: bool) -> bool {
+        let duration = (seconds as f32).max(0.0);
+        if !duration.is_finite() {
+            return false;
+        }
+        let key = name.trim();
+        if key.is_empty() {
+            return false;
+        }
+        self.with_timer_store(|timers| {
+            timers.insert(key.to_string(), TimerState::new(duration, repeat));
+        });
+        true
+    }
+
+    fn with_timer_store<R, F>(&mut self, mut f: F) -> R
+    where
+        F: FnMut(&mut HashMap<String, TimerState>) -> R,
+    {
+        if let Some(state) = &self.instance_state {
+            let mut state = state.borrow_mut();
+            f(&mut state.timers)
+        } else {
+            let mut state = self.state.borrow_mut();
+            f(&mut state.timers)
+        }
     }
 
     fn move_toward(&mut self, current: FLOAT, target: FLOAT, max_delta: FLOAT) -> FLOAT {
@@ -1301,6 +1563,7 @@ impl ScriptHost {
         }
         let entity_int: ScriptHandle = entity_to_rhai(instance.entity);
         let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone());
+        instance.state.borrow_mut().tick_timers(dt);
         let dt_rhai: FLOAT = dt as FLOAT;
         match self.engine.call_fn::<Dynamic>(
             &mut instance.scope,
@@ -1330,6 +1593,7 @@ impl ScriptHost {
         }
         let entity_int: ScriptHandle = entity_to_rhai(instance.entity);
         let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone());
+        instance.state.borrow_mut().tick_timers(dt);
         let dt_rhai: FLOAT = dt as FLOAT;
         match self.engine.call_fn::<Dynamic>(
             &mut instance.scope,
@@ -1369,22 +1633,43 @@ impl ScriptHost {
         }
     }
 
-    pub fn update(&mut self, dt: f32, run_scripts: bool, assets: Option<&AssetManager>) {
+    fn begin_frame(&mut self, dt: f32) -> f32 {
+        let dt = if dt.is_finite() && dt > 0.0 { dt } else { 0.0 };
+        let mut shared = self.shared.borrow_mut();
+        let mut scale = shared.time_scale;
+        if !scale.is_finite() {
+            scale = 1.0;
+            shared.time_scale = 1.0;
+        }
+        let scaled = dt * scale;
+        let scaled_dt = if scaled.is_finite() { scaled } else { 0.0 };
+        shared.last_unscaled_dt = dt;
+        shared.last_scaled_dt = scaled_dt;
+        shared.unscaled_time += dt;
+        shared.scaled_time += scaled_dt;
+        for timer in shared.timers.values_mut() {
+            timer.tick(scaled_dt);
+        }
+        scaled_dt
+    }
+
+    pub fn update(&mut self, dt: f32, run_scripts: bool, assets: Option<&AssetManager>) -> f32 {
         if let Err(err) = self.reload_if_needed(assets) {
             self.error = Some(err.to_string());
-            return;
+            return 0.0;
         }
 
         if !self.enabled {
-            return;
+            return 0.0;
         }
         if !run_scripts {
-            return;
+            return 0.0;
         }
-        let dt_rhai: FLOAT = dt as FLOAT;
+        let dt_scaled = self.begin_frame(dt);
+        let dt_rhai: FLOAT = dt_scaled as FLOAT;
         let ast = match &self.ast {
             Some(ast) => ast,
-            None => return,
+            None => return dt_scaled,
         };
 
         {
@@ -1408,16 +1693,16 @@ impl ScriptHost {
                                     self.script_path.display()
                                 );
                                 self.error = Some(msg);
-                                return;
+                                return dt_scaled;
                             }
                             self.initialized = true;
-                            return;
+                            return dt_scaled;
                         }
                     }
                     let msg =
                         Self::format_rhai_error(err.as_ref(), self.script_path.to_string_lossy().as_ref(), "init");
                     self.error = Some(msg);
-                    return;
+                    return dt_scaled;
                 }
             }
         }
@@ -1438,7 +1723,7 @@ impl ScriptHost {
                         } else {
                             self.error = None;
                         }
-                        return;
+                        return dt_scaled;
                     }
                 }
                 let msg = Self::format_rhai_error(
@@ -1449,6 +1734,7 @@ impl ScriptHost {
                 self.error = Some(msg);
             }
         }
+        dt_scaled
     }
 
     pub fn drain_commands(&mut self) -> Vec<ScriptCommand> {
@@ -1816,12 +2102,13 @@ impl ScriptPlugin {
             ScriptCommand::SetEmitterStartSize { .. } => 16,
             ScriptCommand::SetEmitterEndSize { .. } => 17,
             ScriptCommand::SpawnPrefab { .. } => 18,
-            ScriptCommand::EntitySetPosition { .. } => 19,
-            ScriptCommand::EntitySetRotation { .. } => 20,
-            ScriptCommand::EntitySetScale { .. } => 21,
-            ScriptCommand::EntitySetTint { .. } => 22,
-            ScriptCommand::EntitySetVelocity { .. } => 23,
-            ScriptCommand::EntityDespawn { .. } => 24,
+            ScriptCommand::SpawnTemplate { .. } => 19,
+            ScriptCommand::EntitySetPosition { .. } => 20,
+            ScriptCommand::EntitySetRotation { .. } => 21,
+            ScriptCommand::EntitySetScale { .. } => 22,
+            ScriptCommand::EntitySetTint { .. } => 23,
+            ScriptCommand::EntitySetVelocity { .. } => 24,
+            ScriptCommand::EntityDespawn { .. } => 25,
         }
     }
 
@@ -1894,6 +2181,12 @@ impl ScriptPlugin {
                 (SetEmitterEndSize { size: sa }, SetEmitterEndSize { size: sb }) => Self::cmp_float(*sa, *sb),
                 (SpawnPrefab { handle: ha, path: pa }, SpawnPrefab { handle: hb, path: pb }) => {
                     ha.cmp(hb).then_with(|| pa.cmp(pb))
+                }
+                (
+                    SpawnTemplate { handle: ha, template: ta },
+                    SpawnTemplate { handle: hb, template: tb },
+                ) => {
+                    ha.cmp(hb).then_with(|| ta.cmp(tb))
                 }
                 (
                     EntitySetPosition { entity: ea, position: pa },
@@ -2163,9 +2456,9 @@ impl EnginePlugin for ScriptPlugin {
         }
         self.populate_entity_snapshots(ecs);
         self.cleanup_orphaned_instances(ecs);
-        self.host.update(dt, run_scripts, Some(assets));
+        let dt_scaled = self.host.update(dt, run_scripts, Some(assets));
         if run_scripts && self.host.enabled() {
-            self.run_behaviours(ecs, assets, dt, false)?;
+            self.run_behaviours(ecs, assets, dt_scaled, false)?;
         }
         if !self.paused {
             self.step_once = false;
@@ -2191,7 +2484,8 @@ impl EnginePlugin for ScriptPlugin {
             return Ok(());
         }
         if self.host.enabled() {
-            self.run_behaviours(ecs, assets, dt, true)?;
+            let dt_scaled = self.host.begin_frame(dt);
+            self.run_behaviours(ecs, assets, dt_scaled, true)?;
         }
         let drained = self.drain_host_commands();
         self.commands.extend(drained);
@@ -2226,6 +2520,7 @@ fn register_api(engine: &mut Engine) {
     engine.register_fn("set_sprite_region", ScriptWorld::set_sprite_region);
     engine.register_fn("despawn", ScriptWorld::despawn);
     engine.register_fn("spawn_prefab", ScriptWorld::spawn_prefab);
+    engine.register_fn("spawn_template", ScriptWorld::spawn_template);
     engine.register_fn("set_auto_spawn_rate", ScriptWorld::set_auto_spawn_rate);
     engine.register_fn("set_spawn_per_press", ScriptWorld::set_spawn_per_press);
     engine.register_fn("set_emitter_rate", ScriptWorld::set_emitter_rate);
@@ -2250,7 +2545,9 @@ fn register_api(engine: &mut Engine) {
     engine.register_fn("entity_velocity", ScriptWorld::entity_velocity);
     engine.register_fn("entity_tint", ScriptWorld::entity_tint);
     engine.register_fn("raycast", ScriptWorld::raycast);
+    engine.register_fn("raycast", ScriptWorld::raycast_with_filters);
     engine.register_fn("overlap_circle", ScriptWorld::overlap_circle);
+    engine.register_fn("overlap_circle", ScriptWorld::overlap_circle_with_filters);
     engine.register_fn("input_forward", ScriptWorld::input_forward);
     engine.register_fn("input_backward", ScriptWorld::input_backward);
     engine.register_fn("input_left", ScriptWorld::input_left);
@@ -2267,6 +2564,17 @@ fn register_api(engine: &mut Engine) {
     engine.register_fn("log", ScriptWorld::log);
     engine.register_fn("rand_seed", ScriptWorld::rand_seed);
     engine.register_fn("rand", ScriptWorld::random_range);
+    engine.register_fn("time_scale", ScriptWorld::time_scale);
+    engine.register_fn("set_time_scale", ScriptWorld::set_time_scale);
+    engine.register_fn("delta_seconds", ScriptWorld::delta_seconds);
+    engine.register_fn("unscaled_delta_seconds", ScriptWorld::unscaled_delta_seconds);
+    engine.register_fn("time_seconds", ScriptWorld::time_seconds);
+    engine.register_fn("unscaled_time_seconds", ScriptWorld::unscaled_time_seconds);
+    engine.register_fn("timer_start", ScriptWorld::timer_start);
+    engine.register_fn("timer_start_repeat", ScriptWorld::timer_start_repeat);
+    engine.register_fn("timer_fired", ScriptWorld::timer_fired);
+    engine.register_fn("timer_remaining", ScriptWorld::timer_remaining);
+    engine.register_fn("timer_clear", ScriptWorld::timer_clear);
     engine.register_fn("move_toward", ScriptWorld::move_toward);
     engine.register_fn("state_get", ScriptWorld::state_get);
     engine.register_fn("state_set", ScriptWorld::state_set);
@@ -2363,7 +2671,7 @@ mod tests {
         );
         let mut host = ScriptHost::new(script.path());
         host.force_reload(None).expect("initial load");
-        host.update(0.016, true, None);
+        let _ = host.update(0.016, true, None);
         let err = host.last_error().expect("error recorded");
         assert!(err.contains("init") && err.contains("signature"), "unexpected error: {err}");
     }
@@ -2378,7 +2686,7 @@ mod tests {
         );
         let mut host = ScriptHost::new(script.path());
         host.force_reload(None).expect("initial load");
-        host.update(0.016, true, None);
+        let _ = host.update(0.016, true, None);
         let err = host.last_error().expect("error recorded");
         assert!(err.contains("update") && err.contains("signature"), "unexpected error: {err}");
     }
@@ -2512,13 +2820,13 @@ mod tests {
             "update missing: {:?}",
             funcs
         );
-        host.update(0.016, true, None);
+        let _ = host.update(0.016, true, None);
         assert!(
             host.last_error().is_none(),
             "init should succeed, got {:?}",
             host.last_error()
         );
-        host.update(0.016, true, None);
+        let _ = host.update(0.016, true, None);
         assert!(
             host.last_error().is_none(),
             "update should succeed, got {:?}",
@@ -2575,7 +2883,7 @@ mod tests {
         ));
         let mut host = ScriptHost::new(script.path());
         host.force_reload(None).expect("load script with import");
-        host.update(0.016, true, None);
+        let _ = host.update(0.016, true, None);
         let logs = host.drain_logs();
         assert!(
             logs.iter().any(|l| l.contains("123")),
@@ -2719,7 +3027,7 @@ mod tests {
         );
         let mut host = ScriptHost::new(script.path());
         host.force_reload(None).expect("load script with common import");
-        host.update(0.016, true, None);
+        let _ = host.update(0.016, true, None);
         assert!(host.last_error().is_none(), "script error: {:?}", host.last_error());
         let logs = host.drain_logs();
         let len_line = logs.iter().find(|l| l.starts_with("len:")).expect("len log");
@@ -2918,13 +3226,13 @@ mod tests {
         ));
         let mut host = ScriptHost::new(script.path());
         host.force_reload(None).expect("load main script");
-        host.update(0.016, true, None);
+        let _ = host.update(0.016, true, None);
         let first_logs = host.drain_logs();
         assert!(first_logs.iter().any(|l| l.contains("v:1")), "expected module v1 log, got {first_logs:?}");
 
         fs::write(module.path(), "fn value() { 2 }").expect("rewrite module v2");
         host.last_digest_check = Some(Instant::now() - Duration::from_millis(300));
-        host.update(0.016, true, None);
+        let _ = host.update(0.016, true, None);
         let second_logs = host.drain_logs();
         assert!(second_logs.iter().any(|l| l.contains("v:2")), "expected module v2 log, got {second_logs:?}");
     }
@@ -2940,6 +3248,43 @@ mod tests {
         let samples_a: Vec<_> = (0..4).map(|_| world_a.random_range(-5.0, 5.0)).collect();
         let samples_b: Vec<_> = (0..4).map(|_| world_b.random_range(-5.0, 5.0)).collect();
         assert_eq!(samples_a, samples_b, "seeded rand should be deterministic");
+    }
+
+    #[test]
+    fn time_scale_applies_to_delta_tracking() {
+        let mut host = ScriptHost::new("assets/scripts/main.rhai");
+        let mut world = ScriptWorld::new(host.shared.clone());
+        assert!((world.time_scale() - 1.0).abs() < 1e-6);
+        host.begin_frame(0.25);
+        assert!((world.delta_seconds() as f32 - 0.25).abs() < 1e-6);
+        assert!((world.unscaled_time_seconds() as f32 - 0.25).abs() < 1e-6);
+        assert!((world.time_seconds() as f32 - 0.25).abs() < 1e-6);
+        world.set_time_scale(0.5);
+        host.begin_frame(0.2);
+        assert!((world.delta_seconds() as f32 - 0.1).abs() < 1e-6);
+        assert!((world.unscaled_time_seconds() as f32 - 0.45).abs() < 1e-6);
+        assert!((world.time_seconds() as f32 - 0.35).abs() < 1e-6);
+    }
+
+    #[test]
+    fn timers_tick_and_repeat() {
+        let shared = Rc::new(RefCell::new(SharedState::default()));
+        let instance = Rc::new(RefCell::new(InstanceRuntimeState::default()));
+        let mut world = ScriptWorld::with_instance(shared, instance.clone());
+        assert!(world.timer_start("once", 0.1));
+        instance.borrow_mut().tick_timers(0.05);
+        let remaining = world.timer_remaining("once");
+        assert!((remaining as f32 - 0.05).abs() < 1e-4);
+        assert!(!world.timer_fired("once"));
+        instance.borrow_mut().tick_timers(0.06);
+        assert!(world.timer_fired("once"));
+        assert!(!world.timer_fired("once"), "timer_fired should consume the fired flag");
+        assert!(world.timer_start_repeat("loop", 0.1));
+        instance.borrow_mut().tick_timers(0.12);
+        assert!(world.timer_fired("loop"));
+        instance.borrow_mut().tick_timers(0.11);
+        assert!(world.timer_fired("loop"));
+        assert!(world.timer_clear("loop"));
     }
 
     #[test]
@@ -2962,6 +3307,19 @@ mod tests {
         assert!(matches!(
             cmds.as_slice(),
             [ScriptCommand::SpawnPrefab { handle: h, path }] if *h == handle && path.contains("example.json")
+        ));
+    }
+
+    #[test]
+    fn spawn_template_enqueues_command_with_handle() {
+        let state = Rc::new(RefCell::new(SharedState::default()));
+        let mut world = ScriptWorld::new(state.clone());
+        let handle = world.spawn_template("enemy");
+        assert!(handle >= 0);
+        let cmds = state.borrow().commands.clone();
+        assert!(matches!(
+            cmds.as_slice(),
+            [ScriptCommand::SpawnTemplate { handle: h, template }] if *h == handle && template == "enemy"
         ));
     }
 
@@ -3045,6 +3403,48 @@ mod tests {
     }
 
     #[test]
+    fn raycast_respects_exclude_filter() {
+        let state = Rc::new(RefCell::new(SharedState::default()));
+        {
+            let mut shared = state.borrow_mut();
+            let mut snaps = HashMap::new();
+            let e1 = Entity::from_raw(1);
+            let e2 = Entity::from_raw(2);
+            snaps.insert(
+                e1,
+                EntitySnapshot {
+                    translation: Vec2::new(5.0, 0.0),
+                    rotation: 0.0,
+                    scale: Vec2::ONE,
+                    velocity: None,
+                    tint: None,
+                    half_extents: Some(Vec2::splat(1.0)),
+                },
+            );
+            snaps.insert(
+                e2,
+                EntitySnapshot {
+                    translation: Vec2::new(8.0, 0.0),
+                    rotation: 0.0,
+                    scale: Vec2::ONE,
+                    velocity: None,
+                    tint: None,
+                    half_extents: Some(Vec2::splat(1.0)),
+                },
+            );
+            shared.entity_snapshots = snaps;
+        }
+        let mut world = ScriptWorld::new(state);
+        let mut filters = Map::new();
+        let mut exclude = Array::new();
+        exclude.push(Dynamic::from(entity_to_rhai(Entity::from_raw(1))));
+        filters.insert("exclude".into(), Dynamic::from(exclude));
+        let hit = world.raycast_with_filters(0.0, 0.0, 1.0, 0.0, 20.0, filters);
+        let entity_val = hit.get("entity").unwrap().clone().try_cast::<ScriptHandle>().unwrap();
+        assert_eq!(entity_val as u64, Entity::from_raw(2).to_bits(), "excluded entity should be skipped");
+    }
+
+    #[test]
     fn overlap_circle_collects_intersecting_entities() {
         let state = Rc::new(RefCell::new(SharedState::default()));
         {
@@ -3069,6 +3469,48 @@ mod tests {
         assert_eq!(hits.len(), 1);
         let handle: ScriptHandle = hits[0].clone().try_cast().unwrap();
         assert_eq!(handle as u64, Entity::from_raw(3).to_bits());
+    }
+
+    #[test]
+    fn overlap_circle_respects_include_filter() {
+        let state = Rc::new(RefCell::new(SharedState::default()));
+        let target = Entity::from_raw(7);
+        let other = Entity::from_raw(8);
+        {
+            let mut shared = state.borrow_mut();
+            let mut snaps = HashMap::new();
+            snaps.insert(
+                target,
+                EntitySnapshot {
+                    translation: Vec2::new(1.0, 0.0),
+                    rotation: 0.0,
+                    scale: Vec2::ONE,
+                    velocity: None,
+                    tint: None,
+                    half_extents: Some(Vec2::splat(0.5)),
+                },
+            );
+            snaps.insert(
+                other,
+                EntitySnapshot {
+                    translation: Vec2::new(1.5, 0.0),
+                    rotation: 0.0,
+                    scale: Vec2::ONE,
+                    velocity: None,
+                    tint: None,
+                    half_extents: Some(Vec2::splat(0.5)),
+                },
+            );
+            shared.entity_snapshots = snaps;
+        }
+        let mut filters = Map::new();
+        let include = vec![Dynamic::from(entity_to_rhai(target))];
+        filters.insert("include".into(), Dynamic::from(include));
+        let mut world = ScriptWorld::new(state);
+        let hits = world.overlap_circle_with_filters(0.0, 0.0, 2.0, filters);
+        assert_eq!(hits.len(), 1, "include filter should drop extra hits");
+        let handle: ScriptHandle = hits[0].clone().try_cast().unwrap();
+        assert_eq!(handle as u64, target.to_bits());
     }
 
     #[test]

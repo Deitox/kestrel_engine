@@ -34,7 +34,11 @@ fn script_behaviour_roundtrips_and_resets_instance_id() {
     let mut world = EcsWorld::new();
     world.world.spawn((
         Transform::default(),
-        ScriptBehaviour { script_path: "assets/scripts/spinner.rhai".to_string(), instance_id: 42 },
+        ScriptBehaviour {
+            script_path: "assets/scripts/spinner.rhai".to_string(),
+            instance_id: 42,
+            persist_state: false,
+        },
     ));
     let assets = AssetManager::new();
 

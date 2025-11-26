@@ -4359,6 +4359,60 @@ impl App {
                         }
                     }
                 }
+                ScriptCommand::SpawnTemplate { handle, template } => {
+                    if let Err(err) = self.prefab_library.refresh() {
+                        eprintln!("[script] prefab library refresh failed: {err:?}");
+                    }
+                    let name = template.trim();
+                    if name.is_empty() {
+                        eprintln!("[script] spawn_template received empty name");
+                        self.forget_script_handle(handle);
+                        continue;
+                    }
+                    let entry = self
+                        .prefab_library
+                        .entries()
+                        .iter()
+                        .find(|entry| entry.name.eq_ignore_ascii_case(name) && entry.format == PrefabFormat::Json)
+                        .or_else(|| {
+                            self.prefab_library
+                                .entries()
+                                .iter()
+                                .find(|entry| entry.name.eq_ignore_ascii_case(name))
+                        })
+                        .cloned();
+                    let Some(entry) = entry else {
+                        eprintln!("[script] prefab template '{name}' not found");
+                        self.forget_script_handle(handle);
+                        continue;
+                    };
+                    let load_result =
+                        Scene::load_from_path(&entry.path).map(|scene| scene.with_fresh_entity_ids());
+                    match load_result {
+                        Ok(scene) => {
+                            match self.ecs.instantiate_prefab_with_mesh(&scene, &mut self.assets, |key, path| {
+                                self.mesh_registry.ensure_mesh(key, path, &mut self.material_registry)
+                            }) {
+                                Ok(spawned) => {
+                                    if let Some(&root) = spawned.first() {
+                                        self.register_script_spawn(handle, root);
+                                    } else {
+                                        eprintln!("[script] template '{}' spawned zero entities", entry.name);
+                                        self.forget_script_handle(handle);
+                                    }
+                                }
+                                Err(err) => {
+                                    eprintln!("[script] template instantiate failed for '{}': {err}", entry.name);
+                                    self.forget_script_handle(handle);
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            eprintln!("[script] template load failed for '{}': {err}", entry.name);
+                            self.forget_script_handle(handle);
+                        }
+                    }
+                }
                 ScriptCommand::SetAutoSpawnRate { rate } => {
                     let clamped = rate.max(0.0);
                     self.editor_ui_state_mut().ui_auto_spawn_rate = clamped;

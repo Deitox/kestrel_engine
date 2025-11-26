@@ -20,7 +20,7 @@ fn process(world, entity, dt) {
     dir = normalize(dir);
 
     let pos = world.entity_position(entity);
-    let hit = world.raycast(pos[0], pos[1], dir[0], dir[1], AVOID_DISTANCE);
+    let hit = world.raycast(pos[0], pos[1], dir[0], dir[1], AVOID_DISTANCE, #{ exclude: [entity] });
     if hit.len() > 0 && ("point" in hit) {
         // Tint to warn we are staring at an obstacle.
         world.entity_set_tint(entity, 1.0, 0.4, 0.4, 1.0);
@@ -29,9 +29,9 @@ fn process(world, entity, dt) {
     }
 
     // Simple proximity log.
-    let nearby = world.overlap_circle(pos[0], pos[1], NEAR_RADIUS);
-    if nearby.len() > 1 { // includes self if it has an AABB
-        world.log("seeker sees " + (nearby.len() - 1).to_string() + " neighbours");
+    let nearby = world.overlap_circle(pos[0], pos[1], NEAR_RADIUS, #{ exclude: [entity] });
+    if nearby.len() > 0 {
+        world.log("seeker sees " + nearby.len().to_string() + " neighbours");
     }
 
     world.entity_set_velocity(entity, dir[0] * SPEED, dir[1] * SPEED);
