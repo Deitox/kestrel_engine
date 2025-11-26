@@ -2510,12 +2510,25 @@ mod tests {
                     world.log("ready1:" + c::cooldown_ready(cd).to_string());
                     cd = c::cooldown_tick(cd, 0.25);
                     world.log("ready2:" + c::cooldown_ready(cd).to_string());
+                    let dir = c::angle_to_vec(c::deg_to_rad(90.0));
+                    world.log("dir:" + dir[0].to_string() + "," + dir[1].to_string());
+                    let ang = c::vec_to_angle([0.0, 1.0]);
+                    world.log("ang:" + ang.to_string());
+                    let norm = c::vec2_normalize([3.0, 4.0]);
+                    world.log("norm:" + norm[0].to_string() + "," + norm[1].to_string());
+                    let dist = c::vec2_distance([1.0, 1.0], [4.0, 5.0]);
+                    world.log("dist:" + dist.to_string());
+                    let lerp = c::vec2_lerp([0.0, 0.0], [2.0, 2.0], 0.5);
+                    world.log("lerp:" + lerp[0].to_string() + "," + lerp[1].to_string());
+                    let wrapped = c::wrap_angle_pi(7.0);
+                    world.log("wrap:" + wrapped.to_string());
                 }
             "#,
         );
         let mut host = ScriptHost::new(script.path());
         host.force_reload(None).expect("load script with common import");
         host.update(0.016, true, None);
+        assert!(host.last_error().is_none(), "script error: {:?}", host.last_error());
         let logs = host.drain_logs();
         let len_line = logs.iter().find(|l| l.starts_with("len:")).expect("len log");
         let len_val: f32 = len_line["len:".len()..].parse().expect("len parse");
@@ -2523,6 +2536,63 @@ mod tests {
         assert!((len_val - 2.0).abs() < 0.05, "clamp_length should cap magnitude near 2, got {len_val}");
         assert!(logs.iter().any(|l| l.contains("ready1:false")), "cooldown should not be ready mid-way");
         assert!(logs.iter().any(|l| l.contains("ready2:true")), "cooldown should become ready after duration");
+        let dir_vals: Vec<f32> = logs
+            .iter()
+            .find(|l| l.starts_with("dir:"))
+            .expect("dir log")
+            ["dir:".len()..]
+                .split(',')
+                .map(|v| v.parse::<f32>().expect("dir parse"))
+                .collect();
+        assert!((dir_vals[0]).abs() < 0.05 && (dir_vals[1] - 1.0).abs() < 0.05, "angle_to_vec should face up");
+        let ang: f32 = logs
+            .iter()
+            .find(|l| l.starts_with("ang:"))
+            .expect("ang log")
+            ["ang:".len()..]
+                .parse()
+                .expect("ang parse");
+        assert!((ang - std::f32::consts::FRAC_PI_2).abs() < 0.05, "vec_to_angle should read 90deg");
+        let norm_vals: Vec<f32> = logs
+            .iter()
+            .find(|l| l.starts_with("norm:"))
+            .expect("norm log")
+            ["norm:".len()..]
+                .split(',')
+                .map(|v| v.parse::<f32>().expect("norm parse"))
+                .collect();
+        assert!(
+            (norm_vals[0] - 0.6).abs() < 0.05 && (norm_vals[1] - 0.8).abs() < 0.05,
+            "normalize should yield 0.6/0.8"
+        );
+        let dist: f32 = logs
+            .iter()
+            .find(|l| l.starts_with("dist:"))
+            .expect("dist log")
+            ["dist:".len()..]
+                .parse()
+                .expect("dist parse");
+        assert!((dist - 5.0).abs() < 0.05, "vec2_distance should be 5");
+        let lerp_vals: Vec<f32> = logs
+            .iter()
+            .find(|l| l.starts_with("lerp:"))
+            .expect("lerp log")
+            ["lerp:".len()..]
+                .split(',')
+                .map(|v| v.parse::<f32>().expect("lerp parse"))
+                .collect();
+        assert!(
+            (lerp_vals[0] - 1.0).abs() < 0.05 && (lerp_vals[1] - 1.0).abs() < 0.05,
+            "vec2_lerp should hit midpoint"
+        );
+        let wrapped: f32 = logs
+            .iter()
+            .find(|l| l.starts_with("wrap:"))
+            .expect("wrap log")
+            ["wrap:".len()..]
+                .parse()
+                .expect("wrap parse");
+        assert!((wrapped - 0.7168).abs() < 0.05, "wrap_angle_pi should wrap into [-pi,pi]");
     }
 
     #[test]

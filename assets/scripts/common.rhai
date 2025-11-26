@@ -16,6 +16,55 @@ fn lerp(a, b, t) {
     a + (b - a) * k
 }
 
+fn atan2_safe(y, x) {
+    let pi = 3.141592653589793;
+    let eps = 0.000001;
+    if x.abs() > eps {
+        let base = (y / x).atan();
+        if x > 0.0 {
+            base
+        } else if y >= 0.0 {
+            base + pi
+        } else {
+            base - pi
+        }
+    } else if y.abs() > eps {
+        if y > 0.0 { pi * 0.5 } else { -pi * 0.5 }
+    } else {
+        0.0
+    }
+}
+
+fn vec2(x, y) {
+    [x, y]
+}
+
+fn vec2_dot(a, b) {
+    (a[0] * b[0]) + (a[1] * b[1])
+}
+
+fn vec2_len(v) {
+    (vec2_dot(v, v)).sqrt()
+}
+
+fn vec2_normalize(v) {
+    let len = vec2_len(v);
+    if len <= 0.0001 {
+        [0.0, 0.0]
+    } else {
+        [v[0] / len, v[1] / len]
+    }
+}
+
+fn vec2_distance(a, b) {
+    vec2_len([b[0] - a[0], b[1] - a[1]])
+}
+
+fn vec2_lerp(a, b, t) {
+    let k = clamp01(t);
+    [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k]
+}
+
 fn move_toward(current, target, max_delta) {
     let delta = target - current;
     let step = if delta.abs() <= max_delta.abs() { delta } else { delta.sign() * max_delta.abs() };
@@ -49,7 +98,24 @@ fn clamp_length(v, max_len) {
 fn look_at(from, to) {
     let dx = to[0] - from[0];
     let dy = to[1] - from[1];
-    dy.atan2(dx)
+    atan2_safe(dy, dx)
+}
+
+fn angle_to_vec(angle) {
+    [angle.cos(), angle.sin()]
+}
+
+fn vec_to_angle(v) {
+    atan2_safe(v[1], v[0])
+}
+
+fn wrap_angle_pi(rad) {
+    let pi = 3.141592653589793;
+    let two_pi = 6.283185307179586;
+    let a = rad;
+    while a > pi { a -= two_pi; }
+    while a < -pi { a += two_pi; }
+    a
 }
 
 fn timer(seconds) {
