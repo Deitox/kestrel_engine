@@ -13,7 +13,8 @@ use anyhow::{anyhow, Context, Error, Result};
 use glam::{Vec2, Vec4};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use rhai::{module_resolvers::FileModuleResolver, Array, Dynamic, Engine, EvalAltResult, Map, Scope, AST, FLOAT};
+use rhai::module_resolvers::FileModuleResolver;
+use rhai::{Array, Dynamic, Engine, EvalAltResult, Map, Scope, AST, FLOAT};
 
 use bevy_ecs::prelude::{Component, Entity};
 use crate::ecs::{Aabb, Tint, Transform, Velocity, WorldTransform};
@@ -23,6 +24,7 @@ use crate::input::Input;
 pub type ScriptHandle = rhai::INT;
 
 const SCRIPT_DIGEST_CHECK_INTERVAL: Duration = Duration::from_millis(250);
+const SCRIPT_IMPORT_ROOT: &str = "assets/scripts";
 
 #[derive(Clone)]
 pub struct CompiledScript {
@@ -33,6 +35,7 @@ pub struct CompiledScript {
     pub has_exit: bool,
     pub len: u64,
     pub digest: u64,
+    pub import_digests: HashMap<PathBuf, u64>,
     pub last_checked: Option<Instant>,
     pub asset_revision: Option<u64>,
 }
@@ -732,6 +735,7 @@ pub struct ScriptHost {
     last_modified: Option<SystemTime>,
     last_len: Option<u64>,
     last_digest: Option<u64>,
+    last_import_digests: HashMap<PathBuf, u64>,
     last_digest_check: Option<Instant>,
     last_asset_revision: Option<u64>,
     error: Option<String>,
@@ -759,7 +763,7 @@ impl ScriptHost {
     pub fn new(path: impl AsRef<Path>) -> Self {
         let mut engine = Engine::new();
         engine.set_fast_operators(true);
-        let resolver = FileModuleResolver::new_with_path("assets/scripts");
+        let resolver = FileModuleResolver::new_with_path(SCRIPT_IMPORT_ROOT);
         engine.set_module_resolver(resolver);
         register_api(&mut engine);
         let shared = SharedState { next_handle: 1, ..Default::default() };
@@ -771,6 +775,7 @@ impl ScriptHost {
             last_modified: None,
             last_len: None,
             last_digest: None,
+            last_import_digests: HashMap::new(),
             last_digest_check: None,
             last_asset_revision: None,
             error: None,
@@ -841,7 +846,10 @@ impl ScriptHost {
                 .last_checked
                 .map(|last| now.duration_since(last) < SCRIPT_DIGEST_CHECK_INTERVAL)
                 .unwrap_or(false);
-            if recently_checked && (assets.is_none() || same_asset_rev) {
+            if recently_checked
+                && (assets.is_none() || same_asset_rev)
+                && imports_unchanged(&compiled.import_digests)
+            {
                 return Ok(());
             }
         }
@@ -851,7 +859,8 @@ impl ScriptHost {
         let digest = hash_source(&source);
         if let Some(compiled) = self.scripts.get_mut(path) {
             let same_source = compiled.len == len && compiled.digest == digest;
-            if same_source {
+            let imports_clean = imports_unchanged(&compiled.import_digests);
+            if same_source && imports_clean {
                 compiled.last_checked = Some(now);
                 compiled.asset_revision = asset_rev.or(compiled.asset_revision);
                 return Ok(());
@@ -958,6 +967,7 @@ impl ScriptHost {
             .engine
             .compile(source)
             .with_context(|| format!("Compiling Rhai script '{}'", path))?;
+        let import_digests = compute_import_digests(source)?;
         let (has_ready, has_process, has_physics_process, has_exit) = detect_callbacks(&ast);
         Ok(CompiledScript {
             ast,
@@ -967,6 +977,7 @@ impl ScriptHost {
             has_exit,
             len,
             digest,
+            import_digests,
             last_checked: Some(Instant::now()),
             asset_revision: None,
         })
@@ -1254,7 +1265,8 @@ impl ScriptHost {
                 .last_digest_check
                 .map(|last| now.duration_since(last) < SCRIPT_DIGEST_CHECK_INTERVAL)
                 .unwrap_or(false);
-            if self.ast.is_some() && self.last_asset_revision == Some(revision) && recently_checked {
+            let imports_clean = imports_unchanged(&self.last_import_digests);
+            if self.ast.is_some() && self.last_asset_revision == Some(revision) && recently_checked && imports_clean {
                 return Ok(());
             }
             let (source, _) = self
@@ -1265,7 +1277,8 @@ impl ScriptHost {
             let should_reload = self.ast.is_none()
                 || self.last_digest.is_none_or(|prev| prev != digest)
                 || self.last_len.is_none_or(|prev| prev != len)
-                || self.last_asset_revision.is_none_or(|prev| prev != revision);
+                || self.last_asset_revision.is_none_or(|prev| prev != revision)
+                || !imports_clean;
             if should_reload {
                 // Without filesystem metadata, fall back to epoch/length for change tracking.
                 self.load_script_from_source(source, SystemTime::UNIX_EPOCH, len, Some(revision))?;
@@ -1287,9 +1300,11 @@ impl ScriptHost {
             .with_context(|| format!("Reading script asset '{}'", self.script_path.display()))?;
         let len = source.len() as u64;
         let digest = hash_source(&source);
+        let imports_clean = imports_unchanged(&self.last_import_digests);
         let should_reload = self.ast.is_none()
             || self.last_digest.is_none_or(|prev| prev != digest)
-            || self.last_len.is_none_or(|prev| prev != len);
+            || self.last_len.is_none_or(|prev| prev != len)
+            || !imports_clean;
         if should_reload {
             self.load_script_from_source(source, SystemTime::UNIX_EPOCH, len, None)?;
             self.last_digest = Some(digest);
@@ -1318,6 +1333,7 @@ impl ScriptHost {
         self.engine
             .run_ast_with_scope(&mut self.scope, &ast)
             .map_err(|err| anyhow!("Evaluating script global statements: {err}"))?;
+        self.last_import_digests = compute_import_digests(&source)?;
         self.last_modified = Some(modified);
         self.last_len = Some(len);
         self.last_digest = Some(hash_source(&source));
@@ -1343,6 +1359,67 @@ fn hash_source(source: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     source.hash(&mut hasher);
     hasher.finish()
+}
+
+fn canonical_import_root() -> PathBuf {
+    PathBuf::from(SCRIPT_IMPORT_ROOT).canonicalize().unwrap_or_else(|_| PathBuf::from(SCRIPT_IMPORT_ROOT))
+}
+
+fn resolve_import_path(import: &str) -> Result<PathBuf> {
+    let trimmed = import.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("Empty import path"));
+    }
+    let mut rel = PathBuf::from(trimmed);
+    if rel.extension().is_none() {
+        rel.set_extension("rhai");
+    }
+    if rel.is_absolute() {
+        return Err(anyhow!("Absolute import paths are not allowed: {trimmed}"));
+    }
+    let root = canonical_import_root();
+    let candidate = root.join(rel);
+    let canonical = candidate.canonicalize().with_context(|| format!("Resolving import '{trimmed}'"))?;
+    if !canonical.starts_with(&root) {
+        anyhow::bail!("Import '{trimmed}' escapes scripts directory");
+    }
+    Ok(canonical)
+}
+
+fn parse_literal_imports(source: &str) -> Vec<String> {
+    let mut imports = Vec::new();
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with("import ") {
+            continue;
+        }
+        if let Some(start) = trimmed.find('"') {
+            if let Some(end_rel) = trimmed[start + 1..].find('"') {
+                let end = start + 1 + end_rel;
+                imports.push(trimmed[start + 1..end].to_string());
+            }
+        }
+    }
+    imports
+}
+
+fn compute_import_digests(source: &str) -> Result<HashMap<PathBuf, u64>> {
+    let mut imports = HashMap::new();
+    for name in parse_literal_imports(source) {
+        let path = resolve_import_path(&name)?;
+        let contents =
+            std::fs::read_to_string(&path).with_context(|| format!("Reading imported module '{}'", path.display()))?;
+        imports.insert(path, hash_source(&contents));
+    }
+    Ok(imports)
+}
+
+fn imports_unchanged(imports: &HashMap<PathBuf, u64>) -> bool {
+    imports.iter().all(|(path, digest)| {
+        std::fs::read_to_string(path)
+            .map(|src| hash_source(&src) == *digest)
+            .unwrap_or(false)
+    })
 }
 
 fn detect_callbacks(ast: &AST) -> (bool, bool, bool, bool) {
@@ -1373,6 +1450,7 @@ pub struct ScriptPlugin {
     logs: Vec<String>,
     paused: bool,
     step_once: bool,
+    deterministic_ordering: bool,
     path_indices: HashMap<Arc<str>, usize>,
     path_list: Vec<Arc<str>>,
     failed_path_scratch: HashSet<usize>,
@@ -1388,6 +1466,7 @@ impl ScriptPlugin {
             logs: Vec::new(),
             paused: false,
             step_once: false,
+            deterministic_ordering: false,
             path_indices: HashMap::new(),
             path_list: Vec::new(),
             failed_path_scratch: HashSet::new(),
@@ -1496,6 +1575,22 @@ impl ScriptPlugin {
         self.host.instances.len()
     }
 
+    fn sort_behaviour_worklist(&mut self) {
+        if !self.deterministic_ordering {
+            return;
+        }
+        self.behaviour_worklist.sort_by(
+            |(entity_a, path_idx_a, instance_a), (entity_b, path_idx_b, instance_b)| {
+                let path_a = self.path_list.get(*path_idx_a).map(|p| p.as_ref()).unwrap_or("");
+                let path_b = self.path_list.get(*path_idx_b).map(|p| p.as_ref()).unwrap_or("");
+                path_a
+                    .cmp(path_b)
+                    .then_with(|| entity_a.to_bits().cmp(&entity_b.to_bits()))
+                    .then_with(|| instance_a.cmp(instance_b))
+            },
+        );
+    }
+
     fn run_behaviours(
         &mut self,
         ecs: &mut crate::ecs::EcsWorld,
@@ -1531,6 +1626,7 @@ impl ScriptPlugin {
                 self.failed_path_scratch.insert(idx);
             }
         }
+        self.sort_behaviour_worklist();
         for (entity, path_idx, mut instance_id) in self.behaviour_worklist.drain(..) {
             if self.failed_path_scratch.contains(&path_idx) {
                 self.host.mark_entity_error(entity);
@@ -1638,6 +1734,15 @@ impl ScriptPlugin {
         if !paused {
             self.step_once = false;
         }
+    }
+
+    pub fn set_deterministic_ordering(&mut self, enabled: bool) {
+        self.deterministic_ordering = enabled;
+    }
+
+    pub fn enable_deterministic_mode(&mut self, seed: u64) {
+        self.deterministic_ordering = true;
+        self.set_rng_seed(seed);
     }
 
     pub fn step_once(&mut self) {
@@ -1807,6 +1912,7 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use std::rc::Rc;
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
     use tempfile::{Builder, NamedTempFile};
 
@@ -2060,6 +2166,103 @@ mod tests {
             "expected imported module log, got {:?}",
             logs
         );
+    }
+
+    #[test]
+    fn module_import_reloads_when_dependency_changes() {
+        let mut module = Builder::new()
+            .prefix("rhai_module_reload_")
+            .suffix(".rhai")
+            .tempfile_in("assets/scripts")
+            .expect("module file");
+        write!(module.as_file_mut(), "fn value() {{ 1 }}").expect("write module v1");
+        let module_name = module.path().file_stem().and_then(|s| s.to_str()).expect("module name");
+
+        let behaviour = write_script(&format!(
+            r#"
+                import "{module_name}" as m;
+                fn ready(world, entity) {{ world.log(m::value().to_string()); }}
+                fn process(world, entity, dt) {{ }}
+            "#
+        ));
+        let behaviour_path = behaviour.path().to_string_lossy().into_owned();
+        let mut host = ScriptHost::new(behaviour.path());
+        let mut world = bevy_ecs::world::World::new();
+        let entity = world.spawn_empty().id();
+
+        host.ensure_script_loaded(&behaviour_path, None).expect("initial load");
+        let instance_id = host.create_instance(&behaviour_path, entity, None).expect("instance create");
+        host.call_instance_ready(instance_id).expect("ready call");
+        let first_logs = host.drain_logs();
+        assert!(first_logs.iter().any(|l| l.contains("1")), "expected module v1 log, got {first_logs:?}");
+
+        write!(module.as_file_mut(), "fn value() {{ 2 }}").expect("write module v2");
+        if let Some(compiled) = host.scripts.get_mut(&behaviour_path) {
+            compiled.last_checked = Some(Instant::now() - Duration::from_millis(300));
+        }
+        host.ensure_script_loaded(&behaviour_path, None).expect("reload after module change");
+        host.call_instance_ready(instance_id).expect("ready rerun");
+        let second_logs = host.drain_logs();
+        assert!(second_logs.iter().any(|l| l.contains("2")), "expected module v2 log, got {second_logs:?}");
+    }
+
+    #[test]
+    fn module_import_rejects_parent_directory_escape() {
+        let script = write_script(
+            r#"
+                import "../outside" as bad;
+                fn init(world) { }
+                fn update(world, dt) { }
+            "#,
+        );
+        let mut host = ScriptHost::new(script.path());
+        assert!(
+            host.force_reload(None).is_err(),
+            "importing with '..' should be rejected"
+        );
+    }
+
+    #[test]
+    fn deterministic_ordering_sorts_worklist_by_path_then_entity() {
+        let main = write_script(
+            r#"
+                fn init(world) { }
+                fn update(world, dt) { }
+            "#,
+        );
+        let mut plugin = ScriptPlugin::new(main.path());
+        plugin.set_deterministic_ordering(true);
+        plugin.path_list = vec![Arc::from("b.rhai"), Arc::from("a.rhai")];
+        plugin.behaviour_worklist = vec![
+            (Entity::from_raw(2), 0, 10),
+            (Entity::from_raw(1), 1, 5),
+            (Entity::from_raw(3), 0, 2),
+        ];
+        plugin.sort_behaviour_worklist();
+        let ordered: Vec<u64> = plugin.behaviour_worklist.iter().map(|(e, _, _)| e.to_bits()).collect();
+        assert_eq!(
+            ordered,
+            vec![Entity::from_raw(1).to_bits(), Entity::from_raw(2).to_bits(), Entity::from_raw(3).to_bits()],
+            "worklist should be sorted by path then entity id"
+        );
+    }
+
+    #[test]
+    fn deterministic_mode_seeds_shared_rng() {
+        let main = write_script(
+            r#"
+                fn init(world) { }
+                fn update(world, dt) { }
+            "#,
+        );
+        let mut plugin = ScriptPlugin::new(main.path());
+        plugin.enable_deterministic_mode(77);
+        let mut world_a = ScriptWorld::new(plugin.host.shared.clone());
+        let samples_a: Vec<_> = (0..3).map(|_| world_a.random_range(-1.0, 1.0)).collect();
+        plugin.set_rng_seed(77);
+        let mut world_b = ScriptWorld::new(plugin.host.shared.clone());
+        let samples_b: Vec<_> = (0..3).map(|_| world_b.random_range(-1.0, 1.0)).collect();
+        assert_eq!(samples_a, samples_b, "deterministic seed should stabilize RNG output");
     }
 
     #[test]
