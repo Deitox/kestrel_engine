@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::assets::AssetManager;
 use crate::plugins::{EnginePlugin, PluginContext};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Context, Error, Result};
 use glam::{Vec2, Vec4};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -17,6 +17,7 @@ use rhai::{module_resolvers::FileModuleResolver, Array, Dynamic, Engine, EvalAlt
 
 use bevy_ecs::prelude::{Component, Entity};
 use crate::ecs::{Aabb, Tint, Transform, Velocity, WorldTransform};
+use std::fmt::Write as FmtWrite;
 use crate::input::Input;
 
 pub type ScriptHandle = rhai::INT;
@@ -907,7 +908,18 @@ impl ScriptHost {
     }
 
     pub fn set_error_message(&mut self, msg: impl Into<String>) {
-        self.error = Some(msg.into());
+        let msg = msg.into();
+        eprintln!("[script] {msg}");
+        self.error = Some(msg);
+    }
+
+    pub fn set_error_with_details(&mut self, err: &Error) {
+        let mut buf = String::new();
+        let _ = write!(&mut buf, "{err}");
+        for cause in err.chain().skip(1) {
+            let _ = write!(&mut buf, "\ncaused by: {cause}");
+        }
+        self.set_error_message(buf);
     }
 
     pub fn force_reload(&mut self, assets: Option<&AssetManager>) -> Result<()> {
@@ -1515,7 +1527,7 @@ impl ScriptPlugin {
         }
         for (idx, path) in self.path_list.iter().enumerate() {
             if let Err(err) = self.host.ensure_script_loaded(path.as_ref(), Some(assets)) {
-                self.host.set_error_message(err.to_string());
+                self.host.set_error_with_details(&err);
                 self.failed_path_scratch.insert(idx);
             }
         }
@@ -1532,7 +1544,7 @@ impl ScriptPlugin {
                         self.id_updates.push((entity, id));
                     }
                     Err(err) => {
-                        self.host.set_error_message(err.to_string());
+                        self.host.set_error_with_details(&err);
                         self.host.mark_entity_error(entity);
                         continue;
                     }

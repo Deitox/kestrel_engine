@@ -1,0 +1,8 @@
+[1764151147] Runtime error: Compiling Rhai script 'assets/scripts/seeker.rhai'
+[1764151318] Runtime error: Compiling Rhai script 'assets/scripts/seeker.rhai'
+[1764151672] Runtime error: Compiling Rhai script 'assets/scripts/seeker.rhai'
+caused by: Unknown operator: '?' (line 41, position 35)
+[1764151793] Runtime error: Evaluating globals for 'assets/scripts/seeker.rhai': Syntax error: Expecting name of a variable (line 4, position 8)
+in module 'common' (line 3, position 8)
+[1764151854] Runtime error: Evaluating globals for 'assets/scripts/seeker.rhai': Syntax error: Expecting ';' to terminate this statement (line 4, position 10)
+in module 'common' (line 3, position 8)
