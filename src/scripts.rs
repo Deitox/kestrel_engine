@@ -2061,6 +2061,7 @@ mod tests {
     use std::rc::Rc;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
+    use crate::ecs::{EcsWorld, Transform};
     use tempfile::{Builder, NamedTempFile};
 
     fn write_script(contents: &str) -> NamedTempFile {
@@ -2451,6 +2452,47 @@ mod tests {
                  ScriptCommand::SpawnPrefab { handle: 2, path: p2 }] if p0 == "a" && p2 == "b"),
             "expected deterministic sort by kind then handle/path, got {:?}", cmds
         );
+    }
+
+    #[test]
+    fn deterministic_mode_stabilizes_multi_entity_commands() {
+        fn run_once(main_script: &NamedTempFile, behaviour_path: &str) -> Vec<ScriptCommand> {
+            let mut plugin = ScriptPlugin::new(main_script.path());
+            plugin.enable_deterministic_mode(999);
+            let mut ecs = EcsWorld::new();
+            let assets = AssetManager::new();
+            ecs.world
+                .spawn((Transform::default(), ScriptBehaviour::new(behaviour_path.to_string())));
+            ecs.world
+                .spawn((Transform::default(), ScriptBehaviour::new(behaviour_path.to_string())));
+            plugin
+                .run_behaviours(&mut ecs, &assets, 0.016, false)
+                .expect("behaviours run");
+            plugin.drain_host_commands()
+        }
+
+        let main = write_script(
+            r#"
+                fn init(world) { }
+                fn update(world, dt) { }
+            "#,
+        );
+        let behaviour = write_script(
+            r#"
+                fn ready(world, entity) {
+                    world.spawn_prefab("b_prefab");
+                    world.spawn_prefab("a_prefab");
+                    world.entity_set_position(entity, entity.to_float(), 0.0);
+                }
+                fn process(world, entity, dt) { }
+            "#,
+        );
+        let behaviour_path = behaviour.path().to_string_lossy().into_owned();
+        let first = run_once(&main, &behaviour_path);
+        let second = run_once(&main, &behaviour_path);
+        let first_fmt: Vec<String> = first.iter().map(|c| format!("{c:?}")).collect();
+        let second_fmt: Vec<String> = second.iter().map(|c| format!("{c:?}")).collect();
+        assert_eq!(first_fmt, second_fmt, "deterministic mode should produce stable command ordering across runs");
     }
 
     #[test]
