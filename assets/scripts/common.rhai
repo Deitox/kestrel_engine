@@ -57,16 +57,18 @@ fn timer(seconds) {
 }
 
 fn timer_tick(t, dt) {
-    if t.duration <= 0.0 {
-        return true;
+    let out = t;
+    if out.duration <= 0.0 {
+        return #{ timer: out, fired: true };
     }
-    t.elapsed += dt;
-    if t.elapsed >= t.duration {
-        t.elapsed -= t.duration;
+    out.elapsed += dt;
+    let fired = if out.elapsed >= out.duration {
+        out.elapsed -= out.duration;
         true
     } else {
         false
-    }
+    };
+    #{ timer: out, fired: fired }
 }
 
 fn cooldown(seconds) {
@@ -78,16 +80,20 @@ fn cooldown_ready(cd) {
 }
 
 fn cooldown_trigger(cd) {
-    cd.remaining = cd.duration;
+    let out = cd;
+    out.remaining = out.duration;
+    out
 }
 
 fn cooldown_tick(cd, dt) {
-    if cd.remaining > 0.0 {
-        cd.remaining -= dt;
-        if cd.remaining < 0.0 {
-            cd.remaining = 0.0;
+    let out = cd;
+    if out.remaining > 0.0 {
+        out.remaining -= dt;
+        if out.remaining < 0.0 {
+            out.remaining = 0.0;
         }
     }
+    out
 }
 
 fn smoothstep(t) {

@@ -598,14 +598,22 @@ impl App {
         let plugin_manager = PluginManager::default();
         let mut plugin_runtime = PluginRuntime::new(plugin_host, plugin_manager);
         let script_path = project.scripts_entry_path().to_path_buf();
+        let scripts_cfg = config.scripts.clone();
         let mut builtin_plugins = Vec::new();
         builtin_plugins
             .push(BuiltinPluginFactory::new("mesh_preview", || Box::new(MeshPreviewPlugin::new())));
         builtin_plugins.push(BuiltinPluginFactory::new("analytics", || Box::new(AnalyticsPlugin::default())));
         {
             let path = script_path.clone();
+            let scripts_cfg = scripts_cfg.clone();
             builtin_plugins.push(BuiltinPluginFactory::new("scripts", move || {
-                Box::new(ScriptPlugin::new(path.clone()))
+                let mut plugin = ScriptPlugin::new(path.clone());
+                if let Some(seed) = scripts_cfg.deterministic_seed {
+                    plugin.enable_deterministic_mode(seed);
+                } else if scripts_cfg.deterministic_ordering {
+                    plugin.set_deterministic_ordering(true);
+                }
+                Box::new(plugin)
             }));
         }
         builtin_plugins.push(BuiltinPluginFactory::new("audio", || Box::new(AudioPlugin::new(16))));

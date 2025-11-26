@@ -750,6 +750,11 @@ pub struct ScriptHost {
 }
 
 impl ScriptHost {
+    fn reset_import_resolver(&mut self) {
+        let resolver = FileModuleResolver::new_with_path(SCRIPT_IMPORT_ROOT);
+        self.engine.set_module_resolver(resolver);
+    }
+
     fn format_rhai_error(err: &EvalAltResult, script_path: &str, fn_name: &str) -> String {
         let pos = err.position();
         let location = match (pos.line(), pos.position()) {
@@ -957,12 +962,13 @@ impl ScriptHost {
     }
 
     fn compile_script_from_source(
-        &self,
+        &mut self,
         path: &str,
         source: &str,
         len: u64,
         digest: u64,
     ) -> Result<CompiledScript> {
+        self.reset_import_resolver();
         let ast = self
             .engine
             .compile(source)
@@ -1328,6 +1334,7 @@ impl ScriptHost {
         len: u64,
         revision: Option<u64>,
     ) -> Result<&AST> {
+        self.reset_import_resolver();
         let ast = self.engine.compile(&source).with_context(|| "Compiling Rhai script")?;
         self.scope = Scope::new();
         self.engine
@@ -2223,6 +2230,39 @@ mod tests {
     }
 
     #[test]
+    fn common_rhai_helpers_cover_basic_paths() {
+        let script = write_script(
+            r#"
+                import "common" as c;
+                fn init(world) { }
+                fn update(world, dt) {
+                    let mv = c::move_toward_vec2([0.0, 0.0], [2.0, 0.0], 0.5);
+                    world.log("mv:" + mv[0].to_string() + "," + mv[1].to_string());
+                    let clamped = c::clamp_length([3.0, 4.0], 2.0);
+                    let len = (clamped[0] * clamped[0] + clamped[1] * clamped[1]).sqrt();
+                    world.log("len:" + len.to_string());
+                    let cd = c::cooldown(0.5);
+                    cd = c::cooldown_trigger(cd);
+                    cd = c::cooldown_tick(cd, 0.3);
+                    world.log("ready1:" + c::cooldown_ready(cd).to_string());
+                    cd = c::cooldown_tick(cd, 0.25);
+                    world.log("ready2:" + c::cooldown_ready(cd).to_string());
+                }
+            "#,
+        );
+        let mut host = ScriptHost::new(script.path());
+        host.force_reload(None).expect("load script with common import");
+        host.update(0.016, true, None);
+        let logs = host.drain_logs();
+        let len_line = logs.iter().find(|l| l.starts_with("len:")).expect("len log");
+        let len_val: f32 = len_line["len:".len()..].parse().expect("len parse");
+        assert!(logs.iter().any(|l| l.contains("mv:0.5")), "move_toward_vec2 should advance toward target");
+        assert!((len_val - 2.0).abs() < 0.05, "clamp_length should cap magnitude near 2, got {len_val}");
+        assert!(logs.iter().any(|l| l.contains("ready1:false")), "cooldown should not be ready mid-way");
+        assert!(logs.iter().any(|l| l.contains("ready2:true")), "cooldown should become ready after duration");
+    }
+
+    #[test]
     fn deterministic_ordering_sorts_worklist_by_path_then_entity() {
         let main = write_script(
             r#"
@@ -2263,6 +2303,38 @@ mod tests {
         let mut world_b = ScriptWorld::new(plugin.host.shared.clone());
         let samples_b: Vec<_> = (0..3).map(|_| world_b.random_range(-1.0, 1.0)).collect();
         assert_eq!(samples_a, samples_b, "deterministic seed should stabilize RNG output");
+    }
+
+    #[test]
+    fn main_script_reloads_when_import_changes() {
+        let mut module = Builder::new()
+            .prefix("rhai_main_import_")
+            .suffix(".rhai")
+            .tempfile_in("assets/scripts")
+            .expect("module file");
+        write!(module.as_file_mut(), "fn value() {{ 1 }}").expect("write module v1");
+        let module_name = module.path().file_stem().and_then(|s| s.to_str()).expect("module name");
+
+        let script = write_script(&format!(
+            r#"
+                import "{module_name}" as m;
+                fn init(world) {{}}
+                fn update(world, dt) {{
+                    world.log("v:" + m::value().to_string());
+                }}
+            "#
+        ));
+        let mut host = ScriptHost::new(script.path());
+        host.force_reload(None).expect("load main script");
+        host.update(0.016, true, None);
+        let first_logs = host.drain_logs();
+        assert!(first_logs.iter().any(|l| l.contains("v:1")), "expected module v1 log, got {first_logs:?}");
+
+        fs::write(module.path(), "fn value() { 2 }").expect("rewrite module v2");
+        host.last_digest_check = Some(Instant::now() - Duration::from_millis(300));
+        host.update(0.016, true, None);
+        let second_logs = host.drain_logs();
+        assert!(second_logs.iter().any(|l| l.contains("v:2")), "expected module v2 log, got {second_logs:?}");
     }
 
     #[test]

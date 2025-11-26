@@ -147,6 +147,8 @@ pub struct AppConfig {
     pub editor: EditorConfig,
     #[serde(default)]
     pub timing: TimingConfig,
+    #[serde(default)]
+    pub scripts: ScriptsConfig,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -154,6 +156,19 @@ pub struct AppConfigOverrides {
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub vsync: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ScriptsConfig {
+    #[serde(default)]
+    pub deterministic_ordering: bool,
+    pub deterministic_seed: Option<u64>,
+}
+
+impl Default for ScriptsConfig {
+    fn default() -> Self {
+        Self { deterministic_ordering: false, deterministic_seed: None }
+    }
 }
 
 impl Default for WindowConfig {
