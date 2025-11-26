@@ -951,21 +951,6 @@ impl ScriptHost {
 
     pub fn ensure_script_loaded(&mut self, path: &str, assets: Option<&AssetManager>) -> Result<()> {
         let now = Instant::now();
-        let current_revision = assets.map(|a| a.revision());
-        if let Some(compiled) = self.scripts.get(path) {
-            let same_asset_rev =
-                matches!((compiled.asset_revision, current_revision), (Some(a), Some(current)) if a == current);
-            let recently_checked = compiled
-                .last_checked
-                .map(|last| now.duration_since(last) < SCRIPT_DIGEST_CHECK_INTERVAL)
-                .unwrap_or(false);
-            if recently_checked
-                && (assets.is_none() || same_asset_rev)
-                && imports_unchanged(&compiled.import_digests)
-            {
-                return Ok(());
-            }
-        }
         let was_loaded = self.scripts.contains_key(path);
         let (source, asset_rev) = self.load_script_source_with_revision(path, assets)?;
         let len = source.len() as u64;
@@ -1375,14 +1360,7 @@ impl ScriptHost {
         let now = Instant::now();
         if let Some(assets) = assets {
             let revision = assets.revision();
-            let recently_checked = self
-                .last_digest_check
-                .map(|last| now.duration_since(last) < SCRIPT_DIGEST_CHECK_INTERVAL)
-                .unwrap_or(false);
             let imports_clean = imports_unchanged(&self.last_import_digests);
-            if self.ast.is_some() && self.last_asset_revision == Some(revision) && recently_checked && imports_clean {
-                return Ok(());
-            }
             let (source, _) = self
                 .load_script_source_with_revision(self.script_path.to_string_lossy().as_ref(), Some(assets))
                 .with_context(|| format!("Reading script asset '{}'", self.script_path.display()))?;
@@ -1404,11 +1382,6 @@ impl ScriptHost {
             return Ok(());
         }
 
-        if let Some(last_check) = self.last_digest_check {
-            if last_check.elapsed() < SCRIPT_DIGEST_CHECK_INTERVAL {
-                return Ok(());
-            }
-        }
         let source = self
             .load_script_source(self.script_path.to_string_lossy().as_ref(), None)
             .with_context(|| format!("Reading script asset '{}'", self.script_path.display()))?;
@@ -1422,8 +1395,16 @@ impl ScriptHost {
         if should_reload {
             self.load_script_from_source(source, SystemTime::UNIX_EPOCH, len, None)?;
             self.last_digest = Some(digest);
+            self.last_digest_check = Some(now);
+        } else {
+            let should_update_timestamp = self
+                .last_digest_check
+                .map(|last| now.duration_since(last) >= SCRIPT_DIGEST_CHECK_INTERVAL)
+                .unwrap_or(true);
+            if should_update_timestamp {
+                self.last_digest_check = Some(now);
+            }
         }
-        self.last_digest_check = Some(now);
         Ok(())
     }
 
@@ -2420,7 +2401,7 @@ mod tests {
         let first_logs = host.drain_logs();
         assert!(first_logs.iter().any(|l| l.contains("1")), "expected module v1 log, got {first_logs:?}");
 
-        write!(module.as_file_mut(), "fn value() {{ 2 }}").expect("write module v2");
+        fs::write(module.path(), "fn value() { 2 }").expect("write module v2");
         if let Some(compiled) = host.scripts.get_mut(&behaviour_path) {
             compiled.last_checked = Some(Instant::now() - Duration::from_millis(300));
         }
