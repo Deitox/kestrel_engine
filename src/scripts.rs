@@ -13,9 +13,10 @@ use anyhow::{anyhow, Context, Result};
 use glam::{Vec2, Vec4};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use rhai::{module_resolvers::FileModuleResolver, Dynamic, Engine, EvalAltResult, Scope, AST, FLOAT};
+use rhai::{module_resolvers::FileModuleResolver, Array, Dynamic, Engine, EvalAltResult, Map, Scope, AST, FLOAT};
 
 use bevy_ecs::prelude::{Component, Entity};
+use crate::ecs::{Aabb, Tint, Transform, Velocity, WorldTransform};
 
 pub type ScriptHandle = rhai::INT;
 
@@ -41,6 +42,16 @@ pub struct ScriptInstance {
     pub scope: Scope<'static>,
     pub has_ready_run: bool,
     pub errored: bool,
+}
+
+#[derive(Clone)]
+pub struct EntitySnapshot {
+    pub translation: Vec2,
+    pub rotation: f32,
+    pub scale: Vec2,
+    pub velocity: Option<Vec2>,
+    pub tint: Option<Vec4>,
+    pub half_extents: Option<Vec2>,
 }
 
 #[derive(Component, Clone, Debug)]
@@ -90,6 +101,7 @@ struct SharedState {
     commands: Vec<ScriptCommand>,
     logs: Vec<String>,
     rng: Option<StdRng>,
+    entity_snapshots: HashMap<Entity, EntitySnapshot>,
 }
 
 #[derive(Clone)]
@@ -100,6 +112,177 @@ pub struct ScriptWorld {
 impl ScriptWorld {
     fn new(state: Rc<RefCell<SharedState>>) -> Self {
         Self { state }
+    }
+
+    fn entity_snapshot(&mut self, entity_bits: ScriptHandle) -> Map {
+        let entity = Entity::from_bits(entity_bits as u64);
+        let mut map = Map::new();
+        let state = self.state.borrow();
+        let Some(snapshot) = state.entity_snapshots.get(&entity) else {
+            return map;
+        };
+        map.insert("pos".into(), Dynamic::from(Self::vec2_to_array(snapshot.translation)));
+        map.insert("rot".into(), Dynamic::from(snapshot.rotation as FLOAT));
+        map.insert("scale".into(), Dynamic::from(Self::vec2_to_array(snapshot.scale)));
+        if let Some(vel) = snapshot.velocity {
+            map.insert("vel".into(), Dynamic::from(Self::vec2_to_array(vel)));
+        }
+        if let Some(tint) = snapshot.tint {
+            map.insert("tint".into(), Dynamic::from(Self::vec4_to_array(tint)));
+        }
+        if let Some(half) = snapshot.half_extents {
+            map.insert("half_extents".into(), Dynamic::from(Self::vec2_to_array(half)));
+        }
+        map
+    }
+
+    fn entity_position(&mut self, entity_bits: ScriptHandle) -> Array {
+        let entity = Entity::from_bits(entity_bits as u64);
+        let state = self.state.borrow();
+        let Some(snapshot) = state.entity_snapshots.get(&entity) else {
+            return Array::new();
+        };
+        Self::vec2_to_array(snapshot.translation)
+    }
+
+    fn entity_rotation(&mut self, entity_bits: ScriptHandle) -> FLOAT {
+        let entity = Entity::from_bits(entity_bits as u64);
+        let state = self.state.borrow();
+        state.entity_snapshots.get(&entity).map(|s| s.rotation as FLOAT).unwrap_or(0.0)
+    }
+
+    fn entity_scale(&mut self, entity_bits: ScriptHandle) -> Array {
+        let entity = Entity::from_bits(entity_bits as u64);
+        let state = self.state.borrow();
+        let Some(snapshot) = state.entity_snapshots.get(&entity) else {
+            return Array::new();
+        };
+        Self::vec2_to_array(snapshot.scale)
+    }
+
+    fn entity_velocity(&mut self, entity_bits: ScriptHandle) -> Array {
+        let entity = Entity::from_bits(entity_bits as u64);
+        let state = self.state.borrow();
+        let Some(snapshot) = state.entity_snapshots.get(&entity) else {
+            return Array::new();
+        };
+        snapshot.velocity.map(Self::vec2_to_array).unwrap_or_else(Array::new)
+    }
+
+    fn entity_tint(&mut self, entity_bits: ScriptHandle) -> Array {
+        let entity = Entity::from_bits(entity_bits as u64);
+        let state = self.state.borrow();
+        let Some(snapshot) = state.entity_snapshots.get(&entity) else {
+            return Array::new();
+        };
+        snapshot.tint.map(Self::vec4_to_array).unwrap_or_else(Array::new)
+    }
+
+    fn raycast(&mut self, ox: FLOAT, oy: FLOAT, dx: FLOAT, dy: FLOAT, max_dist: FLOAT) -> Map {
+        let origin = Vec2::new(ox as f32, oy as f32);
+        let dir = Vec2::new(dx as f32, dy as f32);
+        let max_dist = if max_dist.is_finite() && max_dist > 0.0 { max_dist as f32 } else { f32::INFINITY };
+        let mut best: Option<(Entity, f32, Vec2)> = None;
+        let state = self.state.borrow();
+        for (entity, snap) in state.entity_snapshots.iter() {
+            let half = snap.half_extents.unwrap_or_else(|| snap.scale * 0.5);
+            if half.x <= 0.0 || half.y <= 0.0 {
+                continue;
+            }
+            if let Some((dist, hit)) = Self::ray_aabb_2d(origin, dir, snap.translation, half) {
+                if dist <= max_dist && dist.is_finite() && dist >= 0.0 {
+                    match best {
+                        Some((_, best_dist, _)) if dist >= best_dist => {}
+                        _ => best = Some((*entity, dist, hit)),
+                    }
+                }
+            }
+        }
+        let mut out = Map::new();
+        if let Some((entity, dist, hit)) = best {
+            out.insert("entity".into(), Dynamic::from(entity_to_rhai(entity)));
+            out.insert("distance".into(), Dynamic::from(dist as FLOAT));
+            out.insert("point".into(), Dynamic::from(Self::vec2_to_array(hit)));
+        }
+        out
+    }
+
+    fn overlap_circle(&mut self, cx: FLOAT, cy: FLOAT, radius: FLOAT) -> Array {
+        let center = Vec2::new(cx as f32, cy as f32);
+        let radius = radius.abs() as f32;
+        if radius <= 0.0 || !radius.is_finite() {
+            return Array::new();
+        }
+        let mut hits = Array::new();
+        let state = self.state.borrow();
+        let r2 = radius * radius;
+        for (entity, snap) in state.entity_snapshots.iter() {
+            let half = snap.half_extents.unwrap_or_else(|| snap.scale * 0.5);
+            if half.x <= 0.0 || half.y <= 0.0 {
+                continue;
+            }
+            let closest = snap.translation.clamp(center - half, center + half);
+            if (closest - center).length_squared() <= r2 {
+                hits.push(Dynamic::from(entity_to_rhai(*entity)));
+            }
+        }
+        hits
+    }
+
+    fn vec2_to_array(v: Vec2) -> Array {
+        vec![Dynamic::from(v.x as FLOAT), Dynamic::from(v.y as FLOAT)]
+    }
+
+    fn vec4_to_array(v: Vec4) -> Array {
+        vec![
+            Dynamic::from(v.x as FLOAT),
+            Dynamic::from(v.y as FLOAT),
+            Dynamic::from(v.z as FLOAT),
+            Dynamic::from(v.w as FLOAT),
+        ]
+    }
+
+    fn ray_aabb_2d(origin: Vec2, dir: Vec2, center: Vec2, half: Vec2) -> Option<(f32, Vec2)> {
+        if dir.length_squared() <= f32::EPSILON {
+            return None;
+        }
+        let dir = dir.normalize();
+        let min = center - half;
+        let max = center + half;
+        let mut t_min = 0.0_f32;
+        let mut t_max = f32::INFINITY;
+        for i in 0..2 {
+            let o = if i == 0 { origin.x } else { origin.y };
+            let d = if i == 0 { dir.x } else { dir.y };
+            let min_axis = if i == 0 { min.x } else { min.y };
+            let max_axis = if i == 0 { max.x } else { max.y };
+            if d.abs() < 1e-6 {
+                if o < min_axis || o > max_axis {
+                    return None;
+                }
+            } else {
+                let inv_d = 1.0 / d;
+                let mut t1 = (min_axis - o) * inv_d;
+                let mut t2 = (max_axis - o) * inv_d;
+                if t1 > t2 {
+                    std::mem::swap(&mut t1, &mut t2);
+                }
+                t_min = t_min.max(t1);
+                t_max = t_max.min(t2);
+                if t_min > t_max {
+                    return None;
+                }
+            }
+        }
+        if t_max < 0.0 {
+            return None;
+        }
+        let t_hit = if t_min >= 0.0 { t_min } else { t_max };
+        if !t_hit.is_finite() {
+            return None;
+        }
+        let hit = origin + dir * t_hit;
+        Some((t_hit, hit))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -527,6 +710,11 @@ impl ScriptHost {
 
     pub fn last_error(&self) -> Option<&str> {
         self.error.as_deref()
+    }
+
+    pub fn set_entity_snapshots(&mut self, snapshots: HashMap<Entity, EntitySnapshot>) {
+        let mut shared = self.shared.borrow_mut();
+        shared.entity_snapshots = snapshots;
     }
 
     pub fn entity_has_errored_instance(&self, entity: Entity) -> bool {
@@ -1144,6 +1332,42 @@ impl ScriptPlugin {
         shared.rng = Some(StdRng::seed_from_u64(seed));
     }
 
+    fn populate_entity_snapshots(&mut self, ecs: &mut crate::ecs::EcsWorld) {
+        let mut snapshots = HashMap::new();
+        let mut query = ecs.world.query::<(
+            Entity,
+            Option<&WorldTransform>,
+            Option<&Transform>,
+            Option<&Velocity>,
+            Option<&Tint>,
+            Option<&Aabb>,
+        )>();
+        for (entity, wt, transform, vel, tint, aabb) in query.iter(&ecs.world) {
+            let (translation, rotation, scale) = if let Some(t) = transform {
+                let world_pos = wt
+                    .map(|w| Vec2::new(w.0.w_axis.x, w.0.w_axis.y))
+                    .unwrap_or(t.translation);
+                (world_pos, t.rotation, t.scale)
+            } else if let Some(wt) = wt {
+                (Vec2::new(wt.0.w_axis.x, wt.0.w_axis.y), 0.0, Vec2::ONE)
+            } else {
+                continue;
+            };
+            snapshots.insert(
+                entity,
+                EntitySnapshot {
+                    translation,
+                    rotation,
+                    scale,
+                    velocity: vel.map(|v| v.0),
+                    tint: tint.map(|t| t.0),
+                    half_extents: aabb.map(|a| a.half),
+                },
+            );
+        }
+        self.host.set_entity_snapshots(snapshots);
+    }
+
     pub fn clear_rng_seed(&mut self) {
         let mut shared = self.host.shared.borrow_mut();
         shared.rng = None;
@@ -1346,6 +1570,7 @@ impl EnginePlugin for ScriptPlugin {
             true
         };
         let (assets, ecs) = ctx.assets_and_ecs_mut()?;
+        self.populate_entity_snapshots(ecs);
         self.cleanup_orphaned_instances(ecs);
         self.host.update(dt, run_scripts, Some(assets));
         if run_scripts && self.host.enabled() {
@@ -1361,6 +1586,7 @@ impl EnginePlugin for ScriptPlugin {
 
     fn fixed_update(&mut self, ctx: &mut PluginContext<'_>, dt: f32) -> Result<()> {
         let (assets, ecs) = ctx.assets_and_ecs_mut()?;
+        self.populate_entity_snapshots(ecs);
         self.cleanup_orphaned_instances(ecs);
         if self.paused {
             self.commands.extend(self.host.drain_commands());
@@ -1419,6 +1645,14 @@ fn register_api(engine: &mut Engine) {
     engine.register_fn("entity_clear_tint", ScriptWorld::entity_clear_tint);
     engine.register_fn("entity_set_velocity", ScriptWorld::entity_set_velocity);
     engine.register_fn("entity_despawn", ScriptWorld::entity_despawn);
+    engine.register_fn("entity_snapshot", ScriptWorld::entity_snapshot);
+    engine.register_fn("entity_position", ScriptWorld::entity_position);
+    engine.register_fn("entity_rotation", ScriptWorld::entity_rotation);
+    engine.register_fn("entity_scale", ScriptWorld::entity_scale);
+    engine.register_fn("entity_velocity", ScriptWorld::entity_velocity);
+    engine.register_fn("entity_tint", ScriptWorld::entity_tint);
+    engine.register_fn("raycast", ScriptWorld::raycast);
+    engine.register_fn("overlap_circle", ScriptWorld::overlap_circle);
     engine.register_fn("log", ScriptWorld::log);
     engine.register_fn("rand_seed", ScriptWorld::rand_seed);
     engine.register_fn("rand", ScriptWorld::random_range);
@@ -1722,6 +1956,112 @@ mod tests {
             cmds.as_slice(),
             [ScriptCommand::SpawnPrefab { handle: h, path }] if *h == handle && path.contains("example.json")
         ));
+    }
+
+    #[test]
+    fn entity_snapshot_functions_read_cached_data() {
+        let state = Rc::new(RefCell::new(SharedState::default()));
+        let mut ecs_world = bevy_ecs::world::World::new();
+        let entity = ecs_world.spawn_empty().id();
+        {
+            let mut shared = state.borrow_mut();
+            let mut snaps = HashMap::new();
+            snaps.insert(
+                entity,
+                EntitySnapshot {
+                    translation: Vec2::new(1.0, 2.0),
+                    rotation: 0.5,
+                    scale: Vec2::new(3.0, 4.0),
+                    velocity: Some(Vec2::new(5.0, 6.0)),
+                    tint: Some(Vec4::new(0.1, 0.2, 0.3, 0.4)),
+                    half_extents: None,
+                },
+            );
+            shared.entity_snapshots = snaps;
+        }
+        let mut world = ScriptWorld::new(state);
+        let bits = entity.to_bits() as ScriptHandle;
+        let pos = world.entity_position(bits);
+        assert_eq!(pos.len(), 2);
+        let pos_x: FLOAT = pos[0].clone().try_cast().unwrap();
+        assert!((pos_x - 1.0).abs() < 1e-5);
+        assert_eq!(world.entity_rotation(bits), 0.5);
+        let scale = world.entity_scale(bits);
+        assert_eq!(scale.len(), 2);
+        let vel = world.entity_velocity(bits);
+        assert_eq!(vel.len(), 2);
+        let tint = world.entity_tint(bits);
+        assert_eq!(tint.len(), 4);
+        let map = world.entity_snapshot(bits);
+        assert!(map.contains_key("pos"));
+        assert!(map.contains_key("rot"));
+    }
+
+    #[test]
+    fn raycast_returns_closest_hit() {
+        let state = Rc::new(RefCell::new(SharedState::default()));
+        {
+            let mut shared = state.borrow_mut();
+            let mut snaps = HashMap::new();
+            let e1 = Entity::from_raw(1);
+            let e2 = Entity::from_raw(2);
+            snaps.insert(
+                e1,
+                EntitySnapshot {
+                    translation: Vec2::new(5.0, 0.0),
+                    rotation: 0.0,
+                    scale: Vec2::ONE,
+                    velocity: None,
+                    tint: None,
+                    half_extents: Some(Vec2::splat(1.0)),
+                },
+            );
+            snaps.insert(
+                e2,
+                EntitySnapshot {
+                    translation: Vec2::new(8.0, 0.0),
+                    rotation: 0.0,
+                    scale: Vec2::ONE,
+                    velocity: None,
+                    tint: None,
+                    half_extents: Some(Vec2::splat(1.0)),
+                },
+            );
+            shared.entity_snapshots = snaps;
+        }
+        let mut world = ScriptWorld::new(state);
+        let hit = world.raycast(0.0, 0.0, 1.0, 0.0, 20.0);
+        let entity_val = hit.get("entity").unwrap().clone().try_cast::<ScriptHandle>().unwrap();
+        let distance: FLOAT = hit.get("distance").unwrap().clone().try_cast().unwrap();
+        assert_eq!(entity_val as u64, Entity::from_raw(1).to_bits());
+        assert!((distance - 4.0).abs() < 1e-4, "expected hit at leading face");
+    }
+
+    #[test]
+    fn overlap_circle_collects_intersecting_entities() {
+        let state = Rc::new(RefCell::new(SharedState::default()));
+        {
+            let mut shared = state.borrow_mut();
+            let mut snaps = HashMap::new();
+            let inside = Entity::from_raw(3);
+            snaps.insert(
+                inside,
+                EntitySnapshot {
+                    translation: Vec2::new(1.0, 0.0),
+                    rotation: 0.0,
+                    scale: Vec2::ONE,
+                    velocity: None,
+                    tint: None,
+                    half_extents: Some(Vec2::splat(0.5)),
+                },
+            );
+            shared.entity_snapshots = snaps;
+        }
+        let mut world = ScriptWorld::new(state);
+        let hits = world.overlap_circle(0.0, 0.0, 2.0);
+        assert_eq!(hits.len(), 1);
+        let handle: ScriptHandle = hits[0].clone().try_cast().unwrap();
+        assert_eq!(handle as u64, Entity::from_raw(3).to_bits());
     }
 
     #[test]
