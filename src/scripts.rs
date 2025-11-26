@@ -1578,6 +1578,142 @@ impl ScriptPlugin {
         shared.rng = None;
     }
 
+    fn command_rank(cmd: &ScriptCommand) -> u8 {
+        match cmd {
+            ScriptCommand::Spawn { .. } => 0,
+            ScriptCommand::SetVelocity { .. } => 1,
+            ScriptCommand::SetPosition { .. } => 2,
+            ScriptCommand::SetRotation { .. } => 3,
+            ScriptCommand::SetScale { .. } => 4,
+            ScriptCommand::SetTint { .. } => 5,
+            ScriptCommand::SetSpriteRegion { .. } => 6,
+            ScriptCommand::Despawn { .. } => 7,
+            ScriptCommand::SetAutoSpawnRate { .. } => 8,
+            ScriptCommand::SetSpawnPerPress { .. } => 9,
+            ScriptCommand::SetEmitterRate { .. } => 10,
+            ScriptCommand::SetEmitterSpread { .. } => 11,
+            ScriptCommand::SetEmitterSpeed { .. } => 12,
+            ScriptCommand::SetEmitterLifetime { .. } => 13,
+            ScriptCommand::SetEmitterStartColor { .. } => 14,
+            ScriptCommand::SetEmitterEndColor { .. } => 15,
+            ScriptCommand::SetEmitterStartSize { .. } => 16,
+            ScriptCommand::SetEmitterEndSize { .. } => 17,
+            ScriptCommand::SpawnPrefab { .. } => 18,
+            ScriptCommand::EntitySetPosition { .. } => 19,
+            ScriptCommand::EntitySetRotation { .. } => 20,
+            ScriptCommand::EntitySetScale { .. } => 21,
+            ScriptCommand::EntitySetTint { .. } => 22,
+            ScriptCommand::EntitySetVelocity { .. } => 23,
+            ScriptCommand::EntityDespawn { .. } => 24,
+        }
+    }
+
+    fn cmp_float(a: f32, b: f32) -> std::cmp::Ordering {
+        a.total_cmp(&b)
+    }
+
+    fn cmp_vec2(a: &Vec2, b: &Vec2) -> std::cmp::Ordering {
+        Self::cmp_float(a.x, b.x).then_with(|| Self::cmp_float(a.y, b.y))
+    }
+
+    fn cmp_vec4(a: &Vec4, b: &Vec4) -> std::cmp::Ordering {
+        Self::cmp_float(a.x, b.x)
+            .then_with(|| Self::cmp_float(a.y, b.y))
+            .then_with(|| Self::cmp_float(a.z, b.z))
+            .then_with(|| Self::cmp_float(a.w, b.w))
+    }
+
+    fn cmp_commands(a: &ScriptCommand, b: &ScriptCommand) -> std::cmp::Ordering {
+        use ScriptCommand::*;
+        let rank_a = Self::command_rank(a);
+        let rank_b = Self::command_rank(b);
+        rank_a
+            .cmp(&rank_b)
+            .then_with(|| match (a, b) {
+                (Spawn { handle: ha, atlas: aa, region: ra, position: pa, scale: sa, velocity: va },
+                 Spawn { handle: hb, atlas: ab, region: rb, position: pb, scale: sb, velocity: vb }) => {
+                    ha.cmp(hb)
+                        .then_with(|| aa.cmp(ab))
+                        .then_with(|| ra.cmp(rb))
+                        .then_with(|| Self::cmp_vec2(pa, pb))
+                        .then_with(|| Self::cmp_float(*sa, *sb))
+                        .then_with(|| Self::cmp_vec2(va, vb))
+                }
+                (SetVelocity { handle: ha, velocity: va }, SetVelocity { handle: hb, velocity: vb }) => {
+                    ha.cmp(hb).then_with(|| Self::cmp_vec2(va, vb))
+                }
+                (SetPosition { handle: ha, position: pa }, SetPosition { handle: hb, position: pb }) => {
+                    ha.cmp(hb).then_with(|| Self::cmp_vec2(pa, pb))
+                }
+                (SetRotation { handle: ha, rotation: ra }, SetRotation { handle: hb, rotation: rb }) => {
+                    ha.cmp(hb).then_with(|| Self::cmp_float(*ra, *rb))
+                }
+                (SetScale { handle: ha, scale: sa }, SetScale { handle: hb, scale: sb }) => {
+                    ha.cmp(hb).then_with(|| Self::cmp_vec2(sa, sb))
+                }
+                (SetTint { handle: ha, tint: ta }, SetTint { handle: hb, tint: tb }) => {
+                    ha.cmp(hb).then_with(|| match (ta, tb) {
+                        (None, None) => std::cmp::Ordering::Equal,
+                        (None, Some(_)) => std::cmp::Ordering::Less,
+                        (Some(_), None) => std::cmp::Ordering::Greater,
+                        (Some(a), Some(b)) => Self::cmp_vec4(a, b),
+                    })
+                }
+                (SetSpriteRegion { handle: ha, region: ra }, SetSpriteRegion { handle: hb, region: rb }) => {
+                    ha.cmp(hb).then_with(|| ra.cmp(rb))
+                }
+                (Despawn { handle: ha }, Despawn { handle: hb }) => ha.cmp(hb),
+                (SetAutoSpawnRate { rate: ra }, SetAutoSpawnRate { rate: rb }) => Self::cmp_float(*ra, *rb),
+                (SetSpawnPerPress { count: ca }, SetSpawnPerPress { count: cb }) => ca.cmp(cb),
+                (SetEmitterRate { rate: ra }, SetEmitterRate { rate: rb }) => Self::cmp_float(*ra, *rb),
+                (SetEmitterSpread { spread: sa }, SetEmitterSpread { spread: sb }) => Self::cmp_float(*sa, *sb),
+                (SetEmitterSpeed { speed: sa }, SetEmitterSpeed { speed: sb }) => Self::cmp_float(*sa, *sb),
+                (SetEmitterLifetime { lifetime: la }, SetEmitterLifetime { lifetime: lb }) => {
+                    Self::cmp_float(*la, *lb)
+                }
+                (SetEmitterStartColor { color: ca }, SetEmitterStartColor { color: cb }) => Self::cmp_vec4(ca, cb),
+                (SetEmitterEndColor { color: ca }, SetEmitterEndColor { color: cb }) => Self::cmp_vec4(ca, cb),
+                (SetEmitterStartSize { size: sa }, SetEmitterStartSize { size: sb }) => Self::cmp_float(*sa, *sb),
+                (SetEmitterEndSize { size: sa }, SetEmitterEndSize { size: sb }) => Self::cmp_float(*sa, *sb),
+                (SpawnPrefab { handle: ha, path: pa }, SpawnPrefab { handle: hb, path: pb }) => {
+                    ha.cmp(hb).then_with(|| pa.cmp(pb))
+                }
+                (
+                    EntitySetPosition { entity: ea, position: pa },
+                    EntitySetPosition { entity: eb, position: pb },
+                ) => ea.to_bits().cmp(&eb.to_bits()).then_with(|| Self::cmp_vec2(pa, pb)),
+                (EntitySetRotation { entity: ea, rotation: ra }, EntitySetRotation { entity: eb, rotation: rb }) => {
+                    ea.to_bits().cmp(&eb.to_bits()).then_with(|| Self::cmp_float(*ra, *rb))
+                }
+                (EntitySetScale { entity: ea, scale: sa }, EntitySetScale { entity: eb, scale: sb }) => {
+                    ea.to_bits().cmp(&eb.to_bits()).then_with(|| Self::cmp_vec2(sa, sb))
+                }
+                (EntitySetTint { entity: ea, tint: ta }, EntitySetTint { entity: eb, tint: tb }) => {
+                    ea.to_bits()
+                        .cmp(&eb.to_bits())
+                        .then_with(|| match (ta, tb) {
+                            (None, None) => std::cmp::Ordering::Equal,
+                            (None, Some(_)) => std::cmp::Ordering::Less,
+                            (Some(_), None) => std::cmp::Ordering::Greater,
+                            (Some(a), Some(b)) => Self::cmp_vec4(a, b),
+                        })
+                }
+                (EntitySetVelocity { entity: ea, velocity: va }, EntitySetVelocity { entity: eb, velocity: vb }) => {
+                    ea.to_bits().cmp(&eb.to_bits()).then_with(|| Self::cmp_vec2(va, vb))
+                }
+                (EntityDespawn { entity: ea }, EntityDespawn { entity: eb }) => ea.to_bits().cmp(&eb.to_bits()),
+                _ => std::cmp::Ordering::Equal,
+            })
+    }
+
+    fn drain_host_commands(&mut self) -> Vec<ScriptCommand> {
+        let mut cmds = self.host.drain_commands();
+        if self.deterministic_ordering {
+            cmds.sort_by(Self::cmp_commands);
+        }
+        cmds
+    }
+
     pub fn instance_count_for_test(&self) -> usize {
         self.host.instances.len()
     }
@@ -1774,7 +1910,8 @@ impl ScriptPlugin {
 
     pub fn eval_repl(&mut self, source: &str) -> Result<Option<String>> {
         let result = self.host.eval_repl(source)?;
-        self.commands.extend(self.host.drain_commands());
+        let drained = self.drain_host_commands();
+        self.commands.extend(drained);
         self.logs.extend(self.host.drain_logs());
         Ok(result)
     }
@@ -1814,7 +1951,8 @@ impl EnginePlugin for ScriptPlugin {
         if !self.paused {
             self.step_once = false;
         }
-        self.commands.extend(self.host.drain_commands());
+        let drained = self.drain_host_commands();
+        self.commands.extend(drained);
         self.logs.extend(self.host.drain_logs());
         Ok(())
     }
@@ -1828,14 +1966,16 @@ impl EnginePlugin for ScriptPlugin {
         self.populate_entity_snapshots(ecs);
         self.cleanup_orphaned_instances(ecs);
         if self.paused {
-            self.commands.extend(self.host.drain_commands());
+            let drained = self.drain_host_commands();
+            self.commands.extend(drained);
             self.logs.extend(self.host.drain_logs());
             return Ok(());
         }
         if self.host.enabled() {
             self.run_behaviours(ecs, assets, dt, true)?;
         }
-        self.commands.extend(self.host.drain_commands());
+        let drained = self.drain_host_commands();
+        self.commands.extend(drained);
         self.logs.extend(self.host.drain_logs());
         Ok(())
     }
@@ -2284,6 +2424,32 @@ mod tests {
             ordered,
             vec![Entity::from_raw(1).to_bits(), Entity::from_raw(2).to_bits(), Entity::from_raw(3).to_bits()],
             "worklist should be sorted by path then entity id"
+        );
+    }
+
+    #[test]
+    fn deterministic_ordering_sorts_command_queue() {
+        let main = write_script(
+            r#"
+                fn init(world) { }
+                fn update(world, dt) { }
+            "#,
+        );
+        let mut plugin = ScriptPlugin::new(main.path());
+        plugin.set_deterministic_ordering(true);
+        {
+            let mut shared = plugin.host.shared.borrow_mut();
+            shared.commands.push(ScriptCommand::SpawnPrefab { handle: 2, path: "b".into() });
+            shared.commands.push(ScriptCommand::SetPosition { handle: 1, position: Vec2::new(1.0, 0.0) });
+            shared.commands.push(ScriptCommand::SpawnPrefab { handle: 0, path: "a".into() });
+        }
+        let cmds = plugin.drain_host_commands();
+        assert!(
+            matches!(&cmds[..],
+                [ScriptCommand::SetPosition { handle: 1, .. },
+                 ScriptCommand::SpawnPrefab { handle: 0, path: p0 },
+                 ScriptCommand::SpawnPrefab { handle: 2, path: p2 }] if p0 == "a" && p2 == "b"),
+            "expected deterministic sort by kind then handle/path, got {:?}", cmds
         );
     }
 

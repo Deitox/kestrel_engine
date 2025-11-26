@@ -88,7 +88,6 @@ use glam::{Mat4, Vec2, Vec3, Vec4};
 use anyhow::{anyhow, Context, Result};
 use std::cell::{Ref, RefMut};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-#[cfg(feature = "alloc_profiler")]
 use std::env;
 use std::fs;
 use std::mem;
@@ -481,6 +480,31 @@ impl App {
                     val,
                     if enabled { "enabled" } else { "disabled" }
                 );
+            }
+        }
+        if let Ok(val) = env::var("KESTREL_SCRIPT_SEED") {
+            if let Ok(seed) = val.parse::<u64>() {
+                config.scripts.deterministic_seed = Some(seed);
+                config.scripts.deterministic_ordering = true;
+                println!("[config] KESTREL_SCRIPT_SEED={} => deterministic scripts with seed {}", val, seed);
+            } else {
+                eprintln!("[config] KESTREL_SCRIPT_SEED '{}' is not a valid u64", val);
+            }
+        }
+        if let Ok(val) = env::var("KESTREL_SCRIPT_DETERMINISTIC") {
+            match val.to_lowercase().as_str() {
+                "1" | "true" | "yes" | "on" => {
+                    config.scripts.deterministic_ordering = true;
+                    println!("[config] KESTREL_SCRIPT_DETERMINISTIC={} => ordering enabled", val);
+                }
+                "0" | "false" | "no" | "off" => {
+                    config.scripts.deterministic_ordering = false;
+                    println!("[config] KESTREL_SCRIPT_DETERMINISTIC={} => ordering disabled", val);
+                }
+                _ => eprintln!(
+                    "[config] KESTREL_SCRIPT_DETERMINISTIC '{}' is invalid; use on/off or true/false",
+                    val
+                ),
             }
         }
         let mut renderer = Renderer::new(&config.window).await;
