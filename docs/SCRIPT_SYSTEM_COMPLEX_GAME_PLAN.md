@@ -27,11 +27,11 @@ Status legend: `[x]` done, `[~]` partial/incomplete, `[ ]` not started/unknown.
 - [x] Hot reload policy: reload reruns globals, resets scopes unless persistence is enabled, and exposes `world.is_hot_reload()` during the first `ready`.
 - [~] Deliverables: runtime persistence/reload tests exist; scene/checkpoint serialization for persisted state remains.
 
-## Phase 4 - Events & Signals [ ]
-- [ ] Event bus: no emit/listen API exposed to scripts yet.
-- [ ] Entity scoping: no entity-tagged event scoping or auto-unsubscribe.
-- [ ] Safety: no per-frame queue limits or listener isolation.
-- [ ] Deliverables: event API, unsubscribe on drop, and tests not implemented.
+## Phase 4 - Events & Signals [~]
+- [x] Event bus: script-facing emit/listen APIs with payload support.
+- [x] Entity scoping: listeners can be tagged to entities and auto-unsubscribe when instances are removed.
+- [x] Safety: per-frame queue caps with overflow logging plus listener error isolation.
+- [x] Deliverables: event API, unsubscribe handles, and regression tests added.
 
 ## Phase 5 - Tooling & Observability [ ]
 - [ ] Tracing: no script trace logging with per-callback timing or Studio surfacing.

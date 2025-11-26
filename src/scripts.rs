@@ -1,6 +1,6 @@
 use std::any::Any;
 use std::cell::RefCell;
-use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -22,9 +22,11 @@ use std::fmt::Write as FmtWrite;
 use crate::input::Input;
 
 pub type ScriptHandle = rhai::INT;
+pub type ListenerHandle = rhai::INT;
 
 const SCRIPT_DIGEST_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 const SCRIPT_IMPORT_ROOT: &str = "assets/scripts";
+const SCRIPT_EVENT_QUEUE_LIMIT: usize = 256;
 
 #[derive(Clone)]
 pub struct CompiledScript {
@@ -125,8 +127,32 @@ pub enum ScriptCommand {
     EntityDespawn { entity: Entity },
 }
 
+#[derive(Clone)]
+struct ScriptEvent {
+    name: Arc<str>,
+    payload: Dynamic,
+    target: Option<Entity>,
+    source: Option<Entity>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ListenerOwner {
+    Host,
+    Instance(u64),
+}
+
+#[derive(Clone)]
+struct ScriptEventListener {
+    id: u64,
+    name: Arc<str>,
+    handler: Arc<str>,
+    owner: ListenerOwner,
+    scope_entity: Option<Entity>,
+}
+
 struct SharedState {
     next_handle: ScriptHandle,
+    next_listener_id: u64,
     commands: Vec<ScriptCommand>,
     logs: Vec<String>,
     rng: Option<StdRng>,
@@ -138,12 +164,17 @@ struct SharedState {
     last_unscaled_dt: f32,
     last_scaled_dt: f32,
     timers: HashMap<String, TimerState>,
+    event_queue: VecDeque<ScriptEvent>,
+    event_listeners: Vec<ScriptEventListener>,
+    events_dispatched: usize,
+    event_overflowed: bool,
 }
 
 impl Default for SharedState {
     fn default() -> Self {
         Self {
             next_handle: 0,
+            next_listener_id: 1,
             commands: Vec::new(),
             logs: Vec::new(),
             rng: None,
@@ -155,6 +186,10 @@ impl Default for SharedState {
             last_unscaled_dt: 0.0,
             last_scaled_dt: 0.0,
             timers: HashMap::new(),
+            event_queue: VecDeque::new(),
+            event_listeners: Vec::new(),
+            events_dispatched: 0,
+            event_overflowed: false,
         }
     }
 }
@@ -228,6 +263,8 @@ pub struct InstanceRuntimeState {
     persistent: Map,
     is_hot_reload: bool,
     timers: HashMap<String, TimerState>,
+    instance_id: Option<u64>,
+    entity: Option<Entity>,
 }
 
 impl InstanceRuntimeState {
@@ -1199,6 +1236,115 @@ impl ScriptWorld {
         }
     }
 
+    fn listen(&mut self, event: &str, handler: &str) -> ListenerHandle {
+        self.register_listener(event, handler, None)
+    }
+
+    fn listen_for_entity(&mut self, event: &str, entity_bits: ScriptHandle, handler: &str) -> ListenerHandle {
+        let entity = Entity::from_bits(entity_bits as u64);
+        self.register_listener(event, handler, Some(entity))
+    }
+
+    fn unlisten(&mut self, handle: ListenerHandle) -> bool {
+        if handle <= 0 {
+            return false;
+        }
+        let id = handle as u64;
+        let mut state = self.state.borrow_mut();
+        let before = state.event_listeners.len();
+        state.event_listeners.retain(|listener| listener.id != id);
+        before != state.event_listeners.len()
+    }
+
+    fn emit(&mut self, name: &str) -> bool {
+        self.enqueue_event(name, Dynamic::UNIT, None)
+    }
+
+    fn emit_with_payload(&mut self, name: &str, payload: Dynamic) -> bool {
+        self.enqueue_event(name, payload, None)
+    }
+
+    fn emit_to(&mut self, name: &str, entity_bits: ScriptHandle) -> bool {
+        let target = Entity::from_bits(entity_bits as u64);
+        self.enqueue_event(name, Dynamic::UNIT, Some(target))
+    }
+
+    fn emit_to_with_payload(&mut self, name: &str, entity_bits: ScriptHandle, payload: Dynamic) -> bool {
+        let target = Entity::from_bits(entity_bits as u64);
+        self.enqueue_event(name, payload, Some(target))
+    }
+
+    fn register_listener(&mut self, event: &str, handler: &str, scope: Option<Entity>) -> ListenerHandle {
+        let event = event.trim();
+        let handler = handler.trim();
+        if event.is_empty() || handler.is_empty() {
+            return -1;
+        }
+        let (owner, _) = self.listener_owner();
+        let mut state = self.state.borrow_mut();
+        let id = state.next_listener_id;
+        state.next_listener_id = state.next_listener_id.saturating_add(1);
+        state.event_listeners.push(ScriptEventListener {
+            id,
+            name: Arc::from(event),
+            handler: Arc::from(handler),
+            owner,
+            scope_entity: scope,
+        });
+        id as ListenerHandle
+    }
+
+    fn enqueue_event(&mut self, name: &str, payload: Dynamic, target: Option<Entity>) -> bool {
+        let name = name.trim();
+        if name.is_empty() {
+            return false;
+        }
+        let (_, source) = self.listener_owner();
+        let target = target.or(source);
+        let mut state = self.state.borrow_mut();
+        let pending_total = state.events_dispatched + state.event_queue.len();
+        if pending_total >= SCRIPT_EVENT_QUEUE_LIMIT {
+            if !state.event_overflowed {
+                state.logs.push(format!(
+                    "event queue limit ({}) reached; dropping '{}'",
+                    SCRIPT_EVENT_QUEUE_LIMIT, name
+                ));
+                state.event_overflowed = true;
+            }
+            return false;
+        }
+        let event = ScriptEvent { name: Arc::from(name), payload, target, source };
+        state.event_queue.push_back(event);
+        true
+    }
+
+    fn listener_owner(&self) -> (ListenerOwner, Option<Entity>) {
+        if let Some(state) = &self.instance_state {
+            let state = state.borrow();
+            let entity = state.entity;
+            let owner = state.instance_id.map(ListenerOwner::Instance).unwrap_or(ListenerOwner::Host);
+            (owner, entity)
+        } else {
+            (ListenerOwner::Host, None)
+        }
+    }
+
+    fn event_to_map(event: &ScriptEvent, listener_entity: Option<Entity>) -> Map {
+        let mut map = Map::new();
+        map.insert("name".into(), Dynamic::from(event.name.to_string()));
+        map.insert("payload".into(), event.payload.clone());
+        if let Some(target) = event.target {
+            map.insert("target".into(), Dynamic::from(entity_to_rhai(target)));
+        }
+        if let Some(source) = event.source {
+            map.insert("source".into(), Dynamic::from(entity_to_rhai(source)));
+        }
+        if let Some(listener) = listener_entity {
+            map.insert("listener".into(), Dynamic::from(entity_to_rhai(listener)));
+        }
+        map
+    }
+
     fn move_toward(&mut self, current: FLOAT, target: FLOAT, max_delta: FLOAT) -> FLOAT {
         let current = current as f32;
         let target = target as f32;
@@ -1256,6 +1402,109 @@ pub struct ScriptHost {
 }
 
 impl ScriptHost {
+    fn drop_listeners_for_owner(&mut self, owner: ListenerOwner) {
+        let mut state = self.shared.borrow_mut();
+        state.event_listeners.retain(|listener| listener.owner != owner);
+    }
+
+    fn drop_listeners_by_id(&mut self, ids: &HashSet<u64>) {
+        if ids.is_empty() {
+            return;
+        }
+        let mut state = self.shared.borrow_mut();
+        state.event_listeners.retain(|listener| !ids.contains(&listener.id));
+    }
+
+    fn prune_event_listeners(&mut self) {
+        let mut state = self.shared.borrow_mut();
+        state.event_listeners.retain(|listener| match listener.owner {
+            ListenerOwner::Host => true,
+            ListenerOwner::Instance(id) => self.instances.contains_key(&id),
+        });
+    }
+
+    fn pop_next_event(&mut self) -> Option<ScriptEvent> {
+        let mut state = self.shared.borrow_mut();
+        if let Some(event) = state.event_queue.pop_front() {
+            state.events_dispatched = state.events_dispatched.saturating_add(1);
+            Some(event)
+        } else {
+            None
+        }
+    }
+
+    fn dispatch_script_events(&mut self) {
+        self.prune_event_listeners();
+        while let Some(event) = self.pop_next_event() {
+            self.dispatch_event(event);
+        }
+    }
+
+    fn dispatch_event(&mut self, event: ScriptEvent) {
+        let listeners = { self.shared.borrow().event_listeners.clone() };
+        let mut stale_listeners = HashSet::new();
+        for listener in listeners.iter() {
+            if listener.name.as_ref() != event.name.as_ref() {
+                continue;
+            }
+            if let Some(scope) = listener.scope_entity {
+                if event.target != Some(scope) {
+                    continue;
+                }
+            }
+            match listener.owner {
+                ListenerOwner::Host => {
+                    let Some(ast) = &self.ast else { continue; };
+                    let world = ScriptWorld::new(self.shared.clone());
+                    let map = ScriptWorld::event_to_map(&event, None);
+                    if let Err(err) = self.engine.call_fn::<Dynamic>(
+                        &mut self.scope,
+                        ast,
+                        listener.handler.as_ref(),
+                        (world, map),
+                    ) {
+                        let message = Self::format_rhai_error(
+                            err.as_ref(),
+                            self.script_path.to_string_lossy().as_ref(),
+                            listener.handler.as_ref(),
+                        );
+                        self.error = Some(message);
+                        stale_listeners.insert(listener.id);
+                    }
+                }
+                ListenerOwner::Instance(id) => {
+                    let Some(instance) = self.instances.get_mut(&id) else {
+                        stale_listeners.insert(listener.id);
+                        continue;
+                    };
+                    if instance.errored {
+                        stale_listeners.insert(listener.id);
+                        continue;
+                    }
+                    let Some(compiled) = self.scripts.get(&instance.script_path) else {
+                        stale_listeners.insert(listener.id);
+                        continue;
+                    };
+                    let listener_entity = instance.state.borrow().entity;
+                    let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone());
+                    let map = ScriptWorld::event_to_map(&event, listener_entity);
+                    if let Err(err) = self.engine.call_fn::<Dynamic>(
+                        &mut instance.scope,
+                        &compiled.ast,
+                        listener.handler.as_ref(),
+                        (world, map),
+                    ) {
+                        instance.errored = true;
+                        let message = Self::format_rhai_error(err.as_ref(), &instance.script_path, listener.handler.as_ref());
+                        self.error = Some(message);
+                        stale_listeners.insert(listener.id);
+                    }
+                }
+            }
+        }
+        self.drop_listeners_by_id(&stale_listeners);
+    }
+
     fn reset_import_resolver(&mut self) {
         self.engine.set_module_resolver(self.import_resolver.clone());
     }
@@ -1414,6 +1663,12 @@ impl ScriptHost {
         if let Err(err) = self.engine.run_ast_with_scope(&mut scope, &compiled.ast) {
             return Err(anyhow!("Evaluating globals for '{script_path}': {err}"));
         }
+        let state = Rc::new(RefCell::new(InstanceRuntimeState::default()));
+        {
+            let mut runtime = state.borrow_mut();
+            runtime.instance_id = Some(id);
+            runtime.entity = Some(entity);
+        }
         let instance = ScriptInstance {
             script_path: script_path.to_string(),
             entity,
@@ -1421,13 +1676,14 @@ impl ScriptHost {
             has_ready_run: false,
             errored: false,
             persist_state,
-            state: Rc::new(RefCell::new(InstanceRuntimeState::default())),
+            state,
         };
         self.instances.insert(id, instance);
         Ok(id)
     }
 
     pub fn remove_instance(&mut self, id: u64) {
+        self.drop_listeners_for_owner(ListenerOwner::Instance(id));
         self.instances.remove(&id);
     }
 
@@ -1503,7 +1759,15 @@ impl ScriptHost {
         let Some(compiled) = self.scripts.get(script_path).cloned() else {
             return Ok(());
         };
-        for instance in self.instances.values_mut().filter(|instance| instance.script_path == script_path) {
+        let targets: Vec<u64> = self
+            .instances
+            .iter()
+            .filter(|(_, instance)| instance.script_path == script_path)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in targets {
+            self.drop_listeners_for_owner(ListenerOwner::Instance(id));
+            let Some(instance) = self.instances.get_mut(&id) else { continue };
             if !instance.persist_state {
                 instance.state.borrow_mut().persistent.clear();
             }
@@ -1636,6 +1900,8 @@ impl ScriptHost {
     fn begin_frame(&mut self, dt: f32) -> f32 {
         let dt = if dt.is_finite() && dt > 0.0 { dt } else { 0.0 };
         let mut shared = self.shared.borrow_mut();
+        shared.events_dispatched = 0;
+        shared.event_overflowed = false;
         let mut scale = shared.time_scale;
         if !scale.is_finite() {
             scale = 1.0;
@@ -1693,9 +1959,11 @@ impl ScriptHost {
                                     self.script_path.display()
                                 );
                                 self.error = Some(msg);
+                                self.dispatch_script_events();
                                 return dt_scaled;
                             }
                             self.initialized = true;
+                            self.dispatch_script_events();
                             return dt_scaled;
                         }
                     }
@@ -1723,6 +1991,7 @@ impl ScriptHost {
                         } else {
                             self.error = None;
                         }
+                        self.dispatch_script_events();
                         return dt_scaled;
                     }
                 }
@@ -1734,6 +2003,7 @@ impl ScriptHost {
                 self.error = Some(msg);
             }
         }
+        self.dispatch_script_events();
         dt_scaled
     }
 
@@ -1757,7 +2027,7 @@ impl ScriptHost {
         while self.scope.len() > marker {
             self.scope.pop();
         }
-        match eval {
+        let result = match eval {
             Ok(value) => {
                 if value.is_unit() {
                     Ok(None)
@@ -1766,7 +2036,9 @@ impl ScriptHost {
                 }
             }
             Err(err) => Err(anyhow!(err.to_string())),
-        }
+        };
+        self.dispatch_script_events();
+        result
     }
 
     pub fn register_spawn_result(&mut self, handle: ScriptHandle, entity: Entity) {
@@ -1797,6 +2069,10 @@ impl ScriptHost {
         let ids: Vec<u64> = self.instances.keys().copied().collect();
         for id in ids {
             let _ = self.call_instance_exit(id);
+        }
+        {
+            let mut state = self.shared.borrow_mut();
+            state.event_listeners.retain(|listener| matches!(listener.owner, ListenerOwner::Host));
         }
         self.instances.clear();
         self.entity_errors.clear();
@@ -1870,6 +2146,7 @@ impl ScriptHost {
         revision: Option<u64>,
     ) -> Result<&AST> {
         self.reset_import_resolver();
+        self.drop_listeners_for_owner(ListenerOwner::Host);
         let ast = self.engine.compile(&source).with_context(|| "Compiling Rhai script")?;
         self.scope = Scope::new();
         self.engine
@@ -2367,6 +2644,7 @@ impl ScriptPlugin {
         let mut behaviours = ecs.world.query::<(Entity, &mut ScriptBehaviour)>();
         for (entity, mut behaviour) in behaviours.iter_mut(&mut ecs.world) {
             if behaviour.instance_id != 0 && !self.host.instances.contains_key(&behaviour.instance_id) {
+                self.host.drop_listeners_for_owner(ListenerOwner::Instance(behaviour.instance_id));
                 behaviour.instance_id = 0;
                 self.host.clear_entity_error(entity);
             }
@@ -2465,6 +2743,7 @@ impl EnginePlugin for ScriptPlugin {
         if run_scripts && self.host.enabled() {
             self.run_behaviours(ecs, assets, dt_scaled, false)?;
         }
+        self.host.dispatch_script_events();
         if !self.paused {
             self.step_once = false;
         }
@@ -2483,6 +2762,7 @@ impl EnginePlugin for ScriptPlugin {
         self.populate_entity_snapshots(ecs);
         self.cleanup_orphaned_instances(ecs);
         if self.paused {
+            self.host.dispatch_script_events();
             let drained = self.drain_host_commands();
             self.commands.extend(drained);
             self.logs.extend(self.host.drain_logs());
@@ -2492,6 +2772,7 @@ impl EnginePlugin for ScriptPlugin {
             let dt_scaled = self.host.begin_frame(dt);
             self.run_behaviours(ecs, assets, dt_scaled, true)?;
         }
+        self.host.dispatch_script_events();
         let drained = self.drain_host_commands();
         self.commands.extend(drained);
         self.logs.extend(self.host.drain_logs());
@@ -2566,6 +2847,13 @@ fn register_api(engine: &mut Engine) {
     engine.register_fn("input_cursor", ScriptWorld::input_cursor);
     engine.register_fn("input_mouse_delta", ScriptWorld::input_mouse_delta);
     engine.register_fn("input_wheel", ScriptWorld::input_wheel);
+    engine.register_fn("listen", ScriptWorld::listen);
+    engine.register_fn("listen_for_entity", ScriptWorld::listen_for_entity);
+    engine.register_fn("unlisten", ScriptWorld::unlisten);
+    engine.register_fn("emit", ScriptWorld::emit);
+    engine.register_fn("emit", ScriptWorld::emit_with_payload);
+    engine.register_fn("emit_to", ScriptWorld::emit_to);
+    engine.register_fn("emit_to", ScriptWorld::emit_to_with_payload);
     engine.register_fn("log", ScriptWorld::log);
     engine.register_fn("rand_seed", ScriptWorld::rand_seed);
     engine.register_fn("rand", ScriptWorld::random_range);
@@ -3764,6 +4052,115 @@ mod tests {
         assert!(
             logs.iter().position(|l| l.contains("ready v2")).is_some(),
             "expected ready from new script after reload, got {logs:?}"
+        );
+    }
+
+    #[test]
+    fn events_emit_and_listen_from_host() {
+        let script = write_script(
+            r#"
+                fn init(world) {
+                    world.listen("ping", "on_ping");
+                    world.emit("ping", #{ value: 7 });
+                }
+                fn on_ping(world, event) {
+                    let payload = event["payload"]["value"];
+                    world.log("ping:" + payload.to_string());
+                }
+                fn update(world, dt) { }
+            "#,
+        );
+        let mut host = ScriptHost::new(script.path());
+        host.force_reload(None).expect("load script");
+        let _ = host.update(0.016, true, None);
+        let logs = host.drain_logs();
+        assert!(
+            logs.iter().any(|l| l.contains("ping:7")),
+            "expected event handler to run once, got {logs:?}"
+        );
+    }
+
+    #[test]
+    fn event_queue_enforces_limit() {
+        let state = Rc::new(RefCell::new(SharedState::default()));
+        let mut world = ScriptWorld::new(state);
+        for _ in 0..SCRIPT_EVENT_QUEUE_LIMIT {
+            assert!(world.emit("overflow"), "queue should accept events until the cap");
+        }
+        assert!(!world.emit("overflow"), "queue cap should prevent additional events in the same frame");
+    }
+
+    #[test]
+    fn entity_scoped_listeners_cleanup_on_remove() {
+        let main = write_script(
+            r#"
+                fn init(world) { }
+                fn update(world, dt) { }
+            "#,
+        );
+        let emitter = write_script(
+            r#"
+                fn ready(world, entity) {
+                    world.listen_for_entity("poke", entity, "on_poke");
+                    world.emit("poke");
+                }
+                fn on_poke(world, event) {
+                    world.log("emitter:" + event["listener"].to_string());
+                }
+                fn process(world, entity, dt) { }
+            "#,
+        );
+        let listener = write_script(
+            r#"
+                fn ready(world, entity) {
+                    world.listen_for_entity("poke", entity, "on_poke");
+                }
+                fn on_poke(world, event) {
+                    world.log("listener:" + event["listener"].to_string());
+                }
+                fn process(world, entity, dt) { }
+            "#,
+        );
+        let emitter_path = emitter.path().to_string_lossy().into_owned();
+        let listener_path = listener.path().to_string_lossy().into_owned();
+        let mut plugin = ScriptPlugin::new(main.path());
+        let mut ecs = EcsWorld::new();
+        let assets = AssetManager::new();
+        let emitter_entity = ecs
+            .world
+            .spawn((Transform::default(), ScriptBehaviour::new(emitter_path.clone())))
+            .id();
+        ecs.world
+            .spawn((Transform::default(), ScriptBehaviour::new(listener_path.clone())));
+
+        plugin.populate_entity_snapshots(&mut ecs);
+        plugin.cleanup_orphaned_instances(&mut ecs);
+        plugin.host.begin_frame(0.016);
+        plugin
+            .run_behaviours(&mut ecs, &assets, 0.016, false)
+            .expect("behaviours run");
+        plugin.host.dispatch_script_events();
+        let logs = plugin.host.drain_logs();
+        assert!(
+            logs.iter().filter(|l| l.contains("emitter:")).count() == 1
+                && logs.iter().all(|l| !l.contains("listener:")),
+            "scoped listeners should receive only targeted events, got {logs:?}"
+        );
+
+        ecs.world.entity_mut(emitter_entity).remove::<ScriptBehaviour>();
+        plugin.populate_entity_snapshots(&mut ecs);
+        plugin.cleanup_orphaned_instances(&mut ecs);
+        plugin.host.begin_frame(0.016);
+        plugin
+            .run_behaviours(&mut ecs, &assets, 0.016, false)
+            .expect("behaviours run after removal");
+        let mut world = ScriptWorld::new(plugin.host.shared.clone());
+        assert!(world.emit_to("poke", emitter_entity.to_bits() as ScriptHandle));
+        plugin.host.dispatch_script_events();
+        let logs_after = plugin.host.drain_logs();
+        assert!(
+            logs_after.iter().all(|l| !l.contains("emitter:") && !l.contains("listener:")),
+            "removed listener should not receive targeted events, got {logs_after:?}"
         );
     }
 }
