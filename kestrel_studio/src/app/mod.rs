@@ -2231,12 +2231,18 @@ impl ApplicationHandler for App {
             }
         }
 
+        self.with_plugins(|plugins, ctx| plugins.update(ctx, dt));
+        let time_scale = self.script_plugin().map(|p| p.time_scale()).unwrap_or(1.0);
+        let time_scale = if time_scale.is_finite() && time_scale >= 0.0 { time_scale } else { 1.0 };
+        let sim_dt = dt * time_scale;
+        self.ecs.set_animation_time_scale(time_scale);
+
         let (ui_auto_spawn_rate, ui_spawn_per_press) = {
             let state = self.editor_ui_state();
             (state.ui_auto_spawn_rate, state.ui_spawn_per_press)
         };
-        if ui_auto_spawn_rate > 0.0 {
-            let to_spawn = (ui_auto_spawn_rate * dt) as i32;
+        if ui_auto_spawn_rate > 0.0 && sim_dt > 0.0 {
+            let to_spawn = (ui_auto_spawn_rate * sim_dt) as i32;
             if to_spawn > 0 {
                 self.ecs.spawn_burst(&self.assets, to_spawn as usize);
             }
@@ -2248,8 +2254,6 @@ impl ApplicationHandler for App {
         if self.input.take_b_pressed() {
             self.ecs.spawn_burst(&self.assets, (ui_spawn_per_press * 5).max(1000) as usize);
         }
-
-        self.with_plugins(|plugins, ctx| plugins.update(ctx, dt));
         let capability_metrics = self.plugin_manager().capability_metrics();
         let capability_events = self.plugin_manager_mut().drain_capability_events();
         let watchdog_alerts = self.plugin_manager_mut().drain_watchdog_events();
@@ -2411,16 +2415,21 @@ impl ApplicationHandler for App {
             self.ecs.push_event(GameEvent::ScriptMessage { message });
         }
 
-        while let Some(fixed_dt) = self.runtime_loop.pop_fixed_step() {
-            let fixed_start = Instant::now();
-            self.ecs.fixed_step(fixed_dt);
-            fixed_time_ms += fixed_start.elapsed().as_secs_f32() * 1000.0;
-            let plugin_fixed_start = Instant::now();
-            self.with_plugins(|plugins, ctx| plugins.fixed_update(ctx, fixed_dt));
-            fixed_time_ms += plugin_fixed_start.elapsed().as_secs_f32() * 1000.0;
+        if time_scale <= 0.0 {
+            self.runtime_loop.clear_accumulator();
+        } else {
+            while let Some(fixed_dt) = self.runtime_loop.pop_fixed_step() {
+                let scaled_fixed_dt = fixed_dt * time_scale;
+                let fixed_start = Instant::now();
+                self.ecs.fixed_step(scaled_fixed_dt);
+                fixed_time_ms += fixed_start.elapsed().as_secs_f32() * 1000.0;
+                let plugin_fixed_start = Instant::now();
+                self.with_plugins(|plugins, ctx| plugins.fixed_update(ctx, fixed_dt));
+                fixed_time_ms += plugin_fixed_start.elapsed().as_secs_f32() * 1000.0;
+            }
         }
         let update_start = Instant::now();
-        self.ecs.update(dt);
+        self.ecs.update(sim_dt);
         update_time_ms = update_start.elapsed().as_secs_f32() * 1000.0;
         if self.camera_follow_target.is_some() && !self.refresh_camera_follow() {
             self.camera_follow_target = None;
@@ -4360,27 +4369,16 @@ impl App {
                     }
                 }
                 ScriptCommand::SpawnTemplate { handle, template } => {
-                    if let Err(err) = self.prefab_library.refresh() {
-                        eprintln!("[script] prefab library refresh failed: {err:?}");
-                    }
                     let name = template.trim();
                     if name.is_empty() {
                         eprintln!("[script] spawn_template received empty name");
                         self.forget_script_handle(handle);
                         continue;
                     }
-                    let entry = self
-                        .prefab_library
-                        .entries()
-                        .iter()
-                        .find(|entry| entry.name.eq_ignore_ascii_case(name) && entry.format == PrefabFormat::Json)
-                        .or_else(|| {
-                            self.prefab_library
-                                .entries()
-                                .iter()
-                                .find(|entry| entry.name.eq_ignore_ascii_case(name))
-                        })
-                        .cloned();
+                    if let Err(err) = self.prefab_library.refresh() {
+                        eprintln!("[script] prefab library refresh failed: {err:?}");
+                    }
+                    let entry = self.prefab_library.resolve(name);
                     let Some(entry) = entry else {
                         eprintln!("[script] prefab template '{name}' not found");
                         self.forget_script_handle(handle);

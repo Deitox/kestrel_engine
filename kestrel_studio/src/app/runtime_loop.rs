@@ -73,4 +73,8 @@ impl RuntimeLoop {
             None
         }
     }
+
+    pub(crate) fn clear_accumulator(&mut self) {
+        self.accumulator = 0.0;
+    }
 }

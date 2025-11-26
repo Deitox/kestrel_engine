@@ -16,10 +16,10 @@ Status legend: `[x]` done, `[~]` partial/incomplete, `[ ]` not started/unknown.
 
 ## Phase 2 - Game-Facing APIs [~]
 - [x] Read APIs: `entity_snapshot` plus position/rotation/scale/velocity/tint accessors backed by per-frame snapshots.
-- [~] Physics queries: `raycast` and `overlap_circle` exist and use snapshot AABBs; no filters or physics broadphase integration yet.
-- [~] Spawning: `world.spawn_prefab(path)` enqueues deferred prefab spawns and is tested; no `spawn_template(name)` helper.
-- [~] Input/time: input state helpers exist; dt is only passed via callbacks and `World` lacks time-scale/timer registration APIs (only script-side helpers in `common.rhai`).
-- [~] Deliverables: prefab/query helpers and basic tests are in place; template/time/filter coverage still missing.
+- [~] Physics queries: `raycast` and `overlap_circle` use snapshot AABBs and now accept include/exclude filters; still no physics broadphase integration.
+- [x] Spawning: `world.spawn_prefab(path)` enqueues deferred prefab spawns and `spawn_template(name)` now looks up prefab library entries (JSON preferred) with tests, plus optional `assets/prefabs/aliases.json` alias mapping.
+- [x] Input/time: input state helpers exist; `World` now exposes time scale, scaled/unscaled time/delta, and timer registration helpers in addition to `dt` in callbacks, and engine physics/animation respect the script time scale.
+- [~] Deliverables: prefab/query helpers and basic tests are in place; template/time/filter coverage landed; physics coupling/broadphase remains.
 
 ## Phase 3 - State & Lifecycle [~]
 - [~] Persistent state: `ScriptBehaviour.persist_state` + `world.state_get/set/clear/keys` preserve instance maps across reload when opted in; not serialized into scene saves/checkpoints.

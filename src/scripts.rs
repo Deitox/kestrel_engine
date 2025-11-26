@@ -1993,6 +1993,11 @@ impl ScriptPlugin {
         self.logs.drain(..).collect()
     }
 
+    pub fn time_scale(&self) -> f32 {
+        let scale = self.host.shared.borrow().time_scale;
+        if scale.is_finite() && scale >= 0.0 { scale } else { 1.0 }
+    }
+
     pub fn register_spawn_result(&mut self, handle: ScriptHandle, entity: Entity) {
         self.host.register_spawn_result(handle, entity);
     }
