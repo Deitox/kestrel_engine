@@ -4,7 +4,7 @@ use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::assets::AssetManager;
@@ -13,8 +13,8 @@ use anyhow::{anyhow, Context, Error, Result};
 use glam::{Vec2, Vec4};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use rhai::module_resolvers::FileModuleResolver;
-use rhai::{Array, Dynamic, Engine, EvalAltResult, Map, Scope, AST, FLOAT};
+use rhai::module_resolvers::ModuleResolver;
+use rhai::{Array, Dynamic, Engine, EvalAltResult, Map, Module, Scope, Shared, AST, FLOAT};
 
 use bevy_ecs::prelude::{Component, Entity};
 use crate::ecs::{Aabb, Tint, Transform, Velocity, WorldTransform};
@@ -125,6 +125,113 @@ struct SharedState {
     rng: Option<StdRng>,
     entity_snapshots: HashMap<Entity, EntitySnapshot>,
     input_snapshot: Option<InputSnapshot>,
+}
+
+#[derive(Clone)]
+struct CachedModule {
+    digest: u64,
+    ast: AST,
+    module: Shared<Module>,
+}
+
+#[derive(Clone)]
+struct CachedModuleResolver {
+    root: PathBuf,
+    cache: Arc<RwLock<HashMap<PathBuf, CachedModule>>>,
+}
+
+impl CachedModuleResolver {
+    fn new(root: PathBuf) -> Self {
+        let root = root.canonicalize().unwrap_or(root);
+        Self { root, cache: Arc::new(RwLock::new(HashMap::new())) }
+    }
+
+    fn resolve_import_path(&self, import: &str) -> Result<PathBuf> {
+        let trimmed = import.trim();
+        if trimmed.is_empty() {
+            return Err(anyhow!("Empty import path"));
+        }
+        let mut rel = PathBuf::from(trimmed);
+        if rel.extension().is_none() {
+            rel.set_extension("rhai");
+        }
+        if rel.is_absolute() {
+            return Err(anyhow!("Absolute import paths are not allowed: {trimmed}"));
+        }
+        let candidate = self.root.join(rel);
+        let canonical = candidate.canonicalize().with_context(|| format!("Resolving import '{trimmed}'"))?;
+        if !canonical.starts_with(&self.root) {
+            anyhow::bail!("Import '{trimmed}' escapes scripts directory");
+        }
+        Ok(canonical)
+    }
+
+    fn compute_import_digests(&self, source: &str) -> Result<HashMap<PathBuf, u64>> {
+        let mut imports = HashMap::new();
+        for name in parse_literal_imports(source) {
+            let path = self.resolve_import_path(&name)?;
+            let contents = std::fs::read_to_string(&path)
+                .with_context(|| format!("Reading imported module '{}'", path.display()))?;
+            imports.insert(path, hash_source(&contents));
+        }
+        Ok(imports)
+    }
+
+    fn load_module_entry(
+        &self,
+        engine: &Engine,
+        path: &str,
+        pos: rhai::Position,
+    ) -> Result<CachedModule, Box<EvalAltResult>> {
+        let canonical = self
+            .resolve_import_path(path)
+            .map_err(|_| Box::new(EvalAltResult::ErrorModuleNotFound(path.to_string(), pos)))?;
+        let source = std::fs::read_to_string(&canonical)
+            .map_err(|_| Box::new(EvalAltResult::ErrorModuleNotFound(path.to_string(), pos)))?;
+        let digest = hash_source(&source);
+        if let Ok(cache) = self.cache.read() {
+            if let Some(entry) = cache.get(&canonical) {
+                if entry.digest == digest {
+                    return Ok(entry.clone());
+                }
+            }
+        }
+        let mut ast = engine
+            .compile(&source)
+            .map_err(|err| Box::new(EvalAltResult::ErrorInModule(path.to_string(), err.into(), pos)))?;
+        ast.set_source(path);
+        let module =
+            Module::eval_ast_as_new(Scope::new(), &ast, engine)
+                .map_err(|err| Box::new(EvalAltResult::ErrorInModule(path.to_string(), err, pos)))?;
+        let shared: Shared<_> = module.into();
+        let entry = CachedModule { digest, ast, module: shared.clone() };
+        if let Ok(mut cache) = self.cache.write() {
+            cache.insert(canonical, entry.clone());
+        }
+        Ok(entry)
+    }
+}
+
+impl ModuleResolver for CachedModuleResolver {
+    fn resolve(
+        &self,
+        engine: &Engine,
+        _source: Option<&str>,
+        path: &str,
+        pos: rhai::Position,
+    ) -> Result<Shared<Module>, Box<EvalAltResult>> {
+        self.load_module_entry(engine, path, pos).map(|entry| entry.module)
+    }
+
+    fn resolve_ast(
+        &self,
+        engine: &Engine,
+        _source: Option<&str>,
+        path: &str,
+        pos: rhai::Position,
+    ) -> Option<Result<AST, Box<EvalAltResult>>> {
+        Some(self.load_module_entry(engine, path, pos).map(|entry| entry.ast))
+    }
 }
 
 #[derive(Clone)]
@@ -732,6 +839,7 @@ pub struct ScriptHost {
     ast: Option<AST>,
     scope: Scope<'static>,
     script_path: PathBuf,
+    import_resolver: CachedModuleResolver,
     last_modified: Option<SystemTime>,
     last_len: Option<u64>,
     last_digest: Option<u64>,
@@ -751,8 +859,7 @@ pub struct ScriptHost {
 
 impl ScriptHost {
     fn reset_import_resolver(&mut self) {
-        let resolver = FileModuleResolver::new_with_path(SCRIPT_IMPORT_ROOT);
-        self.engine.set_module_resolver(resolver);
+        self.engine.set_module_resolver(self.import_resolver.clone());
     }
 
     fn format_rhai_error(err: &EvalAltResult, script_path: &str, fn_name: &str) -> String {
@@ -768,8 +875,8 @@ impl ScriptHost {
     pub fn new(path: impl AsRef<Path>) -> Self {
         let mut engine = Engine::new();
         engine.set_fast_operators(true);
-        let resolver = FileModuleResolver::new_with_path(SCRIPT_IMPORT_ROOT);
-        engine.set_module_resolver(resolver);
+        let import_resolver = CachedModuleResolver::new(canonical_import_root());
+        engine.set_module_resolver(import_resolver.clone());
         register_api(&mut engine);
         let shared = SharedState { next_handle: 1, ..Default::default() };
         Self {
@@ -777,6 +884,7 @@ impl ScriptHost {
             ast: None,
             scope: Scope::new(),
             script_path: path.as_ref().to_path_buf(),
+            import_resolver,
             last_modified: None,
             last_len: None,
             last_digest: None,
@@ -973,7 +1081,7 @@ impl ScriptHost {
             .engine
             .compile(source)
             .with_context(|| format!("Compiling Rhai script '{}'", path))?;
-        let import_digests = compute_import_digests(source)?;
+        let import_digests = self.import_resolver.compute_import_digests(source)?;
         let (has_ready, has_process, has_physics_process, has_exit) = detect_callbacks(&ast);
         Ok(CompiledScript {
             ast,
@@ -1340,7 +1448,7 @@ impl ScriptHost {
         self.engine
             .run_ast_with_scope(&mut self.scope, &ast)
             .map_err(|err| anyhow!("Evaluating script global statements: {err}"))?;
-        self.last_import_digests = compute_import_digests(&source)?;
+        self.last_import_digests = self.import_resolver.compute_import_digests(&source)?;
         self.last_modified = Some(modified);
         self.last_len = Some(len);
         self.last_digest = Some(hash_source(&source));
@@ -1372,27 +1480,6 @@ fn canonical_import_root() -> PathBuf {
     PathBuf::from(SCRIPT_IMPORT_ROOT).canonicalize().unwrap_or_else(|_| PathBuf::from(SCRIPT_IMPORT_ROOT))
 }
 
-fn resolve_import_path(import: &str) -> Result<PathBuf> {
-    let trimmed = import.trim();
-    if trimmed.is_empty() {
-        return Err(anyhow!("Empty import path"));
-    }
-    let mut rel = PathBuf::from(trimmed);
-    if rel.extension().is_none() {
-        rel.set_extension("rhai");
-    }
-    if rel.is_absolute() {
-        return Err(anyhow!("Absolute import paths are not allowed: {trimmed}"));
-    }
-    let root = canonical_import_root();
-    let candidate = root.join(rel);
-    let canonical = candidate.canonicalize().with_context(|| format!("Resolving import '{trimmed}'"))?;
-    if !canonical.starts_with(&root) {
-        anyhow::bail!("Import '{trimmed}' escapes scripts directory");
-    }
-    Ok(canonical)
-}
-
 fn parse_literal_imports(source: &str) -> Vec<String> {
     let mut imports = Vec::new();
     for line in source.lines() {
@@ -1408,17 +1495,6 @@ fn parse_literal_imports(source: &str) -> Vec<String> {
         }
     }
     imports
-}
-
-fn compute_import_digests(source: &str) -> Result<HashMap<PathBuf, u64>> {
-    let mut imports = HashMap::new();
-    for name in parse_literal_imports(source) {
-        let path = resolve_import_path(&name)?;
-        let contents =
-            std::fs::read_to_string(&path).with_context(|| format!("Reading imported module '{}'", path.display()))?;
-        imports.insert(path, hash_source(&contents));
-    }
-    Ok(imports)
 }
 
 fn imports_unchanged(imports: &HashMap<PathBuf, u64>) -> bool {
@@ -2352,6 +2428,52 @@ mod tests {
         host.call_instance_ready(instance_id).expect("ready rerun");
         let second_logs = host.drain_logs();
         assert!(second_logs.iter().any(|l| l.contains("2")), "expected module v2 log, got {second_logs:?}");
+    }
+
+    #[test]
+    fn module_import_cache_reuses_until_source_changes() {
+        let mut module = Builder::new()
+            .prefix("rhai_module_cache_")
+            .suffix(".rhai")
+            .tempfile_in("assets/scripts")
+            .expect("module file");
+        write!(module.as_file_mut(), "fn value() {{ 1 }}").expect("write module v1");
+        let module_name = module.path().file_stem().and_then(|s| s.to_str()).expect("module name");
+
+        let script = write_script(&format!(
+            r#"
+                import "{module_name}" as m;
+                fn init(world) {{}}
+                fn update(world, dt) {{
+                    world.log(m::value().to_string());
+                }}
+            "#
+        ));
+        let mut host = ScriptHost::new(script.path());
+        host.force_reload(None).expect("load script with import");
+        let canonical = module.path().canonicalize().expect("canonical module path");
+        let first_ptr = {
+            let cache = host.import_resolver.cache.read().expect("cache read");
+            let entry = cache.get(&canonical).expect("module cached");
+            Rc::as_ptr(&entry.module)
+        };
+
+        host.force_reload(None).expect("reload without change");
+        let second_ptr = {
+            let cache = host.import_resolver.cache.read().expect("cache read");
+            let entry = cache.get(&canonical).expect("module cached");
+            Rc::as_ptr(&entry.module)
+        };
+        assert_eq!(first_ptr, second_ptr, "cache should be reused when import is unchanged");
+
+        fs::write(module.path(), "fn value() { 2 }").expect("rewrite module v2");
+        host.force_reload(None).expect("reload after module change");
+        let third_ptr = {
+            let cache = host.import_resolver.cache.read().expect("cache read");
+            let entry = cache.get(&canonical).expect("module cached");
+            Rc::as_ptr(&entry.module)
+        };
+        assert_ne!(first_ptr, third_ptr, "cache should refresh after import source changes");
     }
 
     #[test]
