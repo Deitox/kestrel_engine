@@ -42,6 +42,7 @@
 - Type Rhai commands into the REPL field and press **Enter** or **Run**; commands execute against the live `World` just like the main script, so you can tweak emitters, spawn sprites, or inspect state at runtime.
 - Arrow keys cycle through command history, and the History list lets you click to rehydrate older commands for editing. The input box auto-focuses whenever a script error occurs so you can fix issues quickly.
 - Errors that occur during REPL execution or regular script updates automatically reopen the debugger and highlight the failure, keeping the workflow tight during iteration.
+- Scripting helpers: the shared `assets/scripts/common.rhai` exposes timers, cooldowns, lerp/move helpers, and vector/angle math. For scripts that avoid imports, the `World` API also provides `vec2`, `vec2_len`, `vec2_normalize`, `vec2_distance`, `vec2_lerp`, `move_toward_vec2`, `angle_to_vec`, `vec_to_angle`, and `wrap_angle_pi` so you can do basic math directly from `world.*`.
 
 ## Animation Tooling & Validation
 - The viewport HUD (toggle from **Stats -> Viewport Overlays**) surfaces sprite/transform/skeletal/GPU palette budgets so perf regressions are visible at a glance.
