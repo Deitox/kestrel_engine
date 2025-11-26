@@ -424,6 +424,76 @@ impl ScriptWorld {
             .unwrap_or(0.0)
     }
 
+    fn vec2(&mut self, x: FLOAT, y: FLOAT) -> Array {
+        Self::vec2_to_array(Vec2::new(x as f32, y as f32))
+    }
+
+    fn vec2_len(&mut self, v: Array) -> FLOAT {
+        Self::array_to_vec2(&v).map(|vec| vec.length() as FLOAT).unwrap_or(0.0)
+    }
+
+    fn vec2_normalize(&mut self, v: Array) -> Array {
+        let vec = Self::array_to_vec2(&v).unwrap_or(Vec2::ZERO);
+        if vec.length_squared() <= f32::EPSILON {
+            Self::vec2_to_array(Vec2::ZERO)
+        } else {
+            Self::vec2_to_array(vec.normalize())
+        }
+    }
+
+    fn vec2_distance(&mut self, a: Array, b: Array) -> FLOAT {
+        match (Self::array_to_vec2(&a), Self::array_to_vec2(&b)) {
+            (Some(va), Some(vb)) => va.distance(vb) as FLOAT,
+            _ => 0.0,
+        }
+    }
+
+    fn vec2_lerp(&mut self, a: Array, b: Array, t: FLOAT) -> Array {
+        let t = (t as f32).clamp(0.0, 1.0);
+        match (Self::array_to_vec2(&a), Self::array_to_vec2(&b)) {
+            (Some(va), Some(vb)) => Self::vec2_to_array(va + (vb - va) * t),
+            _ => Array::new(),
+        }
+    }
+
+    fn move_toward_vec2(&mut self, current: Array, target: Array, max_delta: FLOAT) -> Array {
+        let Some(cur) = Self::array_to_vec2(&current) else { return Array::new(); };
+        let Some(trg) = Self::array_to_vec2(&target) else { return Array::new(); };
+        let max_delta = max_delta as f32;
+        let delta = trg - cur;
+        let dist = delta.length();
+        if dist <= max_delta || dist <= 1e-4 {
+            Self::vec2_to_array(trg)
+        } else {
+            let step = delta.normalize_or_zero() * max_delta;
+            Self::vec2_to_array(cur + step)
+        }
+    }
+
+    fn angle_to_vec(&mut self, angle: FLOAT) -> Array {
+        let a = angle as f32;
+        Self::vec2_to_array(Vec2::new(a.cos(), a.sin()))
+    }
+
+    fn vec_to_angle(&mut self, v: Array) -> FLOAT {
+        Self::array_to_vec2(&v)
+            .map(|vec| vec.y.atan2(vec.x) as FLOAT)
+            .unwrap_or(0.0)
+    }
+
+    fn wrap_angle_pi(&mut self, rad: FLOAT) -> FLOAT {
+        let mut a = rad as f32;
+        let pi = std::f32::consts::PI;
+        let two_pi = std::f32::consts::PI * 2.0;
+        while a > pi {
+            a -= two_pi;
+        }
+        while a < -pi {
+            a += two_pi;
+        }
+        a as FLOAT
+    }
+
     fn vec2_to_array(v: Vec2) -> Array {
         vec![Dynamic::from(v.x as FLOAT), Dynamic::from(v.y as FLOAT)]
     }
@@ -435,6 +505,18 @@ impl ScriptWorld {
             Dynamic::from(v.z as FLOAT),
             Dynamic::from(v.w as FLOAT),
         ]
+    }
+
+    fn array_to_vec2(arr: &Array) -> Option<Vec2> {
+        if arr.len() < 2 {
+            return None;
+        }
+        let x: Option<FLOAT> = arr[0].clone().try_cast();
+        let y: Option<FLOAT> = arr[1].clone().try_cast();
+        match (x, y) {
+            (Some(x), Some(y)) if x.is_finite() && y.is_finite() => Some(Vec2::new(x as f32, y as f32)),
+            _ => None,
+        }
     }
 
     fn ray_aabb_2d(origin: Vec2, dir: Vec2, center: Vec2, half: Vec2) -> Option<(f32, Vec2)> {
@@ -2106,6 +2188,15 @@ fn register_api(engine: &mut Engine) {
     engine.register_fn("rand_seed", ScriptWorld::rand_seed);
     engine.register_fn("rand", ScriptWorld::random_range);
     engine.register_fn("move_toward", ScriptWorld::move_toward);
+    engine.register_fn("vec2", ScriptWorld::vec2);
+    engine.register_fn("vec2_len", ScriptWorld::vec2_len);
+    engine.register_fn("vec2_normalize", ScriptWorld::vec2_normalize);
+    engine.register_fn("vec2_distance", ScriptWorld::vec2_distance);
+    engine.register_fn("vec2_lerp", ScriptWorld::vec2_lerp);
+    engine.register_fn("move_toward_vec2", ScriptWorld::move_toward_vec2);
+    engine.register_fn("angle_to_vec", ScriptWorld::angle_to_vec);
+    engine.register_fn("vec_to_angle", ScriptWorld::vec_to_angle);
+    engine.register_fn("wrap_angle_pi", ScriptWorld::wrap_angle_pi);
 }
 
 #[cfg(test)]
@@ -2246,6 +2337,41 @@ mod tests {
         let mut world = ScriptWorld::new(state);
         let value = world.random_range(std::f32::consts::PI as FLOAT, std::f32::consts::PI as FLOAT);
         assert_eq!(value as f32, std::f32::consts::PI);
+    }
+
+    #[test]
+    fn world_vec_helpers_are_available_without_import() {
+        let state = Rc::new(RefCell::new(SharedState::default()));
+        let mut world = ScriptWorld::new(state);
+        let v = world.vec2(3.0, 4.0);
+        let len = world.vec2_len(v.clone());
+        assert!((len - 5.0).abs() < 1e-5);
+        let norm = world.vec2_normalize(v.clone());
+        let nx: FLOAT = norm[0].clone().try_cast().unwrap();
+        let ny: FLOAT = norm[1].clone().try_cast().unwrap();
+        assert!((nx - 0.6).abs() < 0.05 && (ny - 0.8).abs() < 0.05);
+        let zero = world.vec2(0.0, 0.0);
+        let dist = world.vec2_distance(v.clone(), zero.clone());
+        assert!((dist - 5.0).abs() < 0.05);
+        let b = world.vec2(2.0, 2.0);
+        let lerp = world.vec2_lerp(zero.clone(), b.clone(), 0.25);
+        let lx: FLOAT = lerp[0].clone().try_cast().unwrap();
+        let ly: FLOAT = lerp[1].clone().try_cast().unwrap();
+        assert!((lx - 0.5).abs() < 0.05 && (ly - 0.5).abs() < 0.05);
+        let target = world.vec2(2.0, 0.0);
+        let step = world.move_toward_vec2(zero, target, 0.5);
+        let sx: FLOAT = step[0].clone().try_cast().unwrap();
+        assert!((sx - 0.5).abs() < 0.05);
+        let dir = world.angle_to_vec(std::f32::consts::FRAC_PI_2 as FLOAT);
+        let dx: FLOAT = dir[0].clone().try_cast().unwrap();
+        let dy: FLOAT = dir[1].clone().try_cast().unwrap();
+        assert!(dx.abs() < 0.05 && (dy - 1.0).abs() < 0.05);
+        let up = world.vec2(0.0, 1.0);
+        let ang = world.vec_to_angle(up);
+        let target_ang: FLOAT = std::f64::consts::FRAC_PI_2 as FLOAT;
+        assert!((ang - target_ang).abs() < 0.05);
+        let wrapped = world.wrap_angle_pi(7.0);
+        assert!((wrapped - 0.7168).abs() < 0.05);
     }
 
     #[test]
