@@ -34,6 +34,7 @@ use crate::renderer::{
 };
 use crate::runtime_host::PlayState;
 use crate::scene::SceneShadowData;
+use crate::scripts::ScriptTimingSummary;
 
 use crate::config::SpriteGuardrailMode;
 use bevy_ecs::prelude::Entity;
@@ -901,6 +902,7 @@ pub(super) struct ScriptDebuggerParams {
     pub paused: bool,
     pub last_error: Option<String>,
     pub handles: Vec<ScriptHandleBinding>,
+    pub timings: Arc<[ScriptTimingSummary]>,
     pub repl_input: String,
     pub repl_history_index: Option<usize>,
     pub repl_history: Arc<[String]>,
@@ -2242,6 +2244,26 @@ impl App {
                             ui.separator();
                             ui.label("Active handles");
                             show_script_handle_table(ui, &script_debugger.handles, "sidebar");
+                            if !script_debugger.timings.is_empty() {
+                                ui.separator();
+                                ui.label("Script timings (ms)");
+                                egui::Grid::new("script_timings_sidebar").striped(true).show(ui, |ui| {
+                                    ui.label("Name");
+                                    ui.label("Last");
+                                    ui.label("Avg");
+                                    ui.label("Max");
+                                    ui.label("Samples");
+                                    ui.end_row();
+                                    for timing in script_debugger.timings.iter() {
+                                        ui.label(timing.name);
+                                        ui.label(format!("{:.3}", timing.last_ms));
+                                        ui.label(format!("{:.3}", timing.average_ms));
+                                        ui.label(format!("{:.3}", timing.max_ms));
+                                        ui.label(timing.samples.to_string());
+                                        ui.end_row();
+                                    }
+                                });
+                            }
                         } else {
                             ui.label("Script plugin unavailable");
                         }

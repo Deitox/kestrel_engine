@@ -150,6 +150,23 @@ struct ScriptEventListener {
     scope_entity: Option<Entity>,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ScriptTimingSummary {
+    pub name: &'static str,
+    pub last_ms: f32,
+    pub average_ms: f32,
+    pub max_ms: f32,
+    pub samples: u64,
+}
+
+#[derive(Clone, Copy, Default)]
+struct ScriptTiming {
+    last_ms: f32,
+    total_ms: f32,
+    max_ms: f32,
+    samples: u64,
+}
+
 struct SharedState {
     next_handle: ScriptHandle,
     next_listener_id: u64,
@@ -168,6 +185,7 @@ struct SharedState {
     event_listeners: Vec<ScriptEventListener>,
     events_dispatched: usize,
     event_overflowed: bool,
+    timings: HashMap<&'static str, ScriptTiming>,
 }
 
 impl Default for SharedState {
@@ -190,7 +208,34 @@ impl Default for SharedState {
             event_listeners: Vec::new(),
             events_dispatched: 0,
             event_overflowed: false,
+            timings: HashMap::new(),
         }
+    }
+}
+
+impl SharedState {
+    fn record_timing(&mut self, name: &'static str, duration_ms: f32) {
+        let entry = self.timings.entry(name).or_default();
+        entry.last_ms = duration_ms;
+        entry.total_ms += duration_ms;
+        entry.max_ms = entry.max_ms.max(duration_ms);
+        entry.samples = entry.samples.saturating_add(1);
+    }
+
+    fn timing_summaries(&self) -> Vec<ScriptTimingSummary> {
+        let mut out = Vec::with_capacity(self.timings.len());
+        for (&name, timing) in &self.timings {
+            let avg = if timing.samples == 0 { 0.0 } else { timing.total_ms / timing.samples as f32 };
+            out.push(ScriptTimingSummary {
+                name,
+                last_ms: timing.last_ms,
+                average_ms: avg,
+                max_ms: timing.max_ms,
+                samples: timing.samples,
+            });
+        }
+        out.sort_by(|a, b| b.last_ms.partial_cmp(&a.last_ms).unwrap_or(std::cmp::Ordering::Equal));
+        out
     }
 }
 
@@ -1423,6 +1468,11 @@ impl ScriptHost {
         });
     }
 
+    fn record_timing(&self, name: &'static str, start: Instant) {
+        let duration_ms = start.elapsed().as_secs_f32() * 1000.0;
+        self.shared.borrow_mut().record_timing(name, duration_ms);
+    }
+
     fn pop_next_event(&mut self) -> Option<ScriptEvent> {
         let mut state = self.shared.borrow_mut();
         if let Some(event) = state.event_queue.pop_front() {
@@ -1457,6 +1507,7 @@ impl ScriptHost {
                     let Some(ast) = &self.ast else { continue; };
                     let world = ScriptWorld::new(self.shared.clone());
                     let map = ScriptWorld::event_to_map(&event, None);
+                    let start = Instant::now();
                     if let Err(err) = self.engine.call_fn::<Dynamic>(
                         &mut self.scope,
                         ast,
@@ -1471,6 +1522,7 @@ impl ScriptHost {
                         self.error = Some(message);
                         stale_listeners.insert(listener.id);
                     }
+                    self.record_timing("event", start);
                 }
                 ListenerOwner::Instance(id) => {
                     let Some(instance) = self.instances.get_mut(&id) else {
@@ -1488,6 +1540,7 @@ impl ScriptHost {
                     let listener_entity = instance.state.borrow().entity;
                     let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone());
                     let map = ScriptWorld::event_to_map(&event, listener_entity);
+                    let start = Instant::now();
                     if let Err(err) = self.engine.call_fn::<Dynamic>(
                         &mut instance.scope,
                         &compiled.ast,
@@ -1499,6 +1552,7 @@ impl ScriptHost {
                         self.error = Some(message);
                         stale_listeners.insert(listener.id);
                     }
+                    self.record_timing("event", start);
                 }
             }
         }
@@ -1797,6 +1851,7 @@ impl ScriptHost {
         }
         let entity_int: ScriptHandle = entity_to_rhai(instance.entity);
         let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone());
+        let start = Instant::now();
         match self
             .engine
             .call_fn::<Dynamic>(&mut instance.scope, &compiled.ast, "ready", (world, entity_int))
@@ -1804,12 +1859,14 @@ impl ScriptHost {
             Ok(_) => {
                 instance.has_ready_run = true;
                 instance.state.borrow_mut().is_hot_reload = false;
+                self.record_timing("ready", start);
                 Ok(())
             }
             Err(err) => {
                 instance.errored = true;
                 let message = Self::format_rhai_error(err.as_ref(), &instance.script_path, "ready");
                 self.error = Some(message.clone());
+                self.record_timing("ready", start);
                 Err(anyhow!(message))
             }
         }
@@ -1829,17 +1886,22 @@ impl ScriptHost {
         let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone());
         instance.state.borrow_mut().tick_timers(dt);
         let dt_rhai: FLOAT = dt as FLOAT;
+        let start = Instant::now();
         match self.engine.call_fn::<Dynamic>(
             &mut instance.scope,
             &compiled.ast,
             "process",
             (world, entity_int, dt_rhai),
         ) {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                self.record_timing("process", start);
+                Ok(())
+            }
             Err(err) => {
                 instance.errored = true;
                 let message = Self::format_rhai_error(err.as_ref(), &instance.script_path, "process");
                 self.error = Some(message.clone());
+                self.record_timing("process", start);
                 Err(anyhow!(message))
             }
         }
@@ -1859,17 +1921,22 @@ impl ScriptHost {
         let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone());
         instance.state.borrow_mut().tick_timers(dt);
         let dt_rhai: FLOAT = dt as FLOAT;
+        let start = Instant::now();
         match self.engine.call_fn::<Dynamic>(
             &mut instance.scope,
             &compiled.ast,
             "physics_process",
             (world, entity_int, dt_rhai),
         ) {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                self.record_timing("physics_process", start);
+                Ok(())
+            }
             Err(err) => {
                 instance.errored = true;
                 let message = Self::format_rhai_error(err.as_ref(), &instance.script_path, "physics_process");
                 self.error = Some(message.clone());
+                self.record_timing("physics_process", start);
                 Err(anyhow!(message))
             }
         }
@@ -1887,11 +1954,16 @@ impl ScriptHost {
         }
         let entity_int: ScriptHandle = entity_to_rhai(instance.entity);
         let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone());
+        let start = Instant::now();
         match self.engine.call_fn::<Dynamic>(&mut instance.scope, &compiled.ast, "exit", (world, entity_int)) {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                self.record_timing("exit", start);
+                Ok(())
+            }
             Err(err) => {
                 let message = Self::format_rhai_error(err.as_ref(), &instance.script_path, "exit");
                 self.error = Some(message.clone());
+                self.record_timing("exit", start);
                 Err(anyhow!(message))
             }
         }
@@ -1945,10 +2017,12 @@ impl ScriptHost {
 
         let world = ScriptWorld::new(self.shared.clone());
         if !self.initialized {
+            let start = Instant::now();
             match self.engine.call_fn::<()>(&mut self.scope, ast, "init", (world.clone(),)) {
                 Ok(_) => {
                     self.initialized = true;
                     self.error = None;
+                    self.record_timing("init", start);
                 }
                 Err(err) => {
                     if let EvalAltResult::ErrorFunctionNotFound(fn_sig, _) = err.as_ref() {
@@ -1970,14 +2044,17 @@ impl ScriptHost {
                     let msg =
                         Self::format_rhai_error(err.as_ref(), self.script_path.to_string_lossy().as_ref(), "init");
                     self.error = Some(msg);
+                    self.record_timing("init", start);
                     return dt_scaled;
                 }
             }
         }
 
+        let start = Instant::now();
         match self.engine.call_fn::<()>(&mut self.scope, ast, "update", (world, dt_rhai)) {
             Ok(_) => {
                 self.error = None;
+                self.record_timing("update", start);
             }
             Err(err) => {
                 if let EvalAltResult::ErrorFunctionNotFound(fn_sig, _) = err.as_ref() {
@@ -2001,6 +2078,7 @@ impl ScriptHost {
                     "update",
                 );
                 self.error = Some(msg);
+                self.record_timing("update", start);
             }
         }
         self.dispatch_script_events();
@@ -2013,6 +2091,10 @@ impl ScriptHost {
 
     pub fn drain_logs(&mut self) -> Vec<String> {
         self.shared.borrow_mut().logs.drain(..).collect()
+    }
+
+    pub fn timing_summaries(&self) -> Vec<ScriptTimingSummary> {
+        self.shared.borrow().timing_summaries()
     }
 
     pub fn eval_repl(&mut self, source: &str) -> Result<Option<String>> {
@@ -2297,6 +2379,10 @@ impl ScriptPlugin {
 
     pub fn handles_snapshot(&self) -> Vec<(ScriptHandle, Entity)> {
         self.host.handles_snapshot()
+    }
+
+    pub fn timing_summaries(&self) -> Vec<ScriptTimingSummary> {
+        self.host.timing_summaries()
     }
 
     pub fn set_rng_seed(&mut self, seed: u64) {
@@ -4162,5 +4248,22 @@ mod tests {
             logs_after.iter().all(|l| !l.contains("emitter:") && !l.contains("listener:")),
             "removed listener should not receive targeted events, got {logs_after:?}"
         );
+    }
+
+    #[test]
+    fn script_timings_record_average_and_samples() {
+        let mut state = SharedState::default();
+        state.record_timing("ready", 1.0);
+        state.record_timing("ready", 3.0);
+        state.record_timing("process", 0.5);
+        let mut summaries = state.timing_summaries();
+        summaries.sort_by(|a, b| a.name.cmp(b.name));
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].name, "process");
+        assert!((summaries[0].average_ms - 0.5).abs() < 1e-4);
+        assert_eq!(summaries[1].name, "ready");
+        assert_eq!(summaries[1].samples, 2);
+        assert!((summaries[1].average_ms - 2.0).abs() < 1e-4);
+        assert!((summaries[1].max_ms - 3.0).abs() < 1e-4);
     }
 }

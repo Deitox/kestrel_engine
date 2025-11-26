@@ -33,11 +33,11 @@ Status legend: `[x]` done, `[~]` partial/incomplete, `[ ]` not started/unknown.
 - [x] Safety: per-frame queue caps with overflow logging plus listener error isolation.
 - [x] Deliverables: event API, unsubscribe handles, and regression tests added.
 
-## Phase 5 - Tooling & Observability [ ]
-- [ ] Tracing: no script trace logging with per-callback timing or Studio surfacing.
-- [ ] Profiling: no per-callback counters or offender lists.
+## Phase 5 - Tooling & Observability [~]
+- [x] Tracing: per-callback timings recorded (init/update/ready/process/physics/exit/event) with Studio surfacing.
+- [~] Profiling: counters exist for callbacks; no offender list or studio charting beyond tabular view.
 - [~] Error UX: path:line:col formatting exists, but no call stacks or per-instance mute switch.
-- [ ] Deliverables: timing counters, trace logs, Studio wiring, and tests not implemented.
+- [~] Deliverables: timing counters surfaced; trace logs/call stacks remain.
 
 ## Phase 6 - Safety & Performance [ ]
 - [ ] Budgets: no per-callback instruction/time budgets or enforcement.

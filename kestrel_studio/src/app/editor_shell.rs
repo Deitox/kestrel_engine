@@ -15,7 +15,7 @@ use crate::plugins::{
 use crate::prefab::{PrefabFormat, PrefabStatusMessage};
 use crate::renderer::{GpuPassTiming, LightClusterMetrics, SceneLightingState};
 use crate::scene::{SceneDependencies, SceneDependencyFingerprints, SceneEntityId};
-use crate::scripts::ScriptHandle;
+use crate::scripts::{ScriptHandle, ScriptTimingSummary};
 use bevy_ecs::prelude::Entity;
 use egui::Context as EguiCtx;
 use egui_plot as eplot;
@@ -65,6 +65,7 @@ pub(crate) struct ScriptDebuggerStatus {
     pub paused: bool,
     pub last_error: Option<String>,
     pub handles: Vec<ScriptHandleBinding>,
+    pub timings: Vec<ScriptTimingSummary>,
 }
 
 #[derive(Clone, Debug, Default)]

@@ -1414,6 +1414,7 @@ impl App {
                     ScriptHandleBinding { handle, scene_id }
                 })
                 .collect();
+            let timings = plugin.timing_summaries();
             ScriptDebuggerStatus {
                 available: true,
                 script_path: Some(plugin.script_path().display().to_string()),
@@ -1421,6 +1422,7 @@ impl App {
                 paused: plugin.paused(),
                 last_error: plugin.last_error().map(|err| err.to_string()),
                 handles,
+                timings,
             }
         } else {
             ScriptDebuggerStatus::default()
@@ -3287,6 +3289,7 @@ impl ApplicationHandler for App {
                 paused: script_debugger_status.paused,
                 last_error: script_debugger_status.last_error.clone(),
                 handles: script_debugger_status.handles.clone(),
+                timings: Arc::from(script_debugger_status.timings.clone().into_boxed_slice()),
                 repl_input: script_repl_input,
                 repl_history_index: script_repl_history_index,
                 repl_history: script_repl_history,
