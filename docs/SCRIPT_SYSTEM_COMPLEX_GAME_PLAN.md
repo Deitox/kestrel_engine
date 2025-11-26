@@ -9,6 +9,11 @@ Goal: expand Rhai behaviours so we can comfortably build a complex, content-rich
 - Deterministic mode: seed RNG from engine; expose `world.rand_seed(seed)` for tests; add a toggle for deterministic frame ordering in script world command application.
 - Deliverables: import resolver; shared helper file; reload path that refreshes instances; tests covering import caching, reload, deterministic RNG.
 
+### Current determinism wiring
+- Config: `AppConfig.scripts` supports `deterministic_ordering` and optional `deterministic_seed`. Studio also honors env vars `KESTREL_SCRIPT_DETERMINISTIC` (on/off) and `KESTREL_SCRIPT_SEED=<u64>`; both force ordering and seeding.
+- Behaviour: when enabled, the script RNG is seeded and we sort the behaviour worklist plus per-frame command queue for stable execution order; scripts can still call `world.rand_seed(seed)` ad hoc.
+- Tests: unit tests cover RNG determinism, worklist ordering, command queue ordering, and reload when imported modules change.
+
 ## Phase 2 — Game-Facing APIs
 - Read APIs: expose read-only snapshots (transform, velocity, tint, scale) to scripts; return structs not ECS refs.
 - Physics queries: `world.raycast(origin, dir, max_dist) -> hit?` and `world.overlap_circle(pos, radius) -> [entities]` with filters; backed by existing physics broadphase.
