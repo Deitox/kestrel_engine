@@ -17,6 +17,7 @@ use rhai::{module_resolvers::FileModuleResolver, Array, Dynamic, Engine, EvalAlt
 
 use bevy_ecs::prelude::{Component, Entity};
 use crate::ecs::{Aabb, Tint, Transform, Velocity, WorldTransform};
+use crate::input::Input;
 
 pub type ScriptHandle = rhai::INT;
 
@@ -52,6 +53,23 @@ pub struct EntitySnapshot {
     pub velocity: Option<Vec2>,
     pub tint: Option<Vec4>,
     pub half_extents: Option<Vec2>,
+}
+
+#[derive(Clone, Default)]
+pub struct InputSnapshot {
+    pub forward: bool,
+    pub backward: bool,
+    pub left: bool,
+    pub right: bool,
+    pub ascend: bool,
+    pub descend: bool,
+    pub boost: bool,
+    pub ctrl: bool,
+    pub left_mouse: bool,
+    pub right_mouse: bool,
+    pub cursor: Option<Vec2>,
+    pub mouse_delta: Vec2,
+    pub wheel: f32,
 }
 
 #[derive(Component, Clone, Debug)]
@@ -102,6 +120,7 @@ struct SharedState {
     logs: Vec<String>,
     rng: Option<StdRng>,
     entity_snapshots: HashMap<Entity, EntitySnapshot>,
+    input_snapshot: Option<InputSnapshot>,
 }
 
 #[derive(Clone)]
@@ -227,6 +246,71 @@ impl ScriptWorld {
             }
         }
         hits
+    }
+
+    fn input_forward(&mut self) -> bool {
+        self.state.borrow().input_snapshot.as_ref().map_or(false, |s| s.forward)
+    }
+
+    fn input_backward(&mut self) -> bool {
+        self.state.borrow().input_snapshot.as_ref().map_or(false, |s| s.backward)
+    }
+
+    fn input_left(&mut self) -> bool {
+        self.state.borrow().input_snapshot.as_ref().map_or(false, |s| s.left)
+    }
+
+    fn input_right(&mut self) -> bool {
+        self.state.borrow().input_snapshot.as_ref().map_or(false, |s| s.right)
+    }
+
+    fn input_ascend(&mut self) -> bool {
+        self.state.borrow().input_snapshot.as_ref().map_or(false, |s| s.ascend)
+    }
+
+    fn input_descend(&mut self) -> bool {
+        self.state.borrow().input_snapshot.as_ref().map_or(false, |s| s.descend)
+    }
+
+    fn input_boost(&mut self) -> bool {
+        self.state.borrow().input_snapshot.as_ref().map_or(false, |s| s.boost)
+    }
+
+    fn input_ctrl(&mut self) -> bool {
+        self.state.borrow().input_snapshot.as_ref().map_or(false, |s| s.ctrl)
+    }
+
+    fn input_left_mouse(&mut self) -> bool {
+        self.state.borrow().input_snapshot.as_ref().map_or(false, |s| s.left_mouse)
+    }
+
+    fn input_right_mouse(&mut self) -> bool {
+        self.state.borrow().input_snapshot.as_ref().map_or(false, |s| s.right_mouse)
+    }
+
+    fn input_cursor(&mut self) -> Array {
+        if let Some(snap) = self.state.borrow().input_snapshot.as_ref() {
+            if let Some(cursor) = snap.cursor {
+                return Self::vec2_to_array(cursor);
+            }
+        }
+        Array::new()
+    }
+
+    fn input_mouse_delta(&mut self) -> Array {
+        if let Some(snap) = self.state.borrow().input_snapshot.as_ref() {
+            return Self::vec2_to_array(snap.mouse_delta);
+        }
+        Array::new()
+    }
+
+    fn input_wheel(&mut self) -> FLOAT {
+        self.state
+            .borrow()
+            .input_snapshot
+            .as_ref()
+            .map(|s| s.wheel as FLOAT)
+            .unwrap_or(0.0)
     }
 
     fn vec2_to_array(v: Vec2) -> Array {
@@ -715,6 +799,11 @@ impl ScriptHost {
     pub fn set_entity_snapshots(&mut self, snapshots: HashMap<Entity, EntitySnapshot>) {
         let mut shared = self.shared.borrow_mut();
         shared.entity_snapshots = snapshots;
+    }
+
+    pub fn set_input_snapshot(&mut self, snapshot: InputSnapshot) {
+        let mut shared = self.shared.borrow_mut();
+        shared.input_snapshot = Some(snapshot);
     }
 
     pub fn entity_has_errored_instance(&self, entity: Entity) -> bool {
@@ -1368,6 +1457,24 @@ impl ScriptPlugin {
         self.host.set_entity_snapshots(snapshots);
     }
 
+    fn snapshot_from_input(input: &Input) -> InputSnapshot {
+        InputSnapshot {
+            forward: input.freefly_forward(),
+            backward: input.freefly_backward(),
+            left: input.freefly_left(),
+            right: input.freefly_right(),
+            ascend: input.freefly_ascend(),
+            descend: input.freefly_descend(),
+            boost: input.freefly_boost(),
+            ctrl: input.ctrl_held(),
+            left_mouse: input.left_mouse_held(),
+            right_mouse: input.right_mouse_held(),
+            cursor: input.cursor_position().map(|(x, y)| Vec2::new(x, y)),
+            mouse_delta: Vec2::new(input.mouse_delta.0, input.mouse_delta.1),
+            wheel: input.wheel,
+        }
+    }
+
     pub fn clear_rng_seed(&mut self) {
         let mut shared = self.host.shared.borrow_mut();
         shared.rng = None;
@@ -1569,7 +1676,11 @@ impl EnginePlugin for ScriptPlugin {
         } else {
             true
         };
+        let input_snapshot = ctx.input().ok().map(Self::snapshot_from_input);
         let (assets, ecs) = ctx.assets_and_ecs_mut()?;
+        if let Some(snap) = input_snapshot {
+            self.host.set_input_snapshot(snap);
+        }
         self.populate_entity_snapshots(ecs);
         self.cleanup_orphaned_instances(ecs);
         self.host.update(dt, run_scripts, Some(assets));
@@ -1585,7 +1696,11 @@ impl EnginePlugin for ScriptPlugin {
     }
 
     fn fixed_update(&mut self, ctx: &mut PluginContext<'_>, dt: f32) -> Result<()> {
+        let input_snapshot = ctx.input().ok().map(Self::snapshot_from_input);
         let (assets, ecs) = ctx.assets_and_ecs_mut()?;
+        if let Some(snap) = input_snapshot {
+            self.host.set_input_snapshot(snap);
+        }
         self.populate_entity_snapshots(ecs);
         self.cleanup_orphaned_instances(ecs);
         if self.paused {
@@ -1653,6 +1768,19 @@ fn register_api(engine: &mut Engine) {
     engine.register_fn("entity_tint", ScriptWorld::entity_tint);
     engine.register_fn("raycast", ScriptWorld::raycast);
     engine.register_fn("overlap_circle", ScriptWorld::overlap_circle);
+    engine.register_fn("input_forward", ScriptWorld::input_forward);
+    engine.register_fn("input_backward", ScriptWorld::input_backward);
+    engine.register_fn("input_left", ScriptWorld::input_left);
+    engine.register_fn("input_right", ScriptWorld::input_right);
+    engine.register_fn("input_ascend", ScriptWorld::input_ascend);
+    engine.register_fn("input_descend", ScriptWorld::input_descend);
+    engine.register_fn("input_boost", ScriptWorld::input_boost);
+    engine.register_fn("input_ctrl", ScriptWorld::input_ctrl);
+    engine.register_fn("input_left_mouse", ScriptWorld::input_left_mouse);
+    engine.register_fn("input_right_mouse", ScriptWorld::input_right_mouse);
+    engine.register_fn("input_cursor", ScriptWorld::input_cursor);
+    engine.register_fn("input_mouse_delta", ScriptWorld::input_mouse_delta);
+    engine.register_fn("input_wheel", ScriptWorld::input_wheel);
     engine.register_fn("log", ScriptWorld::log);
     engine.register_fn("rand_seed", ScriptWorld::rand_seed);
     engine.register_fn("rand", ScriptWorld::random_range);
@@ -2062,6 +2190,35 @@ mod tests {
         assert_eq!(hits.len(), 1);
         let handle: ScriptHandle = hits[0].clone().try_cast().unwrap();
         assert_eq!(handle as u64, Entity::from_raw(3).to_bits());
+    }
+
+    #[test]
+    fn input_snapshot_reads_flags() {
+        let state = Rc::new(RefCell::new(SharedState::default()));
+        {
+            let mut shared = state.borrow_mut();
+            shared.input_snapshot = Some(InputSnapshot {
+                forward: true,
+                right: true,
+                boost: true,
+                ctrl: false,
+                left_mouse: true,
+                right_mouse: false,
+                cursor: Some(Vec2::new(10.0, 20.0)),
+                mouse_delta: Vec2::new(1.0, -2.0),
+                wheel: 0.5,
+                ..Default::default()
+            });
+        }
+        let mut world = ScriptWorld::new(state);
+        assert!(world.input_forward());
+        assert!(world.input_right());
+        assert!(world.input_boost());
+        assert!(!world.input_ctrl());
+        let cursor = world.input_cursor();
+        assert_eq!(cursor.len(), 2);
+        let wheel: FLOAT = world.input_wheel();
+        assert!((wheel - 0.5).abs() < 1e-6);
     }
 
     #[test]
