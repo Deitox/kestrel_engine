@@ -47,6 +47,8 @@ pub struct ScriptInstance {
     pub scope: Scope<'static>,
     pub has_ready_run: bool,
     pub errored: bool,
+    pub persist_state: bool,
+    pub state: Rc<RefCell<InstanceRuntimeState>>,
 }
 
 #[derive(Clone)]
@@ -80,11 +82,16 @@ pub struct InputSnapshot {
 pub struct ScriptBehaviour {
     pub script_path: String,
     pub instance_id: u64,
+    pub persist_state: bool,
 }
 
 impl ScriptBehaviour {
     pub fn new(path: impl Into<String>) -> Self {
-        Self { script_path: path.into(), instance_id: 0 }
+        Self { script_path: path.into(), instance_id: 0, persist_state: false }
+    }
+
+    pub fn with_persistence(path: impl Into<String>, persist: bool) -> Self {
+        Self { script_path: path.into(), instance_id: 0, persist_state: persist }
     }
 }
 
@@ -125,6 +132,12 @@ struct SharedState {
     rng: Option<StdRng>,
     entity_snapshots: HashMap<Entity, EntitySnapshot>,
     input_snapshot: Option<InputSnapshot>,
+}
+
+#[derive(Default)]
+pub struct InstanceRuntimeState {
+    persistent: Map,
+    is_hot_reload: bool,
 }
 
 #[derive(Clone)]
@@ -237,11 +250,16 @@ impl ModuleResolver for CachedModuleResolver {
 #[derive(Clone)]
 pub struct ScriptWorld {
     state: Rc<RefCell<SharedState>>,
+    instance_state: Option<Rc<RefCell<InstanceRuntimeState>>>,
 }
 
 impl ScriptWorld {
     fn new(state: Rc<RefCell<SharedState>>) -> Self {
-        Self { state }
+        Self { state, instance_state: None }
+    }
+
+    fn with_instance(state: Rc<RefCell<SharedState>>, instance_state: Rc<RefCell<InstanceRuntimeState>>) -> Self {
+        Self { state, instance_state: Some(instance_state) }
     }
 
     fn entity_snapshot(&mut self, entity_bits: ScriptHandle) -> Map {
@@ -422,6 +440,42 @@ impl ScriptWorld {
             .as_ref()
             .map(|s| s.wheel as FLOAT)
             .unwrap_or(0.0)
+    }
+
+    fn state_get(&mut self, key: &str) -> Dynamic {
+        self.instance_state
+            .as_ref()
+            .and_then(|s| {
+                let state = s.borrow();
+                state.persistent.get(key).cloned()
+            })
+            .unwrap_or(Dynamic::UNIT)
+    }
+
+    fn state_set(&mut self, key: &str, value: Dynamic) {
+        if let Some(state) = &self.instance_state {
+            state.borrow_mut().persistent.insert(key.into(), value);
+        }
+    }
+
+    fn state_clear(&mut self) {
+        if let Some(state) = &self.instance_state {
+            state.borrow_mut().persistent.clear();
+        }
+    }
+
+    fn state_keys(&mut self) -> Array {
+        if let Some(state) = &self.instance_state {
+            return state.borrow().persistent.keys().map(|k| Dynamic::from(k.clone())).collect();
+        }
+        Array::new()
+    }
+
+    fn is_hot_reload(&mut self) -> bool {
+        self.instance_state
+            .as_ref()
+            .map(|s| s.borrow().is_hot_reload)
+            .unwrap_or(false)
     }
 
     fn vec2(&mut self, x: FLOAT, y: FLOAT) -> Array {
@@ -1020,6 +1074,18 @@ impl ScriptHost {
         self.entity_errors.remove(&entity);
     }
 
+    fn call_exit_for_script_instances(&mut self, script_path: &str) {
+        let ids: Vec<u64> = self
+            .instances
+            .iter()
+            .filter(|(_, inst)| inst.script_path == script_path)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            let _ = self.call_instance_exit(id);
+        }
+    }
+
     fn prune_entity_errors<F>(&mut self, mut keep: F)
     where
         F: FnMut(Entity) -> bool,
@@ -1038,12 +1104,17 @@ impl ScriptHost {
         let len = source.len() as u64;
         let digest = hash_source(&source);
         if let Some(compiled) = self.scripts.get_mut(path) {
-            let same_source = compiled.len == len && compiled.digest == digest;
             let imports_clean = imports_unchanged(&compiled.import_digests);
-            if same_source && imports_clean {
+            let same_source = compiled.len == len && compiled.digest == digest;
+            let same_asset_rev = asset_rev.map(|rev| compiled.asset_revision == Some(rev)).unwrap_or(true);
+            if same_source && imports_clean && same_asset_rev {
                 compiled.last_checked = Some(now);
                 compiled.asset_revision = asset_rev.or(compiled.asset_revision);
+                self.error = None;
                 return Ok(());
+            }
+            if !same_source || !imports_clean {
+                self.call_exit_for_script_instances(path);
             }
         }
         let mut compiled = self.compile_script_from_source(path, &source, len, digest)?;
@@ -1068,10 +1139,10 @@ impl ScriptHost {
         assets: Option<&AssetManager>,
     ) -> Result<u64> {
         self.ensure_script_loaded(script_path, assets)?;
-        self.create_instance_preloaded(script_path, entity)
+        self.create_instance_preloaded(script_path, entity, false)
     }
 
-    fn create_instance_preloaded(&mut self, script_path: &str, entity: Entity) -> Result<u64> {
+    fn create_instance_preloaded(&mut self, script_path: &str, entity: Entity, persist_state: bool) -> Result<u64> {
         let compiled =
             self.scripts.get(script_path).ok_or_else(|| anyhow!("Script '{script_path}' not cached after load"))?;
         let id = self.next_instance_id;
@@ -1087,6 +1158,8 @@ impl ScriptHost {
             scope,
             has_ready_run: false,
             errored: false,
+            persist_state,
+            state: Rc::new(RefCell::new(InstanceRuntimeState::default())),
         };
         self.instances.insert(id, instance);
         Ok(id)
@@ -1169,6 +1242,10 @@ impl ScriptHost {
             return Ok(());
         };
         for instance in self.instances.values_mut().filter(|instance| instance.script_path == script_path) {
+            if !instance.persist_state {
+                instance.state.borrow_mut().persistent.clear();
+            }
+            instance.state.borrow_mut().is_hot_reload = true;
             instance.scope = Scope::new();
             instance.has_ready_run = false;
             instance.errored = false;
@@ -1193,13 +1270,14 @@ impl ScriptHost {
             return Ok(());
         }
         let entity_int: ScriptHandle = entity_to_rhai(instance.entity);
-        let world = ScriptWorld::new(self.shared.clone());
+        let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone());
         match self
             .engine
             .call_fn::<Dynamic>(&mut instance.scope, &compiled.ast, "ready", (world, entity_int))
         {
             Ok(_) => {
                 instance.has_ready_run = true;
+                instance.state.borrow_mut().is_hot_reload = false;
                 Ok(())
             }
             Err(err) => {
@@ -1222,7 +1300,7 @@ impl ScriptHost {
             return Ok(());
         }
         let entity_int: ScriptHandle = entity_to_rhai(instance.entity);
-        let world = ScriptWorld::new(self.shared.clone());
+        let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone());
         let dt_rhai: FLOAT = dt as FLOAT;
         match self.engine.call_fn::<Dynamic>(
             &mut instance.scope,
@@ -1251,7 +1329,7 @@ impl ScriptHost {
             return Ok(());
         }
         let entity_int: ScriptHandle = entity_to_rhai(instance.entity);
-        let world = ScriptWorld::new(self.shared.clone());
+        let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone());
         let dt_rhai: FLOAT = dt as FLOAT;
         match self.engine.call_fn::<Dynamic>(
             &mut instance.scope,
@@ -1280,7 +1358,7 @@ impl ScriptHost {
             return Ok(());
         }
         let entity_int: ScriptHandle = entity_to_rhai(instance.entity);
-        let world = ScriptWorld::new(self.shared.clone());
+        let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone());
         match self.engine.call_fn::<Dynamic>(&mut instance.scope, &compiled.ast, "exit", (world, entity_int)) {
             Ok(_) => Ok(()),
             Err(err) => {
@@ -1601,7 +1679,7 @@ pub struct ScriptPlugin {
     path_list: Vec<Arc<str>>,
     failed_path_scratch: HashSet<usize>,
     id_updates: Vec<(Entity, u64)>,
-    behaviour_worklist: Vec<(Entity, usize, u64)>,
+    behaviour_worklist: Vec<(Entity, usize, u64, bool)>,
 }
 
 impl ScriptPlugin {
@@ -1862,7 +1940,7 @@ impl ScriptPlugin {
             return;
         }
         self.behaviour_worklist.sort_by(
-            |(entity_a, path_idx_a, instance_a), (entity_b, path_idx_b, instance_b)| {
+            |(entity_a, path_idx_a, instance_a, _), (entity_b, path_idx_b, instance_b, _)| {
                 let path_a = self.path_list.get(*path_idx_a).map(|p| p.as_ref()).unwrap_or("");
                 let path_b = self.path_list.get(*path_idx_b).map(|p| p.as_ref()).unwrap_or("");
                 path_a
@@ -1900,7 +1978,7 @@ impl ScriptPlugin {
                 self.path_indices.insert(arc, idx);
                 idx
             };
-            self.behaviour_worklist.push((entity, idx, behaviour.instance_id));
+            self.behaviour_worklist.push((entity, idx, behaviour.instance_id, behaviour.persist_state));
         }
         for (idx, path) in self.path_list.iter().enumerate() {
             if let Err(err) = self.host.ensure_script_loaded(path.as_ref(), Some(assets)) {
@@ -1909,14 +1987,14 @@ impl ScriptPlugin {
             }
         }
         self.sort_behaviour_worklist();
-        for (entity, path_idx, mut instance_id) in self.behaviour_worklist.drain(..) {
+        for (entity, path_idx, mut instance_id, persist_state) in self.behaviour_worklist.drain(..) {
             if self.failed_path_scratch.contains(&path_idx) {
                 self.host.mark_entity_error(entity);
                 continue;
             }
             let script_path = &self.path_list[path_idx];
             if instance_id == 0 {
-                match self.host.create_instance_preloaded(script_path, entity) {
+                match self.host.create_instance_preloaded(script_path, entity, persist_state) {
                     Ok(id) => {
                         instance_id = id;
                         self.id_updates.push((entity, id));
@@ -1927,6 +2005,8 @@ impl ScriptPlugin {
                         continue;
                     }
                 }
+            } else if let Some(instance) = self.host.instances.get_mut(&instance_id) {
+                instance.persist_state = persist_state;
             }
             if let Err(err) = self.host.call_instance_ready(instance_id) {
                 eprintln!("[script] ready error for {}: {}", script_path, err);
@@ -2188,6 +2268,11 @@ fn register_api(engine: &mut Engine) {
     engine.register_fn("rand_seed", ScriptWorld::rand_seed);
     engine.register_fn("rand", ScriptWorld::random_range);
     engine.register_fn("move_toward", ScriptWorld::move_toward);
+    engine.register_fn("state_get", ScriptWorld::state_get);
+    engine.register_fn("state_set", ScriptWorld::state_set);
+    engine.register_fn("state_clear", ScriptWorld::state_clear);
+    engine.register_fn("state_keys", ScriptWorld::state_keys);
+    engine.register_fn("is_hot_reload", ScriptWorld::is_hot_reload);
     engine.register_fn("vec2", ScriptWorld::vec2);
     engine.register_fn("vec2_len", ScriptWorld::vec2_len);
     engine.register_fn("vec2_normalize", ScriptWorld::vec2_normalize);
@@ -2714,12 +2799,12 @@ mod tests {
         plugin.set_deterministic_ordering(true);
         plugin.path_list = vec![Arc::from("b.rhai"), Arc::from("a.rhai")];
         plugin.behaviour_worklist = vec![
-            (Entity::from_raw(2), 0, 10),
-            (Entity::from_raw(1), 1, 5),
-            (Entity::from_raw(3), 0, 2),
+            (Entity::from_raw(2), 0, 10, false),
+            (Entity::from_raw(1), 1, 5, false),
+            (Entity::from_raw(3), 0, 2, false),
         ];
         plugin.sort_behaviour_worklist();
-        let ordered: Vec<u64> = plugin.behaviour_worklist.iter().map(|(e, _, _)| e.to_bits()).collect();
+        let ordered: Vec<u64> = plugin.behaviour_worklist.iter().map(|(e, _, _, _)| e.to_bits()).collect();
         assert_eq!(
             ordered,
             vec![Entity::from_raw(1).to_bits(), Entity::from_raw(2).to_bits(), Entity::from_raw(3).to_bits()],
@@ -3123,6 +3208,115 @@ mod tests {
         assert!(
             reloaded_logs.iter().any(|l| l.contains("ready v2 6")),
             "expected ready to rerun new script with reset state, got {reloaded_logs:?}"
+        );
+    }
+
+    #[test]
+    fn behaviour_reload_preserves_state_when_persistent_and_sets_hot_flag() {
+        let main_script = write_script(
+            r#"
+                fn init(world) { }
+                fn update(world, dt) { }
+            "#,
+        );
+        let behaviour_script = write_script(
+            r#"
+                fn ready(world, entity) {
+                    let c = world.state_get("count");
+                    if type_of(c) == "()" { c = 0; }
+                    world.log("count:" + c.to_string());
+                    world.state_set("count", c + 1);
+                    if world.is_hot_reload() { world.log("hot"); }
+                }
+                fn process(world, entity, dt) { }
+            "#,
+        );
+        let behaviour_path = behaviour_script.path().to_string_lossy().into_owned();
+        let mut host = ScriptHost::new(main_script.path());
+        let mut world = bevy_ecs::world::World::new();
+        let entity = world.spawn_empty().id();
+
+        host.ensure_script_loaded(&behaviour_path, None).expect("initial load");
+        let instance_id = host
+            .create_instance_preloaded(&behaviour_path, entity, true)
+            .expect("create instance");
+
+        host.call_instance_ready(instance_id).expect("initial ready call");
+        let initial_logs = host.drain_logs();
+        assert!(
+            initial_logs.iter().any(|l| l.contains("count:0")) && !initial_logs.iter().any(|l| l.contains("hot")),
+            "expected initial count and no hot reload flag, got {initial_logs:?}"
+        );
+
+        let replacement = r#"
+            fn ready(world, entity) {
+                let c = world.state_get("count");
+                if type_of(c) == "()" { c = -1; }
+                world.log("count:" + c.to_string());
+                world.state_set("count", c + 1);
+                if world.is_hot_reload() { world.log("hot"); }
+            }
+            fn process(world, entity, dt) { }
+        "#;
+        fs::write(&behaviour_path, replacement).expect("rewrite behaviour script");
+
+        host.ensure_script_loaded(&behaviour_path, None).expect("reload after change");
+        host.call_instance_ready(instance_id).expect("ready should rerun after reload");
+        let reload_logs = host.drain_logs();
+        assert!(
+            reload_logs.iter().any(|l| l.contains("count:1")) && reload_logs.iter().any(|l| l.contains("hot")),
+            "expected persisted state and hot flag on reload, got {reload_logs:?}"
+        );
+    }
+
+    #[test]
+    fn behaviour_reload_invokes_exit_before_ready() {
+        let main_script = write_script(
+            r#"
+                fn init(world) { }
+                fn update(world, dt) { }
+            "#,
+        );
+        let behaviour_script = write_script(
+            r#"
+                fn ready(world, entity) {
+                    world.log("ready v1");
+                }
+                fn exit(world, entity) {
+                    world.log("exit v1");
+                }
+                fn process(world, entity, dt) { }
+            "#,
+        );
+        let behaviour_path = behaviour_script.path().to_string_lossy().into_owned();
+        let mut host = ScriptHost::new(main_script.path());
+        let mut world = bevy_ecs::world::World::new();
+        let entity = world.spawn_empty().id();
+
+        host.ensure_script_loaded(&behaviour_path, None).expect("initial load");
+        let instance_id = host
+            .create_instance_preloaded(&behaviour_path, entity, false)
+            .expect("create instance");
+        host.call_instance_ready(instance_id).expect("initial ready call");
+        host.drain_logs();
+
+        let replacement = r#"
+            fn ready(world, entity) { world.log("ready v2"); }
+            fn exit(world, entity) { world.log("exit v2"); }
+            fn process(world, entity, dt) { }
+        "#;
+        fs::write(&behaviour_path, replacement).expect("rewrite behaviour script");
+
+        host.ensure_script_loaded(&behaviour_path, None).expect("reload after change");
+        host.call_instance_ready(instance_id).expect("ready rerun");
+        let logs = host.drain_logs();
+        assert!(
+            logs.iter().position(|l| l.contains("exit v1")).is_some(),
+            "expected exit from old script on reload, got {logs:?}"
+        );
+        assert!(
+            logs.iter().position(|l| l.contains("ready v2")).is_some(),
+            "expected ready from new script after reload, got {logs:?}"
         );
     }
 }
