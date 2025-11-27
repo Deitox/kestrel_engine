@@ -49,6 +49,14 @@ fn gamekit_fixture_matches_golden() {
 }
 
 #[test]
+fn gamekit_dash_fixture_matches_golden() {
+    assert_fixture_matches(
+        "tests/fixtures/script_harness/gamekit_dash.json",
+        "tests/fixtures/script_harness/gamekit_dash.golden.json",
+    );
+}
+
+#[test]
 fn deterministic_queries_fixture_is_stable_across_runs() {
     let fixture =
         load_fixture("tests/fixtures/script_harness/deterministic_queries.json").expect("load fixture");

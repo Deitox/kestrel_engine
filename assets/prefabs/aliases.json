@@ -3,6 +3,8 @@
   "kit_player": "gamekit_player",
   "kit_enemy_light": "gamekit_enemy_light",
   "kit_enemy_heavy": "gamekit_enemy_heavy",
+  "kit_enemy_dash": "gamekit_enemy_dash",
+  "enemy.dash": "gamekit_enemy_dash",
   "enemy.light": "gamekit_enemy_light",
   "enemy.heavy": "gamekit_enemy_heavy"
 }

@@ -6,14 +6,20 @@ cfg.player.spawn_point = [-0.35, -0.2];
 cfg.player.health = 4.0;
 cfg.player.lives = 2;
 cfg.wave_gap = 0.35;
+cfg.spawn_jitter = 0.1;
 cfg.rewards.kill_score = 6.0;
 cfg.rewards.wave_clear_bonus = 8.0;
 cfg.enemy_health["gamekit_enemy_light"] = 2.0;
 cfg.enemy_health["gamekit_enemy_heavy"] = 5.0;
+cfg.enemy_health["gamekit_enemy_dash"] = 3.0;
+cfg.enemy_speed["gamekit_enemy_dash"] = 1.6;
 cfg.rewards.kill_currency = 2.0;
+cfg.difficulty.health_growth = 0.1;
+cfg.difficulty.reward_growth = 0.05;
 
 cfg.waves.push(kit::wave("intro", "gamekit_enemy_light", 2, 0.1, 0.0));
 cfg.waves.push(kit::wave("finale", "gamekit_enemy_heavy", 1, 0.0, 0.25));
+cfg.waves.push(kit::wave("dashers", "gamekit_enemy_dash", 2, 0.0, 0.1));
 cfg.waves[0].reward_score = 2.0;
 cfg.waves[0].reward_currency = 0.5;
 
@@ -22,6 +28,7 @@ cfg.upgrades.push(kit::upgrade("damage_boost", 1.0, "+0.5 damage"));
 cfg.upgrades.push(kit::upgrade("spawn_haste", 0.5, "Faster waves"));
 cfg.upgrades.push(kit::upgrade("auto_repair", 2.5, "Restore 1 health on purchase"));
 cfg.upgrades.push(kit::upgrade("tough_hull", 4.0, "Max health +1"));
+cfg.upgrades.push(kit::upgrade("shield_overload", 1.0, "Short burst of invulnerability"));
 
 let state = kit::state(cfg);
 state.flags.first_kill = false;

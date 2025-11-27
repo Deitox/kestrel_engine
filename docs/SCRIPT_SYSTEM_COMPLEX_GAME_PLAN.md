@@ -57,13 +57,17 @@ Status legend: `[x]` done, `[~]` partial/incomplete, `[ ]` not started/unknown.
 - [x] Build artifacts: AOT cache tooling added (env-configurable cache load/save plus `src/bin/script_ast_cache.rs` to precompute import digests).
 - [x] Deliverables: headless runner and golden helpers landed; cache validation persists digests for faster reload checks via the prebuild CLI.
 
-## Game Kit Layer (Player/Waves/Stats/Upgrades) [~]
+### AST cache usage
+- Prebuild caches: `cargo run --bin script_ast_cache -- <cache_dir> <scripts_root>` (defaults: `assets/scripts_cache` and `assets/scripts`).
+- Runtime load/save: set `KESTREL_SCRIPT_AST_CACHE=<cache_dir>` for the script host to read/write caches; caches are ignored if source digests or import digests change.
+
+## Game Kit Layer (Player/Waves/Stats/Upgrades) [x]
 - [x] `assets/scripts/gamekit.rhai` introduces player/wave/stat/upgrade helpers plus a sample `gamekit_sample.rhai` host.
 - [x] Prefab stubs and aliases exist for the kit player + light/heavy enemies under `assets/prefabs/`.
 - [x] Harness coverage: `gamekit_wave` fixture/golden exercises kit flow, stat sync, and upgrade purchases (income, damage, spawn cadence, auto-repair).
 - [x] Collision-driven behaviours emit kit damage events (player vs. enemies) wired into the kit handlers.
 - [x] Studio reference updated with GameKit event/stat entries; quickstart + sample scene added (`docs/gamekit_quickstart.md`, `assets/scenes/gamekit_sample_scene.json`).
-- [ ] Richer behaviours and tuning helpers still pending.
+- [x] Richer behaviours and tuning helpers: dash enemy prefab/behaviour added, spawn jitter + enemy speed/difficulty scaling exposed, new `shield_overload` upgrade, and a new harness fixture/golden (`gamekit_dash`) validates the flow.
 
 ### Recent core tightenings
 - Added Rapier-backed script queries: raycasts now return normals + collider IDs and fall back to snapshots; overlaps can return collider IDs via `overlap_circle_hits` (with filters variant) while preserving legacy array output.

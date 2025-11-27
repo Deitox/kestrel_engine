@@ -1,0 +1,41 @@
+{
+  "metadata": {
+    "viewport": "Ortho2D"
+  },
+  "dependencies": {
+    "atlases": [
+      {
+        "key": "main",
+        "path": "assets/images/atlas.json"
+      }
+    ],
+    "clips": [],
+    "skeletons": [],
+    "meshes": [],
+    "materials": [],
+    "environments": []
+  },
+  "entities": [
+    {
+      "name": "gamekit_enemy_dash",
+      "transform": {
+        "translation": {
+          "x": 0.0,
+          "y": 0.0
+        },
+        "rotation": 0.0,
+        "scale": {
+          "x": 0.9,
+          "y": 0.9
+        }
+      },
+      "script": {
+        "script_path": "assets/scripts/gamekit_enemy_dash_behaviour.rhai"
+      },
+      "sprite": {
+        "atlas": "main",
+        "region": "green"
+      }
+    }
+  ]
+}

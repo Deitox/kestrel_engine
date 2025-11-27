@@ -1,0 +1,121 @@
+{
+  "steps": 4,
+  "dt": 0.25,
+  "behaviours": [
+    "tests/fixtures/script_harness/gamekit_dash.rhai"
+  ],
+  "results": [
+    {
+      "step": 0,
+      "logs": [
+        "dash:ready",
+        "dash:upgrade shield_overload",
+        "kit:score=6.0 scrap=0.0 wave=1 next=dash_b"
+      ],
+      "commands": [
+        {
+          "kind": "set_velocity",
+          "handle": 2,
+          "velocity": [
+            1.2521981,
+            -0.62609905
+          ]
+        },
+        {
+          "kind": "set_position",
+          "handle": 1,
+          "position": [
+            0.2,
+            -0.1
+          ]
+        },
+        {
+          "kind": "set_position",
+          "handle": 2,
+          "position": [
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "kind": "despawn",
+          "handle": 2
+        },
+        {
+          "kind": "spawn_template",
+          "handle": 1,
+          "template": "gamekit_player"
+        },
+        {
+          "kind": "spawn_template",
+          "handle": 2,
+          "template": "gamekit_enemy_dash"
+        }
+      ]
+    },
+    {
+      "step": 1,
+      "logs": [
+        "kit:score=6.0 scrap=0.0 wave=1 next=dash_b"
+      ],
+      "commands": []
+    },
+    {
+      "step": 2,
+      "logs": [
+        "kit:score=15.0 scrap=1.5 wave=2 next=done",
+        "dash:done score=15.0 scrap=1.5"
+      ],
+      "commands": [
+        {
+          "kind": "set_velocity",
+          "handle": 3,
+          "velocity": [
+            1.2521981,
+            -0.62609905
+          ]
+        },
+        {
+          "kind": "set_position",
+          "handle": 3,
+          "position": [
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "kind": "despawn",
+          "handle": 3
+        },
+        {
+          "kind": "spawn_template",
+          "handle": 3,
+          "template": "gamekit_enemy_dash"
+        }
+      ]
+    },
+    {
+      "step": 3,
+      "logs": [
+        "kit:score=15.0 scrap=1.5 wave=2 next=done",
+        "dash:done score=15.0 scrap=1.5"
+      ],
+      "commands": []
+    }
+  ],
+  "final_entities": [
+    {
+      "entity": 4294967297,
+      "name": "gamekit_dash",
+      "translation": [
+        0.0,
+        0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+        1.0,
+        1.0
+      ]
+    }
+  ]
+}

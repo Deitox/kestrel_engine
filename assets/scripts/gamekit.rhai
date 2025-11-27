@@ -1,27 +1,42 @@
 // Lightweight game kit helpers for player/wave/stat/upgrades flows.
 
 fn config() {
+    let player = #{
+        template: "gamekit_player",
+        spawn_point: [0.0, 0.0],
+        health: 5.0,
+        lives: 3,
+        respawn_delay: 1.0,
+        invulnerable: 0.75
+    };
+    let enemy_health = #{
+        "default": 1.0,
+        "gamekit_enemy_light": 2.0,
+        "gamekit_enemy_heavy": 4.0,
+        "gamekit_enemy_dash": 3.0
+    };
+    let enemy_speed = #{
+        "default": 0.0,
+        "gamekit_enemy_dash": 1.6
+    };
+    let rewards = #{
+        kill_score: 10.0,
+        kill_currency: 1.0,
+        wave_clear_bonus: 5.0
+    };
+    let difficulty = #{
+        health_growth: 0.0,
+        reward_growth: 0.0
+    };
     #{
-        player: #{
-            template: "gamekit_player",
-            spawn_point: [0.0, 0.0],
-            health: 5.0,
-            lives: 3,
-            respawn_delay: 1.0,
-            invulnerable: 0.75
-        },
-        enemy_health: #{
-            "default": 1.0,
-            "gamekit_enemy_light": 2.0,
-            "gamekit_enemy_heavy": 4.0
-        },
+        player: player,
+        enemy_health: enemy_health,
+        enemy_speed: enemy_speed,
         wave_gap: 0.5,
+        spawn_jitter: 0.0,
+        difficulty: difficulty,
         waves: [],
-        rewards: #{
-            kill_score: 10.0,
-            kill_currency: 1.0,
-            wave_clear_bonus: 5.0
-        },
+        rewards: rewards,
         upgrades: []
     }
 }
@@ -125,8 +140,9 @@ fn on_enemy_defeated(world, state, label) {
     let out = state;
     out.stats.kills += 1;
     let rewards = out.config.rewards;
-    out.stats.score += rewards.kill_score;
-    out.stats.currency += rewards.kill_currency;
+    let reward_mult = 1.0 + (out.config.difficulty.reward_growth * out.stats.waves_cleared);
+    out.stats.score += rewards.kill_score * reward_mult;
+    out.stats.currency += rewards.kill_currency * reward_mult;
     out.stats.score += out.bonuses.score_per_kill;
     out.stats.currency += out.bonuses.scrap_per_kill;
     let wave_index = out.waves.index;
@@ -135,13 +151,13 @@ fn on_enemy_defeated(world, state, label) {
         out.waves.kills += 1;
         let wave = wave_list[wave_index];
         if wave.reward_score > 0.0 {
-            out.stats.score += wave.reward_score;
+            out.stats.score += wave.reward_score * reward_mult;
         }
         if wave.reward_currency > 0.0 {
-            out.stats.currency += wave.reward_currency;
+            out.stats.currency += wave.reward_currency * reward_mult;
         }
         if out.waves.kills >= wave.count {
-            out.stats.score += rewards.wave_clear_bonus;
+            out.stats.score += rewards.wave_clear_bonus * reward_mult;
             out.stats.waves_cleared += 1;
             out.waves.index = wave_index + 1;
             out.waves.spawned = 0;
@@ -315,9 +331,14 @@ fn spawn_enemy(world, state, template) {
     let out = state;
     let handle = world.spawn_template(template);
     if handle >= 0 {
-        let spawn_pos = out.config.player.spawn_point;
+        let spawn_pos = jittered_spawn(out.config, out.player.spawn_point, world);
         world.set_position(handle, spawn_pos[0], spawn_pos[1]);
-        let hp = enemy_health(out.config, template);
+        let hp = scaled_enemy_health(out.config, template, out.stats.waves_cleared);
+        let speed = enemy_speed(out.config, template);
+        if speed > 0.0 {
+            let dir = enemy_dir(spawn_pos, out.config.player.spawn_point);
+            world.set_velocity(handle, dir[0] * speed, dir[1] * speed);
+        }
         out.enemies.push(#{
             handle: handle,
             template: template,
@@ -335,6 +356,47 @@ fn enemy_health(cfg, template) {
     } else {
         hp
     }
+}
+
+fn scaled_enemy_health(cfg, template, wave_count) {
+    let base = enemy_health(cfg, template);
+    let growth = cfg.difficulty.health_growth.max(0.0);
+    base * (1.0 + growth * wave_count)
+}
+
+fn enemy_speed(cfg, template) {
+    let speed = cfg.enemy_speed[template];
+    if type_of(speed) == "()" { 0.0 } else { speed.max(0.0) }
+}
+
+fn jittered_spawn(cfg, origin, world) {
+    let base = origin;
+    if type_of(base) != "array" || base.len() < 2 {
+        return [0.0, 0.0];
+    }
+    let jitter = cfg.spawn_jitter.max(0.0);
+    if jitter <= 0.0 {
+        return [base[0], base[1]];
+    }
+    let jx = world.rand(-jitter, jitter);
+    let jy = world.rand(-jitter, jitter);
+    [base[0] + jx, base[1] + jy]
+}
+
+fn enemy_dir(spawn_pos, target_pos) {
+    let dir = [1.0, 0.0];
+    if type_of(target_pos) == "array" && target_pos.len() >= 2 {
+        let dx = target_pos[0] - spawn_pos[0];
+        let dy = target_pos[1] - spawn_pos[1];
+        let len = (dx * dx + dy * dy).sqrt();
+        if len > 0.0001 {
+            let inv = 1.0 / len;
+            let nx = dx * inv;
+            let ny = dy * inv;
+            dir = [nx, ny];
+        }
+    }
+    dir
 }
 
 fn enemy_handle(state, template) {
@@ -399,6 +461,8 @@ fn apply_upgrade_effect(world, state, name) {
     let out = state;
     if name == "auto_repair" {
         out.player.health += 1.0;
+    } else if name == "shield_overload" {
+        out.player.invuln = (out.player.invuln + 0.5).min(2.0);
     } else if name == "tough_hull" {
         out.config.player.health += 1.0;
         out.player.health = out.config.player.health;
