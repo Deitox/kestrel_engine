@@ -2556,7 +2556,7 @@ impl App {
                             egui::TextEdit::singleline(&mut script_debugger.repl_input)
                                 .desired_width(f32::INFINITY)
                                 .hint_text(
-                                    "world.spawn_sprite(\"atlas\", \"spark\", 0.0, 0.0, 1.0, 0.0, 0.0);",
+                                    "raycast/overlap example: let hit = world.raycast(0.0,0.0,1.0,0.0,50.0); if hit.has(\"collider\") { print(hit); }",
                                 ),
                         );
                         if script_debugger.focus_repl {
