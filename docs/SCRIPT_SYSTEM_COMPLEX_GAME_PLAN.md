@@ -25,7 +25,7 @@ Status legend: `[x]` done, `[~]` partial/incomplete, `[ ]` not started/unknown.
 - [~] Persistent state: `ScriptBehaviour.persist_state` + `world.state_get/set/clear/keys` preserve instance maps across reload when opted in; not serialized into scene saves/checkpoints.
 - [x] Lifecycle: `exit(world, entity)` fires on despawn and reload/script swap; `ready` reruns after reload with optional state preservation.
 - [x] Hot reload policy: reload reruns globals, resets scopes unless persistence is enabled, and exposes `world.is_hot_reload()` during the first `ready`.
-- [~] Deliverables: runtime persistence/reload tests exist; scene/checkpoint serialization for persisted state remains.
+- [x] Deliverables: runtime persistence/reload tests exist; persisted state now serializes into scenes/checkpoints and reloads with entities.
 
 ## Phase 4 - Events & Signals [x]
 - [x] Event bus: script-facing emit/listen APIs with payload support.

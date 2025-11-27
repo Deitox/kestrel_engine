@@ -15,7 +15,7 @@ use crate::scene::{
     ParticleEmitterData, ParticleTrailData, Scene, SceneDependencies, SceneEntity, SceneEntityId, ScriptData,
     SkeletonClipData, SkeletonData, SpriteAnimationData, SpriteData, Transform3DData, TransformClipData, TransformData,
 };
-use crate::scripts::ScriptBehaviour;
+use crate::scripts::{ScriptBehaviour, ScriptPersistedState};
 use anyhow::{anyhow, Result};
 use bevy_ecs::prelude::{Entity, Schedule, With, World};
 use bevy_ecs::schedule::IntoSystemConfigs;
@@ -2083,10 +2083,13 @@ impl EcsWorld {
             if path.is_empty() {
                 None
             } else {
+                let persisted_state = self.world.get::<ScriptPersistedState>(entity).map(|s| s.0.clone());
                 Some(ScriptInfo {
                     path: path.to_string(),
                     instance_id: behaviour.instance_id,
                     mute_errors: behaviour.mute_errors,
+                    persist_state: behaviour.persist_state,
+                    persisted_state,
                 })
             }
         });
@@ -2755,6 +2758,9 @@ impl EcsWorld {
             behaviour.persist_state = script.persist_state;
             behaviour.mute_errors = script.mute_errors;
             entity.insert(behaviour);
+            if let Some(state) = script.persisted_state.clone() {
+                entity.insert(ScriptPersistedState(state));
+            }
         }
         if let Some(tint) = data.tint.clone() {
             entity.insert(Tint(tint.into()));
@@ -2997,6 +3003,10 @@ impl EcsWorld {
                     script_path: beh.script_path.clone(),
                     persist_state: beh.persist_state,
                     mute_errors: beh.mute_errors,
+                    persisted_state: self
+                        .world
+                        .get::<ScriptPersistedState>(entity)
+                        .map(|state| state.0.clone()),
                 }),
             transform_clip,
             skeleton: skeleton_data,

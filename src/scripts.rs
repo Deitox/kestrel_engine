@@ -13,6 +13,7 @@ use anyhow::{anyhow, Context, Error, Result};
 use glam::{Vec2, Vec4};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
+use serde_json::{Map as JsonMap, Value as JsonValue};
 use rhai::module_resolvers::ModuleResolver;
 use rhai::{Array, Dynamic, Engine, EvalAltResult, Map, Module, Scope, Shared, AST, FLOAT};
 
@@ -169,6 +170,9 @@ pub struct ScriptTimingOffender {
     pub entity: Option<Entity>,
     pub last_ms: f32,
 }
+
+#[derive(Component, Clone, Debug)]
+pub struct ScriptPersistedState(pub JsonValue);
 
 #[derive(Clone, Copy, Default)]
 struct ScriptTiming {
@@ -1685,6 +1689,96 @@ impl ScriptHost {
         }
     }
 
+    fn dynamic_to_json(value: &Dynamic) -> Option<JsonValue> {
+        if value.is_unit() {
+            return Some(JsonValue::Null);
+        }
+        if let Some(b) = value.clone().try_cast::<bool>() {
+            return Some(JsonValue::Bool(b));
+        }
+        if let Some(int_val) = value.clone().try_cast::<rhai::INT>() {
+            return Some(JsonValue::from(int_val));
+        }
+        if let Some(float_val) = value.clone().try_cast::<FLOAT>() {
+            return serde_json::Number::from_f64(float_val as f64).map(JsonValue::Number);
+        }
+        if let Some(text) = value.clone().try_cast::<rhai::ImmutableString>() {
+            return Some(JsonValue::String(text.into_owned()));
+        }
+        if let Some(arr) = value.clone().try_cast::<Array>() {
+            let mut out = Vec::with_capacity(arr.len());
+            for v in arr {
+                if let Some(json) = Self::dynamic_to_json(&v) {
+                    out.push(json);
+                }
+            }
+            return Some(JsonValue::Array(out));
+        }
+        if let Some(map) = value.clone().try_cast::<Map>() {
+            return Some(Self::map_to_json(&map));
+        }
+        None
+    }
+
+    fn map_to_json(map: &Map) -> JsonValue {
+        let mut obj = JsonMap::new();
+        for (k, v) in map.iter() {
+            if let Some(json) = Self::dynamic_to_json(v) {
+                obj.insert(k.to_string(), json);
+            }
+        }
+        JsonValue::Object(obj)
+    }
+
+    fn json_to_dynamic(val: &JsonValue) -> Option<Dynamic> {
+        match val {
+            JsonValue::Null => Some(Dynamic::UNIT),
+            JsonValue::Bool(b) => Some(Dynamic::from_bool(*b)),
+            JsonValue::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Some(Dynamic::from_int(i as rhai::INT))
+                } else if let Some(f) = n.as_f64() {
+                    Some(Dynamic::from_float(f as FLOAT))
+                } else {
+                    None
+                }
+            }
+            JsonValue::String(s) => Some(Dynamic::from(s.clone())),
+            JsonValue::Array(arr) => {
+                let mut out = Array::with_capacity(arr.len());
+                for v in arr {
+                    if let Some(d) = Self::json_to_dynamic(v) {
+                        out.push(d);
+                    }
+                }
+                Some(Dynamic::from_array(out))
+            }
+            JsonValue::Object(obj) => {
+                let mut map = Map::new();
+                for (k, v) in obj {
+                    if let Some(d) = Self::json_to_dynamic(v) {
+                        map.insert(k.into(), d);
+                    }
+                }
+                Some(Dynamic::from_map(map))
+            }
+        }
+    }
+
+    fn json_to_map(val: &JsonValue) -> Option<Map> {
+        let mut out = Map::new();
+        if let JsonValue::Object(obj) = val {
+            for (k, v) in obj {
+                if let Some(d) = Self::json_to_dynamic(v) {
+                    out.insert(k.into(), d);
+                }
+            }
+            Some(out)
+        } else {
+            None
+        }
+    }
+
     fn instance_muted(&self, instance_id: u64) -> bool {
         self.instances.get(&instance_id).map_or(false, |instance| instance.mute_errors)
     }
@@ -2875,6 +2969,7 @@ impl ScriptPlugin {
         self.failed_path_scratch.clear();
         self.id_updates.clear();
         self.behaviour_worklist.clear();
+        self.populate_pending_persistent_from_components(ecs);
         let mut query = ecs.world.query::<(Entity, &mut ScriptBehaviour)>();
         for (entity, behaviour) in query.iter_mut(&mut ecs.world) {
             let path = behaviour.script_path.trim();
@@ -2965,6 +3060,7 @@ impl ScriptPlugin {
                 }
             }
         }
+        self.sync_persisted_state_components(ecs);
         Ok(())
     }
 
@@ -2996,6 +3092,40 @@ impl ScriptPlugin {
                 self.host.drop_listeners_for_owner(ListenerOwner::Instance(behaviour.instance_id));
                 behaviour.instance_id = 0;
                 self.host.clear_entity_error(entity);
+            }
+        }
+    }
+
+    fn populate_pending_persistent_from_components(&mut self, ecs: &mut crate::ecs::EcsWorld) {
+        let mut query = ecs.world.query::<(Entity, &ScriptPersistedState, Option<&ScriptBehaviour>)>();
+        for (entity, persisted, behaviour) in query.iter(&ecs.world) {
+            let wants_persist = behaviour.map(|b| b.persist_state).unwrap_or(false);
+            if !wants_persist {
+                continue;
+            }
+            if let Some(map) = ScriptHost::json_to_map(&persisted.0) {
+                self.pending_persistent.insert(entity, map);
+            }
+        }
+    }
+
+    fn sync_persisted_state_components(&mut self, ecs: &mut crate::ecs::EcsWorld) {
+        let mut to_update: Vec<(Entity, JsonValue)> = Vec::new();
+        for instance in self.host.instances.values() {
+            if !instance.persist_state || instance.errored {
+                continue;
+            }
+            let map = instance.state.borrow().persistent.clone();
+            let json = ScriptHost::map_to_json(&map);
+            to_update.push((instance.entity, json));
+        }
+        for (entity, json) in to_update {
+            if let Ok(mut entity_ref) = ecs.world.get_entity_mut(entity) {
+                if let Some(mut existing) = entity_ref.get_mut::<ScriptPersistedState>() {
+                    existing.0 = json.clone();
+                } else {
+                    entity_ref.insert(ScriptPersistedState(json));
+                }
             }
         }
     }

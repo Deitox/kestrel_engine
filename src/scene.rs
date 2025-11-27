@@ -1426,6 +1426,8 @@ pub struct ScriptData {
     pub persist_state: bool,
     #[serde(default)]
     pub mute_errors: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persisted_state: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

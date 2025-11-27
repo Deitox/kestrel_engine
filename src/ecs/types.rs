@@ -3401,6 +3401,8 @@ pub struct ScriptInfo {
     pub path: String,
     pub instance_id: u64,
     pub mute_errors: bool,
+    pub persist_state: bool,
+    pub persisted_state: Option<serde_json::Value>,
 }
 
 #[derive(Clone)]

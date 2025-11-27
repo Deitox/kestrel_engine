@@ -202,6 +202,7 @@ pub(super) fn show_entity_inspector(
             let mut script_path = info.script.as_ref().map(|s| s.path.clone()).unwrap_or_default();
             let instance_id = info.script.as_ref().map(|s| s.instance_id).unwrap_or(0);
             let mut mute_errors = info.script.as_ref().map(|s| s.mute_errors).unwrap_or(false);
+            let persist_state = info.script.as_ref().map(|s| s.persist_state).unwrap_or(false);
             let has_script = info.script.is_some();
             let path_trimmed = script_path.trim();
             let path_known = ctx.script_paths.iter().any(|p| p == path_trimmed);
@@ -225,14 +226,25 @@ pub(super) fn show_entity_inspector(
                 if script_path.trim().is_empty() {
                     info.script = None;
                 } else {
-                    info.script =
-                        Some(ScriptInfo { path: script_path.clone(), instance_id, mute_errors });
+                    info.script = Some(ScriptInfo {
+                        path: script_path.clone(),
+                        instance_id,
+                        mute_errors,
+                        persist_state,
+                        persisted_state: None,
+                    });
                 }
             }
             if ui.button("Apply").clicked() && !script_path.trim().is_empty() {
                 let trimmed = script_path.trim().to_string();
                 actions.inspector_actions.push(InspectorAction::SetScript { entity, path: trimmed.clone() });
-                info.script = Some(ScriptInfo { path: trimmed, instance_id: 0, mute_errors });
+                info.script = Some(ScriptInfo {
+                    path: trimmed,
+                    instance_id: 0,
+                    mute_errors,
+                    persist_state,
+                    persisted_state: None,
+                });
                 _inspector_refresh = true;
             }
                 ui.add_enabled_ui(has_script, |ui| {
@@ -271,7 +283,13 @@ pub(super) fn show_entity_inspector(
                     script_path.clear();
                 } else {
                     actions.inspector_actions.push(InspectorAction::SetScript { entity, path: trimmed.clone() });
-                    info.script = Some(ScriptInfo { path: trimmed, instance_id: 0, mute_errors });
+                    info.script = Some(ScriptInfo {
+                        path: trimmed,
+                        instance_id: 0,
+                        mute_errors,
+                        persist_state,
+                        persisted_state: None,
+                    });
                 }
                 _inspector_refresh = true;
             }

@@ -1,7 +1,7 @@
 use bevy_ecs::prelude::Entity;
 use kestrel_engine::assets::AssetManager;
 use kestrel_engine::config::WindowConfig;
-use kestrel_engine::ecs::{EcsWorld, Transform};
+use kestrel_engine::ecs::{EcsWorld, SceneEntityTag, Transform};
 use kestrel_engine::environment::EnvironmentRegistry;
 use kestrel_engine::events::GameEvent;
 use kestrel_engine::input::Input;
@@ -12,7 +12,9 @@ use kestrel_engine::plugins::{
 };
 use kestrel_engine::renderer::Renderer;
 use kestrel_engine::scripts::{ScriptBehaviour, ScriptCommand, ScriptPlugin};
+use kestrel_engine::scene::SceneEntityId;
 use kestrel_engine::time::Time;
+use serde_json::Value as JsonValue;
 use glam::Vec4;
 use pollster::block_on;
 use std::fs;
@@ -497,6 +499,79 @@ fn muted_instances_suppress_global_errors() {
         plugin.entity_has_errored_instance(entity),
         "muted instance should still be marked errored"
     );
+}
+
+#[test]
+fn persisted_state_roundtrips_through_scene_export_and_load() {
+    let main_script = write_script(
+        r#"
+            fn init(world) { }
+            fn update(world, dt) { }
+        "#,
+    );
+    let behaviour_script = write_script(
+        r#"
+            fn ready(world, entity) {
+                world.state_set("count", 7);
+                world.state_set("label", "hello");
+            }
+            fn process(world, entity, dt) { }
+        "#,
+    );
+    let behaviour_path = behaviour_script.path().to_string_lossy().into_owned();
+
+    let mut plugin = ScriptPlugin::new(main_script.path());
+    let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
+    let mut ecs = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    let mut input = Input::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+    let mut environment_registry = EnvironmentRegistry::new();
+    let time = Time::new();
+    let feature_registry = FeatureRegistryHandle::isolated();
+    let capability_tracker = CapabilityTrackerHandle::isolated();
+
+    ecs.world.spawn((
+        Transform::default(),
+        SceneEntityTag::new(SceneEntityId::new()),
+        ScriptBehaviour::with_persistence(behaviour_path.clone(), true),
+    ));
+
+    {
+        let mut ctx = PluginContext::new(
+            &mut renderer,
+            &mut ecs,
+            &mut assets,
+            &mut input,
+            &mut material_registry,
+            &mut mesh_registry,
+            &mut environment_registry,
+            &time,
+            push_event_bridge,
+            feature_registry.clone(),
+            None,
+            capability_tracker.clone(),
+        );
+        plugin.update(&mut ctx, 0.016).expect("update should run ready");
+        let _ = plugin.take_logs();
+    }
+
+    let scene = ecs.export_scene(&assets);
+    let script_data = scene.entities.first().and_then(|e| e.script.as_ref()).expect("script data present");
+    let persisted = script_data.persisted_state.as_ref().expect("persisted state serialized");
+    assert_eq!(persisted["count"], JsonValue::from(7));
+    assert_eq!(persisted["label"], JsonValue::from("hello"));
+
+    let mut loaded = EcsWorld::new();
+    loaded.load_scene(&scene, &assets).expect("scene reload");
+    let mut query = loaded.world.query::<(&ScriptBehaviour, Option<&kestrel_engine::scripts::ScriptPersistedState>)>();
+    let (behaviour, persisted_component) =
+        query.iter(&loaded.world).next().expect("loaded script entity exists");
+    assert!(behaviour.persist_state, "persist_state should round-trip");
+    let persisted = persisted_component.expect("persisted component attached");
+    assert_eq!(persisted.0["count"], JsonValue::from(7));
+    assert_eq!(persisted.0["label"], JsonValue::from("hello"));
 }
 
 #[test]
