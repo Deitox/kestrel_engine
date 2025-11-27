@@ -1,6 +1,7 @@
 use super::{
-    editor_shell::ScriptHandleBinding, App, CameraBookmark, FrameTimingSample, MeshControlMode,
-    ScriptConsoleEntry, ScriptConsoleKind, ViewportCameraMode,
+    editor_shell::{ScriptHandleBinding, ScriptOffenderStatus},
+    App, CameraBookmark, FrameTimingSample, MeshControlMode, ScriptConsoleEntry, ScriptConsoleKind,
+    ViewportCameraMode,
 };
 #[cfg(feature = "alloc_profiler")]
 use crate::alloc_profiler::AllocationDelta;
@@ -964,6 +965,7 @@ pub(super) struct ScriptDebuggerParams {
     pub last_error: Option<String>,
     pub handles: Vec<ScriptHandleBinding>,
     pub timings: Arc<[ScriptTimingSummary]>,
+    pub offenders: Arc<[ScriptOffenderStatus]>,
     pub repl_input: String,
     pub repl_history_index: Option<usize>,
     pub repl_history: Arc<[String]>,
@@ -2321,6 +2323,26 @@ impl App {
                                         ui.label(format!("{:.3}", timing.average_ms));
                                         ui.label(format!("{:.3}", timing.max_ms));
                                         ui.label(timing.samples.to_string());
+                                        ui.end_row();
+                                    }
+                                });
+                            }
+                            if !script_debugger.offenders.is_empty() {
+                                ui.separator();
+                                ui.label("Slow callbacks (ms)");
+                                egui::Grid::new("script_offenders_sidebar").striped(true).show(ui, |ui| {
+                                    ui.label("Script");
+                                    ui.label("Fn");
+                                    ui.label("Entity");
+                                    ui.label("Last");
+                                    ui.end_row();
+                                    for off in script_debugger.offenders.iter() {
+                                        ui.label(&off.script_path);
+                                        ui.label(&off.function);
+                                        let entity_label =
+                                            off.scene_id.as_ref().map(|id| id.as_str()).unwrap_or("-");
+                                        ui.label(entity_label);
+                                        ui.label(format!("{:.3}", off.last_ms));
                                         ui.end_row();
                                     }
                                 });

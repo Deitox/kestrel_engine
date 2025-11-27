@@ -66,11 +66,20 @@ pub(crate) struct ScriptDebuggerStatus {
     pub last_error: Option<String>,
     pub handles: Vec<ScriptHandleBinding>,
     pub timings: Vec<ScriptTimingSummary>,
+    pub offenders: Vec<ScriptOffenderStatus>,
 }
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ScriptHandleBinding {
     pub handle: ScriptHandle,
+    pub scene_id: Option<SceneEntityId>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ScriptOffenderStatus {
+    pub script_path: String,
+    pub function: String,
+    pub last_ms: f32,
     pub scene_id: Option<SceneEntityId>,
 }
 

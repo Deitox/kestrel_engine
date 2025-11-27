@@ -31,7 +31,7 @@ use self::animation_watch::{AnimationAssetKind, AnimationAssetWatcher};
 use self::atlas_watch::AtlasHotReload;
 use self::editor_shell::{
     EditorShell, EditorUiState, EditorUiStateParams, EmitterUiDefaults, ScriptDebuggerStatus,
-    ScriptHandleBinding,
+    ScriptHandleBinding, ScriptOffenderStatus,
 };
 use self::mesh_reload::MeshReloadWorker;
 use self::mesh_watch::MeshHotReload;
@@ -1417,6 +1417,21 @@ impl App {
                 })
                 .collect();
             let timings = plugin.timing_summaries();
+            let offenders = plugin
+                .timing_offenders()
+                .into_iter()
+                .map(|off| {
+                    let scene_id = off
+                        .entity
+                        .and_then(|entity| self.ecs.entity_info(entity).map(|info| info.scene_id));
+                    ScriptOffenderStatus {
+                        script_path: off.script_path,
+                        function: off.function,
+                        last_ms: off.last_ms,
+                        scene_id,
+                    }
+                })
+                .collect();
             ScriptDebuggerStatus {
                 available: true,
                 script_path: Some(plugin.script_path().display().to_string()),
@@ -1425,6 +1440,7 @@ impl App {
                 last_error: plugin.last_error().map(|err| err.to_string()),
                 handles,
                 timings,
+                offenders,
             }
         } else {
             ScriptDebuggerStatus::default()
@@ -3292,6 +3308,7 @@ impl ApplicationHandler for App {
                 last_error: script_debugger_status.last_error.clone(),
                 handles: script_debugger_status.handles.clone(),
                 timings: Arc::from(script_debugger_status.timings.clone().into_boxed_slice()),
+                offenders: Arc::from(script_debugger_status.offenders.clone().into_boxed_slice()),
                 repl_input: script_repl_input,
                 repl_history_index: script_repl_history_index,
                 repl_history: script_repl_history,

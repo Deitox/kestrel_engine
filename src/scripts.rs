@@ -27,6 +27,7 @@ pub type ListenerHandle = rhai::INT;
 const SCRIPT_DIGEST_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 const SCRIPT_IMPORT_ROOT: &str = "assets/scripts";
 const SCRIPT_EVENT_QUEUE_LIMIT: usize = 256;
+const SCRIPT_OFFENDER_LIMIT: usize = 8;
 
 #[derive(Clone)]
 pub struct CompiledScript {
@@ -161,6 +162,14 @@ pub struct ScriptTimingSummary {
     pub samples: u64,
 }
 
+#[derive(Clone, Debug)]
+pub struct ScriptTimingOffender {
+    pub script_path: String,
+    pub function: String,
+    pub entity: Option<Entity>,
+    pub last_ms: f32,
+}
+
 #[derive(Clone, Copy, Default)]
 struct ScriptTiming {
     last_ms: f32,
@@ -190,6 +199,7 @@ struct SharedState {
     events_dispatched: usize,
     event_overflowed: bool,
     timings: HashMap<&'static str, ScriptTiming>,
+    offenders: Vec<ScriptTimingOffender>,
 }
 
 impl Default for SharedState {
@@ -215,6 +225,7 @@ impl Default for SharedState {
             events_dispatched: 0,
             event_overflowed: false,
             timings: HashMap::new(),
+            offenders: Vec::new(),
         }
     }
 }
@@ -242,6 +253,18 @@ impl SharedState {
         }
         out.sort_by(|a, b| b.last_ms.partial_cmp(&a.last_ms).unwrap_or(std::cmp::Ordering::Equal));
         out
+    }
+
+    fn record_offender(&mut self, entry: ScriptTimingOffender) {
+        if !entry.last_ms.is_finite() {
+            return;
+        }
+        self.offenders.push(entry);
+        self.offenders
+            .sort_by(|a, b| b.last_ms.partial_cmp(&a.last_ms).unwrap_or(std::cmp::Ordering::Equal));
+        if self.offenders.len() > SCRIPT_OFFENDER_LIMIT {
+            self.offenders.truncate(SCRIPT_OFFENDER_LIMIT);
+        }
     }
 }
 
@@ -1540,6 +1563,12 @@ impl ScriptHost {
                     }
                     let elapsed_ms = start.elapsed().as_secs_f32() * 1000.0;
                     self.record_timing_elapsed("event", elapsed_ms);
+                    self.record_offender_entry(
+                        self.script_path.to_string_lossy().as_ref(),
+                        listener.handler.as_ref(),
+                        None,
+                        elapsed_ms,
+                    );
                     self.enforce_budget(elapsed_ms, script_path.as_ref(), listener.handler.as_ref(), None);
                 }
                 ListenerOwner::Instance(id) => {
@@ -1547,6 +1576,7 @@ impl ScriptHost {
                     let mut mark_stale = false;
                     let mut error_message = None;
                     let mut script_path = String::new();
+                    let mut listener_entity_opt = None;
                     {
                         let Some(instance) = self.instances.get_mut(&id) else {
                             stale_listeners.insert(listener.id);
@@ -1557,6 +1587,7 @@ impl ScriptHost {
                         } else if let Some(compiled) = self.scripts.get(&instance.script_path) {
                             script_path = instance.script_path.clone();
                             let listener_entity = instance.state.borrow().entity;
+                            listener_entity_opt = listener_entity;
                             let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone(), id);
                             let map = ScriptWorld::event_to_map(&event, listener_entity);
                             let start = Instant::now();
@@ -1588,6 +1619,12 @@ impl ScriptHost {
                         stale_listeners.insert(listener.id);
                     }
                     self.record_timing_elapsed("event", elapsed_ms);
+                    self.record_offender_entry(
+                        &script_path,
+                        listener.handler.as_ref(),
+                        listener_entity_opt,
+                        elapsed_ms,
+                    );
                     self.enforce_budget(elapsed_ms, &script_path, listener.handler.as_ref(), Some(id));
                 }
             }
@@ -1956,37 +1993,42 @@ impl ScriptHost {
     }
 
     fn call_instance_ready(&mut self, instance_id: u64) -> Result<()> {
-        let Some(instance) = self.instances.get_mut(&instance_id) else {
-            return Ok(());
-        };
-        let Some(compiled) = self.scripts.get(&instance.script_path) else {
-            return Ok(());
-        };
-        if !compiled.has_ready || instance.has_ready_run || instance.errored {
-            return Ok(());
-        }
-        let elapsed_ms;
-        let mut error_message = None;
-        let script_path = instance.script_path.clone();
-        {
-            let entity_int: ScriptHandle = entity_to_rhai(instance.entity);
-            let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone(), instance_id);
-            let start = Instant::now();
-            let result =
-                self.engine.call_fn::<Dynamic>(&mut instance.scope, &compiled.ast, "ready", (world, entity_int));
-            elapsed_ms = start.elapsed().as_secs_f32() * 1000.0;
-            match result {
-                Ok(_) => {
-                    instance.has_ready_run = true;
-                    instance.state.borrow_mut().is_hot_reload = false;
-                }
-                Err(err) => {
-                    instance.errored = true;
-                    error_message = Some(Self::format_rhai_error(err.as_ref(), &script_path, "ready"));
+        let (script_path, elapsed_ms, error_message, entity) = {
+            let Some(instance) = self.instances.get_mut(&instance_id) else {
+                return Ok(());
+            };
+            let Some(compiled) = self.scripts.get(&instance.script_path) else {
+                return Ok(());
+            };
+            if !compiled.has_ready || instance.has_ready_run || instance.errored {
+                return Ok(());
+            }
+            let elapsed_ms;
+            let mut error_message = None;
+            let script_path = instance.script_path.clone();
+            let entity = instance.entity;
+            {
+                let entity_int: ScriptHandle = entity_to_rhai(instance.entity);
+                let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone(), instance_id);
+                let start = Instant::now();
+                let result =
+                    self.engine.call_fn::<Dynamic>(&mut instance.scope, &compiled.ast, "ready", (world, entity_int));
+                elapsed_ms = start.elapsed().as_secs_f32() * 1000.0;
+                match result {
+                    Ok(_) => {
+                        instance.has_ready_run = true;
+                        instance.state.borrow_mut().is_hot_reload = false;
+                    }
+                    Err(err) => {
+                        instance.errored = true;
+                        error_message = Some(Self::format_rhai_error(err.as_ref(), &script_path, "ready"));
+                    }
                 }
             }
-        }
+            (script_path, elapsed_ms, error_message, entity)
+        };
         self.record_timing_elapsed("ready", elapsed_ms);
+        self.record_offender_entry(&script_path, "ready", Some(entity), elapsed_ms);
         self.enforce_budget(elapsed_ms, &script_path, "ready", Some(instance_id));
         if let Some(message) = error_message {
             self.set_instance_error_message(instance_id, message.clone());
@@ -1997,37 +2039,42 @@ impl ScriptHost {
     }
 
     fn call_instance_process(&mut self, instance_id: u64, dt: f32) -> Result<()> {
-        let Some(instance) = self.instances.get_mut(&instance_id) else {
-            return Ok(());
-        };
-        let Some(compiled) = self.scripts.get(&instance.script_path) else {
-            return Ok(());
-        };
-        if !compiled.has_process || instance.errored {
-            return Ok(());
-        }
-        let elapsed_ms;
-        let mut error_message = None;
-        let script_path = instance.script_path.clone();
-        {
-            let entity_int: ScriptHandle = entity_to_rhai(instance.entity);
-            let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone(), instance_id);
-            instance.state.borrow_mut().tick_timers(dt);
-            let dt_rhai: FLOAT = dt as FLOAT;
-            let start = Instant::now();
-            let result = self.engine.call_fn::<Dynamic>(
-                &mut instance.scope,
-                &compiled.ast,
-                "process",
-                (world, entity_int, dt_rhai),
-            );
-            elapsed_ms = start.elapsed().as_secs_f32() * 1000.0;
-            if let Err(err) = result {
-                instance.errored = true;
-                error_message = Some(Self::format_rhai_error(err.as_ref(), &script_path, "process"));
+        let (script_path, elapsed_ms, error_message, entity) = {
+            let Some(instance) = self.instances.get_mut(&instance_id) else {
+                return Ok(());
+            };
+            let Some(compiled) = self.scripts.get(&instance.script_path) else {
+                return Ok(());
+            };
+            if !compiled.has_process || instance.errored {
+                return Ok(());
             }
-        }
+            let elapsed_ms;
+            let mut error_message = None;
+            let script_path = instance.script_path.clone();
+            let entity = instance.entity;
+            {
+                let entity_int: ScriptHandle = entity_to_rhai(instance.entity);
+                let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone(), instance_id);
+                instance.state.borrow_mut().tick_timers(dt);
+                let dt_rhai: FLOAT = dt as FLOAT;
+                let start = Instant::now();
+                let result = self.engine.call_fn::<Dynamic>(
+                    &mut instance.scope,
+                    &compiled.ast,
+                    "process",
+                    (world, entity_int, dt_rhai),
+                );
+                elapsed_ms = start.elapsed().as_secs_f32() * 1000.0;
+                if let Err(err) = result {
+                    instance.errored = true;
+                    error_message = Some(Self::format_rhai_error(err.as_ref(), &script_path, "process"));
+                }
+            }
+            (script_path, elapsed_ms, error_message, entity)
+        };
         self.record_timing_elapsed("process", elapsed_ms);
+        self.record_offender_entry(&script_path, "process", Some(entity), elapsed_ms);
         self.enforce_budget(elapsed_ms, &script_path, "process", Some(instance_id));
         if let Some(message) = error_message {
             self.set_instance_error_message(instance_id, message.clone());
@@ -2038,38 +2085,43 @@ impl ScriptHost {
     }
 
     fn call_instance_physics_process(&mut self, instance_id: u64, dt: f32) -> Result<()> {
-        let Some(instance) = self.instances.get_mut(&instance_id) else {
-            return Ok(());
-        };
-        let Some(compiled) = self.scripts.get(&instance.script_path) else {
-            return Ok(());
-        };
-        if !compiled.has_physics_process || instance.errored {
-            return Ok(());
-        }
-        let elapsed_ms;
-        let mut error_message = None;
-        let script_path = instance.script_path.clone();
-        {
-            let entity_int: ScriptHandle = entity_to_rhai(instance.entity);
-            let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone(), instance_id);
-            instance.state.borrow_mut().tick_timers(dt);
-            let dt_rhai: FLOAT = dt as FLOAT;
-            let start = Instant::now();
-            let result = self.engine.call_fn::<Dynamic>(
-                &mut instance.scope,
-                &compiled.ast,
-                "physics_process",
-                (world, entity_int, dt_rhai),
-            );
-            elapsed_ms = start.elapsed().as_secs_f32() * 1000.0;
-            if let Err(err) = result {
-                instance.errored = true;
-                error_message =
-                    Some(Self::format_rhai_error(err.as_ref(), &script_path, "physics_process"));
+        let (script_path, elapsed_ms, error_message, entity) = {
+            let Some(instance) = self.instances.get_mut(&instance_id) else {
+                return Ok(());
+            };
+            let Some(compiled) = self.scripts.get(&instance.script_path) else {
+                return Ok(());
+            };
+            if !compiled.has_physics_process || instance.errored {
+                return Ok(());
             }
-        }
+            let elapsed_ms;
+            let mut error_message = None;
+            let script_path = instance.script_path.clone();
+            let entity = instance.entity;
+            {
+                let entity_int: ScriptHandle = entity_to_rhai(instance.entity);
+                let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone(), instance_id);
+                instance.state.borrow_mut().tick_timers(dt);
+                let dt_rhai: FLOAT = dt as FLOAT;
+                let start = Instant::now();
+                let result = self.engine.call_fn::<Dynamic>(
+                    &mut instance.scope,
+                    &compiled.ast,
+                    "physics_process",
+                    (world, entity_int, dt_rhai),
+                );
+                elapsed_ms = start.elapsed().as_secs_f32() * 1000.0;
+                if let Err(err) = result {
+                    instance.errored = true;
+                    error_message =
+                        Some(Self::format_rhai_error(err.as_ref(), &script_path, "physics_process"));
+                }
+            }
+            (script_path, elapsed_ms, error_message, entity)
+        };
         self.record_timing_elapsed("physics_process", elapsed_ms);
+        self.record_offender_entry(&script_path, "physics_process", Some(entity), elapsed_ms);
         self.enforce_budget(elapsed_ms, &script_path, "physics_process", Some(instance_id));
         if let Some(message) = error_message {
             self.set_instance_error_message(instance_id, message.clone());
@@ -2080,30 +2132,36 @@ impl ScriptHost {
     }
 
     fn call_instance_exit(&mut self, instance_id: u64) -> Result<()> {
-        let Some(instance) = self.instances.get_mut(&instance_id) else {
-            return Ok(());
-        };
-        let Some(compiled) = self.scripts.get(&instance.script_path) else {
-            return Ok(());
-        };
-        if !compiled.has_exit || instance.errored {
-            return Ok(());
-        }
-        let elapsed_ms;
-        let mut error_message = None;
-        let script_path = instance.script_path.clone();
-        {
-            let entity_int: ScriptHandle = entity_to_rhai(instance.entity);
-            let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone(), instance_id);
-            let start = Instant::now();
-            let result = self.engine.call_fn::<Dynamic>(&mut instance.scope, &compiled.ast, "exit", (world, entity_int));
-            elapsed_ms = start.elapsed().as_secs_f32() * 1000.0;
-            if let Err(err) = result {
-                instance.errored = true;
-                error_message = Some(Self::format_rhai_error(err.as_ref(), &script_path, "exit"));
+        let (script_path, elapsed_ms, error_message, entity) = {
+            let Some(instance) = self.instances.get_mut(&instance_id) else {
+                return Ok(());
+            };
+            let Some(compiled) = self.scripts.get(&instance.script_path) else {
+                return Ok(());
+            };
+            if !compiled.has_exit || instance.errored {
+                return Ok(());
             }
-        }
+            let elapsed_ms;
+            let mut error_message = None;
+            let script_path = instance.script_path.clone();
+            let entity = instance.entity;
+            {
+                let entity_int: ScriptHandle = entity_to_rhai(instance.entity);
+                let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone(), instance_id);
+                let start = Instant::now();
+                let result =
+                    self.engine.call_fn::<Dynamic>(&mut instance.scope, &compiled.ast, "exit", (world, entity_int));
+                elapsed_ms = start.elapsed().as_secs_f32() * 1000.0;
+                if let Err(err) = result {
+                    instance.errored = true;
+                    error_message = Some(Self::format_rhai_error(err.as_ref(), &script_path, "exit"));
+                }
+            }
+            (script_path, elapsed_ms, error_message, entity)
+        };
         self.record_timing_elapsed("exit", elapsed_ms);
+        self.record_offender_entry(&script_path, "exit", Some(entity), elapsed_ms);
         self.enforce_budget(elapsed_ms, &script_path, "exit", Some(instance_id));
         if let Some(message) = error_message {
             self.set_instance_error_message(instance_id, message.clone());
@@ -2119,6 +2177,7 @@ impl ScriptHost {
         shared.events_dispatched = 0;
         shared.event_overflowed = false;
         shared.commands_per_owner.clear();
+        shared.offenders.clear();
         let mut scale = shared.time_scale;
         if !scale.is_finite() {
             scale = 1.0;
@@ -2170,6 +2229,7 @@ impl ScriptHost {
                 (result, start.elapsed().as_secs_f32() * 1000.0, init_fn_exists)
             };
             self.record_timing_elapsed("init", init_elapsed);
+            self.record_offender_entry(script_path.as_ref(), "init", None, init_elapsed);
             self.enforce_budget(init_elapsed, script_path.as_ref(), "init", None);
             match init_result {
                 Ok(_) => {
@@ -2211,6 +2271,7 @@ impl ScriptHost {
             (result, start.elapsed().as_secs_f32() * 1000.0, update_fn_exists)
         };
         self.record_timing_elapsed("update", elapsed_ms);
+        self.record_offender_entry(script_path.as_ref(), "update", None, elapsed_ms);
         self.enforce_budget(elapsed_ms, script_path.as_ref(), "update", None);
         match result {
             Ok(_) => {
@@ -2251,6 +2312,26 @@ impl ScriptHost {
 
     pub fn timing_summaries(&self) -> Vec<ScriptTimingSummary> {
         self.shared.borrow().timing_summaries()
+    }
+
+    pub fn timing_offenders(&self) -> Vec<ScriptTimingOffender> {
+        self.shared.borrow().offenders.clone()
+    }
+
+    fn record_offender_entry(
+        &self,
+        script_path: &str,
+        function: &str,
+        entity: Option<Entity>,
+        last_ms: f32,
+    ) {
+        let mut shared = self.shared.borrow_mut();
+        shared.record_offender(ScriptTimingOffender {
+            script_path: script_path.to_string(),
+            function: function.to_string(),
+            entity,
+            last_ms,
+        });
     }
 
     pub fn eval_repl(&mut self, source: &str) -> Result<Option<String>> {
@@ -2508,6 +2589,10 @@ impl ScriptPlugin {
 
     pub fn take_logs(&mut self) -> Vec<String> {
         self.logs.drain(..).collect()
+    }
+
+    pub fn timing_offenders(&self) -> Vec<ScriptTimingOffender> {
+        self.host.timing_offenders()
     }
 
     pub fn time_scale(&self) -> f32 {
@@ -3696,6 +3781,39 @@ mod tests {
             ordered,
             vec![Entity::from_raw(1).to_bits(), Entity::from_raw(2).to_bits(), Entity::from_raw(3).to_bits()],
             "worklist should be sorted by path then entity id"
+        );
+    }
+
+    #[test]
+    fn timing_offenders_track_slowest_callbacks() {
+        let script = write_script(
+            r#"
+                fn init(world) { }
+                fn update(world, dt) { }
+            "#,
+        );
+        let host = ScriptHost::new(script.path());
+        host.record_offender_entry("a.rhai", "process", Some(Entity::from_raw(2)), 1.0);
+        host.record_offender_entry("b.rhai", "process", Some(Entity::from_raw(3)), 5.0);
+        host.record_offender_entry("c.rhai", "ready", None, 3.0);
+        host.record_offender_entry("d.rhai", "process", Some(Entity::from_raw(4)), 9.0);
+        for i in 0..16 {
+            host.record_offender_entry("spam.rhai", "process", None, i as f32);
+        }
+        let offenders = host.timing_offenders();
+        assert!(!offenders.is_empty(), "offenders should capture samples");
+        assert!(
+            offenders.len() <= SCRIPT_OFFENDER_LIMIT,
+            "offenders list should be truncated to the configured cap"
+        );
+        assert!(
+            offenders.first().map(|o| o.last_ms).unwrap_or_default()
+                >= offenders.last().map(|o| o.last_ms).unwrap_or_default(),
+            "offenders should be sorted by descending runtime"
+        );
+        assert!(
+            offenders.iter().any(|o| o.script_path == "d.rhai"),
+            "largest offender should be retained after truncation"
         );
     }
 

@@ -35,9 +35,9 @@ Status legend: `[x]` done, `[~]` partial/incomplete, `[ ]` not started/unknown.
 
 ## Phase 5 - Tooling & Observability [~]
 - [x] Tracing: per-callback timings recorded (init/update/ready/process/physics/exit/event) with Studio surfacing.
-- [~] Profiling: counters exist for callbacks; no offender list or studio charting beyond tabular view.
+- [~] Profiling: counters exist for callbacks; Studio now shows a slow-callback offender list, but no offender charting beyond tables.
 - [x] Error UX: path:line:col formatting now includes call stacks and supports per-instance error mute in the inspector.
-- [~] Deliverables: timing counters surfaced; call stacks/mute delivered; offender list and richer profiling still remain.
+- [~] Deliverables: timing counters surfaced; call stacks/mute delivered; offender list present; richer profiling still remains.
 
 ## Phase 6 - Safety & Performance [x]
 - [x] Budgets: configurable per-callback time budget (`scripts.callback_budget_ms`) halts callbacks, marks instances errored, and surfaces the budget error when exceeded.
