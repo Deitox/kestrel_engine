@@ -8,7 +8,8 @@
     {
       "step": 0,
       "logs": [
-        "kit:ready"
+        "kit:ready",
+        "kit:upgrade income_boost"
       ],
       "commands": [
         {
@@ -26,6 +27,10 @@
             -0.5,
             -0.2
           ]
+        },
+        {
+          "kind": "despawn",
+          "handle": 2
         },
         {
           "kind": "spawn_template",
@@ -42,8 +47,7 @@
     {
       "step": 1,
       "logs": [
-        "kit:upgrade auto_repair",
-        "kit:score=15.0 scrap=1.0 wave=1 next=finale"
+        "kit:score=15.0 scrap=2.5 wave=1 next=finale"
       ],
       "commands": [
         {
@@ -55,6 +59,10 @@
           ]
         },
         {
+          "kind": "despawn",
+          "handle": 3
+        },
+        {
           "kind": "spawn_template",
           "handle": 3,
           "template": "gamekit_enemy_light"
@@ -64,17 +72,35 @@
     {
       "step": 2,
       "logs": [
-        "kit:stats score=22.0 scrap=2.5"
+        "kit:stats score=15.0 scrap=2.5"
       ],
       "commands": []
     },
     {
       "step": 3,
       "logs": [
-        "kit:score=22.0 scrap=2.5 wave=2 next=done",
-        "kit:stats score=22.0 scrap=2.5"
+        "kit:score=22.0 scrap=4.5 wave=2 next=done",
+        "kit:stats score=22.0 scrap=4.5"
       ],
-      "commands": []
+      "commands": [
+        {
+          "kind": "set_position",
+          "handle": 4,
+          "position": [
+            -0.5,
+            -0.2
+          ]
+        },
+        {
+          "kind": "despawn",
+          "handle": 4
+        },
+        {
+          "kind": "spawn_template",
+          "handle": 4,
+          "template": "gamekit_enemy_heavy"
+        }
+      ]
     }
   ],
   "final_entities": [

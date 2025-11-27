@@ -10,6 +10,11 @@ fn config() {
             respawn_delay: 1.0,
             invulnerable: 0.75
         },
+        enemy_health: #{
+            "default": 1.0,
+            "gamekit_enemy_light": 2.0,
+            "gamekit_enemy_heavy": 4.0
+        },
         wave_gap: 0.5,
         waves: [],
         rewards: #{
@@ -67,6 +72,11 @@ fn state(cfg) {
             waves_cleared: 0,
             upgrades: []
         },
+        bonuses: #{
+            score_per_kill: 0.0,
+            scrap_per_kill: 0.0
+        },
+        enemies: [],
         timers: #{
             elapsed: 0.0,
             log: 0.0
@@ -115,6 +125,8 @@ fn on_enemy_defeated(world, state, label) {
     let rewards = out.config.rewards;
     out.stats.score += rewards.kill_score;
     out.stats.currency += rewards.kill_currency;
+    out.stats.score += out.bonuses.score_per_kill;
+    out.stats.currency += out.bonuses.scrap_per_kill;
     let wave_index = out.waves.index;
     let wave_list = out.config.waves;
     if wave_index < wave_list.len() {
@@ -188,6 +200,7 @@ fn try_purchase_upgrade(world, state, name) {
         }
     }
     if purchased {
+        out = apply_upgrade_effect(world, out, name);
         sync_stats(world, out);
     }
     #{ state: out, purchased: purchased }
@@ -260,11 +273,10 @@ fn drive_waves(world, state, dt) {
     out.waves.timer -= dt;
     let current = out.config.waves[out.waves.index];
     if out.waves.spawned < current.count && out.waves.timer <= 0.0 {
-        let handle = world.spawn_template(current.template);
-        if handle >= 0 {
+        let spawn_result = spawn_enemy(world, out, current.template);
+        out = spawn_result.state;
+        if spawn_result.handle >= 0 {
             out.waves.spawned += 1;
-            let spawn_pos = out.config.player.spawn_point;
-            world.set_position(handle, spawn_pos[0], spawn_pos[1]);
         }
         let cadence = current.cadence;
         out.waves.timer = if cadence <= 0.0 { 0.0 } else { cadence };
@@ -290,4 +302,79 @@ fn next_wave_delay(cfg, index) {
     } else {
         0.0
     }
+}
+
+fn spawn_enemy(world, state, template) {
+    let out = state;
+    let handle = world.spawn_template(template);
+    if handle >= 0 {
+        let spawn_pos = out.config.player.spawn_point;
+        world.set_position(handle, spawn_pos[0], spawn_pos[1]);
+        let hp = enemy_health(out.config, template);
+        out.enemies.push(#{
+            handle: handle,
+            template: template,
+            health: hp
+        });
+    }
+    #{ state: out, handle: handle }
+}
+
+fn enemy_health(cfg, template) {
+    let hp = cfg.enemy_health[template];
+    if type_of(hp) == "()" {
+        let fallback = cfg.enemy_health["default"];
+        if type_of(fallback) == "()" { 1.0 } else { fallback }
+    } else {
+        hp
+    }
+}
+
+fn enemy_handle(state, template) {
+    let idx = 0;
+    while idx < state.enemies.len() {
+        if state.enemies[idx].template == template && state.enemies[idx].health > 0.0 {
+            return state.enemies[idx].handle;
+        }
+        idx += 1;
+    }
+    -1
+}
+
+fn enemy_hit(world, state, handle, damage) {
+    let out = state;
+    let killed = false;
+    let template = "";
+    let idx = 0;
+    while idx < out.enemies.len() {
+        if out.enemies[idx].handle == handle {
+            let enemy = out.enemies[idx];
+            enemy.health = enemy.health - damage.max(0.0);
+            out.enemies[idx] = enemy;
+            if enemy.health <= 0.0 {
+                killed = true;
+                template = enemy.template;
+            }
+            break;
+        }
+        idx += 1;
+    }
+    if killed {
+        world.despawn(handle);
+        out = on_enemy_defeated(world, out, template);
+    }
+    #{ state: out, killed: killed }
+}
+
+fn apply_upgrade_effect(world, state, name) {
+    let out = state;
+    if name == "auto_repair" {
+        out.player.health += 1.0;
+    } else if name == "tough_hull" {
+        out.config.player.health += 1.0;
+        out.player.health = out.config.player.health;
+    } else if name == "income_boost" {
+        out.bonuses.scrap_per_kill += 0.5;
+    }
+    out
 }
