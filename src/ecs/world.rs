@@ -2083,7 +2083,11 @@ impl EcsWorld {
             if path.is_empty() {
                 None
             } else {
-                Some(ScriptInfo { path: path.to_string(), instance_id: behaviour.instance_id })
+                Some(ScriptInfo {
+                    path: path.to_string(),
+                    instance_id: behaviour.instance_id,
+                    mute_errors: behaviour.mute_errors,
+                })
             }
         });
         let mesh_transform = self.world.get::<Transform3D>(entity).map(|transform| Transform3DInfo {
@@ -2747,7 +2751,10 @@ impl EcsWorld {
             entity.insert(Spin { speed: spin });
         }
         if let Some(script) = data.script.as_ref() {
-            entity.insert(ScriptBehaviour::new(script.script_path.clone()));
+            let mut behaviour = ScriptBehaviour::new(script.script_path.clone());
+            behaviour.persist_state = script.persist_state;
+            behaviour.mute_errors = script.mute_errors;
+            entity.insert(behaviour);
         }
         if let Some(tint) = data.tint.clone() {
             entity.insert(Tint(tint.into()));
@@ -2986,7 +2993,11 @@ impl EcsWorld {
             script: self
                 .world
                 .get::<ScriptBehaviour>(entity)
-                .map(|beh| ScriptData { script_path: beh.script_path.clone() }),
+                .map(|beh| ScriptData {
+                    script_path: beh.script_path.clone(),
+                    persist_state: beh.persist_state,
+                    mute_errors: beh.mute_errors,
+                }),
             transform_clip,
             skeleton: skeleton_data,
             sprite: self

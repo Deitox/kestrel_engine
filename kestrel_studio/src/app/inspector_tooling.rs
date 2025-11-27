@@ -114,8 +114,26 @@ impl App {
                         self.set_inspector_status(Some("Script path cannot be empty.".to_string()));
                     } else {
                         let mut entity_ref = self.ecs.world.entity_mut(entity);
-                        entity_ref.insert(crate::scripts::ScriptBehaviour::new(trimmed.to_string()));
+                        if let Some(mut behaviour) = entity_ref.get_mut::<crate::scripts::ScriptBehaviour>() {
+                            behaviour.script_path = trimmed.to_string();
+                            behaviour.instance_id = 0;
+                        } else {
+                            entity_ref.insert(crate::scripts::ScriptBehaviour::new(trimmed.to_string()));
+                        }
                         self.set_inspector_status(Some(format!("Script set to {trimmed}.")));
+                    }
+                }
+                editor_ui::InspectorAction::SetScriptMute { entity, muted } => {
+                    if let Ok(mut entity_ref) = self.ecs.world.get_entity_mut(entity) {
+                        if let Some(mut behaviour) = entity_ref.get_mut::<crate::scripts::ScriptBehaviour>() {
+                            behaviour.mute_errors = muted;
+                            let status = if muted {
+                                "Script errors muted for this entity."
+                            } else {
+                                "Script errors unmuted for this entity."
+                            };
+                            self.set_inspector_status(Some(status.to_string()));
+                        }
                     }
                 }
                 editor_ui::InspectorAction::RemoveScript { entity } => {

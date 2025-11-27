@@ -38,6 +38,7 @@ fn script_behaviour_roundtrips_and_resets_instance_id() {
             script_path: "assets/scripts/spinner.rhai".to_string(),
             instance_id: 42,
             persist_state: false,
+            mute_errors: false,
         },
     ));
     let assets = AssetManager::new();
@@ -383,6 +384,119 @@ fn compile_errors_flag_entity_and_clear_after_fix() {
         "entity error marker should clear after script is fixed"
     );
     assert!(plugin.last_error().is_none(), "last_error should clear after successful reload");
+}
+
+#[test]
+fn runtime_errors_include_call_stacks() {
+    let main_script = write_script(
+        r#"
+            fn init(world) { }
+            fn update(world, dt) { }
+        "#,
+    );
+    let behaviour_script = write_script(
+        r#"
+            fn inner(world, entity) { let x = 1 / 0; }
+            fn outer(world, entity) { inner(world, entity); }
+            fn ready(world, entity) { }
+            fn process(world, entity, dt) { outer(world, entity); }
+        "#,
+    );
+    let behaviour_path = behaviour_script.path().to_string_lossy().into_owned();
+
+    let mut plugin = ScriptPlugin::new(main_script.path());
+    let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
+    let mut ecs = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    let mut input = Input::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+    let mut environment_registry = EnvironmentRegistry::new();
+    let time = Time::new();
+    let feature_registry = FeatureRegistryHandle::isolated();
+    let capability_tracker = CapabilityTrackerHandle::isolated();
+
+    ecs.world.spawn((Transform::default(), ScriptBehaviour::new(behaviour_path.clone())));
+
+    let mut ctx = PluginContext::new(
+        &mut renderer,
+        &mut ecs,
+        &mut assets,
+        &mut input,
+        &mut material_registry,
+        &mut mesh_registry,
+        &mut environment_registry,
+        &time,
+        push_event_bridge,
+        feature_registry,
+        None,
+        capability_tracker,
+    );
+    plugin.update(&mut ctx, 0.016).expect("update should surface runtime error");
+    let _ = plugin.take_logs();
+    let err = plugin.last_error().expect("error should be recorded with call stack");
+    assert!(err.contains("Call stack:"), "call stack missing from error: {err}");
+    assert!(err.contains("inner"), "expected inner() in call stack: {err}");
+    assert!(err.contains("outer"), "expected outer() in call stack: {err}");
+}
+
+#[test]
+fn muted_instances_suppress_global_errors() {
+    let main_script = write_script(
+        r#"
+            fn init(world) { }
+            fn update(world, dt) { }
+        "#,
+    );
+    let behaviour_script = write_script(
+        r#"
+            fn ready(world, entity) { }
+            fn process(world, entity, dt) { let crash = 1 / 0; }
+        "#,
+    );
+    let behaviour_path = behaviour_script.path().to_string_lossy().into_owned();
+
+    let mut plugin = ScriptPlugin::new(main_script.path());
+    let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
+    let mut ecs = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    let mut input = Input::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+    let mut environment_registry = EnvironmentRegistry::new();
+    let time = Time::new();
+    let feature_registry = FeatureRegistryHandle::isolated();
+    let capability_tracker = CapabilityTrackerHandle::isolated();
+
+    let mut behaviour = ScriptBehaviour::new(behaviour_path.clone());
+    behaviour.mute_errors = true;
+    let entity = ecs.world.spawn((Transform::default(), behaviour)).id();
+
+    let mut ctx = PluginContext::new(
+        &mut renderer,
+        &mut ecs,
+        &mut assets,
+        &mut input,
+        &mut material_registry,
+        &mut mesh_registry,
+        &mut environment_registry,
+        &time,
+        push_event_bridge,
+        feature_registry,
+        None,
+        capability_tracker,
+    );
+    plugin.update(&mut ctx, 0.016).expect("update should tolerate muted errors");
+    let _ = plugin.take_logs();
+    assert!(
+        plugin.last_error().is_none(),
+        "muted instances should not surface global errors, got {:?}",
+        plugin.last_error()
+    );
+    assert!(
+        plugin.entity_has_errored_instance(entity),
+        "muted instance should still be marked errored"
+    );
 }
 
 #[test]

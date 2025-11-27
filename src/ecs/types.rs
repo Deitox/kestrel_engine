@@ -3400,6 +3400,7 @@ pub struct ParticleEmitterInfo {
 pub struct ScriptInfo {
     pub path: String,
     pub instance_id: u64,
+    pub mute_errors: bool,
 }
 
 #[derive(Clone)]

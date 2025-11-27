@@ -50,6 +50,7 @@ pub struct ScriptInstance {
     pub has_ready_run: bool,
     pub errored: bool,
     pub persist_state: bool,
+    pub mute_errors: bool,
     pub state: Rc<RefCell<InstanceRuntimeState>>,
 }
 
@@ -85,15 +86,16 @@ pub struct ScriptBehaviour {
     pub script_path: String,
     pub instance_id: u64,
     pub persist_state: bool,
+    pub mute_errors: bool,
 }
 
 impl ScriptBehaviour {
     pub fn new(path: impl Into<String>) -> Self {
-        Self { script_path: path.into(), instance_id: 0, persist_state: false }
+        Self { script_path: path.into(), instance_id: 0, persist_state: false, mute_errors: false }
     }
 
     pub fn with_persistence(path: impl Into<String>, persist: bool) -> Self {
-        Self { script_path: path.into(), instance_id: 0, persist_state: persist }
+        Self { script_path: path.into(), instance_id: 0, persist_state: persist, mute_errors: false }
     }
 }
 
@@ -1582,7 +1584,7 @@ impl ScriptHost {
                         continue;
                     }
                     if let Some(message) = error_message {
-                        self.error = Some(message);
+                        self.set_instance_error_message(id, message);
                         stale_listeners.insert(listener.id);
                     }
                     self.record_timing_elapsed("event", elapsed_ms);
@@ -1598,13 +1600,62 @@ impl ScriptHost {
     }
 
     fn format_rhai_error(err: &EvalAltResult, script_path: &str, fn_name: &str) -> String {
-        let pos = err.position();
-        let location = match (pos.line(), pos.position()) {
-            (Some(line), Some(col)) => format!("{script_path}:{line}:{col}"),
-            (Some(line), None) => format!("{script_path}:{line}"),
-            _ => script_path.to_string(),
-        };
-        format!("{location} in {fn_name}: {err}")
+        let location = Self::format_location(script_path, err.position());
+        let mut message = format!("{location} in {fn_name}: {err}");
+        let mut frames = Vec::new();
+        Self::collect_rhai_call_stack(err, &mut frames);
+        if !frames.is_empty() {
+            message.push_str("\nCall stack:");
+            for frame in frames {
+                message.push_str("\n - ");
+                message.push_str(&frame);
+            }
+        }
+        message
+    }
+
+    fn format_location(source: &str, pos: rhai::Position) -> String {
+        let base = if source.is_empty() { "<unknown>".to_string() } else { source.to_string() };
+        match (pos.line(), pos.position()) {
+            (Some(line), Some(col)) => format!("{base}:{line}:{col}"),
+            (Some(line), None) => format!("{base}:{line}"),
+            _ => base,
+        }
+    }
+
+    fn collect_rhai_call_stack(err: &EvalAltResult, frames: &mut Vec<String>) {
+        match err {
+            EvalAltResult::ErrorInFunctionCall(fn_name, src, inner, pos) => {
+                let label = if src.is_empty() {
+                    fn_name.clone()
+                } else {
+                    format!("{fn_name} @ {}", Self::format_location(src, *pos))
+                };
+                frames.push(label);
+                Self::collect_rhai_call_stack(inner.as_ref(), frames);
+            }
+            EvalAltResult::ErrorInModule(module, inner, pos) => {
+                let label = if module.is_empty() {
+                    "module".to_string()
+                } else {
+                    format!("module {module}")
+                };
+                let loc = Self::format_location(module, *pos);
+                frames.push(format!("{label} @ {loc}"));
+                Self::collect_rhai_call_stack(inner.as_ref(), frames);
+            }
+            _ => {}
+        }
+    }
+
+    fn instance_muted(&self, instance_id: u64) -> bool {
+        self.instances.get(&instance_id).map_or(false, |instance| instance.mute_errors)
+    }
+
+    fn set_instance_error_message(&mut self, instance_id: u64, message: String) {
+        if !self.instance_muted(instance_id) {
+            self.error = Some(message);
+        }
     }
 
     fn enforce_budget(&mut self, duration_ms: f32, script_path: &str, fn_name: &str, instance_id: Option<u64>) {
@@ -1619,8 +1670,10 @@ impl ScriptHost {
                 message.push_str(&format!(" [instance {id}]"));
                 instance.errored = true;
             }
+            self.set_instance_error_message(id, message);
+        } else {
+            self.set_error_message(message);
         }
-        self.set_error_message(message);
     }
 
     pub fn new(path: impl AsRef<Path>) -> Self {
@@ -1792,6 +1845,7 @@ impl ScriptHost {
             has_ready_run: false,
             errored: false,
             persist_state,
+            mute_errors: false,
             state,
         };
         self.instances.insert(id, instance);
@@ -1935,7 +1989,7 @@ impl ScriptHost {
         self.record_timing_elapsed("ready", elapsed_ms);
         self.enforce_budget(elapsed_ms, &script_path, "ready", Some(instance_id));
         if let Some(message) = error_message {
-            self.error = Some(message.clone());
+            self.set_instance_error_message(instance_id, message.clone());
             Err(anyhow!(message))
         } else {
             Ok(())
@@ -1976,7 +2030,7 @@ impl ScriptHost {
         self.record_timing_elapsed("process", elapsed_ms);
         self.enforce_budget(elapsed_ms, &script_path, "process", Some(instance_id));
         if let Some(message) = error_message {
-            self.error = Some(message.clone());
+            self.set_instance_error_message(instance_id, message.clone());
             Err(anyhow!(message))
         } else {
             Ok(())
@@ -2018,7 +2072,7 @@ impl ScriptHost {
         self.record_timing_elapsed("physics_process", elapsed_ms);
         self.enforce_budget(elapsed_ms, &script_path, "physics_process", Some(instance_id));
         if let Some(message) = error_message {
-            self.error = Some(message.clone());
+            self.set_instance_error_message(instance_id, message.clone());
             Err(anyhow!(message))
         } else {
             Ok(())
@@ -2052,7 +2106,7 @@ impl ScriptHost {
         self.record_timing_elapsed("exit", elapsed_ms);
         self.enforce_budget(elapsed_ms, &script_path, "exit", Some(instance_id));
         if let Some(message) = error_message {
-            self.error = Some(message.clone());
+            self.set_instance_error_message(instance_id, message.clone());
             Err(anyhow!(message))
         } else {
             Ok(())
@@ -2426,7 +2480,7 @@ pub struct ScriptPlugin {
     path_list: Vec<Arc<str>>,
     failed_path_scratch: HashSet<usize>,
     id_updates: Vec<(Entity, u64)>,
-    behaviour_worklist: Vec<(Entity, usize, u64, bool)>,
+    behaviour_worklist: Vec<(Entity, usize, u64, bool, bool)>,
     pending_persistent: HashMap<Entity, Map>,
 }
 
@@ -2713,7 +2767,7 @@ impl ScriptPlugin {
             return;
         }
         self.behaviour_worklist.sort_by(
-            |(entity_a, path_idx_a, instance_a, _), (entity_b, path_idx_b, instance_b, _)| {
+            |(entity_a, path_idx_a, instance_a, _, _), (entity_b, path_idx_b, instance_b, _, _)| {
                 let path_a = self.path_list.get(*path_idx_a).map(|p| p.as_ref()).unwrap_or("");
                 let path_b = self.path_list.get(*path_idx_b).map(|p| p.as_ref()).unwrap_or("");
                 path_a
@@ -2751,7 +2805,7 @@ impl ScriptPlugin {
                 self.path_indices.insert(arc, idx);
                 idx
             };
-            self.behaviour_worklist.push((entity, idx, behaviour.instance_id, behaviour.persist_state));
+            self.behaviour_worklist.push((entity, idx, behaviour.instance_id, behaviour.persist_state, behaviour.mute_errors));
         }
         for (idx, path) in self.path_list.iter().enumerate() {
             if let Err(err) = self.host.ensure_script_loaded(path.as_ref(), Some(assets)) {
@@ -2760,7 +2814,7 @@ impl ScriptPlugin {
             }
         }
         self.sort_behaviour_worklist();
-        for (entity, path_idx, mut instance_id, persist_state) in self.behaviour_worklist.drain(..) {
+        for (entity, path_idx, mut instance_id, persist_state, mute_errors) in self.behaviour_worklist.drain(..) {
             if self.failed_path_scratch.contains(&path_idx) {
                 self.host.mark_entity_error(entity);
                 continue;
@@ -2772,11 +2826,14 @@ impl ScriptPlugin {
                         instance_id = id;
                         self.id_updates.push((entity, id));
                         if let Some(persistent) = self.pending_persistent.remove(&entity) {
-                            if let Some(new_instance) = self.host.instances.get(&id) {
+                            if let Some(new_instance) = self.host.instances.get_mut(&id) {
+                                new_instance.mute_errors = mute_errors;
                                 let mut state = new_instance.state.borrow_mut();
                                 state.persistent = persistent;
                                 state.is_hot_reload = true;
                             }
+                        } else if let Some(new_instance) = self.host.instances.get_mut(&id) {
+                            new_instance.mute_errors = mute_errors;
                         }
                     }
                     Err(err) => {
@@ -2787,6 +2844,7 @@ impl ScriptPlugin {
                 }
             } else if let Some(instance) = self.host.instances.get_mut(&instance_id) {
                 instance.persist_state = persist_state;
+                instance.mute_errors = mute_errors;
             }
             if let Err(err) = self.host.call_instance_ready(instance_id) {
                 eprintln!("[script] ready error for {}: {}", script_path, err);
@@ -3628,12 +3686,12 @@ mod tests {
         plugin.set_deterministic_ordering(true);
         plugin.path_list = vec![Arc::from("b.rhai"), Arc::from("a.rhai")];
         plugin.behaviour_worklist = vec![
-            (Entity::from_raw(2), 0, 10, false),
-            (Entity::from_raw(1), 1, 5, false),
-            (Entity::from_raw(3), 0, 2, false),
+            (Entity::from_raw(2), 0, 10, false, false),
+            (Entity::from_raw(1), 1, 5, false, false),
+            (Entity::from_raw(3), 0, 2, false, false),
         ];
         plugin.sort_behaviour_worklist();
-        let ordered: Vec<u64> = plugin.behaviour_worklist.iter().map(|(e, _, _, _)| e.to_bits()).collect();
+        let ordered: Vec<u64> = plugin.behaviour_worklist.iter().map(|(e, _, _, _, _)| e.to_bits()).collect();
         assert_eq!(
             ordered,
             vec![Entity::from_raw(1).to_bits(), Entity::from_raw(2).to_bits(), Entity::from_raw(3).to_bits()],

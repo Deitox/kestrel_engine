@@ -216,6 +216,10 @@ pub(super) enum InspectorAction {
         entity: Entity,
         path: String,
     },
+    SetScriptMute {
+        entity: Entity,
+        muted: bool,
+    },
     RemoveScript {
         entity: Entity,
     },

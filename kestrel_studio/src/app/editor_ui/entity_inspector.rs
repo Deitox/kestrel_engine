@@ -201,6 +201,7 @@ pub(super) fn show_entity_inspector(
         ui.collapsing("Script", |ui| {
             let mut script_path = info.script.as_ref().map(|s| s.path.clone()).unwrap_or_default();
             let instance_id = info.script.as_ref().map(|s| s.instance_id).unwrap_or(0);
+            let mut mute_errors = info.script.as_ref().map(|s| s.mute_errors).unwrap_or(false);
             let has_script = info.script.is_some();
             let path_trimmed = script_path.trim();
             let path_known = ctx.script_paths.iter().any(|p| p == path_trimmed);
@@ -221,18 +222,19 @@ pub(super) fn show_entity_inspector(
                 let edit_response = ui
                     .add(egui::TextEdit::singleline(&mut script_path).hint_text("assets/scripts/example.rhai"));
                 if edit_response.changed() {
-                    if script_path.trim().is_empty() {
-                        info.script = None;
-                    } else {
-                        info.script = Some(ScriptInfo { path: script_path.clone(), instance_id });
-                    }
+                if script_path.trim().is_empty() {
+                    info.script = None;
+                } else {
+                    info.script =
+                        Some(ScriptInfo { path: script_path.clone(), instance_id, mute_errors });
                 }
-                if ui.button("Apply").clicked() && !script_path.trim().is_empty() {
-                    let trimmed = script_path.trim().to_string();
-                    actions.inspector_actions.push(InspectorAction::SetScript { entity, path: trimmed.clone() });
-                    info.script = Some(ScriptInfo { path: trimmed, instance_id: 0 });
-                    _inspector_refresh = true;
-                }
+            }
+            if ui.button("Apply").clicked() && !script_path.trim().is_empty() {
+                let trimmed = script_path.trim().to_string();
+                actions.inspector_actions.push(InspectorAction::SetScript { entity, path: trimmed.clone() });
+                info.script = Some(ScriptInfo { path: trimmed, instance_id: 0, mute_errors });
+                _inspector_refresh = true;
+            }
                 ui.add_enabled_ui(has_script, |ui| {
                     if ui.button("Remove").clicked() {
                         actions.inspector_actions.push(InspectorAction::RemoveScript { entity });
@@ -269,7 +271,7 @@ pub(super) fn show_entity_inspector(
                     script_path.clear();
                 } else {
                     actions.inspector_actions.push(InspectorAction::SetScript { entity, path: trimmed.clone() });
-                    info.script = Some(ScriptInfo { path: trimmed, instance_id: 0 });
+                    info.script = Some(ScriptInfo { path: trimmed, instance_id: 0, mute_errors });
                 }
                 _inspector_refresh = true;
             }
@@ -285,6 +287,19 @@ pub(super) fn show_entity_inspector(
                     ui.small(format!("Instance id (runtime): {instance_id}"));
                 } else {
                     ui.small("Instance id will be assigned at runtime.");
+                }
+                let mut muted = mute_errors;
+                if ui
+                    .checkbox(&mut muted, "Mute errors")
+                    .on_hover_text("Suppress console popups for this behaviour's errors.")
+                    .changed()
+                {
+                    mute_errors = muted;
+                    actions.inspector_actions.push(InspectorAction::SetScriptMute { entity, muted: mute_errors });
+                    if let Some(script) = info.script.as_mut() {
+                        script.mute_errors = mute_errors;
+                    }
+                    _inspector_refresh = true;
                 }
                 ui.horizontal(|ui| {
                     if ui

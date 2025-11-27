@@ -60,17 +60,19 @@ The plan below extends this instead of throwing it away.
   pub struct ScriptBehaviour {
       pub script_path: String, // e.g. "scripts/enemy.rhai"
       pub instance_id: u64,    // runtime-only; 0 = not bound
+      pub persist_state: bool, // opt-in runtime persistence
+      pub mute_errors: bool,   // suppress surfacing errors for this instance
   }
   ```
 - Register the component with ECS so it can be attached in code and scenes.
 - Scene/prefab serialization:
-  - Serialize `script_path`.
+  - Serialize `script_path` plus runtime flags (`persist_state`, `mute_errors`).
   - Do not serialize `instance_id` (or reset it to 0 on load).
 - Helpers:
   ```rust
   impl ScriptBehaviour {
       pub fn new(path: impl Into<String>) -> Self {
-          Self { script_path: path.into(), instance_id: 0 }
+          Self { script_path: path.into(), instance_id: 0, persist_state: false, mute_errors: false }
       }
   }
   ```

@@ -49,6 +49,8 @@ pub struct FixtureBehaviour {
     pub rotation: Option<f32>,
     #[serde(default)]
     pub velocity: Option<[f32; 2]>,
+    #[serde(default)]
+    pub mute_errors: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -137,10 +139,10 @@ pub fn run_fixture(fixture: &HarnessFixture) -> Result<HarnessOutput> {
         if let Some(rot) = behaviour.rotation {
             transform.rotation = rot;
         }
-        let mut entity_builder = ecs.world.spawn((transform, ScriptBehaviour::with_persistence(
-            behaviour.path.clone(),
-            behaviour.persist_state,
-        )));
+        let mut script_behaviour =
+            ScriptBehaviour::with_persistence(behaviour.path.clone(), behaviour.persist_state);
+        script_behaviour.mute_errors = behaviour.mute_errors;
+        let mut entity_builder = ecs.world.spawn((transform, script_behaviour));
         if let Some([vx, vy]) = behaviour.velocity {
             entity_builder.insert(Velocity(Vec2::new(vx, vy)));
         }

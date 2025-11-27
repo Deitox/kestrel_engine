@@ -1422,6 +1422,10 @@ pub struct Transform3DData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScriptData {
     pub script_path: String,
+    #[serde(default)]
+    pub persist_state: bool,
+    #[serde(default)]
+    pub mute_errors: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
