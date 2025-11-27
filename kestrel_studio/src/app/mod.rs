@@ -1431,7 +1431,12 @@ impl App {
                 state
                     .script_timing_history
                     .iter()
-                    .map(|(name, samples)| ScriptTimingHistory { name: name.clone(), samples: samples.clone() })
+                    .map(|(name, samples)| ScriptTimingHistory {
+                        name: name.clone(),
+                        samples: samples.clone(),
+                        threshold_ms: state.script_timing_threshold_ms,
+                        pinned: state.script_timing_pins.contains(name),
+                    })
                     .collect::<Vec<_>>()
             });
             let offenders = plugin
@@ -3328,6 +3333,7 @@ impl ApplicationHandler for App {
                 timings: Arc::from(script_debugger_status.timings.clone().into_boxed_slice()),
                 offenders: Arc::from(script_debugger_status.offenders.clone().into_boxed_slice()),
                 timing_history: Arc::from(script_debugger_status.timing_history.clone().into_boxed_slice()),
+                timing_threshold_ms: self.editor_ui_state().script_timing_threshold_ms,
                 repl_input: script_repl_input,
                 repl_history_index: script_repl_history_index,
                 repl_history: script_repl_history,
@@ -3672,6 +3678,18 @@ impl ApplicationHandler for App {
             if let Some(plugin) = self.script_plugin_mut() {
                 plugin.step_once();
             }
+        }
+        if let Some(threshold) = script_debugger.set_timing_threshold_ms {
+            self.with_editor_ui_state_mut(|state| state.script_timing_threshold_ms = threshold);
+        }
+        if let Some(pin) = script_debugger.toggle_pin {
+            self.with_editor_ui_state_mut(|state| {
+                if state.script_timing_pins.contains(&pin) {
+                    state.script_timing_pins.remove(&pin);
+                } else {
+                    state.script_timing_pins.insert(pin);
+                }
+            });
         }
         if script_debugger.reload {
             let assets_ptr = &self.assets as *const AssetManager;

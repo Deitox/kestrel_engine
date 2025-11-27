@@ -35,7 +35,7 @@ Status legend: `[x]` done, `[~]` partial/incomplete, `[ ]` not started/unknown.
 
 ## Phase 5 - Tooling & Observability [x]
 - [x] Tracing: per-callback timings recorded (init/update/ready/process/physics/exit/event) with Studio surfacing.
-- [x] Profiling: counters exist for callbacks; Studio now shows a slow-callback offender list and per-callback history charts.
+- [x] Profiling: counters exist for callbacks; Studio now shows a slow-callback offender list, per-callback history charts, and threshold/pin controls.
 - [x] Error UX: path:line:col formatting now includes call stacks and supports per-instance error mute in the inspector.
 - [x] Deliverables: timing counters surfaced; call stacks/mute delivered; offender list and basic charting present.
 

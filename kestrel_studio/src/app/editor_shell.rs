@@ -88,6 +88,8 @@ pub(crate) struct ScriptOffenderStatus {
 pub(crate) struct ScriptTimingHistory {
     pub name: String,
     pub samples: Vec<f32>,
+    pub threshold_ms: Option<f32>,
+    pub pinned: bool,
 }
 
 pub(crate) struct EditorUiState {
@@ -185,6 +187,8 @@ pub(crate) struct EditorUiState {
     pub script_console_snapshot: Option<Arc<[ScriptConsoleEntry]>>,
     pub last_reported_script_error: Option<String>,
     pub script_debugger_status: ScriptDebuggerStatus,
+    pub script_timing_threshold_ms: Option<f32>,
+    pub script_timing_pins: HashSet<String>,
     pub animation_keyframe_panel: AnimationKeyframePanel,
     pub clip_dirty: HashSet<String>,
     pub clip_edit_history: Vec<ClipEditRecord>,
@@ -325,6 +329,8 @@ impl EditorUiState {
             script_console_snapshot: None,
             last_reported_script_error: None,
             script_debugger_status: ScriptDebuggerStatus::default(),
+            script_timing_threshold_ms: None,
+            script_timing_pins: HashSet::new(),
             animation_keyframe_panel: AnimationKeyframePanel::default(),
             clip_dirty: HashSet::new(),
             clip_edit_history: Vec::new(),

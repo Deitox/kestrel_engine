@@ -971,6 +971,7 @@ pub(super) struct ScriptDebuggerParams {
     pub timings: Arc<[ScriptTimingSummary]>,
     pub offenders: Arc<[ScriptOffenderStatus]>,
     pub timing_history: Arc<[ScriptTimingHistory]>,
+    pub timing_threshold_ms: Option<f32>,
     pub repl_input: String,
     pub repl_history_index: Option<usize>,
     pub repl_history: Arc<[String]>,
@@ -989,6 +990,8 @@ pub(super) struct ScriptDebuggerOutput {
     pub set_paused: Option<bool>,
     pub step_once: bool,
     pub reload: bool,
+    pub set_timing_threshold_ms: Option<Option<f32>>,
+    pub toggle_pin: Option<String>,
 }
 
 pub(super) struct EditorUiParams {
@@ -1514,6 +1517,8 @@ impl App {
             set_paused: None,
             step_once: false,
             reload: false,
+            set_timing_threshold_ms: None,
+            toggle_pin: None,
         };
 
         let plugin_manifest_loaded = plugin_manifest_entries.is_some();
@@ -2315,6 +2320,20 @@ impl App {
                             if !script_debugger.timings.is_empty() {
                                 ui.separator();
                                 ui.label("Script timings (ms)");
+                                let mut threshold = script_debugger.timing_threshold_ms.unwrap_or(0.0);
+                                ui.horizontal(|ui| {
+                                    ui.label("Threshold");
+                                    if ui
+                                        .add(egui::DragValue::new(&mut threshold).speed(0.1).range(0.0..=50.0))
+                                        .changed()
+                                    {
+                                        script_debugger_output.set_timing_threshold_ms = Some(Some(threshold));
+                                    }
+                                    if ui.button("Clear").clicked() {
+                                        threshold = 0.0;
+                                        script_debugger_output.set_timing_threshold_ms = Some(None);
+                                    }
+                                });
                                 egui::Grid::new("script_timings_sidebar").striped(true).show(ui, |ui| {
                                     ui.label("Name");
                                     ui.label("Last");
@@ -2368,8 +2387,21 @@ impl App {
                                         .allow_zoom(false)
                                         .allow_scroll(false)
                                         .show(ui, |plot_ui| {
+                                            if let Some(th) = hist.threshold_ms {
+                                                plot_ui.hline(
+                                                    eplot::HLine::new("threshold", th as f64)
+                                                        .color(egui::Color32::YELLOW),
+                                                );
+                                            }
                                             plot_ui.line(eplot::Line::new(hist.name.clone(), points));
                                         });
+                                    if ui
+                                        .selectable_label(hist.pinned, "Pin")
+                                        .on_hover_text("Pin this callback for focus")
+                                        .clicked()
+                                    {
+                                        script_debugger_output.toggle_pin = Some(hist.name.clone());
+                                    }
                                 }
                             }
                             ui.separator();
