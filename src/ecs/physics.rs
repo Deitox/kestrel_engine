@@ -325,6 +325,22 @@ impl RapierState {
     pub fn bounds(&self) -> WorldBounds {
         self.bounds
     }
+
+    pub fn query_view(&self) -> RapierQueryView<'_> {
+        RapierQueryView {
+            pipeline: &self.query_pipeline,
+            colliders: &self.colliders,
+            bodies: &self.bodies,
+            collider_entities: &self.collider_entities,
+        }
+    }
+}
+
+pub struct RapierQueryView<'a> {
+    pub pipeline: &'a QueryPipeline,
+    pub bodies: &'a RigidBodySet,
+    pub colliders: &'a ColliderSet,
+    pub collider_entities: &'a HashMap<ColliderHandle, Entity>,
 }
 
 #[derive(Resource)]

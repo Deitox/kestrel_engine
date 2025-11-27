@@ -11,6 +11,10 @@ use crate::assets::AssetManager;
 use crate::plugins::{EnginePlugin, PluginContext};
 use anyhow::{anyhow, Context, Error, Result};
 use glam::{Vec2, Vec4};
+use rapier2d::prelude::{
+    ColliderHandle, Isometry, Point, QueryFilter as RapierQueryFilter, QueryFilterFlags, Ray as RapierRay,
+    RayIntersection, SharedShape, Vector,
+};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use serde_json::{Map as JsonMap, Value as JsonValue};
@@ -270,6 +274,21 @@ impl ScriptSpatialIndex {
     }
 }
 
+#[derive(Clone, Copy)]
+struct PhysicsQueryContext {
+    rapier: *const crate::ecs::RapierState,
+}
+
+impl PhysicsQueryContext {
+    fn from_state(state: &crate::ecs::RapierState) -> Self {
+        Self { rapier: state as *const _ }
+    }
+
+    unsafe fn rapier(&self) -> Option<&crate::ecs::RapierState> {
+        self.rapier.as_ref()
+    }
+}
+
 struct SharedState {
     next_handle: ScriptHandle,
     next_listener_id: u64,
@@ -281,6 +300,7 @@ struct SharedState {
     entity_snapshots: HashMap<Entity, EntitySnapshot>,
     input_snapshot: Option<InputSnapshot>,
     spatial_index: ScriptSpatialIndex,
+    physics_ctx: Option<PhysicsQueryContext>,
     time_scale: f32,
     unscaled_time: f32,
     scaled_time: f32,
@@ -308,6 +328,7 @@ impl Default for SharedState {
             entity_snapshots: HashMap::new(),
             input_snapshot: None,
             spatial_index: ScriptSpatialIndex::default(),
+            physics_ctx: None,
             time_scale: 1.0,
             unscaled_time: 0.0,
             scaled_time: 0.0,
@@ -655,6 +676,13 @@ impl ScriptWorld {
         let origin = Vec2::new(ox as f32, oy as f32);
         let dir = Vec2::new(dx as f32, dy as f32);
         let max_dist = if max_dist.is_finite() && max_dist > 0.0 { max_dist as f32 } else { f32::INFINITY };
+        if let Some((entity, dist, hit)) = self.rapier_raycast(origin, dir, max_dist, &filters) {
+            let mut out = Map::new();
+            out.insert("entity".into(), Dynamic::from(entity_to_rhai(entity)));
+            out.insert("distance".into(), Dynamic::from(dist as FLOAT));
+            out.insert("point".into(), Dynamic::from(Self::vec2_to_array(hit)));
+            return out;
+        }
         let mut best: Option<(Entity, f32, Vec2)> = None;
         let state = self.state.borrow();
         let candidates = state
@@ -710,6 +738,13 @@ impl ScriptWorld {
         let mut hits = Array::new();
         let state = self.state.borrow();
         let r2 = radius * radius;
+        if let Some(mut rapier_hits) = self.rapier_overlap_circle(center, radius, &filters) {
+            rapier_hits.sort_by_key(|e| e.to_bits());
+            for entity in rapier_hits {
+                hits.push(Dynamic::from(entity_to_rhai(entity)));
+            }
+            return hits;
+        }
         let candidates = state
             .spatial_index
             .circle_candidates(center, radius)
@@ -733,6 +768,73 @@ impl ScriptWorld {
             }
         }
         hits
+    }
+
+    fn rapier_context(&self) -> Option<PhysicsQueryContext> {
+        self.state.borrow().physics_ctx
+    }
+
+    fn rapier_raycast(
+        &self,
+        origin: Vec2,
+        dir: Vec2,
+        max_dist: f32,
+        filters: &QueryFilters,
+    ) -> Option<(Entity, f32, Vec2)> {
+        if dir.length_squared() <= f32::EPSILON || !max_dist.is_finite() || max_dist <= 0.0 {
+            return None;
+        }
+        let ctx = self.rapier_context()?;
+        let rapier = unsafe { ctx.rapier()? };
+        let view = rapier.query_view();
+        let ray = RapierRay::new(Point::new(origin.x, origin.y), Vector::new(dir.x, dir.y));
+        let filter = RapierQueryFilter { flags: QueryFilterFlags::EXCLUDE_SENSORS, ..Default::default() };
+        let mut best: Option<(Entity, f32, Vec2)> = None;
+        let mut callback = |handle: ColliderHandle, hit: RayIntersection| {
+            if let Some(entity) = view.collider_entities.get(&handle).copied() {
+                if filters.matches(entity) {
+                    let toi = hit.time_of_impact as f32;
+                    let point = origin + dir.normalize() * toi;
+                    best = Some((entity, toi, point));
+                    return false;
+                }
+            }
+            true
+        };
+        view.pipeline.intersections_with_ray(&view.bodies, &view.colliders, &ray, max_dist, true, filter, &mut callback);
+        best
+    }
+
+    fn rapier_overlap_circle(
+        &self,
+        center: Vec2,
+        radius: f32,
+        filters: &QueryFilters,
+    ) -> Option<Vec<Entity>> {
+        let ctx = self.rapier_context()?;
+        let rapier = unsafe { ctx.rapier()? };
+        let view = rapier.query_view();
+        let iso = Isometry::new(Vector::new(center.x, center.y), 0.0);
+        let shape = SharedShape::ball(radius);
+        let filter = RapierQueryFilter { flags: QueryFilterFlags::EXCLUDE_SENSORS, ..Default::default() };
+        let mut hits = Vec::new();
+        let mut callback = |handle: ColliderHandle| {
+            if let Some(entity) = view.collider_entities.get(&handle).copied() {
+                if filters.matches(entity) {
+                    hits.push(entity);
+                }
+            }
+            true
+        };
+        view.pipeline.intersections_with_shape(
+            &view.bodies,
+            &view.colliders,
+            &iso,
+            &*shape,
+            filter,
+            &mut callback,
+        );
+        if hits.is_empty() { None } else { Some(hits) }
     }
 
     fn input_forward(&mut self) -> bool {
@@ -1594,6 +1696,10 @@ pub struct ScriptHost {
 }
 
 impl ScriptHost {
+    fn set_physics_context(&mut self, ctx: Option<PhysicsQueryContext>) {
+        self.shared.borrow_mut().physics_ctx = ctx;
+    }
+
     fn drop_listeners_for_owner(&mut self, owner: ListenerOwner) {
         let mut state = self.shared.borrow_mut();
         state.event_listeners.retain(|listener| listener.owner != owner);
@@ -3353,7 +3459,14 @@ impl EnginePlugin for ScriptPlugin {
         self.cleanup_orphaned_instances(ecs);
         let dt_scaled = self.host.update(dt, run_scripts, Some(assets));
         if run_scripts && self.host.enabled() {
-            self.run_behaviours(ecs, assets, dt_scaled, false)?;
+            let rapier_ctx = {
+                let rapier = ecs.world.resource::<crate::ecs::RapierState>();
+                PhysicsQueryContext::from_state(rapier)
+            };
+            self.host.set_physics_context(Some(rapier_ctx));
+            let result = self.run_behaviours(ecs, assets, dt_scaled, false);
+            self.host.set_physics_context(None);
+            result?;
         }
         self.host.dispatch_script_events();
         if !self.paused {
@@ -3382,7 +3495,14 @@ impl EnginePlugin for ScriptPlugin {
         }
         if self.host.enabled() {
             let dt_scaled = self.host.begin_frame(dt);
-            self.run_behaviours(ecs, assets, dt_scaled, true)?;
+            let rapier_ctx = {
+                let rapier = ecs.world.resource::<crate::ecs::RapierState>();
+                PhysicsQueryContext::from_state(rapier)
+            };
+            self.host.set_physics_context(Some(rapier_ctx));
+            let result = self.run_behaviours(ecs, assets, dt_scaled, true);
+            self.host.set_physics_context(None);
+            result?;
         }
         self.host.dispatch_script_events();
         let drained = self.drain_host_commands();
