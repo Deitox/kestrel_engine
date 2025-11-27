@@ -42,6 +42,7 @@ use bevy_ecs::prelude::Entity;
 use egui::{Checkbox, DragAndDrop, Key, SliderClamping};
 use egui_plot as eplot;
 use glam::{Vec2, Vec3, Vec4};
+use serde_json::Value as JsonValue;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
@@ -839,6 +840,56 @@ fn ellipsize(text: &str, max_len: usize) -> String {
     }
     truncated.push_str("...");
     truncated
+}
+
+fn render_script_hit_summary(ui: &mut egui::Ui, text: &str) {
+    let Ok(value) = serde_json::from_str::<JsonValue>(text) else {
+        return;
+    };
+    match value {
+        JsonValue::Object(map) => {
+            if map.contains_key("entity") && (map.contains_key("point") || map.contains_key("normal")) {
+                draw_hit_row(ui, &map);
+            }
+        }
+        JsonValue::Array(arr) => {
+            for item in arr {
+                if let JsonValue::Object(map) = item {
+                    if map.contains_key("entity") && (map.contains_key("point") || map.contains_key("normal")) {
+                        draw_hit_row(ui, &map);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn draw_hit_row(ui: &mut egui::Ui, map: &serde_json::Map<String, JsonValue>) {
+    let entity = map.get("entity").and_then(|v| v.as_i64()).unwrap_or(-1);
+    let dist = map.get("distance").and_then(|v| v.as_f64());
+    let collider = map.get("collider").and_then(|v| v.as_i64());
+    let normal = map
+        .get("normal")
+        .and_then(|v| v.as_array())
+        .and_then(|a| match (a.get(0), a.get(1)) {
+            (Some(JsonValue::Number(x)), Some(JsonValue::Number(y))) => Some((x.as_f64(), y.as_f64())),
+            _ => None,
+        });
+    ui.horizontal(|ui| {
+        ui.small(format!("entity {}", entity));
+        if let Some(d) = dist {
+            ui.small(format!("dist {:.3}", d));
+        }
+        if let Some((nx, ny)) = normal {
+            if let (Some(nx), Some(ny)) = (nx, ny) {
+                ui.small(format!("normal ({:.2}, {:.2})", nx, ny));
+            }
+        }
+        if let Some(c) = collider {
+            ui.small(format!("collider {}", c));
+        }
+    });
 }
 
 fn parse_audio_trigger(label: &str) -> ParsedAudioTrigger {
@@ -2546,6 +2597,7 @@ impl App {
                                         ScriptConsoleKind::Log => egui::Color32::WHITE,
                                     };
                                     ui.colored_label(color, entry.text.as_str());
+                                    render_script_hit_summary(ui, entry.text.as_str());
                                 }
                             }
                         });

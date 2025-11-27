@@ -64,3 +64,5 @@ Status legend: `[x]` done, `[~]` partial/incomplete, `[ ]` not started/unknown.
 - Added Rapier-backed script queries: raycasts now return normals + collider IDs and fall back to snapshots; overlaps can return collider IDs via `overlap_circle_hits` (with filters variant) while preserving legacy array output.
 - Physics query view exposed for scripts without leaking mutability.
 - Studio docs: script API help now calls out collider IDs/normal results and the new `overlap_circle_hits` helper; collider IDs are available for inspection in UI.
+- REPL snippet (example):\
+  `let hit = world.raycast(0.0,0.0,1.0,0.0,50.0); if hit.has(\"collider\") { print(hit); }` → `{"entity":123,"distance":4.0,"point":[4.0,0.0],"normal":[-1.0,0.0],"collider":4294967296}`
