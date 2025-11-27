@@ -159,12 +159,20 @@ const SCRIPT_API_DOCS: &[ScriptApiDoc] = &[
         detail: "Subscribe and emit events; use emit_to(name, entity, payload) for scoped delivery.",
     },
     ScriptApiDoc {
+        signature: "kit_enemy_contact / kit_enemy_hit events",
+        detail: "GameKit collision hooks: enemies emit kit_enemy_contact with #{ damage, source, target }; players emit kit_enemy_hit with #{ damage, target } for enemy damage intake.",
+    },
+    ScriptApiDoc {
         signature: "timer_start(id, seconds) / timer_fired(id)",
         detail: "One-shot timers tracked per instance; timer_start_repeat loops automatically.",
     },
     ScriptApiDoc {
         signature: "state_get/set/clear/keys",
         detail: "Per-behaviour persistent map (opt-in via persist_state); survives hot reload when enabled.",
+    },
+    ScriptApiDoc {
+        signature: "stat_get/set/add/clear/keys",
+        detail: "Shared world-level stats (score/currency/etc.) accessible to all scripts; used by GameKit helpers.",
     },
     ScriptApiDoc {
         signature: "time_scale()/set_time_scale(scale)",
