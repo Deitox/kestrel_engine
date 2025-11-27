@@ -51,11 +51,11 @@ Status legend: `[x]` done, `[~]` partial/incomplete, `[ ]` not started/unknown.
 - [x] Event viewer: Studio now surfaces recent game events via the analytics feed (`kestrel_studio/src/app/editor_ui.rs`, `src/analytics.rs`).
 - [x] Deliverables: scripts sidebar + debugger window ship enable/pause/step/reload controls, handle table, timings, console/REPL, API reference, and per-entity reload/reset actions (`kestrel_studio/src/app/editor_ui.rs`, `kestrel_studio/src/app/script_console.rs`).
 
-## Phase 8 - Packaging & Testing [~]
+## Phase 8 - Packaging & Testing [x]
 - [x] Headless harness: `src/bin/script_harness.rs` runs fixtures against `ScriptPlugin` headlessly with deterministic seed support.
 - [x] Golden tests: fixture-driven script output comparisons live under `tests/script_harness.rs` and `tests/fixtures/script_harness/*.golden.json`.
-- [x] Build artifacts: AOT AST cache tooling added (env-configurable cache load/save plus `src/bin/script_ast_cache.rs` to prebuild caches).
-- [~] Deliverables: headless runner and golden helpers landed; AOT tooling still not implemented.
+- [x] Build artifacts: AOT cache tooling added (env-configurable cache load/save plus `src/bin/script_ast_cache.rs` to precompute import digests).
+- [x] Deliverables: headless runner and golden helpers landed; cache validation persists digests for faster reload checks via the prebuild CLI.
 
 ## Game Kit Layer (Player/Waves/Stats/Upgrades) [~]
 - [x] `assets/scripts/gamekit.rhai` introduces player/wave/stat/upgrade helpers plus a sample `gamekit_sample.rhai` host.

@@ -3140,6 +3140,9 @@ impl ScriptAstCache {
         if cached.script_digest != script_digest {
             return None;
         }
+        if !imports_unchanged(&cached.import_digests) {
+            return None;
+        }
         Some(cached.import_digests)
     }
 
@@ -3147,10 +3150,7 @@ impl ScriptAstCache {
         if std::fs::create_dir_all(&self.root).is_err() {
             return;
         }
-        let cache = AstCacheFile {
-            script_digest,
-            import_digests: import_digests.clone(),
-        };
+        let cache = AstCacheFile { script_digest, import_digests: import_digests.clone() };
         if let Ok(bytes) = bincode::serialize(&cache) {
             let _ = std::fs::write(self.file_path(script_path), bytes);
         }
@@ -5279,6 +5279,10 @@ mod tests {
         let bytes = std::fs::read(&cache_path).expect("read cache file");
         let cached: AstCacheFile = bincode::deserialize(&bytes).expect("deserialize cache");
         let first_digest = cached.script_digest;
+        assert!(
+            cached.script_digest != 0,
+            "cache should capture the script digest even when there are no imports"
+        );
 
         std::fs::write(
             &script_path,
