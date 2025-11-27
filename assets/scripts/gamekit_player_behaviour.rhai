@@ -15,7 +15,7 @@ fn process(world, entity, dt) {
     while idx < hits.len() {
         let other = hits[idx]["entity"];
         if other != entity {
-            world.emit("kit_enemy_hit", #{ damage: damage, template: "" });
+            world.emit("kit_enemy_hit", #{ damage: damage, target: other });
         }
         idx += 1;
     }

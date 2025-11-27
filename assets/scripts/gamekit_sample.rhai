@@ -94,8 +94,13 @@ fn process(world, entity, dt) {
 }
 
 fn on_enemy_contact(world, event) {
-    let damage = event["payload"]["damage"];
-    if type_of(damage) != "float" && type_of(damage) != "int" {
+    let payload = event["payload"];
+    let target = payload["target"];
+    let damage = payload["damage"];
+    if type_of(target) != "int" || (type_of(damage) != "float" && type_of(damage) != "int") {
+        return;
+    }
+    if target != state.player.handle {
         return;
     }
     let res = kit::on_player_hit(world, state, damage);
@@ -104,10 +109,16 @@ fn on_enemy_contact(world, event) {
 
 fn on_enemy_hit(world, event) {
     let payload = event["payload"];
-    let template = payload["template"];
+    let target = payload["target"];
     let damage = payload["damage"];
+    if type_of(target) != "int" {
+        return;
+    }
     let dmg = if type_of(damage) == "float" || type_of(damage) == "int" { damage } else { 1.0 };
-    let tpl = if type_of(template) == "string" { template } else { "" };
-    let res = kit::enemy_hit_template(world, state, tpl, dmg);
+    // Ignore if the target is the player; this event is for enemies.
+    if target == state.player.handle {
+        return;
+    }
+    let res = kit::enemy_hit_handle(world, state, target, dmg);
     state = res.state;
 }
