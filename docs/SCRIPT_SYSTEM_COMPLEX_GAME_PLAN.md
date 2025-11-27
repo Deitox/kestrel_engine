@@ -39,11 +39,11 @@ Status legend: `[x]` done, `[~]` partial/incomplete, `[ ]` not started/unknown.
 - [~] Error UX: path:line:col formatting exists, but no call stacks or per-instance mute switch.
 - [~] Deliverables: timing counters surfaced; trace logs/call stacks remain.
 
-## Phase 6 - Safety & Performance [~]
+## Phase 6 - Safety & Performance [x]
 - [x] Budgets: configurable per-callback time budget (`scripts.callback_budget_ms`) halts callbacks, marks instances errored, and surfaces the budget error when exceeded.
 - [x] Command quotas: per-owner (host/instance) command quotas (`scripts.command_quota`) enforced per frame with log messages when a quota is exceeded.
-- [~] Determinism: RNG seeding and command/worklist sorting exist; no deterministic harness tying physics query ordering + command application beyond that.
-- [~] Deliverables: budget/quota enforcement landed; expanded deterministic harness still not implemented.
+- [x] Determinism: RNG seeding and command/worklist sorting exist; physics queries now iterate deterministically and a harness fixture locks query/command ordering across runs.
+- [x] Deliverables: budget/quota enforcement landed; deterministic harness coverage and query ordering guarantees implemented.
 
 ## Phase 7 - Studio/Editor UX [x]
 - [x] Inspector polish: script path dropdowns and error badges present; per-entity reload/reset buttons now available with tooltips in the inspector.

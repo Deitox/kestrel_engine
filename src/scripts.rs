@@ -538,7 +538,9 @@ impl ScriptWorld {
         let max_dist = if max_dist.is_finite() && max_dist > 0.0 { max_dist as f32 } else { f32::INFINITY };
         let mut best: Option<(Entity, f32, Vec2)> = None;
         let state = self.state.borrow();
-        for (entity, snap) in state.entity_snapshots.iter() {
+        let mut snapshots: Vec<_> = state.entity_snapshots.iter().collect();
+        snapshots.sort_by_key(|(entity, _)| entity.to_bits());
+        for (entity, snap) in snapshots {
             if !filters.matches(*entity) {
                 continue;
             }
@@ -582,7 +584,9 @@ impl ScriptWorld {
         let mut hits = Array::new();
         let state = self.state.borrow();
         let r2 = radius * radius;
-        for (entity, snap) in state.entity_snapshots.iter() {
+        let mut snapshots: Vec<_> = state.entity_snapshots.iter().collect();
+        snapshots.sort_by_key(|(entity, _)| entity.to_bits());
+        for (entity, snap) in snapshots {
             if !filters.matches(*entity) {
                 continue;
             }

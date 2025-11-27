@@ -32,6 +32,23 @@ fn event_bus_fixture_matches_golden() {
     );
 }
 
+#[test]
+fn deterministic_queries_fixture_matches_golden() {
+    assert_fixture_matches(
+        "tests/fixtures/script_harness/deterministic_queries.json",
+        "tests/fixtures/script_harness/deterministic_queries.golden.json",
+    );
+}
+
+#[test]
+fn deterministic_queries_fixture_is_stable_across_runs() {
+    let fixture =
+        load_fixture("tests/fixtures/script_harness/deterministic_queries.json").expect("load fixture");
+    let first = run_fixture(&fixture).expect("run fixture first time");
+    let second = run_fixture(&fixture).expect("run fixture second time");
+    assert_eq!(first, second, "deterministic fixture should produce identical output across runs");
+}
+
 fn assert_fixture_matches(fixture_path: &str, golden_path: &str) {
     let fixture = load_fixture(fixture_path).expect("load fixture");
     let output = run_fixture(&fixture).expect("run fixture");

@@ -1,0 +1,199 @@
+{
+  "steps": 1,
+  "dt": 0.016,
+  "behaviours": [
+    "tests/fixtures/script_harness/deterministic_queries.rhai",
+    "tests/fixtures/script_harness/idle.rhai",
+    "tests/fixtures/script_harness/idle.rhai"
+  ],
+  "results": [
+    {
+      "step": 0,
+      "logs": [
+        "Script init",
+        "overlap:4294967297,4294967298,4294967299",
+        "ray:4294967297@3.5",
+        "spawned:1,2"
+      ],
+      "commands": [
+        {
+          "kind": "spawn",
+          "handle": 1,
+          "atlas": "main",
+          "region": "green",
+          "position": [
+            1.0,
+            0.0
+          ],
+          "scale": [
+            0.25,
+            0.25
+          ],
+          "velocity": [
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "kind": "spawn",
+          "handle": 2,
+          "atlas": "main",
+          "region": "green",
+          "position": [
+            -1.0,
+            0.0
+          ],
+          "scale": [
+            0.25,
+            0.25
+          ],
+          "velocity": [
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "kind": "set_position",
+          "handle": 1,
+          "position": [
+            0.5,
+            0.0
+          ]
+        },
+        {
+          "kind": "set_position",
+          "handle": 2,
+          "position": [
+            -0.5,
+            0.0
+          ]
+        },
+        {
+          "kind": "set_auto_spawn_rate",
+          "details": "0"
+        },
+        {
+          "kind": "set_spawn_per_press",
+          "details": "100"
+        },
+        {
+          "kind": "set_emitter_spread",
+          "details": "1"
+        },
+        {
+          "kind": "set_emitter_speed",
+          "details": "1"
+        },
+        {
+          "kind": "set_emitter_lifetime",
+          "details": "1.2"
+        },
+        {
+          "kind": "set_emitter_start_color",
+          "tint": [
+            1.0,
+            0.8,
+            0.2,
+            0.8
+          ]
+        },
+        {
+          "kind": "set_emitter_end_color",
+          "tint": [
+            1.0,
+            0.2,
+            0.2,
+            0.0
+          ]
+        },
+        {
+          "kind": "set_emitter_start_size",
+          "scale": [
+            0.18,
+            0.18
+          ]
+        },
+        {
+          "kind": "set_emitter_end_size",
+          "scale": [
+            0.05,
+            0.05
+          ]
+        }
+      ]
+    }
+  ],
+  "final_entities": [
+    {
+      "entity": 4294967300,
+      "translation": [
+        0.5,
+        0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+        0.25,
+        0.25
+      ],
+      "velocity": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "entity": 4294967301,
+      "translation": [
+        -0.5,
+        0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+        0.25,
+        0.25
+      ],
+      "velocity": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "entity": 4294967297,
+      "name": "driver",
+      "translation": [
+        4.0,
+        0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "entity": 4294967298,
+      "name": "target_a",
+      "translation": [
+        4.0,
+        0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "entity": 4294967299,
+      "name": "target_b",
+      "translation": [
+        7.0,
+        0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+        1.0,
+        1.0
+      ]
+    }
+  ]
+}
