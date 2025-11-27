@@ -67,6 +67,7 @@ pub(crate) struct ScriptDebuggerStatus {
     pub handles: Vec<ScriptHandleBinding>,
     pub timings: Vec<ScriptTimingSummary>,
     pub offenders: Vec<ScriptOffenderStatus>,
+    pub timing_history: Vec<ScriptTimingHistory>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -81,6 +82,12 @@ pub(crate) struct ScriptOffenderStatus {
     pub function: String,
     pub last_ms: f32,
     pub scene_id: Option<SceneEntityId>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ScriptTimingHistory {
+    pub name: String,
+    pub samples: Vec<f32>,
 }
 
 pub(crate) struct EditorUiState {
@@ -187,6 +194,7 @@ pub(crate) struct EditorUiState {
     pub pending_animation_validation_events: Vec<AnimationValidationEvent>,
     pub suppressed_validation_paths: HashSet<PathBuf>,
     pub telemetry_cache: TelemetryCache,
+    pub script_timing_history: HashMap<String, Vec<f32>>,
     pub frame_plot_points: Arc<[eplot::PlotPoint]>,
     pub frame_plot_revision: u64,
     pub gpu_timings: Arc<[GpuPassTiming]>,
@@ -326,6 +334,7 @@ impl EditorUiState {
             pending_animation_validation_events: Vec::new(),
             suppressed_validation_paths: HashSet::new(),
             telemetry_cache: TelemetryCache::default(),
+            script_timing_history: HashMap::new(),
             frame_plot_points: Arc::from(Vec::<eplot::PlotPoint>::new().into_boxed_slice()),
             frame_plot_revision: 0,
             gpu_timings: Arc::from(Vec::<GpuPassTiming>::new().into_boxed_slice()),

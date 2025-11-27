@@ -1,5 +1,5 @@
 use super::{
-    editor_shell::{ScriptHandleBinding, ScriptOffenderStatus},
+    editor_shell::{ScriptHandleBinding, ScriptOffenderStatus, ScriptTimingHistory},
     App, CameraBookmark, FrameTimingSample, MeshControlMode, ScriptConsoleEntry, ScriptConsoleKind,
     ViewportCameraMode,
 };
@@ -220,6 +220,10 @@ pub(super) enum InspectorAction {
     SetScriptMute {
         entity: Entity,
         muted: bool,
+    },
+    SetScriptPersist {
+        entity: Entity,
+        persist: bool,
     },
     RemoveScript {
         entity: Entity,
@@ -966,6 +970,7 @@ pub(super) struct ScriptDebuggerParams {
     pub handles: Vec<ScriptHandleBinding>,
     pub timings: Arc<[ScriptTimingSummary]>,
     pub offenders: Arc<[ScriptOffenderStatus]>,
+    pub timing_history: Arc<[ScriptTimingHistory]>,
     pub repl_input: String,
     pub repl_history_index: Option<usize>,
     pub repl_history: Arc<[String]>,
@@ -2346,6 +2351,26 @@ impl App {
                                         ui.end_row();
                                     }
                                 });
+                            }
+                            if !script_debugger.timing_history.is_empty() {
+                                ui.separator();
+                                ui.label("Script timing history (last frames)");
+                                for hist in script_debugger.timing_history.iter() {
+                                    ui.label(&hist.name);
+                                    let points: Vec<[f64; 2]> = hist
+                                        .samples
+                                        .iter()
+                                        .enumerate()
+                                        .map(|(i, v)| [i as f64, *v as f64])
+                                        .collect();
+                                    eplot::Plot::new(format!("script_timing_plot_{}", hist.name))
+                                        .height(80.0)
+                                        .allow_zoom(false)
+                                        .allow_scroll(false)
+                                        .show(ui, |plot_ui| {
+                                            plot_ui.line(eplot::Line::new(hist.name.clone(), points));
+                                        });
+                                }
                             }
                             ui.separator();
                             render_script_api_reference(ui);

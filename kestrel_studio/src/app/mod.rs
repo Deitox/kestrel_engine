@@ -31,7 +31,7 @@ use self::animation_watch::{AnimationAssetKind, AnimationAssetWatcher};
 use self::atlas_watch::AtlasHotReload;
 use self::editor_shell::{
     EditorShell, EditorUiState, EditorUiStateParams, EmitterUiDefaults, ScriptDebuggerStatus,
-    ScriptHandleBinding, ScriptOffenderStatus,
+    ScriptHandleBinding, ScriptOffenderStatus, ScriptTimingHistory,
 };
 use self::mesh_reload::MeshReloadWorker;
 use self::mesh_watch::MeshHotReload;
@@ -1417,6 +1417,23 @@ impl App {
                 })
                 .collect();
             let timings = plugin.timing_summaries();
+            let timing_history = self.with_editor_ui_state_mut(|state| {
+                let cap = 120;
+                for timing in &timings {
+                    let entry = state.script_timing_history.entry(timing.name.to_string()).or_insert_with(Vec::new);
+                    entry.push(timing.last_ms);
+                    if entry.len() > cap {
+                        let drain = entry.len() - cap;
+                        entry.drain(0..drain);
+                    }
+                }
+                state.script_timing_history.retain(|name, _| timings.iter().any(|t| t.name == name.as_str()));
+                state
+                    .script_timing_history
+                    .iter()
+                    .map(|(name, samples)| ScriptTimingHistory { name: name.clone(), samples: samples.clone() })
+                    .collect::<Vec<_>>()
+            });
             let offenders = plugin
                 .timing_offenders()
                 .into_iter()
@@ -1441,6 +1458,7 @@ impl App {
                 handles,
                 timings,
                 offenders,
+                timing_history,
             }
         } else {
             ScriptDebuggerStatus::default()
@@ -3309,6 +3327,7 @@ impl ApplicationHandler for App {
                 handles: script_debugger_status.handles.clone(),
                 timings: Arc::from(script_debugger_status.timings.clone().into_boxed_slice()),
                 offenders: Arc::from(script_debugger_status.offenders.clone().into_boxed_slice()),
+                timing_history: Arc::from(script_debugger_status.timing_history.clone().into_boxed_slice()),
                 repl_input: script_repl_input,
                 repl_history_index: script_repl_history_index,
                 repl_history: script_repl_history,

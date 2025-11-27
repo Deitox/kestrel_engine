@@ -202,7 +202,7 @@ pub(super) fn show_entity_inspector(
             let mut script_path = info.script.as_ref().map(|s| s.path.clone()).unwrap_or_default();
             let instance_id = info.script.as_ref().map(|s| s.instance_id).unwrap_or(0);
             let mut mute_errors = info.script.as_ref().map(|s| s.mute_errors).unwrap_or(false);
-            let persist_state = info.script.as_ref().map(|s| s.persist_state).unwrap_or(false);
+            let mut persist_state = info.script.as_ref().map(|s| s.persist_state).unwrap_or(false);
             let has_script = info.script.is_some();
             let path_trimmed = script_path.trim();
             let path_known = ctx.script_paths.iter().any(|p| p == path_trimmed);
@@ -316,6 +316,19 @@ pub(super) fn show_entity_inspector(
                     actions.inspector_actions.push(InspectorAction::SetScriptMute { entity, muted: mute_errors });
                     if let Some(script) = info.script.as_mut() {
                         script.mute_errors = mute_errors;
+                    }
+                    _inspector_refresh = true;
+                }
+                let mut persist = persist_state;
+                if ui
+                    .checkbox(&mut persist, "Persist state")
+                    .on_hover_text("Save behaviour state across reloads and into scenes/checkpoints.")
+                    .changed()
+                {
+                    persist_state = persist;
+                    actions.inspector_actions.push(InspectorAction::SetScriptPersist { entity, persist });
+                    if let Some(script) = info.script.as_mut() {
+                        script.persist_state = persist_state;
                     }
                     _inspector_refresh = true;
                 }

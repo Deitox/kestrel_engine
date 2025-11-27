@@ -136,6 +136,22 @@ impl App {
                         }
                     }
                 }
+                editor_ui::InspectorAction::SetScriptPersist { entity, persist } => {
+                    if let Ok(mut entity_ref) = self.ecs.world.get_entity_mut(entity) {
+                        if let Some(mut behaviour) = entity_ref.get_mut::<crate::scripts::ScriptBehaviour>() {
+                            behaviour.persist_state = persist;
+                            if !persist {
+                                entity_ref.remove::<crate::scripts::ScriptPersistedState>();
+                            }
+                            let status = if persist {
+                                "Script state will persist across reloads and serialize into scenes."
+                            } else {
+                                "Script state persistence disabled; serialized state cleared."
+                            };
+                            self.set_inspector_status(Some(status.to_string()));
+                        }
+                    }
+                }
                 editor_ui::InspectorAction::RemoveScript { entity } => {
                     let mut entity_ref = self.ecs.world.entity_mut(entity);
                     entity_ref.remove::<crate::scripts::ScriptBehaviour>();
