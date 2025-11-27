@@ -104,69 +104,6 @@
       "script": {
         "script_path": "assets/scripts/gamekit_sample.rhai"
       }
-    },
-    {
-      "name": "player_spawn",
-      "transform": {
-        "translation": {
-          "x": -0.6,
-          "y": -0.2
-        },
-        "rotation": 0.0,
-        "scale": {
-          "x": 1.0,
-          "y": 1.0
-        }
-      },
-      "script": {
-        "script_path": "assets/scripts/gamekit_player_behaviour.rhai"
-      },
-      "sprite": {
-        "atlas": "main",
-        "region": "green"
-      }
-    },
-    {
-      "name": "enemy_light",
-      "transform": {
-        "translation": {
-          "x": 0.5,
-          "y": 0.1
-        },
-        "rotation": 0.0,
-        "scale": {
-          "x": 0.9,
-          "y": 0.9
-        }
-      },
-      "script": {
-        "script_path": "assets/scripts/gamekit_enemy_light_behaviour.rhai"
-      },
-      "sprite": {
-        "atlas": "main",
-        "region": "bluebox"
-      }
-    },
-    {
-      "name": "enemy_heavy",
-      "transform": {
-        "translation": {
-          "x": 0.9,
-          "y": -0.4
-        },
-        "rotation": 0.0,
-        "scale": {
-          "x": 1.1,
-          "y": 1.1
-        }
-      },
-      "script": {
-        "script_path": "assets/scripts/gamekit_enemy_heavy_behaviour.rhai"
-      },
-      "sprite": {
-        "atlas": "main",
-        "region": "redorb"
-      }
     }
   ]
 }
