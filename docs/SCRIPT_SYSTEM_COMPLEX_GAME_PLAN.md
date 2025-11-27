@@ -27,7 +27,7 @@ Status legend: `[x]` done, `[~]` partial/incomplete, `[ ]` not started/unknown.
 - [x] Hot reload policy: reload reruns globals, resets scopes unless persistence is enabled, and exposes `world.is_hot_reload()` during the first `ready`.
 - [~] Deliverables: runtime persistence/reload tests exist; scene/checkpoint serialization for persisted state remains.
 
-## Phase 4 - Events & Signals [~]
+## Phase 4 - Events & Signals [x]
 - [x] Event bus: script-facing emit/listen APIs with payload support.
 - [x] Entity scoping: listeners can be tagged to entities and auto-unsubscribe when instances are removed.
 - [x] Safety: per-frame queue caps with overflow logging plus listener error isolation.
@@ -39,11 +39,11 @@ Status legend: `[x]` done, `[~]` partial/incomplete, `[ ]` not started/unknown.
 - [~] Error UX: path:line:col formatting exists, but no call stacks or per-instance mute switch.
 - [~] Deliverables: timing counters surfaced; trace logs/call stacks remain.
 
-## Phase 6 - Safety & Performance [ ]
-- [ ] Budgets: no per-callback instruction/time budgets or enforcement.
-- [ ] Command quotas: no per-instance command caps.
+## Phase 6 - Safety & Performance [~]
+- [x] Budgets: configurable per-callback time budget (`scripts.callback_budget_ms`) halts callbacks, marks instances errored, and surfaces the budget error when exceeded.
+- [x] Command quotas: per-owner (host/instance) command quotas (`scripts.command_quota`) enforced per frame with log messages when a quota is exceeded.
 - [~] Determinism: RNG seeding and command/worklist sorting exist; no deterministic harness tying physics query ordering + command application beyond that.
-- [ ] Deliverables: budget enforcement, quotas, expanded deterministic harness not implemented.
+- [~] Deliverables: budget/quota enforcement landed; expanded deterministic harness still not implemented.
 
 ## Phase 7 - Studio/Editor UX [~]
 - [~] Inspector polish: script path dropdowns and error badges present; no per-instance reload/reset buttons, inline API docs/tooltips, or recent logs view.

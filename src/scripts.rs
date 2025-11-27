@@ -135,7 +135,7 @@ struct ScriptEvent {
     source: Option<Entity>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum ListenerOwner {
     Host,
     Instance(u64),
@@ -171,6 +171,8 @@ struct SharedState {
     next_handle: ScriptHandle,
     next_listener_id: u64,
     commands: Vec<ScriptCommand>,
+    command_quota: Option<usize>,
+    commands_per_owner: HashMap<ListenerOwner, usize>,
     logs: Vec<String>,
     rng: Option<StdRng>,
     entity_snapshots: HashMap<Entity, EntitySnapshot>,
@@ -194,6 +196,8 @@ impl Default for SharedState {
             next_handle: 0,
             next_listener_id: 1,
             commands: Vec::new(),
+            command_quota: None,
+            commands_per_owner: HashMap::new(),
             logs: Vec::new(),
             rng: None,
             entity_snapshots: HashMap::new(),
@@ -431,15 +435,20 @@ impl ModuleResolver for CachedModuleResolver {
 pub struct ScriptWorld {
     state: Rc<RefCell<SharedState>>,
     instance_state: Option<Rc<RefCell<InstanceRuntimeState>>>,
+    owner: ListenerOwner,
 }
 
 impl ScriptWorld {
     fn new(state: Rc<RefCell<SharedState>>) -> Self {
-        Self { state, instance_state: None }
+        Self { state, instance_state: None, owner: ListenerOwner::Host }
     }
 
-    fn with_instance(state: Rc<RefCell<SharedState>>, instance_state: Rc<RefCell<InstanceRuntimeState>>) -> Self {
-        Self { state, instance_state: Some(instance_state) }
+    fn with_instance(
+        state: Rc<RefCell<SharedState>>,
+        instance_state: Rc<RefCell<InstanceRuntimeState>>,
+        instance_id: u64,
+    ) -> Self {
+        Self { state, instance_state: Some(instance_state), owner: ListenerOwner::Instance(instance_id) }
     }
 
     fn entity_snapshot(&mut self, entity_bits: ScriptHandle) -> Map {
@@ -876,18 +885,14 @@ impl ScriptWorld {
         if scale <= 0.0 {
             return -1;
         }
-        let mut state = self.state.borrow_mut();
-        let handle = state.next_handle;
-        state.next_handle = state.next_handle.saturating_add(1);
-        state.commands.push(ScriptCommand::Spawn {
+        self.push_command_with_handle(|handle| ScriptCommand::Spawn {
             handle,
             atlas: atlas.to_string(),
             region: region.to_string(),
             position: Vec2::new(x, y),
             scale,
             velocity: Vec2::new(vx, vy),
-        });
-        handle
+        })
     }
 
     fn set_velocity(&mut self, handle: ScriptHandle, vx: FLOAT, vy: FLOAT) -> bool {
@@ -896,11 +901,7 @@ impl ScriptWorld {
         if !self.ensure_finite("set_velocity", &[vx, vy]) {
             return false;
         }
-        self.state
-            .borrow_mut()
-            .commands
-            .push(ScriptCommand::SetVelocity { handle, velocity: Vec2::new(vx, vy) });
-        true
+        self.push_command_plain(ScriptCommand::SetVelocity { handle, velocity: Vec2::new(vx, vy) })
     }
 
     fn set_position(&mut self, handle: ScriptHandle, x: FLOAT, y: FLOAT) -> bool {
@@ -909,11 +910,7 @@ impl ScriptWorld {
         if !self.ensure_finite("set_position", &[x, y]) {
             return false;
         }
-        self.state
-            .borrow_mut()
-            .commands
-            .push(ScriptCommand::SetPosition { handle, position: Vec2::new(x, y) });
-        true
+        self.push_command_plain(ScriptCommand::SetPosition { handle, position: Vec2::new(x, y) })
     }
 
     fn set_rotation(&mut self, handle: ScriptHandle, radians: FLOAT) -> bool {
@@ -921,8 +918,7 @@ impl ScriptWorld {
         if !self.ensure_finite("set_rotation", &[radians]) {
             return false;
         }
-        self.state.borrow_mut().commands.push(ScriptCommand::SetRotation { handle, rotation: radians });
-        true
+        self.push_command_plain(ScriptCommand::SetRotation { handle, rotation: radians })
     }
 
     fn set_scale(&mut self, handle: ScriptHandle, sx: FLOAT, sy: FLOAT) -> bool {
@@ -932,8 +928,7 @@ impl ScriptWorld {
             return false;
         }
         let clamped = Vec2::new(sx.max(0.01), sy.max(0.01));
-        self.state.borrow_mut().commands.push(ScriptCommand::SetScale { handle, scale: clamped });
-        true
+        self.push_command_plain(ScriptCommand::SetScale { handle, scale: clamped })
     }
 
     fn set_tint(&mut self, handle: ScriptHandle, r: FLOAT, g: FLOAT, b: FLOAT, a: FLOAT) -> bool {
@@ -944,16 +939,11 @@ impl ScriptWorld {
         if !self.ensure_finite("set_tint", &[r, g, b, a]) {
             return false;
         }
-        self.state
-            .borrow_mut()
-            .commands
-            .push(ScriptCommand::SetTint { handle, tint: Some(Vec4::new(r, g, b, a)) });
-        true
+        self.push_command_plain(ScriptCommand::SetTint { handle, tint: Some(Vec4::new(r, g, b, a)) })
     }
 
     fn clear_tint(&mut self, handle: ScriptHandle) -> bool {
-        self.state.borrow_mut().commands.push(ScriptCommand::SetTint { handle, tint: None });
-        true
+        self.push_command_plain(ScriptCommand::SetTint { handle, tint: None })
     }
 
     fn set_sprite_region(&mut self, handle: ScriptHandle, region: &str) -> bool {
@@ -965,8 +955,7 @@ impl ScriptWorld {
     }
 
     fn despawn(&mut self, handle: ScriptHandle) -> bool {
-        self.state.borrow_mut().commands.push(ScriptCommand::Despawn { handle });
-        true
+        self.push_command_plain(ScriptCommand::Despawn { handle })
     }
 
     fn spawn_prefab(&mut self, path: &str) -> ScriptHandle {
@@ -974,11 +963,7 @@ impl ScriptWorld {
         if trimmed.is_empty() {
             return -1;
         }
-        let mut state = self.state.borrow_mut();
-        let handle = state.next_handle;
-        state.next_handle = state.next_handle.saturating_add(1);
-        state.commands.push(ScriptCommand::SpawnPrefab { handle, path: trimmed.to_string() });
-        handle
+        self.push_command_with_handle(|handle| ScriptCommand::SpawnPrefab { handle, path: trimmed.to_string() })
     }
 
     fn spawn_template(&mut self, name: &str) -> ScriptHandle {
@@ -986,11 +971,7 @@ impl ScriptWorld {
         if trimmed.is_empty() {
             return -1;
         }
-        let mut state = self.state.borrow_mut();
-        let handle = state.next_handle;
-        state.next_handle = state.next_handle.saturating_add(1);
-        state.commands.push(ScriptCommand::SpawnTemplate { handle, template: trimmed.to_string() });
-        handle
+        self.push_command_with_handle(|handle| ScriptCommand::SpawnTemplate { handle, template: trimmed.to_string() })
     }
 
     fn entity_set_position(&mut self, entity_bits: ScriptHandle, x: FLOAT, y: FLOAT) -> bool {
@@ -999,8 +980,7 @@ impl ScriptWorld {
         if !self.ensure_finite("entity_set_position", &[pos.x, pos.y]) {
             return false;
         }
-        self.state.borrow_mut().commands.push(ScriptCommand::EntitySetPosition { entity, position: pos });
-        true
+        self.push_command_plain(ScriptCommand::EntitySetPosition { entity, position: pos })
     }
 
     fn entity_set_rotation(&mut self, entity_bits: ScriptHandle, radians: FLOAT) -> bool {
@@ -1009,8 +989,7 @@ impl ScriptWorld {
         if !self.ensure_finite("entity_set_rotation", &[rot]) {
             return false;
         }
-        self.state.borrow_mut().commands.push(ScriptCommand::EntitySetRotation { entity, rotation: rot });
-        true
+        self.push_command_plain(ScriptCommand::EntitySetRotation { entity, rotation: rot })
     }
 
     fn entity_set_scale(&mut self, entity_bits: ScriptHandle, sx: FLOAT, sy: FLOAT) -> bool {
@@ -1021,8 +1000,7 @@ impl ScriptWorld {
             return false;
         }
         let clamped = Vec2::new(sx.max(0.01), sy.max(0.01));
-        self.state.borrow_mut().commands.push(ScriptCommand::EntitySetScale { entity, scale: clamped });
-        true
+        self.push_command_plain(ScriptCommand::EntitySetScale { entity, scale: clamped })
     }
 
     fn entity_set_tint(&mut self, entity_bits: ScriptHandle, r: FLOAT, g: FLOAT, b: FLOAT, a: FLOAT) -> bool {
@@ -1043,8 +1021,7 @@ impl ScriptWorld {
 
     fn entity_clear_tint(&mut self, entity_bits: ScriptHandle) -> bool {
         let entity = Entity::from_bits(entity_bits as u64);
-        self.state.borrow_mut().commands.push(ScriptCommand::EntitySetTint { entity, tint: None });
-        true
+        self.push_command_plain(ScriptCommand::EntitySetTint { entity, tint: None })
     }
 
     fn entity_set_velocity(&mut self, entity_bits: ScriptHandle, vx: FLOAT, vy: FLOAT) -> bool {
@@ -1054,17 +1031,12 @@ impl ScriptWorld {
         if !self.ensure_finite("entity_set_velocity", &[vx, vy]) {
             return false;
         }
-        self.state.borrow_mut().commands.push(ScriptCommand::EntitySetVelocity {
-            entity,
-            velocity: Vec2::new(vx, vy),
-        });
-        true
+        self.push_command_plain(ScriptCommand::EntitySetVelocity { entity, velocity: Vec2::new(vx, vy) })
     }
 
     fn entity_despawn(&mut self, entity_bits: ScriptHandle) -> bool {
         let entity = Entity::from_bits(entity_bits as u64);
-        self.state.borrow_mut().commands.push(ScriptCommand::EntityDespawn { entity });
-        true
+        self.push_command_plain(ScriptCommand::EntityDespawn { entity })
     }
 
     fn set_auto_spawn_rate(&mut self, rate: FLOAT) {
@@ -1072,12 +1044,12 @@ impl ScriptWorld {
         if !self.ensure_finite("set_auto_spawn_rate", &[rate]) {
             return;
         }
-        self.state.borrow_mut().commands.push(ScriptCommand::SetAutoSpawnRate { rate });
+        let _ = self.push_command_plain(ScriptCommand::SetAutoSpawnRate { rate });
     }
 
     fn set_spawn_per_press(&mut self, count: i64) {
         let clamped = count.clamp(0, 10_000) as i32;
-        self.state.borrow_mut().commands.push(ScriptCommand::SetSpawnPerPress { count: clamped });
+        let _ = self.push_command_plain(ScriptCommand::SetSpawnPerPress { count: clamped });
     }
 
     fn set_emitter_rate(&mut self, rate: FLOAT) {
@@ -1085,7 +1057,7 @@ impl ScriptWorld {
         if !self.ensure_finite("set_emitter_rate", &[rate]) {
             return;
         }
-        self.state.borrow_mut().commands.push(ScriptCommand::SetEmitterRate { rate: rate.max(0.0) });
+        let _ = self.push_command_plain(ScriptCommand::SetEmitterRate { rate: rate.max(0.0) });
     }
 
     fn set_emitter_spread(&mut self, spread: FLOAT) {
@@ -1094,7 +1066,7 @@ impl ScriptWorld {
             return;
         }
         let clamped = spread.clamp(0.0, std::f32::consts::PI);
-        self.state.borrow_mut().commands.push(ScriptCommand::SetEmitterSpread { spread: clamped });
+        let _ = self.push_command_plain(ScriptCommand::SetEmitterSpread { spread: clamped });
     }
 
     fn set_emitter_speed(&mut self, speed: FLOAT) {
@@ -1102,7 +1074,7 @@ impl ScriptWorld {
         if !self.ensure_finite("set_emitter_speed", &[speed]) {
             return;
         }
-        self.state.borrow_mut().commands.push(ScriptCommand::SetEmitterSpeed { speed: speed.max(0.0) });
+        let _ = self.push_command_plain(ScriptCommand::SetEmitterSpeed { speed: speed.max(0.0) });
     }
 
     fn set_emitter_lifetime(&mut self, lifetime: FLOAT) {
@@ -1110,10 +1082,7 @@ impl ScriptWorld {
         if !self.ensure_finite("set_emitter_lifetime", &[lifetime]) {
             return;
         }
-        self.state
-            .borrow_mut()
-            .commands
-            .push(ScriptCommand::SetEmitterLifetime { lifetime: lifetime.max(0.05) });
+        let _ = self.push_command_plain(ScriptCommand::SetEmitterLifetime { lifetime: lifetime.max(0.05) });
     }
 
     fn set_emitter_start_color(&mut self, r: FLOAT, g: FLOAT, b: FLOAT, a: FLOAT) {
@@ -1124,10 +1093,7 @@ impl ScriptWorld {
         if !self.ensure_finite("set_emitter_start_color", &[r, g, b, a]) {
             return;
         }
-        self.state
-            .borrow_mut()
-            .commands
-            .push(ScriptCommand::SetEmitterStartColor { color: Vec4::new(r, g, b, a) });
+        let _ = self.push_command_plain(ScriptCommand::SetEmitterStartColor { color: Vec4::new(r, g, b, a) });
     }
 
     fn set_emitter_end_color(&mut self, r: FLOAT, g: FLOAT, b: FLOAT, a: FLOAT) {
@@ -1138,10 +1104,7 @@ impl ScriptWorld {
         if !self.ensure_finite("set_emitter_end_color", &[r, g, b, a]) {
             return;
         }
-        self.state
-            .borrow_mut()
-            .commands
-            .push(ScriptCommand::SetEmitterEndColor { color: Vec4::new(r, g, b, a) });
+        let _ = self.push_command_plain(ScriptCommand::SetEmitterEndColor { color: Vec4::new(r, g, b, a) });
     }
 
     fn set_emitter_start_size(&mut self, size: FLOAT) {
@@ -1149,7 +1112,7 @@ impl ScriptWorld {
         if !self.ensure_finite("set_emitter_start_size", &[size]) {
             return;
         }
-        self.state.borrow_mut().commands.push(ScriptCommand::SetEmitterStartSize { size: size.max(0.01) });
+        let _ = self.push_command_plain(ScriptCommand::SetEmitterStartSize { size: size.max(0.01) });
     }
 
     fn set_emitter_end_size(&mut self, size: FLOAT) {
@@ -1157,7 +1120,7 @@ impl ScriptWorld {
         if !self.ensure_finite("set_emitter_end_size", &[size]) {
             return;
         }
-        self.state.borrow_mut().commands.push(ScriptCommand::SetEmitterEndSize { size: size.max(0.01) });
+        let _ = self.push_command_plain(ScriptCommand::SetEmitterEndSize { size: size.max(0.01) });
     }
 
     fn random_range(&mut self, min: FLOAT, max: FLOAT) -> FLOAT {
@@ -1421,6 +1384,52 @@ impl ScriptWorld {
             false
         }
     }
+
+    fn owner_label(&self) -> String {
+        match self.owner {
+            ListenerOwner::Host => "host".to_string(),
+            ListenerOwner::Instance(id) => format!("instance {id}"),
+        }
+    }
+
+    fn push_command_plain(&mut self, command: ScriptCommand) -> bool {
+        let owner_label = self.owner_label();
+        let mut state = self.state.borrow_mut();
+        if let Some(quota) = state.command_quota {
+            let count = state.commands_per_owner.entry(self.owner).or_insert(0);
+            if *count >= quota {
+                state
+                    .logs
+                    .push(format!("Command quota exceeded for {owner_label} (quota {quota})"));
+                return false;
+            }
+            *count += 1;
+        }
+        state.commands.push(command);
+        true
+    }
+
+    fn push_command_with_handle<F>(&mut self, build: F) -> ScriptHandle
+    where
+        F: FnOnce(ScriptHandle) -> ScriptCommand,
+    {
+        let owner_label = self.owner_label();
+        let mut state = self.state.borrow_mut();
+        if let Some(quota) = state.command_quota {
+            let count = state.commands_per_owner.entry(self.owner).or_insert(0);
+            if *count >= quota {
+                state
+                    .logs
+                    .push(format!("Command quota exceeded for {owner_label} (quota {quota})"));
+                return -1;
+            }
+            *count += 1;
+        }
+        let handle = state.next_handle;
+        state.next_handle = state.next_handle.saturating_add(1);
+        state.commands.push(build(handle));
+        handle
+    }
 }
 
 pub struct ScriptHost {
@@ -1435,6 +1444,7 @@ pub struct ScriptHost {
     last_import_digests: HashMap<PathBuf, u64>,
     last_digest_check: Option<Instant>,
     last_asset_revision: Option<u64>,
+    callback_budget_ms: Option<f32>,
     error: Option<String>,
     enabled: bool,
     initialized: bool,
@@ -1468,8 +1478,7 @@ impl ScriptHost {
         });
     }
 
-    fn record_timing(&self, name: &'static str, start: Instant) {
-        let duration_ms = start.elapsed().as_secs_f32() * 1000.0;
+    fn record_timing_elapsed(&self, name: &'static str, duration_ms: f32) {
         self.shared.borrow_mut().record_timing(name, duration_ms);
     }
 
@@ -1505,6 +1514,7 @@ impl ScriptHost {
             match listener.owner {
                 ListenerOwner::Host => {
                     let Some(ast) = &self.ast else { continue; };
+                    let script_path = self.script_path.to_string_lossy().into_owned();
                     let world = ScriptWorld::new(self.shared.clone());
                     let map = ScriptWorld::event_to_map(&event, None);
                     let start = Instant::now();
@@ -1522,37 +1532,57 @@ impl ScriptHost {
                         self.error = Some(message);
                         stale_listeners.insert(listener.id);
                     }
-                    self.record_timing("event", start);
+                    let elapsed_ms = start.elapsed().as_secs_f32() * 1000.0;
+                    self.record_timing_elapsed("event", elapsed_ms);
+                    self.enforce_budget(elapsed_ms, script_path.as_ref(), listener.handler.as_ref(), None);
                 }
                 ListenerOwner::Instance(id) => {
-                    let Some(instance) = self.instances.get_mut(&id) else {
-                        stale_listeners.insert(listener.id);
-                        continue;
-                    };
-                    if instance.errored {
+                    let mut elapsed_ms = 0.0;
+                    let mut mark_stale = false;
+                    let mut error_message = None;
+                    let mut script_path = String::new();
+                    {
+                        let Some(instance) = self.instances.get_mut(&id) else {
+                            stale_listeners.insert(listener.id);
+                            continue;
+                        };
+                        if instance.errored {
+                            mark_stale = true;
+                        } else if let Some(compiled) = self.scripts.get(&instance.script_path) {
+                            script_path = instance.script_path.clone();
+                            let listener_entity = instance.state.borrow().entity;
+                            let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone(), id);
+                            let map = ScriptWorld::event_to_map(&event, listener_entity);
+                            let start = Instant::now();
+                            let call_result = self.engine.call_fn::<Dynamic>(
+                                &mut instance.scope,
+                                &compiled.ast,
+                                listener.handler.as_ref(),
+                                (world, map),
+                            );
+                            elapsed_ms = start.elapsed().as_secs_f32() * 1000.0;
+                            if let Err(err) = call_result {
+                                instance.errored = true;
+                                error_message = Some(Self::format_rhai_error(
+                                    err.as_ref(),
+                                    &script_path,
+                                    listener.handler.as_ref(),
+                                ));
+                            }
+                        } else {
+                            mark_stale = true;
+                        }
+                    }
+                    if mark_stale {
                         stale_listeners.insert(listener.id);
                         continue;
                     }
-                    let Some(compiled) = self.scripts.get(&instance.script_path) else {
-                        stale_listeners.insert(listener.id);
-                        continue;
-                    };
-                    let listener_entity = instance.state.borrow().entity;
-                    let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone());
-                    let map = ScriptWorld::event_to_map(&event, listener_entity);
-                    let start = Instant::now();
-                    if let Err(err) = self.engine.call_fn::<Dynamic>(
-                        &mut instance.scope,
-                        &compiled.ast,
-                        listener.handler.as_ref(),
-                        (world, map),
-                    ) {
-                        instance.errored = true;
-                        let message = Self::format_rhai_error(err.as_ref(), &instance.script_path, listener.handler.as_ref());
+                    if let Some(message) = error_message {
                         self.error = Some(message);
                         stale_listeners.insert(listener.id);
                     }
-                    self.record_timing("event", start);
+                    self.record_timing_elapsed("event", elapsed_ms);
+                    self.enforce_budget(elapsed_ms, &script_path, listener.handler.as_ref(), Some(id));
                 }
             }
         }
@@ -1571,6 +1601,22 @@ impl ScriptHost {
             _ => script_path.to_string(),
         };
         format!("{location} in {fn_name}: {err}")
+    }
+
+    fn enforce_budget(&mut self, duration_ms: f32, script_path: &str, fn_name: &str, instance_id: Option<u64>) {
+        let Some(budget_ms) = self.callback_budget_ms else { return };
+        if duration_ms <= budget_ms {
+            return;
+        }
+        let mut message =
+            format!("{script_path}:{fn_name} exceeded callback budget ({duration_ms:.3} ms > {budget_ms:.3} ms)");
+        if let Some(id) = instance_id {
+            if let Some(instance) = self.instances.get_mut(&id) {
+                message.push_str(&format!(" [instance {id}]"));
+                instance.errored = true;
+            }
+        }
+        self.set_error_message(message);
     }
 
     pub fn new(path: impl AsRef<Path>) -> Self {
@@ -1592,6 +1638,7 @@ impl ScriptHost {
             last_import_digests: HashMap::new(),
             last_digest_check: None,
             last_asset_revision: None,
+            callback_budget_ms: None,
             error: None,
             enabled: true,
             initialized: false,
@@ -1610,6 +1657,17 @@ impl ScriptHost {
 
     pub fn set_enabled(&mut self, enable: bool) {
         self.enabled = enable;
+    }
+
+    pub fn set_callback_budget_ms(&mut self, budget_ms: Option<f32>) {
+        self.callback_budget_ms = budget_ms.filter(|v| *v > 0.0);
+    }
+
+    pub fn set_command_quota(&mut self, quota: Option<usize>) {
+        let quota = quota.filter(|q| *q > 0);
+        let mut shared = self.shared.borrow_mut();
+        shared.command_quota = quota;
+        shared.commands_per_owner.clear();
     }
 
     pub fn last_error(&self) -> Option<&str> {
@@ -1849,26 +1907,34 @@ impl ScriptHost {
         if !compiled.has_ready || instance.has_ready_run || instance.errored {
             return Ok(());
         }
-        let entity_int: ScriptHandle = entity_to_rhai(instance.entity);
-        let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone());
-        let start = Instant::now();
-        match self
-            .engine
-            .call_fn::<Dynamic>(&mut instance.scope, &compiled.ast, "ready", (world, entity_int))
+        let elapsed_ms;
+        let mut error_message = None;
+        let script_path = instance.script_path.clone();
         {
-            Ok(_) => {
-                instance.has_ready_run = true;
-                instance.state.borrow_mut().is_hot_reload = false;
-                self.record_timing("ready", start);
-                Ok(())
+            let entity_int: ScriptHandle = entity_to_rhai(instance.entity);
+            let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone(), instance_id);
+            let start = Instant::now();
+            let result =
+                self.engine.call_fn::<Dynamic>(&mut instance.scope, &compiled.ast, "ready", (world, entity_int));
+            elapsed_ms = start.elapsed().as_secs_f32() * 1000.0;
+            match result {
+                Ok(_) => {
+                    instance.has_ready_run = true;
+                    instance.state.borrow_mut().is_hot_reload = false;
+                }
+                Err(err) => {
+                    instance.errored = true;
+                    error_message = Some(Self::format_rhai_error(err.as_ref(), &script_path, "ready"));
+                }
             }
-            Err(err) => {
-                instance.errored = true;
-                let message = Self::format_rhai_error(err.as_ref(), &instance.script_path, "ready");
-                self.error = Some(message.clone());
-                self.record_timing("ready", start);
-                Err(anyhow!(message))
-            }
+        }
+        self.record_timing_elapsed("ready", elapsed_ms);
+        self.enforce_budget(elapsed_ms, &script_path, "ready", Some(instance_id));
+        if let Some(message) = error_message {
+            self.error = Some(message.clone());
+            Err(anyhow!(message))
+        } else {
+            Ok(())
         }
     }
 
@@ -1882,28 +1948,34 @@ impl ScriptHost {
         if !compiled.has_process || instance.errored {
             return Ok(());
         }
-        let entity_int: ScriptHandle = entity_to_rhai(instance.entity);
-        let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone());
-        instance.state.borrow_mut().tick_timers(dt);
-        let dt_rhai: FLOAT = dt as FLOAT;
-        let start = Instant::now();
-        match self.engine.call_fn::<Dynamic>(
-            &mut instance.scope,
-            &compiled.ast,
-            "process",
-            (world, entity_int, dt_rhai),
-        ) {
-            Ok(_) => {
-                self.record_timing("process", start);
-                Ok(())
-            }
-            Err(err) => {
+        let elapsed_ms;
+        let mut error_message = None;
+        let script_path = instance.script_path.clone();
+        {
+            let entity_int: ScriptHandle = entity_to_rhai(instance.entity);
+            let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone(), instance_id);
+            instance.state.borrow_mut().tick_timers(dt);
+            let dt_rhai: FLOAT = dt as FLOAT;
+            let start = Instant::now();
+            let result = self.engine.call_fn::<Dynamic>(
+                &mut instance.scope,
+                &compiled.ast,
+                "process",
+                (world, entity_int, dt_rhai),
+            );
+            elapsed_ms = start.elapsed().as_secs_f32() * 1000.0;
+            if let Err(err) = result {
                 instance.errored = true;
-                let message = Self::format_rhai_error(err.as_ref(), &instance.script_path, "process");
-                self.error = Some(message.clone());
-                self.record_timing("process", start);
-                Err(anyhow!(message))
+                error_message = Some(Self::format_rhai_error(err.as_ref(), &script_path, "process"));
             }
+        }
+        self.record_timing_elapsed("process", elapsed_ms);
+        self.enforce_budget(elapsed_ms, &script_path, "process", Some(instance_id));
+        if let Some(message) = error_message {
+            self.error = Some(message.clone());
+            Err(anyhow!(message))
+        } else {
+            Ok(())
         }
     }
 
@@ -1917,28 +1989,35 @@ impl ScriptHost {
         if !compiled.has_physics_process || instance.errored {
             return Ok(());
         }
-        let entity_int: ScriptHandle = entity_to_rhai(instance.entity);
-        let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone());
-        instance.state.borrow_mut().tick_timers(dt);
-        let dt_rhai: FLOAT = dt as FLOAT;
-        let start = Instant::now();
-        match self.engine.call_fn::<Dynamic>(
-            &mut instance.scope,
-            &compiled.ast,
-            "physics_process",
-            (world, entity_int, dt_rhai),
-        ) {
-            Ok(_) => {
-                self.record_timing("physics_process", start);
-                Ok(())
-            }
-            Err(err) => {
+        let elapsed_ms;
+        let mut error_message = None;
+        let script_path = instance.script_path.clone();
+        {
+            let entity_int: ScriptHandle = entity_to_rhai(instance.entity);
+            let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone(), instance_id);
+            instance.state.borrow_mut().tick_timers(dt);
+            let dt_rhai: FLOAT = dt as FLOAT;
+            let start = Instant::now();
+            let result = self.engine.call_fn::<Dynamic>(
+                &mut instance.scope,
+                &compiled.ast,
+                "physics_process",
+                (world, entity_int, dt_rhai),
+            );
+            elapsed_ms = start.elapsed().as_secs_f32() * 1000.0;
+            if let Err(err) = result {
                 instance.errored = true;
-                let message = Self::format_rhai_error(err.as_ref(), &instance.script_path, "physics_process");
-                self.error = Some(message.clone());
-                self.record_timing("physics_process", start);
-                Err(anyhow!(message))
+                error_message =
+                    Some(Self::format_rhai_error(err.as_ref(), &script_path, "physics_process"));
             }
+        }
+        self.record_timing_elapsed("physics_process", elapsed_ms);
+        self.enforce_budget(elapsed_ms, &script_path, "physics_process", Some(instance_id));
+        if let Some(message) = error_message {
+            self.error = Some(message.clone());
+            Err(anyhow!(message))
+        } else {
+            Ok(())
         }
     }
 
@@ -1952,20 +2031,27 @@ impl ScriptHost {
         if !compiled.has_exit || instance.errored {
             return Ok(());
         }
-        let entity_int: ScriptHandle = entity_to_rhai(instance.entity);
-        let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone());
-        let start = Instant::now();
-        match self.engine.call_fn::<Dynamic>(&mut instance.scope, &compiled.ast, "exit", (world, entity_int)) {
-            Ok(_) => {
-                self.record_timing("exit", start);
-                Ok(())
+        let elapsed_ms;
+        let mut error_message = None;
+        let script_path = instance.script_path.clone();
+        {
+            let entity_int: ScriptHandle = entity_to_rhai(instance.entity);
+            let world = ScriptWorld::with_instance(self.shared.clone(), instance.state.clone(), instance_id);
+            let start = Instant::now();
+            let result = self.engine.call_fn::<Dynamic>(&mut instance.scope, &compiled.ast, "exit", (world, entity_int));
+            elapsed_ms = start.elapsed().as_secs_f32() * 1000.0;
+            if let Err(err) = result {
+                instance.errored = true;
+                error_message = Some(Self::format_rhai_error(err.as_ref(), &script_path, "exit"));
             }
-            Err(err) => {
-                let message = Self::format_rhai_error(err.as_ref(), &instance.script_path, "exit");
-                self.error = Some(message.clone());
-                self.record_timing("exit", start);
-                Err(anyhow!(message))
-            }
+        }
+        self.record_timing_elapsed("exit", elapsed_ms);
+        self.enforce_budget(elapsed_ms, &script_path, "exit", Some(instance_id));
+        if let Some(message) = error_message {
+            self.error = Some(message.clone());
+            Err(anyhow!(message))
+        } else {
+            Ok(())
         }
     }
 
@@ -1974,6 +2060,7 @@ impl ScriptHost {
         let mut shared = self.shared.borrow_mut();
         shared.events_dispatched = 0;
         shared.event_overflowed = false;
+        shared.commands_per_owner.clear();
         let mut scale = shared.time_scale;
         if !scale.is_finite() {
             scale = 1.0;
@@ -2005,29 +2092,36 @@ impl ScriptHost {
         }
         let dt_scaled = self.begin_frame(dt);
         let dt_rhai: FLOAT = dt_scaled as FLOAT;
-        let ast = match &self.ast {
-            Some(ast) => ast,
-            None => return dt_scaled,
-        };
 
         {
             let mut shared = self.shared.borrow_mut();
             shared.commands.clear();
         }
 
+        let script_path = self.script_path.to_string_lossy().into_owned();
         let world = ScriptWorld::new(self.shared.clone());
         if !self.initialized {
-            let start = Instant::now();
-            match self.engine.call_fn::<()>(&mut self.scope, ast, "init", (world.clone(),)) {
+            let (init_result, init_elapsed, init_fn_exists) = {
+                let ast = match &self.ast {
+                    Some(ast) => ast,
+                    None => return dt_scaled,
+                };
+                let init_fn_exists = self.function_exists_with_any_arity(ast, "init");
+                let start = Instant::now();
+                let result = self.engine.call_fn::<()>(&mut self.scope, ast, "init", (world.clone(),));
+                (result, start.elapsed().as_secs_f32() * 1000.0, init_fn_exists)
+            };
+            self.record_timing_elapsed("init", init_elapsed);
+            self.enforce_budget(init_elapsed, script_path.as_ref(), "init", None);
+            match init_result {
                 Ok(_) => {
                     self.initialized = true;
                     self.error = None;
-                    self.record_timing("init", start);
                 }
                 Err(err) => {
                     if let EvalAltResult::ErrorFunctionNotFound(fn_sig, _) = err.as_ref() {
                         if fn_sig.starts_with("init") {
-                            if self.function_exists_with_any_arity(ast, "init") {
+                            if init_fn_exists {
                                 let msg = format!(
                                     "{}: Script function 'init' has wrong signature; expected init(world).",
                                     self.script_path.display()
@@ -2041,25 +2135,33 @@ impl ScriptHost {
                             return dt_scaled;
                         }
                     }
-                    let msg =
-                        Self::format_rhai_error(err.as_ref(), self.script_path.to_string_lossy().as_ref(), "init");
+                    let msg = Self::format_rhai_error(err.as_ref(), script_path.as_ref(), "init");
                     self.error = Some(msg);
-                    self.record_timing("init", start);
                     return dt_scaled;
                 }
             }
         }
 
-        let start = Instant::now();
-        match self.engine.call_fn::<()>(&mut self.scope, ast, "update", (world, dt_rhai)) {
+        let (result, elapsed_ms, update_fn_exists) = {
+            let ast = match &self.ast {
+                Some(ast) => ast,
+                None => return dt_scaled,
+            };
+            let update_fn_exists = self.function_exists_with_any_arity(ast, "update");
+            let start = Instant::now();
+            let result = self.engine.call_fn::<()>(&mut self.scope, ast, "update", (world, dt_rhai));
+            (result, start.elapsed().as_secs_f32() * 1000.0, update_fn_exists)
+        };
+        self.record_timing_elapsed("update", elapsed_ms);
+        self.enforce_budget(elapsed_ms, script_path.as_ref(), "update", None);
+        match result {
             Ok(_) => {
                 self.error = None;
-                self.record_timing("update", start);
             }
             Err(err) => {
                 if let EvalAltResult::ErrorFunctionNotFound(fn_sig, _) = err.as_ref() {
                     if fn_sig.starts_with("update") {
-                        if self.function_exists_with_any_arity(ast, "update") {
+                        if update_fn_exists {
                             let msg = format!(
                                 "{}: Script function 'update' has wrong signature; expected update(world, dt: number).",
                                 self.script_path.display()
@@ -2072,13 +2174,9 @@ impl ScriptHost {
                         return dt_scaled;
                     }
                 }
-                let msg = Self::format_rhai_error(
-                    err.as_ref(),
-                    self.script_path.to_string_lossy().as_ref(),
-                    "update",
-                );
+                let msg =
+                    Self::format_rhai_error(err.as_ref(), self.script_path.to_string_lossy().as_ref(), "update");
                 self.error = Some(msg);
-                self.record_timing("update", start);
             }
         }
         self.dispatch_script_events();
@@ -2388,6 +2486,14 @@ impl ScriptPlugin {
     pub fn set_rng_seed(&mut self, seed: u64) {
         let mut shared = self.host.shared.borrow_mut();
         shared.rng = Some(StdRng::seed_from_u64(seed));
+    }
+
+    pub fn set_callback_budget_ms(&mut self, budget_ms: Option<f32>) {
+        self.host.set_callback_budget_ms(budget_ms);
+    }
+
+    pub fn set_command_quota(&mut self, quota: Option<usize>) {
+        self.host.set_command_quota(quota);
     }
 
     fn populate_entity_snapshots(&mut self, ecs: &mut crate::ecs::EcsWorld) {
@@ -3585,6 +3691,94 @@ mod tests {
     }
 
     #[test]
+    fn command_quota_limits_per_instance_commands() {
+        let main = write_script(
+            r#"
+                fn init(world) { }
+                fn update(world, dt) { }
+            "#,
+        );
+        let behaviour = write_script(
+            r#"
+                fn ready(world, entity) {
+                    world.spawn_prefab("first");
+                    world.spawn_prefab("second");
+                }
+                fn process(world, entity, dt) { }
+            "#,
+        );
+        let behaviour_path = behaviour.path().to_string_lossy().into_owned();
+        let mut plugin = ScriptPlugin::new(main.path());
+        plugin.set_command_quota(Some(1));
+        let mut ecs = EcsWorld::new();
+        let assets = AssetManager::new();
+        ecs.world.spawn((Transform::default(), ScriptBehaviour::new(behaviour_path)));
+        plugin.populate_entity_snapshots(&mut ecs);
+        plugin.cleanup_orphaned_instances(&mut ecs);
+        plugin.host.begin_frame(0.016);
+        plugin
+            .run_behaviours(&mut ecs, &assets, 0.016, false)
+            .expect("behaviours should run with quota");
+        let cmds = plugin.drain_host_commands();
+        assert_eq!(cmds.len(), 1, "quota should drop extra commands");
+        let logs = plugin.host.drain_logs();
+        assert!(
+            logs.iter().any(|l| l.contains("quota")),
+            "quota breach should log an informational message"
+        );
+    }
+
+    #[test]
+    fn callback_budget_marks_instances_errored() {
+        let main = write_script(
+            r#"
+                fn init(world) { }
+                fn update(world, dt) { }
+            "#,
+        );
+        let behaviour = write_script(
+            r#"
+                fn ready(world, entity) {
+                    let mut i = 0;
+                    while i < 2_000_000 {
+                        i += 1;
+                    }
+                }
+                fn process(world, entity, dt) { }
+            "#,
+        );
+        let behaviour_path = behaviour.path().to_string_lossy().into_owned();
+        let mut plugin = ScriptPlugin::new(main.path());
+        plugin.set_callback_budget_ms(Some(0.01));
+        let mut ecs = EcsWorld::new();
+        let assets = AssetManager::new();
+        let entity = ecs
+            .world
+            .spawn((Transform::default(), ScriptBehaviour::new(behaviour_path.clone())))
+            .id();
+        plugin.populate_entity_snapshots(&mut ecs);
+        plugin.cleanup_orphaned_instances(&mut ecs);
+        plugin.host.begin_frame(0.016);
+        plugin
+            .run_behaviours(&mut ecs, &assets, 0.016, false)
+            .expect("behaviours should run with budget enforcement");
+        let instance_id = ecs
+            .world
+            .get::<ScriptBehaviour>(entity)
+            .expect("behaviour attached")
+            .instance_id;
+        assert!(instance_id != 0, "instance id should be assigned");
+        let instance = plugin.host.instances.get(&instance_id).expect("instance cached");
+        assert!(
+            instance.errored,
+            "budget overrun should mark instance errored; error was {:?}",
+            plugin.host.last_error()
+        );
+        let err = plugin.last_error().unwrap_or("");
+        assert!(err.contains("budget"), "expected budget error message, got {err:?}");
+    }
+
+    #[test]
     fn main_script_reloads_when_import_changes() {
         let mut module = Builder::new()
             .prefix("rhai_main_import_")
@@ -3649,7 +3843,7 @@ mod tests {
     fn timers_tick_and_repeat() {
         let shared = Rc::new(RefCell::new(SharedState::default()));
         let instance = Rc::new(RefCell::new(InstanceRuntimeState::default()));
-        let mut world = ScriptWorld::with_instance(shared, instance.clone());
+        let mut world = ScriptWorld::with_instance(shared, instance.clone(), 1);
         assert!(world.timer_start("once", 0.1));
         instance.borrow_mut().tick_timers(0.05);
         let remaining = world.timer_remaining("once");

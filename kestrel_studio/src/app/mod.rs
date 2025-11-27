@@ -637,6 +637,8 @@ impl App {
                 } else if scripts_cfg.deterministic_ordering {
                     plugin.set_deterministic_ordering(true);
                 }
+                plugin.set_callback_budget_ms(scripts_cfg.callback_budget_ms);
+                plugin.set_command_quota(scripts_cfg.command_quota);
                 Box::new(plugin)
             }));
         }

@@ -163,11 +163,15 @@ pub struct ScriptsConfig {
     #[serde(default)]
     pub deterministic_ordering: bool,
     pub deterministic_seed: Option<u64>,
+    #[serde(default)]
+    pub callback_budget_ms: Option<f32>,
+    #[serde(default)]
+    pub command_quota: Option<usize>,
 }
 
 impl Default for ScriptsConfig {
     fn default() -> Self {
-        Self { deterministic_ordering: false, deterministic_seed: None }
+        Self { deterministic_ordering: false, deterministic_seed: None, callback_budget_ms: None, command_quota: None }
     }
 }
 
