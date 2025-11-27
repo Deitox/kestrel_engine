@@ -1581,6 +1581,22 @@ impl Renderer {
     pub fn take_gpu_timings(&mut self) -> Vec<GpuPassTiming> {
         self.gpu_timer.take_latest()
     }
+
+    #[cfg(all(test, feature = "editor"))]
+    fn collect_gpu_timings_for_test(&mut self) {
+        if let Ok(device_ref) = self.window_surface.device() {
+            let device_ptr = device_ref as *const wgpu::Device;
+            // Safe because the device is owned by the renderer and lives for the duration of the test.
+            let device = unsafe { &*device_ptr };
+            for _ in 0..4 {
+                self.gpu_timer.collect_results(device);
+                if !self.gpu_timer.latest.is_empty() {
+                    break;
+                }
+                let _ = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1761,6 +1777,7 @@ mod pass_tests {
             pixels_per_point: renderer.pixels_per_point(),
         };
         renderer.render_egui(&mut egui_renderer, &[], &screen, frame).expect("render egui");
+        renderer.collect_gpu_timings_for_test();
         let timings = renderer.take_gpu_timings();
         if renderer.gpu_timing_supported() {
             assert!(!timings.is_empty());

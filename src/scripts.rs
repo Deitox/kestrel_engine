@@ -690,15 +690,17 @@ impl ScriptWorld {
     ) -> Map {
         let origin = Vec2::new(ox as f32, oy as f32);
         let dir = Vec2::new(dx as f32, dy as f32);
-        let max_dist = if max_dist.is_finite() && max_dist > 0.0 { max_dist as f32 } else { f32::INFINITY };
-        if let Some(hit) = self.rapier_raycast(origin, dir, max_dist, &filters) {
-            return Self::raycast_hit_to_map(hit);
+        let dir_len_sq = dir.length_squared();
+        if dir_len_sq <= f32::EPSILON {
+            return Map::new();
         }
-        let mut best: Option<RaycastHit> = None;
+        let dir_norm = dir / dir_len_sq.sqrt();
+        let max_dist = if max_dist.is_finite() && max_dist > 0.0 { max_dist as f32 } else { f32::INFINITY };
+        let mut best = self.rapier_raycast(origin, dir_norm, max_dist, &filters);
         let state = self.state.borrow();
         let candidates = state
             .spatial_index
-            .ray_candidates(origin, dir, max_dist)
+            .ray_candidates(origin, dir_norm, max_dist)
             .unwrap_or_else(|| state.entity_snapshots.keys().copied().collect());
         let mut snapshots: Vec<_> = candidates
             .into_iter()
@@ -713,13 +715,12 @@ impl ScriptWorld {
             if half.x <= 0.0 || half.y <= 0.0 {
                 continue;
             }
-            if let Some((dist, hit)) = Self::ray_aabb_2d(origin, dir, snap.translation, half) {
-                if dist <= max_dist && dist.is_finite() && dist >= 0.0 {
-                    match best {
-                        Some(existing) if dist >= existing.distance => {}
-                        _ => best = Some(RaycastHit { entity, distance: dist, point: hit, normal: None, collider: None }),
-                    }
-                }
+            if let Some((dist, hit)) = Self::ray_aabb_2d(origin, dir_norm, snap.translation, half) {
+                Self::update_best_ray_hit(
+                    &mut best,
+                    RaycastHit { entity, distance: dist, point: hit, normal: None, collider: None },
+                    max_dist,
+                );
             }
         }
         best.map(Self::raycast_hit_to_map).unwrap_or_default()
@@ -749,16 +750,18 @@ impl ScriptWorld {
         if radius <= 0.0 || !radius.is_finite() {
             return Array::new();
         }
-        let mut hits = Array::new();
-        let state = self.state.borrow();
+        let mut seen = HashSet::new();
+        let mut hits = Vec::new();
         let r2 = radius * radius;
         if let Some(mut rapier_hits) = self.rapier_overlap_circle(center, radius, &filters) {
             rapier_hits.sort_by_key(|h| h.entity.to_bits());
             for hit in rapier_hits {
-                hits.push(Dynamic::from(entity_to_rhai(hit.entity)));
+                if seen.insert(hit.entity) {
+                    hits.push(hit.entity);
+                }
             }
-            return hits;
         }
+        let state = self.state.borrow();
         let candidates = state
             .spatial_index
             .circle_candidates(center, radius)
@@ -777,11 +780,12 @@ impl ScriptWorld {
                 continue;
             }
             let closest = snap.translation.clamp(center - half, center + half);
-            if (closest - center).length_squared() <= r2 {
-                hits.push(Dynamic::from(entity_to_rhai(entity)));
+            if (closest - center).length_squared() <= r2 && seen.insert(entity) {
+                hits.push(entity);
             }
         }
-        hits
+        hits.sort_by_key(|e| e.to_bits());
+        hits.into_iter().map(|entity| Dynamic::from(entity_to_rhai(entity))).collect()
     }
 
     fn overlap_circle_hits_filtered(&mut self, cx: FLOAT, cy: FLOAT, radius: FLOAT, filters: QueryFilters) -> Array {
@@ -790,12 +794,14 @@ impl ScriptWorld {
         if radius <= 0.0 || !radius.is_finite() {
             return Array::new();
         }
-        if let Some(mut rapier_hits) = self.rapier_overlap_circle(center, radius, &filters) {
-            rapier_hits.sort_by_key(|h| h.entity.to_bits());
-            return rapier_hits
-                .into_iter()
-                .map(|hit| Dynamic::from(Self::overlap_hit_to_map(hit, center, None)))
-                .collect();
+        let mut merged: HashMap<Entity, (OverlapHit, Option<Vec2>)> = HashMap::new();
+        if let Some(rapier_hits) = self.rapier_overlap_circle(center, radius, &filters) {
+            for hit in rapier_hits {
+                let entry = merged.entry(hit.entity).or_insert((hit, None));
+                if entry.0.collider.is_none() {
+                    entry.0.collider = hit.collider;
+                }
+            }
         }
         let state = self.state.borrow();
         let r2 = radius * radius;
@@ -808,7 +814,6 @@ impl ScriptWorld {
             .filter_map(|entity| state.entity_snapshots.get(&entity).map(|snap| (entity, snap)))
             .collect();
         snapshots.sort_by_key(|(entity, _)| entity.to_bits());
-        let mut hits = Array::new();
         for (entity, snap) in snapshots {
             if !filters.matches(entity) {
                 continue;
@@ -819,11 +824,17 @@ impl ScriptWorld {
             }
             let closest = snap.translation.clamp(center - half, center + half);
             if (closest - center).length_squared() <= r2 {
-                let hit = OverlapHit { entity, collider: None };
-                hits.push(Dynamic::from(Self::overlap_hit_to_map(hit, center, Some(snap.translation))));
+                let entry = merged.entry(entity).or_insert((OverlapHit { entity, collider: None }, None));
+                if entry.1.is_none() {
+                    entry.1 = Some(snap.translation);
+                }
             }
         }
-        hits
+        let mut hits: Vec<_> = merged.into_iter().collect();
+        hits.sort_by_key(|(entity, _)| entity.to_bits());
+        hits.into_iter()
+            .map(|(_, (hit, translation))| Dynamic::from(Self::overlap_hit_to_map(hit, center, translation)))
+            .collect()
     }
 
     fn rapier_context(&self) -> Option<PhysicsQueryContext> {
@@ -866,6 +877,27 @@ impl ScriptWorld {
         packed as ScriptHandle
     }
 
+    fn update_best_ray_hit(best: &mut Option<RaycastHit>, candidate: RaycastHit, max_dist: f32) {
+        if !candidate.distance.is_finite() || candidate.distance < 0.0 || candidate.distance > max_dist {
+            return;
+        }
+        let replace = match best {
+            None => true,
+            Some(existing) => {
+                if candidate.distance < existing.distance - 1e-5 {
+                    true
+                } else {
+                    (candidate.distance - existing.distance).abs() <= 1e-5
+                        && existing.collider.is_none()
+                        && candidate.collider.is_some()
+                }
+            }
+        };
+        if replace {
+            *best = Some(candidate);
+        }
+    }
+
     fn rapier_raycast(
         &self,
         origin: Vec2,
@@ -885,11 +917,15 @@ impl ScriptWorld {
         let mut callback = |handle: ColliderHandle, hit: RayIntersection| {
             if let Some(entity) = view.collider_entities.get(&handle).copied() {
                 if filters.matches(entity) {
-                    let toi = hit.time_of_impact as f32;
-                    let point = origin + dir.normalize() * toi;
-                    let normal = Vec2::new(hit.normal.x, hit.normal.y);
-                    best = Some(RaycastHit { entity, distance: toi, point, normal: Some(normal), collider: Some(handle) });
-                    return false;
+                    let distance = hit.time_of_impact as f32;
+                    let candidate = RaycastHit {
+                        entity,
+                        distance,
+                        point: origin + dir * distance,
+                        normal: Some(Vec2::new(hit.normal.x, hit.normal.y)),
+                        collider: Some(handle),
+                    };
+                    Self::update_best_ray_hit(&mut best, candidate, max_dist);
                 }
             }
             true
@@ -4407,7 +4443,7 @@ mod tests {
         let behaviour = write_script(
             r#"
                 fn ready(world, entity) {
-                    let mut i = 0;
+                    let i = 0;
                     while i < 2_000_000 {
                         i += 1;
                     }
@@ -4726,6 +4762,49 @@ mod tests {
     }
 
     #[test]
+    fn raycast_prefers_closest_snapshot_over_rapier_hit() {
+        let params = PhysicsParams { gravity: Vec2::ZERO, linear_damping: 0.0 };
+        let bounds = WorldBounds { min: Vec2::splat(-10.0), max: Vec2::splat(10.0), thickness: 0.1 };
+        let mut rapier = RapierState::new(&params, &bounds, Entity::from_raw(9000));
+        let rapier_entity = Entity::from_raw(101);
+        let (_body, collider) =
+            rapier.spawn_dynamic_body(Vec2::new(6.0, 0.0), Vec2::splat(1.0), 0.0, Vec2::ZERO);
+        rapier.register_collider_entity(collider, rapier_entity);
+        rapier.step(0.0);
+
+        let near_entity = Entity::from_raw(102);
+        let mut snaps = HashMap::new();
+        snaps.insert(
+            near_entity,
+            EntitySnapshot {
+                translation: Vec2::new(3.0, 0.0),
+                rotation: 0.0,
+                scale: Vec2::ONE,
+                velocity: None,
+                tint: None,
+                half_extents: Some(Vec2::splat(0.5)),
+            },
+        );
+        let mut index = ScriptSpatialIndex::default();
+        index.rebuild(&snaps, 0.5);
+
+        let state = Rc::new(RefCell::new(SharedState::default()));
+        {
+            let mut shared = state.borrow_mut();
+            shared.entity_snapshots = snaps;
+            shared.spatial_index = index;
+            shared.physics_ctx = Some(PhysicsQueryContext::from_state(&rapier));
+        }
+        let mut world = ScriptWorld::new(state);
+        let hit = world.raycast(0.0, 0.0, 1.0, 0.0, 20.0);
+        let entity_val: ScriptHandle = hit.get("entity").unwrap().clone().try_cast().unwrap();
+        assert_eq!(entity_val as u64, near_entity.to_bits(), "closest snapshot hit should win");
+        let distance: FLOAT = hit.get("distance").unwrap().clone().try_cast().unwrap();
+        assert!((distance - 2.5).abs() < 1e-4, "expected entry face of snapshot AABB");
+        assert!(hit.get("collider").is_none(), "snapshot-derived hit should not report a collider handle");
+    }
+
+    #[test]
     fn overlap_circle_collects_intersecting_entities() {
         let state = Rc::new(RefCell::new(SharedState::default()));
         {
@@ -4798,6 +4877,74 @@ mod tests {
         assert_eq!(hits.len(), 1, "include filter should drop extra hits");
         let handle: ScriptHandle = hits[0].clone().try_cast().unwrap();
         assert_eq!(handle as u64, target.to_bits());
+    }
+
+    #[test]
+    fn overlap_circle_merges_snapshot_and_rapier_hits() {
+        let params = PhysicsParams { gravity: Vec2::ZERO, linear_damping: 0.0 };
+        let bounds = WorldBounds { min: Vec2::splat(-5.0), max: Vec2::splat(5.0), thickness: 0.1 };
+        let mut rapier = RapierState::new(&params, &bounds, Entity::from_raw(9001));
+        let rapier_entity = Entity::from_raw(111);
+        let (_body, collider) =
+            rapier.spawn_dynamic_body(Vec2::new(0.6, 0.0), Vec2::splat(0.25), 0.0, Vec2::ZERO);
+        rapier.register_collider_entity(collider, rapier_entity);
+        rapier.step(0.0);
+
+        let snap_entity = Entity::from_raw(112);
+        let mut snaps = HashMap::new();
+        snaps.insert(
+            rapier_entity,
+            EntitySnapshot {
+                translation: Vec2::new(0.6, 0.0),
+                rotation: 0.0,
+                scale: Vec2::ONE,
+                velocity: None,
+                tint: None,
+                half_extents: Some(Vec2::splat(0.25)),
+            },
+        );
+        snaps.insert(
+            snap_entity,
+            EntitySnapshot {
+                translation: Vec2::new(-0.4, 0.0),
+                rotation: 0.0,
+                scale: Vec2::ONE,
+                velocity: None,
+                tint: None,
+                half_extents: Some(Vec2::splat(0.25)),
+            },
+        );
+        let mut index = ScriptSpatialIndex::default();
+        index.rebuild(&snaps, 0.25);
+
+        let state = Rc::new(RefCell::new(SharedState::default()));
+        {
+            let mut shared = state.borrow_mut();
+            shared.entity_snapshots = snaps;
+            shared.spatial_index = index;
+            shared.physics_ctx = Some(PhysicsQueryContext::from_state(&rapier));
+        }
+        let mut world = ScriptWorld::new(state);
+        let hits = world.overlap_circle_hits(0.0, 0.0, 1.0);
+        assert_eq!(hits.len(), 2, "should combine rapier and snapshot overlaps");
+        let mut info: HashMap<u64, (bool, bool)> = HashMap::new();
+        for (entity_bits, has_collider, has_normal) in hits.into_iter().map(|d| {
+            let map = d.try_cast::<Map>().unwrap();
+            let entity_val: ScriptHandle = map.get("entity").unwrap().clone().try_cast().unwrap();
+            let has_collider = map.get("collider").is_some();
+            let has_normal = map.get("approx_normal").is_some();
+            (entity_val as u64, has_collider, has_normal)
+        }) {
+            info.insert(entity_bits, (has_collider, has_normal));
+        }
+        let (snap_collider, snap_normal) =
+            info.get(&snap_entity.to_bits()).expect("snapshot entity should be included");
+        assert!(!*snap_collider, "snapshot hit should not report collider handle");
+        assert!(*snap_normal, "snapshot hit should include an approximate normal");
+        let (rapier_collider, rapier_normal) =
+            info.get(&rapier_entity.to_bits()).expect("rapier entity should be included");
+        assert!(*rapier_collider, "rapier hit should keep collider handle");
+        assert!(*rapier_normal, "rapier hit should pick up snapshot translation for normals");
     }
 
     #[test]
@@ -5114,7 +5261,7 @@ mod tests {
             r#"
                 fn init(world) {
                     world.listen("ping", "on_ping");
-                    world.emit("ping", #{ value: 7 });
+                    let _ok = world.emit("ping", #{ value: 7 });
                 }
                 fn on_ping(world, event) {
                     let payload = event["payload"]["value"];
@@ -5126,6 +5273,7 @@ mod tests {
         let mut host = ScriptHost::new(script.path());
         host.force_reload(None).expect("load script");
         let _ = host.update(0.016, true, None);
+        assert!(host.last_error().is_none(), "unexpected error: {:?}", host.last_error());
         let logs = host.drain_logs();
         assert!(
             logs.iter().any(|l| l.contains("ping:7")),
