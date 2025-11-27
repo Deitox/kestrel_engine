@@ -62,7 +62,8 @@ Status legend: `[x]` done, `[~]` partial/incomplete, `[ ]` not started/unknown.
 - [x] Prefab stubs and aliases exist for the kit player + light/heavy enemies under `assets/prefabs/`.
 - [x] Harness coverage: `gamekit_wave` fixture/golden exercises kit flow, stat sync, and upgrade purchases (income, damage, spawn cadence, auto-repair).
 - [x] Collision-driven behaviours emit kit damage events (player vs. enemies) wired into the kit handlers.
-- [ ] Editor-facing docs, richer behaviours, and tuning helpers still pending.
+- [x] Studio reference updated with GameKit event/stat entries; quickstart + sample scene added (`docs/gamekit_quickstart.md`, `assets/scenes/gamekit_sample_scene.json`).
+- [ ] Richer behaviours and tuning helpers still pending.
 
 ### Recent core tightenings
 - Added Rapier-backed script queries: raycasts now return normals + collider IDs and fall back to snapshots; overlaps can return collider IDs via `overlap_circle_hits` (with filters variant) while preserving legacy array output.
