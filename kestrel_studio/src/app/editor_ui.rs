@@ -1032,6 +1032,7 @@ pub(super) struct ScriptDebuggerParams {
     pub repl_history: Arc<[String]>,
     pub console_entries: Arc<[ScriptConsoleEntry]>,
     pub focus_repl: bool,
+    pub parse_hits_in_console: bool,
 }
 
 pub(super) struct ScriptDebuggerOutput {
@@ -1041,6 +1042,7 @@ pub(super) struct ScriptDebuggerOutput {
     pub focus_repl: bool,
     pub submit_command: Option<String>,
     pub clear_console: bool,
+    pub parse_hits_in_console: bool,
     pub set_enabled: Option<bool>,
     pub set_paused: Option<bool>,
     pub step_once: bool,
@@ -1568,6 +1570,7 @@ impl App {
             focus_repl: script_debugger.focus_repl,
             submit_command: None,
             clear_console: false,
+            parse_hits_in_console: script_debugger.parse_hits_in_console,
             set_enabled: None,
             set_paused: None,
             step_once: false,
@@ -2575,6 +2578,10 @@ impl App {
                             if ui.button("Clear Console").clicked() {
                                 script_debugger_output.clear_console = true;
                             }
+                            ui.checkbox(
+                                &mut script_debugger_output.parse_hits_in_console,
+                                "Parse hit JSON in console",
+                            );
                         });
                         if let Some(err) = script_debugger.last_error.as_ref() {
                             ui.colored_label(egui::Color32::RED, format!("Error: {err}"));
@@ -2597,7 +2604,9 @@ impl App {
                                         ScriptConsoleKind::Log => egui::Color32::WHITE,
                                     };
                                     ui.colored_label(color, entry.text.as_str());
-                                    render_script_hit_summary(ui, entry.text.as_str());
+                                    if script_debugger_output.parse_hits_in_console {
+                                        render_script_hit_summary(ui, entry.text.as_str());
+                                    }
                                 }
                             }
                         });

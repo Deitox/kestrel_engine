@@ -3339,6 +3339,7 @@ impl ApplicationHandler for App {
                 repl_history: script_repl_history,
                 console_entries: script_console_entries,
                 focus_repl: script_focus_repl,
+                parse_hits_in_console: self.editor_ui_state().script_console_parse_hits,
             },
             id_lookup_input: id_lookup_input_state,
             id_lookup_active: id_lookup_active_state,
@@ -3659,6 +3660,7 @@ impl ApplicationHandler for App {
             state.script_repl_input = script_debugger.repl_input;
             state.script_repl_history_index = script_debugger.repl_history_index;
             state.script_focus_repl = script_debugger.focus_repl;
+            state.script_console_parse_hits = script_debugger.parse_hits_in_console;
             if script_debugger.clear_console {
                 state.script_console.clear();
                 state.script_console_snapshot = None;
