@@ -46,10 +46,10 @@ Status legend: `[x]` done, `[~]` partial/incomplete, `[ ]` not started/unknown.
 - [~] Deliverables: budget/quota enforcement landed; expanded deterministic harness still not implemented.
 
 ## Phase 7 - Studio/Editor UX [~]
-- [~] Inspector polish: script path dropdowns and error badges present; no per-instance reload/reset buttons, inline API docs/tooltips, or recent logs view.
+- [~] Inspector polish: script path dropdowns and error badges present; still no per-instance reload/reset buttons or inline API docs/tooltips.
 - [ ] Docs: no generated ScriptWorld API reference or Studio tooltips/panel.
-- [ ] Event viewer: no tracing-driven event view.
-- [~] Deliverables: partial inspector wiring only.
+- [x] Event viewer: Studio now surfaces recent game events via the analytics feed (`kestrel_studio/src/app/editor_ui.rs`, `src/analytics.rs`).
+- [~] Deliverables: scripts sidebar + debugger window ship enable/pause/step/reload controls, handle table, timings, and a console/REPL (`kestrel_studio/src/app/editor_ui.rs`, `kestrel_studio/src/app/script_console.rs`); per-entity reload/reset tooling and API docs still missing.
 
 ## Phase 8 - Packaging & Testing [ ]
 - [ ] Headless harness: no script/behaviour headless runner or CLI for script suites.
