@@ -1,0 +1,90 @@
+{
+  "steps": 2,
+  "dt": 0.016,
+  "behaviours": [
+    "tests/fixtures/script_harness/counter.rhai"
+  ],
+  "results": [
+    {
+      "step": 0,
+      "logs": [
+        "Script init",
+        "count:0"
+      ],
+      "commands": [
+        {
+          "kind": "set_auto_spawn_rate",
+          "details": "0"
+        },
+        {
+          "kind": "set_spawn_per_press",
+          "details": "100"
+        },
+        {
+          "kind": "set_emitter_spread",
+          "details": "1"
+        },
+        {
+          "kind": "set_emitter_speed",
+          "details": "1"
+        },
+        {
+          "kind": "set_emitter_lifetime",
+          "details": "1.2"
+        },
+        {
+          "kind": "set_emitter_start_color",
+          "tint": [
+            1.0,
+            0.8,
+            0.2,
+            0.8
+          ]
+        },
+        {
+          "kind": "set_emitter_end_color",
+          "tint": [
+            1.0,
+            0.2,
+            0.2,
+            0.0
+          ]
+        },
+        {
+          "kind": "set_emitter_start_size",
+          "scale": [
+            0.18,
+            0.18
+          ]
+        },
+        {
+          "kind": "set_emitter_end_size",
+          "scale": [
+            0.05,
+            0.05
+          ]
+        }
+      ]
+    },
+    {
+      "step": 1,
+      "logs": [],
+      "commands": []
+    }
+  ],
+  "final_entities": [
+    {
+      "entity": 4294967297,
+      "name": "counter",
+      "translation": [
+        0.0,
+        0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+        1.0,
+        1.0
+      ]
+    }
+  ]
+}

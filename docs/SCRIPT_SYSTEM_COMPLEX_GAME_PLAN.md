@@ -51,11 +51,11 @@ Status legend: `[x]` done, `[~]` partial/incomplete, `[ ]` not started/unknown.
 - [x] Event viewer: Studio now surfaces recent game events via the analytics feed (`kestrel_studio/src/app/editor_ui.rs`, `src/analytics.rs`).
 - [x] Deliverables: scripts sidebar + debugger window ship enable/pause/step/reload controls, handle table, timings, console/REPL, API reference, and per-entity reload/reset actions (`kestrel_studio/src/app/editor_ui.rs`, `kestrel_studio/src/app/script_console.rs`).
 
-## Phase 8 - Packaging & Testing [ ]
-- [ ] Headless harness: no script/behaviour headless runner or CLI for script suites.
-- [ ] Golden tests: no fixture-driven script output comparisons.
+## Phase 8 - Packaging & Testing [~]
+- [x] Headless harness: `src/bin/script_harness.rs` runs fixtures against `ScriptPlugin` headlessly with deterministic seed support.
+- [x] Golden tests: fixture-driven script output comparisons live under `tests/script_harness.rs` and `tests/fixtures/script_harness/*.golden.json`.
 - [ ] Build artifacts: no AOT AST cache tooling.
-- [ ] Deliverables: headless runner, golden helpers, and AOT tooling not implemented.
+- [~] Deliverables: headless runner and golden helpers landed; AOT tooling still not implemented.
 
 ## Game Kit Layer (Player/Waves/Stats/Upgrades) [ ]
 - [ ] Not yet implemented; no `gamekit.rhai`, Rust helpers, docs, or sample scripts.
