@@ -59,3 +59,7 @@ Status legend: `[x]` done, `[~]` partial/incomplete, `[ ]` not started/unknown.
 
 ## Game Kit Layer (Player/Waves/Stats/Upgrades) [ ]
 - [ ] Not yet implemented; no `gamekit.rhai`, Rust helpers, docs, or sample scripts.
+
+### Recent core tightenings
+- Added Rapier-backed script queries: raycasts now return normals + collider IDs and fall back to snapshots; overlaps can return collider IDs via `overlap_circle_hits` (with filters variant) while preserving legacy array output.
+- Physics query view exposed for scripts without leaking mutability.
