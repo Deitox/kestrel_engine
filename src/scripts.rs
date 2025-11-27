@@ -182,6 +182,94 @@ struct ScriptTiming {
     samples: u64,
 }
 
+#[derive(Clone, Default)]
+struct ScriptSpatialIndex {
+    cell_size: f32,
+    cells: HashMap<(i32, i32), Vec<Entity>>,
+}
+
+impl ScriptSpatialIndex {
+    fn enabled(&self) -> bool {
+        self.cell_size.is_finite() && self.cell_size > 0.0
+    }
+
+    fn has_cells(&self) -> bool {
+        self.enabled() && !self.cells.is_empty()
+    }
+
+    fn rebuild(&mut self, snapshots: &HashMap<Entity, EntitySnapshot>, cell_size: f32) {
+        self.cells.clear();
+        self.cell_size = if cell_size.is_finite() && cell_size > 0.0 { cell_size } else { 0.0 };
+        if !self.enabled() {
+            return;
+        }
+        for (entity, snap) in snapshots {
+            let half = snap.half_extents.unwrap_or_else(|| snap.scale * 0.5);
+            if !half.is_finite() || half.x <= 0.0 || half.y <= 0.0 {
+                continue;
+            }
+            if !snap.translation.is_finite() {
+                continue;
+            }
+            let min = snap.translation - half;
+            let max = snap.translation + half;
+            let (kx0, ky0) = self.key(min);
+            let (kx1, ky1) = self.key(max);
+            for ky in ky0..=ky1 {
+                for kx in kx0..=kx1 {
+                    self.cells.entry((kx, ky)).or_default().push(*entity);
+                }
+            }
+        }
+    }
+
+    fn ray_candidates(&self, origin: Vec2, dir: Vec2, max_dist: f32) -> Option<Vec<Entity>> {
+        if !self.has_cells() || !max_dist.is_finite() || max_dist <= 0.0 || dir.length_squared() <= f32::EPSILON {
+            return None;
+        }
+        let dir = dir.normalize();
+        let end = origin + dir * max_dist;
+        let min = Vec2::new(origin.x.min(end.x), origin.y.min(end.y));
+        let max = Vec2::new(origin.x.max(end.x), origin.y.max(end.y));
+        self.query_aabb(min, max)
+    }
+
+    fn circle_candidates(&self, center: Vec2, radius: f32) -> Option<Vec<Entity>> {
+        if !self.has_cells() || !radius.is_finite() || radius <= 0.0 {
+            return None;
+        }
+        let half = Vec2::splat(radius);
+        self.query_aabb(center - half, center + half)
+    }
+
+    fn query_aabb(&self, min: Vec2, max: Vec2) -> Option<Vec<Entity>> {
+        if !self.has_cells() || !min.is_finite() || !max.is_finite() {
+            return None;
+        }
+        let (kx0, ky0) = self.key(min);
+        let (kx1, ky1) = self.key(max);
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        for ky in ky0..=ky1 {
+            for kx in kx0..=kx1 {
+                if let Some(list) = self.cells.get(&(kx, ky)) {
+                    for &entity in list {
+                        if seen.insert(entity) {
+                            out.push(entity);
+                        }
+                    }
+                }
+            }
+        }
+        Some(out)
+    }
+
+    fn key(&self, p: Vec2) -> (i32, i32) {
+        let cell = self.cell_size;
+        ((p.x / cell).floor() as i32, (p.y / cell).floor() as i32)
+    }
+}
+
 struct SharedState {
     next_handle: ScriptHandle,
     next_listener_id: u64,
@@ -192,6 +280,7 @@ struct SharedState {
     rng: Option<StdRng>,
     entity_snapshots: HashMap<Entity, EntitySnapshot>,
     input_snapshot: Option<InputSnapshot>,
+    spatial_index: ScriptSpatialIndex,
     time_scale: f32,
     unscaled_time: f32,
     scaled_time: f32,
@@ -218,6 +307,7 @@ impl Default for SharedState {
             rng: None,
             entity_snapshots: HashMap::new(),
             input_snapshot: None,
+            spatial_index: ScriptSpatialIndex::default(),
             time_scale: 1.0,
             unscaled_time: 0.0,
             scaled_time: 0.0,
@@ -567,10 +657,17 @@ impl ScriptWorld {
         let max_dist = if max_dist.is_finite() && max_dist > 0.0 { max_dist as f32 } else { f32::INFINITY };
         let mut best: Option<(Entity, f32, Vec2)> = None;
         let state = self.state.borrow();
-        let mut snapshots: Vec<_> = state.entity_snapshots.iter().collect();
+        let candidates = state
+            .spatial_index
+            .ray_candidates(origin, dir, max_dist)
+            .unwrap_or_else(|| state.entity_snapshots.keys().copied().collect());
+        let mut snapshots: Vec<_> = candidates
+            .into_iter()
+            .filter_map(|entity| state.entity_snapshots.get(&entity).map(|snap| (entity, snap)))
+            .collect();
         snapshots.sort_by_key(|(entity, _)| entity.to_bits());
         for (entity, snap) in snapshots {
-            if !filters.matches(*entity) {
+            if !filters.matches(entity) {
                 continue;
             }
             let half = snap.half_extents.unwrap_or_else(|| snap.scale * 0.5);
@@ -581,7 +678,7 @@ impl ScriptWorld {
                 if dist <= max_dist && dist.is_finite() && dist >= 0.0 {
                     match best {
                         Some((_, best_dist, _)) if dist >= best_dist => {}
-                        _ => best = Some((*entity, dist, hit)),
+                        _ => best = Some((entity, dist, hit)),
                     }
                 }
             }
@@ -613,10 +710,17 @@ impl ScriptWorld {
         let mut hits = Array::new();
         let state = self.state.borrow();
         let r2 = radius * radius;
-        let mut snapshots: Vec<_> = state.entity_snapshots.iter().collect();
+        let candidates = state
+            .spatial_index
+            .circle_candidates(center, radius)
+            .unwrap_or_else(|| state.entity_snapshots.keys().copied().collect());
+        let mut snapshots: Vec<_> = candidates
+            .into_iter()
+            .filter_map(|entity| state.entity_snapshots.get(&entity).map(|snap| (entity, snap)))
+            .collect();
         snapshots.sort_by_key(|(entity, _)| entity.to_bits());
         for (entity, snap) in snapshots {
-            if !filters.matches(*entity) {
+            if !filters.matches(entity) {
                 continue;
             }
             let half = snap.half_extents.unwrap_or_else(|| snap.scale * 0.5);
@@ -625,7 +729,7 @@ impl ScriptWorld {
             }
             let closest = snap.translation.clamp(center - half, center + half);
             if (closest - center).length_squared() <= r2 {
-                hits.push(Dynamic::from(entity_to_rhai(*entity)));
+                hits.push(Dynamic::from(entity_to_rhai(entity)));
             }
         }
         hits
@@ -1862,9 +1966,12 @@ impl ScriptHost {
         self.error.as_deref()
     }
 
-    pub fn set_entity_snapshots(&mut self, snapshots: HashMap<Entity, EntitySnapshot>) {
+    pub fn set_entity_snapshots(&mut self, snapshots: HashMap<Entity, EntitySnapshot>, cell_size: f32) {
+        let mut index = ScriptSpatialIndex::default();
+        index.rebuild(&snapshots, cell_size);
         let mut shared = self.shared.borrow_mut();
         shared.entity_snapshots = snapshots;
+        shared.spatial_index = index;
     }
 
     pub fn set_input_snapshot(&mut self, snapshot: InputSnapshot) {
@@ -2736,6 +2843,10 @@ impl ScriptPlugin {
     }
 
     fn populate_entity_snapshots(&mut self, ecs: &mut crate::ecs::EcsWorld) {
+        let cell_size = {
+            let spatial = ecs.world.resource::<crate::ecs::SpatialHash>();
+            spatial.cell
+        };
         let mut snapshots = HashMap::new();
         let mut query = ecs.world.query::<(
             Entity,
@@ -2768,7 +2879,7 @@ impl ScriptPlugin {
                 },
             );
         }
-        self.host.set_entity_snapshots(snapshots);
+        self.host.set_entity_snapshots(snapshots, cell_size);
     }
 
     fn snapshot_from_input(input: &Input) -> InputSnapshot {
@@ -4278,6 +4389,40 @@ mod tests {
     }
 
     #[test]
+    fn spatial_index_culls_to_aabb_bounds() {
+        let mut index = ScriptSpatialIndex::default();
+        let mut snaps = HashMap::new();
+        let inside = Entity::from_raw(21);
+        let outside = Entity::from_raw(22);
+        snaps.insert(
+            inside,
+            EntitySnapshot {
+                translation: Vec2::new(0.5, 0.5),
+                rotation: 0.0,
+                scale: Vec2::ONE,
+                velocity: None,
+                tint: None,
+                half_extents: Some(Vec2::splat(0.25)),
+            },
+        );
+        snaps.insert(
+            outside,
+            EntitySnapshot {
+                translation: Vec2::new(5.0, 5.0),
+                rotation: 0.0,
+                scale: Vec2::ONE,
+                velocity: None,
+                tint: None,
+                half_extents: Some(Vec2::splat(0.5)),
+            },
+        );
+        index.rebuild(&snaps, 1.0);
+        let hits = index.query_aabb(Vec2::new(-1.0, -1.0), Vec2::new(1.0, 1.0)).unwrap();
+        assert!(hits.contains(&inside), "nearby entity should be returned");
+        assert!(!hits.contains(&outside), "far entity should be culled");
+    }
+
+    #[test]
     fn raycast_returns_closest_hit() {
         let state = Rc::new(RefCell::new(SharedState::default()));
         {
@@ -4307,7 +4452,10 @@ mod tests {
                     half_extents: Some(Vec2::splat(1.0)),
                 },
             );
+            let mut index = ScriptSpatialIndex::default();
+            index.rebuild(&snaps, 0.5);
             shared.entity_snapshots = snaps;
+            shared.spatial_index = index;
         }
         let mut world = ScriptWorld::new(state);
         let hit = world.raycast(0.0, 0.0, 1.0, 0.0, 20.0);
@@ -4347,7 +4495,10 @@ mod tests {
                     half_extents: Some(Vec2::splat(1.0)),
                 },
             );
+            let mut index = ScriptSpatialIndex::default();
+            index.rebuild(&snaps, 1.0);
             shared.entity_snapshots = snaps;
+            shared.spatial_index = index;
         }
         let mut world = ScriptWorld::new(state);
         let mut filters = Map::new();
@@ -4377,7 +4528,10 @@ mod tests {
                     half_extents: Some(Vec2::splat(0.5)),
                 },
             );
+            let mut index = ScriptSpatialIndex::default();
+            index.rebuild(&snaps, 0.5);
             shared.entity_snapshots = snaps;
+            shared.spatial_index = index;
         }
         let mut world = ScriptWorld::new(state);
         let hits = world.overlap_circle(0.0, 0.0, 2.0);
@@ -4416,7 +4570,10 @@ mod tests {
                     half_extents: Some(Vec2::splat(0.5)),
                 },
             );
+            let mut index = ScriptSpatialIndex::default();
+            index.rebuild(&snaps, 0.5);
             shared.entity_snapshots = snaps;
+            shared.spatial_index = index;
         }
         let mut filters = Map::new();
         let include = vec![Dynamic::from(entity_to_rhai(target))];
