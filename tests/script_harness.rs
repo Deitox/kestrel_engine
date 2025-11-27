@@ -16,6 +16,22 @@ fn entity_commands_fixture_matches_golden() {
     );
 }
 
+#[test]
+fn spawn_commands_fixture_matches_golden() {
+    assert_fixture_matches(
+        "tests/fixtures/script_harness/spawn_commands.json",
+        "tests/fixtures/script_harness/spawn_commands.golden.json",
+    );
+}
+
+#[test]
+fn event_bus_fixture_matches_golden() {
+    assert_fixture_matches(
+        "tests/fixtures/script_harness/event_bus.json",
+        "tests/fixtures/script_harness/event_bus.golden.json",
+    );
+}
+
 fn assert_fixture_matches(fixture_path: &str, golden_path: &str) {
     let fixture = load_fixture(fixture_path).expect("load fixture");
     let output = run_fixture(&fixture).expect("run fixture");
