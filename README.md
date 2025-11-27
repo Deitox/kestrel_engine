@@ -55,6 +55,7 @@
 - Keep sprite atlases on the current schema with `cargo run --bin migrate_atlas -- assets/images`. Append `--check` when you need a read-only verification (e.g., CI): the helper walks directories of JSON files, injects canonical `loop_mode` data, trims orphaned timeline events, clamps invalid durations, and bumps the file version so CI bots and local editors agree on the data they ingest.
 - Load `assets/scenes/animation_showcase.json` (documented in `docs/animation_sample_content.md`) for a ready-to-edit scene that exercises the sprite timeline, transform clip, and palette upload counters used throughout the milestone tutorials.
 - Load `assets/scenes/skeletal_showcase.json` to preview the skeletal fixture (`slime` rig + `slime::breath` clip). It keeps the skeletal HUD rows active and provides a deterministic target for watcher/validator tests.
+- Load `assets/scenes/gamekit_sample_scene.json` to see the GameKit flow (player + light/heavy enemies, kit collisions, and upgrades) driven by `assets/scripts/gamekit_sample.rhai`.
 - Keep the samples deterministic by running `python scripts/capture_animation_samples.py <scene>` (e.g., `animation_showcase`, `skeletal_showcase`); `cargo test animation_showcase_scene` compares the current scenes to their captures so CI can flag unintended edits.
 
 ## Scene Formats
