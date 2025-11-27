@@ -2423,6 +2423,7 @@ pub struct ScriptPlugin {
     failed_path_scratch: HashSet<usize>,
     id_updates: Vec<(Entity, u64)>,
     behaviour_worklist: Vec<(Entity, usize, u64, bool)>,
+    pending_persistent: HashMap<Entity, Map>,
 }
 
 impl ScriptPlugin {
@@ -2439,6 +2440,7 @@ impl ScriptPlugin {
             failed_path_scratch: HashSet::new(),
             id_updates: Vec::new(),
             behaviour_worklist: Vec::new(),
+            pending_persistent: HashMap::new(),
         }
     }
 
@@ -2765,6 +2767,13 @@ impl ScriptPlugin {
                     Ok(id) => {
                         instance_id = id;
                         self.id_updates.push((entity, id));
+                        if let Some(persistent) = self.pending_persistent.remove(&entity) {
+                            if let Some(new_instance) = self.host.instances.get(&id) {
+                                let mut state = new_instance.state.borrow_mut();
+                                state.persistent = persistent;
+                                state.is_hot_reload = true;
+                            }
+                        }
                     }
                     Err(err) => {
                         self.host.set_error_with_details(&err);
@@ -2813,6 +2822,7 @@ impl ScriptPlugin {
     }
 
     fn cleanup_orphaned_instances(&mut self, ecs: &mut crate::ecs::EcsWorld) {
+        self.pending_persistent.retain(|entity, _| ecs.world.get_entity(*entity).is_ok());
         self.host.prune_entity_errors(|entity| ecs.world.get_entity(entity).is_ok());
         let mut stale_ids = Vec::new();
         for (&id, instance) in self.host.instances.iter() {
@@ -2877,6 +2887,28 @@ impl ScriptPlugin {
 
     pub fn step_once(&mut self) {
         self.step_once = true;
+    }
+
+    pub fn reload_instance_for_entity(&mut self, entity: Entity, preserve_state: bool) {
+        let Some((&id, instance)) = self.host.instances.iter().find(|(_, inst)| inst.entity == entity) else {
+            if !preserve_state {
+                self.pending_persistent.remove(&entity);
+            }
+            return;
+        };
+        let preserved = if preserve_state && instance.persist_state {
+            Some(instance.state.borrow().persistent.clone())
+        } else {
+            None
+        };
+        let _ = self.host.call_instance_exit(id);
+        self.host.remove_instance(id);
+        self.host.clear_entity_error(entity);
+        if let Some(map) = preserved {
+            self.pending_persistent.insert(entity, map);
+        } else {
+            self.pending_persistent.remove(&entity);
+        }
     }
 
     pub fn force_reload(&mut self, assets: Option<&AssetManager>) -> Result<()> {

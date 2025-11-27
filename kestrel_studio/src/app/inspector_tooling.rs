@@ -123,6 +123,22 @@ impl App {
                     entity_ref.remove::<crate::scripts::ScriptBehaviour>();
                     self.set_inspector_status(Some("Script removed.".to_string()));
                 }
+                editor_ui::InspectorAction::ReloadScript { entity, reset_state } => {
+                    let preserve_state = !reset_state;
+                    if let Some(plugin) = self.script_plugin_mut() {
+                        plugin.reload_instance_for_entity(entity, preserve_state);
+                    }
+                    if let Ok(mut entity_ref) = self.ecs.world.get_entity_mut(entity) {
+                        if let Some(mut behaviour) = entity_ref.get_mut::<crate::scripts::ScriptBehaviour>() {
+                            behaviour.instance_id = 0;
+                        }
+                    }
+                    if reset_state {
+                        self.set_inspector_status(Some("Script reset and state cleared.".to_string()));
+                    } else {
+                        self.set_inspector_status(Some("Script reloaded for this entity.".to_string()));
+                    }
+                }
                 editor_ui::InspectorAction::SetEmitterTrail { entity, trail } => {
                     self.ecs.set_emitter_trail(entity, trail);
                     self.set_inspector_status(Some("Emitter trail updated.".to_string()));

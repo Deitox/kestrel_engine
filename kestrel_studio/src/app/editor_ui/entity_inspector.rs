@@ -286,6 +286,24 @@ pub(super) fn show_entity_inspector(
                 } else {
                     ui.small("Instance id will be assigned at runtime.");
                 }
+                ui.horizontal(|ui| {
+                    if ui
+                        .button("Reload")
+                        .on_hover_text("Restart this behaviour and rerun ready(); preserves persistent state when enabled.")
+                        .clicked()
+                    {
+                        actions.inspector_actions.push(InspectorAction::ReloadScript { entity, reset_state: false });
+                        _inspector_refresh = true;
+                    }
+                    if ui
+                        .button("Reset state")
+                        .on_hover_text("Drop the behaviour instance and clear any persisted state before rerunning ready().")
+                        .clicked()
+                    {
+                        actions.inspector_actions.push(InspectorAction::ReloadScript { entity, reset_state: true });
+                        _inspector_refresh = true;
+                    }
+                });
             }
             ui.small("Scripts are relative to the project root, e.g. assets/scripts/my_behaviour.rhai");
         });

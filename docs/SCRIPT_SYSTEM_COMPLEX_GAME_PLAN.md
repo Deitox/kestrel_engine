@@ -45,11 +45,11 @@ Status legend: `[x]` done, `[~]` partial/incomplete, `[ ]` not started/unknown.
 - [~] Determinism: RNG seeding and command/worklist sorting exist; no deterministic harness tying physics query ordering + command application beyond that.
 - [~] Deliverables: budget/quota enforcement landed; expanded deterministic harness still not implemented.
 
-## Phase 7 - Studio/Editor UX [~]
-- [~] Inspector polish: script path dropdowns and error badges present; still no per-instance reload/reset buttons or inline API docs/tooltips.
-- [ ] Docs: no generated ScriptWorld API reference or Studio tooltips/panel.
+## Phase 7 - Studio/Editor UX [x]
+- [x] Inspector polish: script path dropdowns and error badges present; per-entity reload/reset buttons now available with tooltips in the inspector.
+- [x] Docs: in-Studio ScriptWorld API reference panel/tooltips added to the Scripts sidebar and debugger window.
 - [x] Event viewer: Studio now surfaces recent game events via the analytics feed (`kestrel_studio/src/app/editor_ui.rs`, `src/analytics.rs`).
-- [~] Deliverables: scripts sidebar + debugger window ship enable/pause/step/reload controls, handle table, timings, and a console/REPL (`kestrel_studio/src/app/editor_ui.rs`, `kestrel_studio/src/app/script_console.rs`); per-entity reload/reset tooling and API docs still missing.
+- [x] Deliverables: scripts sidebar + debugger window ship enable/pause/step/reload controls, handle table, timings, console/REPL, API reference, and per-entity reload/reset actions (`kestrel_studio/src/app/editor_ui.rs`, `kestrel_studio/src/app/script_console.rs`).
 
 ## Phase 8 - Packaging & Testing [ ]
 - [ ] Headless harness: no script/behaviour headless runner or CLI for script suites.

@@ -121,6 +121,59 @@ pub(super) struct MaterialOption {
     pub label: String,
 }
 
+#[derive(Clone, Copy)]
+struct ScriptApiDoc {
+    signature: &'static str,
+    detail: &'static str,
+}
+
+const SCRIPT_API_DOCS: &[ScriptApiDoc] = &[
+    ScriptApiDoc {
+        signature: "spawn_prefab(path) / spawn_template(name)",
+        detail: "Queue a prefab/template spawn; returns a handle usable with entity_* helpers.",
+    },
+    ScriptApiDoc {
+        signature: "entity_set_* / entity_despawn(handle/entity)",
+        detail: "Move/tint/despawn entities via the command queue; resolves either handles or raw entities.",
+    },
+    ScriptApiDoc {
+        signature: "entity_snapshot(entity)",
+        detail: "Read pos/rot/scale/vel/tint/half_extents from the per-frame snapshot (read-only).",
+    },
+    ScriptApiDoc {
+        signature: "raycast(origin, dir, max[, filters])",
+        detail: "Ray vs. snapshot AABBs; include/exclude filters accept entity arrays.",
+    },
+    ScriptApiDoc {
+        signature: "overlap_circle(cx, cy, r[, filters])",
+        detail: "Collect entities whose snapshot AABBs overlap the circle; filters match raycast.",
+    },
+    ScriptApiDoc {
+        signature: "listen(name, handler) / emit(name[, payload])",
+        detail: "Subscribe and emit events; use emit_to(name, entity, payload) for scoped delivery.",
+    },
+    ScriptApiDoc {
+        signature: "timer_start(id, seconds) / timer_fired(id)",
+        detail: "One-shot timers tracked per instance; timer_start_repeat loops automatically.",
+    },
+    ScriptApiDoc {
+        signature: "state_get/set/clear/keys",
+        detail: "Per-behaviour persistent map (opt-in via persist_state); survives hot reload when enabled.",
+    },
+    ScriptApiDoc {
+        signature: "time_scale()/set_time_scale(scale)",
+        detail: "Scales dt/time for scripts; unscaled_* APIs expose real time when needed.",
+    },
+    ScriptApiDoc {
+        signature: "rand_seed(seed) / rand(min, max)",
+        detail: "Deterministic RNG when seeded (or deterministic mode is enabled).",
+    },
+    ScriptApiDoc {
+        signature: "move_toward/vec2/angle helpers",
+        detail: "Common math utilities mirrored from assets/scripts/common.rhai for inline use.",
+    },
+];
+
 #[derive(Clone, Debug)]
 pub(super) struct MeshSubsetEntry {
     pub name: Option<String>,
@@ -165,6 +218,10 @@ pub(super) enum InspectorAction {
     },
     RemoveScript {
         entity: Entity,
+    },
+    ReloadScript {
+        entity: Entity,
+        reset_state: bool,
     },
     ClearTransformClip {
         entity: Entity,
@@ -2264,6 +2321,8 @@ impl App {
                                     }
                                 });
                             }
+                            ui.separator();
+                            render_script_api_reference(ui);
                         } else {
                             ui.label("Script plugin unavailable");
                         }
@@ -2491,6 +2550,8 @@ impl App {
                                 }
                             }
                         });
+                        ui.separator();
+                        render_script_api_reference(ui);
                     });
                 script_debugger.open = debugger_open;
             }
@@ -4201,6 +4262,18 @@ impl App {
             editor_settings_dirty,
         }
     }
+}
+
+fn render_script_api_reference(ui: &mut egui::Ui) {
+    ui.collapsing("World API reference", |ui| {
+        ui.small("Core `world` helpers available to scripts:");
+        for doc in SCRIPT_API_DOCS {
+            ui.horizontal(|ui| {
+                ui.monospace(doc.signature);
+                ui.small(doc.detail);
+            });
+        }
+    });
 }
 
 fn frame_summary_text(sample: Option<&FrameTimingSample>) -> String {
