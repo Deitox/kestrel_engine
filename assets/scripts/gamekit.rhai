@@ -74,7 +74,9 @@ fn state(cfg) {
         },
         bonuses: #{
             score_per_kill: 0.0,
-            scrap_per_kill: 0.0
+            scrap_per_kill: 0.0,
+            damage_mult: 1.0,
+            spawn_haste: 0.0
         },
         enemies: [],
         timers: #{
@@ -279,7 +281,12 @@ fn drive_waves(world, state, dt) {
             out.waves.spawned += 1;
         }
         let cadence = current.cadence;
-        out.waves.timer = if cadence <= 0.0 { 0.0 } else { cadence };
+        if cadence <= 0.0 {
+            out.waves.timer = 0.0;
+        } else {
+            let haste = 1.0 + out.bonuses.spawn_haste;
+            out.waves.timer = cadence / haste;
+        }
     }
     out
 }
@@ -349,7 +356,8 @@ fn enemy_hit(world, state, handle, damage) {
     while idx < out.enemies.len() {
         if out.enemies[idx].handle == handle {
             let enemy = out.enemies[idx];
-            enemy.health = enemy.health - damage.max(0.0);
+            let dealt = damage.max(0.0) * out.bonuses.damage_mult.max(0.0);
+            enemy.health = enemy.health - dealt;
             out.enemies[idx] = enemy;
             if enemy.health <= 0.0 {
                 killed = true;
@@ -375,6 +383,10 @@ fn apply_upgrade_effect(world, state, name) {
         out.player.health = out.config.player.health;
     } else if name == "income_boost" {
         out.bonuses.scrap_per_kill += 0.5;
+    } else if name == "damage_boost" {
+        out.bonuses.damage_mult += 0.5;
+    } else if name == "spawn_haste" {
+        out.bonuses.spawn_haste += 0.25;
     }
     out
 }

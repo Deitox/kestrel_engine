@@ -60,7 +60,7 @@ Status legend: `[x]` done, `[~]` partial/incomplete, `[ ]` not started/unknown.
 ## Game Kit Layer (Player/Waves/Stats/Upgrades) [~]
 - [x] `assets/scripts/gamekit.rhai` introduces player/wave/stat/upgrade helpers plus a sample `gamekit_sample.rhai` host.
 - [x] Prefab stubs and aliases exist for the kit player + light/heavy enemies under `assets/prefabs/`.
-- [x] Harness coverage: `gamekit_wave` fixture/golden exercises kit flow, stat sync, and upgrade purchases.
+- [x] Harness coverage: `gamekit_wave` fixture/golden exercises kit flow, stat sync, and upgrade purchases (income, damage, spawn cadence, auto-repair).
 - [ ] Editor-facing docs, richer behaviours, and tuning helpers still pending.
 
 ### Recent core tightenings
