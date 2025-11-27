@@ -143,11 +143,15 @@ const SCRIPT_API_DOCS: &[ScriptApiDoc] = &[
     },
     ScriptApiDoc {
         signature: "raycast(origin, dir, max[, filters])",
-        detail: "Ray vs. snapshot AABBs; include/exclude filters accept entity arrays.",
+        detail: "Ray vs. physics colliders when present (returns entity/distance/point/normal/collider id) else snapshot AABBs; include/exclude filters accept entity arrays.",
     },
     ScriptApiDoc {
         signature: "overlap_circle(cx, cy, r[, filters])",
-        detail: "Collect entities whose snapshot AABBs overlap the circle; filters match raycast.",
+        detail: "Collect entities overlapping the circle (physics colliders if available, else snapshot AABBs); filters match raycast.",
+    },
+    ScriptApiDoc {
+        signature: "overlap_circle_hits(cx, cy, r[, filters])",
+        detail: "Detailed overlaps: returns maps with entity, optional collider id, and approx_normal when snapshots are used.",
     },
     ScriptApiDoc {
         signature: "listen(name, handler) / emit(name[, payload])",
