@@ -203,30 +203,88 @@ impl ScriptSpatialIndex {
         self.enabled() && !self.cells.is_empty()
     }
 
+    fn normalized_cell_size(cell_size: f32) -> f32 {
+        if cell_size.is_finite() && cell_size > 0.0 {
+            cell_size
+        } else {
+            0.0
+        }
+    }
+
+    fn add_snapshot(&mut self, entity: Entity, snap: &EntitySnapshot) {
+        if !self.enabled() {
+            return;
+        }
+        let half = snap.half_extents.unwrap_or_else(|| snap.scale * 0.5);
+        if !half.is_finite() || half.x <= 0.0 || half.y <= 0.0 {
+            return;
+        }
+        if !snap.translation.is_finite() {
+            return;
+        }
+        let min = snap.translation - half;
+        let max = snap.translation + half;
+        let (kx0, ky0) = self.key(min);
+        let (kx1, ky1) = self.key(max);
+        for ky in ky0..=ky1 {
+            for kx in kx0..=kx1 {
+                self.cells.entry((kx, ky)).or_default().push(entity);
+            }
+        }
+    }
+
+    fn backfill_missing(&mut self, snapshots: &HashMap<Entity, EntitySnapshot>) {
+        if !self.enabled() {
+            return;
+        }
+        let mut covered = HashSet::new();
+        for list in self.cells.values() {
+            for &entity in list {
+                covered.insert(entity);
+            }
+        }
+        for (entity, snap) in snapshots {
+            if covered.contains(entity) {
+                continue;
+            }
+            self.add_snapshot(*entity, snap);
+        }
+    }
+
     fn rebuild(&mut self, snapshots: &HashMap<Entity, EntitySnapshot>, cell_size: f32) {
         self.cells.clear();
-        self.cell_size = if cell_size.is_finite() && cell_size > 0.0 { cell_size } else { 0.0 };
+        self.cell_size = Self::normalized_cell_size(cell_size);
         if !self.enabled() {
             return;
         }
         for (entity, snap) in snapshots {
-            let half = snap.half_extents.unwrap_or_else(|| snap.scale * 0.5);
-            if !half.is_finite() || half.x <= 0.0 || half.y <= 0.0 {
-                continue;
-            }
-            if !snap.translation.is_finite() {
-                continue;
-            }
-            let min = snap.translation - half;
-            let max = snap.translation + half;
-            let (kx0, ky0) = self.key(min);
-            let (kx1, ky1) = self.key(max);
-            for ky in ky0..=ky1 {
-                for kx in kx0..=kx1 {
-                    self.cells.entry((kx, ky)).or_default().push(*entity);
+            self.add_snapshot(*entity, snap);
+        }
+    }
+
+    fn rebuild_with_spatial_hash(
+        &mut self,
+        snapshots: &HashMap<Entity, EntitySnapshot>,
+        spatial_cells: Option<HashMap<(i32, i32), Vec<Entity>>>,
+        cell_size: f32,
+    ) {
+        self.cells.clear();
+        self.cell_size = Self::normalized_cell_size(cell_size);
+        if !self.enabled() {
+            return;
+        }
+        if let Some(cells) = spatial_cells {
+            for (key, list) in cells {
+                if !list.is_empty() {
+                    self.cells.insert(key, list);
                 }
             }
         }
+        if self.cells.is_empty() {
+            self.rebuild(snapshots, self.cell_size);
+            return;
+        }
+        self.backfill_missing(snapshots);
     }
 
     fn ray_candidates(&self, origin: Vec2, dir: Vec2, max_dist: f32) -> Option<Vec<Entity>> {
@@ -2269,9 +2327,14 @@ impl ScriptHost {
         self.error.as_deref()
     }
 
-    pub fn set_entity_snapshots(&mut self, snapshots: HashMap<Entity, EntitySnapshot>, cell_size: f32) {
+    pub fn set_entity_snapshots(
+        &mut self,
+        snapshots: HashMap<Entity, EntitySnapshot>,
+        cell_size: f32,
+        spatial_cells: Option<HashMap<(i32, i32), Vec<Entity>>>,
+    ) {
         let mut index = ScriptSpatialIndex::default();
-        index.rebuild(&snapshots, cell_size);
+        index.rebuild_with_spatial_hash(&snapshots, spatial_cells, cell_size);
         let mut shared = self.shared.borrow_mut();
         shared.entity_snapshots = snapshots;
         shared.spatial_index = index;
@@ -3212,9 +3275,18 @@ impl ScriptPlugin {
     }
 
     fn populate_entity_snapshots(&mut self, ecs: &mut crate::ecs::EcsWorld) {
-        let cell_size = {
-            let spatial = ecs.world.resource::<crate::ecs::SpatialHash>();
-            spatial.cell
+        let (cell_size, spatial_cells) = {
+            let spatial_hash = ecs.world.resource::<crate::ecs::SpatialHash>();
+            let mut cells = HashMap::new();
+            for key in &spatial_hash.active_cells {
+                if let Some(list) = spatial_hash.grid.get(key) {
+                    if !list.is_empty() {
+                        cells.insert(*key, list.clone());
+                    }
+                }
+            }
+            let cells = if cells.is_empty() { None } else { Some(cells) };
+            (spatial_hash.cell, cells)
         };
         let mut snapshots = HashMap::new();
         let mut query = ecs.world.query::<(
@@ -3248,7 +3320,7 @@ impl ScriptPlugin {
                 },
             );
         }
-        self.host.set_entity_snapshots(snapshots, cell_size);
+        self.host.set_entity_snapshots(snapshots, cell_size, spatial_cells);
     }
 
     fn snapshot_from_input(input: &Input) -> InputSnapshot {
@@ -3897,7 +3969,7 @@ mod tests {
     use std::rc::Rc;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
-    use crate::ecs::{EcsWorld, PhysicsParams, RapierState, Transform, WorldBounds};
+    use crate::ecs::{EcsWorld, PhysicsParams, RapierState, SpatialHash, Transform, WorldBounds};
     use tempfile::{tempdir, Builder, NamedTempFile};
 
     fn write_script(contents: &str) -> NamedTempFile {
@@ -4829,6 +4901,51 @@ mod tests {
         let hits = index.query_aabb(Vec2::new(-1.0, -1.0), Vec2::new(1.0, 1.0)).unwrap();
         assert!(hits.contains(&inside), "nearby entity should be returned");
         assert!(!hits.contains(&outside), "far entity should be culled");
+    }
+
+    #[test]
+    fn spatial_index_reuses_physics_grid_and_backfills_missing() {
+        let mut spatial = SpatialHash::new(1.0);
+        spatial.begin_frame();
+        let in_grid = Entity::from_raw(31);
+        spatial.insert(in_grid, Vec2::ZERO, Vec2::splat(0.25));
+        let missing = Entity::from_raw(32);
+        let mut snaps = HashMap::new();
+        snaps.insert(
+            in_grid,
+            EntitySnapshot {
+                translation: Vec2::ZERO,
+                rotation: 0.0,
+                scale: Vec2::ONE,
+                velocity: None,
+                tint: None,
+                half_extents: Some(Vec2::splat(0.25)),
+            },
+        );
+        snaps.insert(
+            missing,
+            EntitySnapshot {
+                translation: Vec2::new(1.2, 0.0),
+                rotation: 0.0,
+                scale: Vec2::ONE,
+                velocity: None,
+                tint: None,
+                half_extents: Some(Vec2::splat(0.25)),
+            },
+        );
+        let mut index = ScriptSpatialIndex::default();
+        let mut cells = HashMap::new();
+        for key in &spatial.active_cells {
+            if let Some(list) = spatial.grid.get(key) {
+                if !list.is_empty() {
+                    cells.insert(*key, list.clone());
+                }
+            }
+        }
+        index.rebuild_with_spatial_hash(&snaps, Some(cells), 1.0);
+        let hits = index.query_aabb(Vec2::new(-0.5, -0.5), Vec2::new(1.5, 0.5)).expect("index should be available");
+        assert!(hits.contains(&in_grid), "entity from physics grid should be present");
+        assert!(hits.contains(&missing), "entities missing from physics grid should be backfilled");
     }
 
     #[test]

@@ -14,12 +14,12 @@ Status legend: `[x]` done, `[~]` partial/incomplete, `[ ]` not started/unknown.
 - [x] Behaviour ordering and per-frame command queues sorted when deterministic mode is on; `world.rand_seed(seed)` available.
 - [x] Tests cover RNG determinism, worklist ordering, command queue ordering, and reload when imports change.
 
-## Phase 2 - Game-Facing APIs [~]
+## Phase 2 - Game-Facing APIs [x]
 - [x] Read APIs: `entity_snapshot` plus position/rotation/scale/velocity/tint accessors backed by per-frame snapshots.
-- [~] Physics queries: `raycast` and `overlap_circle` use snapshot AABBs and now accept include/exclude filters; still no physics broadphase integration.
+- [x] Physics queries: `raycast` and `overlap_circle` use snapshot AABBs, accept include/exclude filters, and reuse physics broadphase data (spatial hash) with rapier fallbacks.
 - [x] Spawning: `world.spawn_prefab(path)` enqueues deferred prefab spawns and `spawn_template(name)` now looks up prefab library entries (JSON preferred) with tests, plus optional `assets/prefabs/aliases.json` alias mapping.
 - [x] Input/time: input state helpers exist; `World` now exposes time scale, scaled/unscaled time/delta, and timer registration helpers in addition to `dt` in callbacks, and engine physics/animation respect the script time scale.
-- [~] Deliverables: prefab/query helpers and basic tests are in place; template/time/filter coverage landed; physics coupling/broadphase remains.
+- [x] Deliverables: prefab/query helpers and basic tests are in place; template/time/filter coverage landed; physics coupling/broadphase now hooked up.
 
 ## Phase 3 - State & Lifecycle [~]
 - [~] Persistent state: `ScriptBehaviour.persist_state` + `world.state_get/set/clear/keys` preserve instance maps across reload when opted in; not serialized into scene saves/checkpoints.
@@ -71,3 +71,4 @@ Status legend: `[x]` done, `[~]` partial/incomplete, `[ ]` not started/unknown.
 - Studio docs: script API help now calls out collider IDs/normal results and the new `overlap_circle_hits` helper; collider IDs are available for inspection in UI.
 - REPL snippet (example):\
   `let hit = world.raycast(0.0,0.0,1.0,0.0,50.0); if hit.has(\"collider\") { print(hit); }` → `{"entity":123,"distance":4.0,"point":[4.0,0.0],"normal":[-1.0,0.0],"collider":4294967296}`
+- Script queries now reuse the physics spatial hash broadphase and backfill entities missing from the grid (e.g., Rapier bodies) so ray/overlap calls align with the live physics data.
