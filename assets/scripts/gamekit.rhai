@@ -374,6 +374,20 @@ fn enemy_hit(world, state, handle, damage) {
     #{ state: out, killed: killed }
 }
 
+fn enemy_hit_template(world, state, template, damage) {
+    let out = state;
+    let target = enemy_handle(out, template);
+    if target < 0 {
+        if out.enemies.len() > 0 {
+            target = out.enemies[0].handle;
+        }
+    }
+    if target < 0 {
+        return #{ state: out, killed: false };
+    }
+    enemy_hit(world, out, target, damage)
+}
+
 fn apply_upgrade_effect(world, state, name) {
     let out = state;
     if name == "auto_repair" {

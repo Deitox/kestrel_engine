@@ -29,6 +29,9 @@
           "y": 0.8
         }
       },
+      "script": {
+        "script_path": "assets/scripts/gamekit_enemy_light_behaviour.rhai"
+      },
       "sprite": {
         "atlas": "main",
         "region": "bluebox"

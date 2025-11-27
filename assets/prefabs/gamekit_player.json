@@ -29,6 +29,9 @@
           "y": 0.9
         }
       },
+      "script": {
+        "script_path": "assets/scripts/gamekit_player_behaviour.rhai"
+      },
       "sprite": {
         "atlas": "main",
         "region": "green"

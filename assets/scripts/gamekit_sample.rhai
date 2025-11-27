@@ -30,6 +30,8 @@ state.flags.final_kill = false;
 
 fn ready(world, entity) {
     state = kit::start(world, state);
+    world.listen("kit_enemy_contact", "on_enemy_contact");
+    world.listen("kit_enemy_hit", "on_enemy_hit");
     world.log("gamekit sample ready");
 }
 
@@ -89,4 +91,23 @@ fn process(world, entity, dt) {
     }
 
     state = kit::log_progress(world, state, 0.4);
+}
+
+fn on_enemy_contact(world, event) {
+    let damage = event["payload"]["damage"];
+    if type_of(damage) != "float" && type_of(damage) != "int" {
+        return;
+    }
+    let res = kit::on_player_hit(world, state, damage);
+    state = res.state;
+}
+
+fn on_enemy_hit(world, event) {
+    let payload = event["payload"];
+    let template = payload["template"];
+    let damage = payload["damage"];
+    let dmg = if type_of(damage) == "float" || type_of(damage) == "int" { damage } else { 1.0 };
+    let tpl = if type_of(template) == "string" { template } else { "" };
+    let res = kit::enemy_hit_template(world, state, tpl, dmg);
+    state = res.state;
 }
