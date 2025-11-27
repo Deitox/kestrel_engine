@@ -54,7 +54,7 @@ Status legend: `[x]` done, `[~]` partial/incomplete, `[ ]` not started/unknown.
 ## Phase 8 - Packaging & Testing [~]
 - [x] Headless harness: `src/bin/script_harness.rs` runs fixtures against `ScriptPlugin` headlessly with deterministic seed support.
 - [x] Golden tests: fixture-driven script output comparisons live under `tests/script_harness.rs` and `tests/fixtures/script_harness/*.golden.json`.
-- [ ] Build artifacts: no AOT AST cache tooling.
+- [x] Build artifacts: AOT AST cache tooling added (env-configurable cache load/save plus `src/bin/script_ast_cache.rs` to prebuild caches).
 - [~] Deliverables: headless runner and golden helpers landed; AOT tooling still not implemented.
 
 ## Game Kit Layer (Player/Waves/Stats/Upgrades) [ ]

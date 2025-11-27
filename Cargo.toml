@@ -34,7 +34,7 @@ egui = { version = "0.33", optional = true }
 egui-winit = { version = "0.33", optional = true }
 egui-wgpu = { version = "0.33", features = ["winit"], optional = true }
 egui_plot = { version = "0.34", optional = true }
-rhai = { version = "1.17", default-features = false, features = ["std"] }
+rhai = { version = "1.17", default-features = false, features = ["std", "serde"] }
 rapier2d = "0.26"
 rodio = "0.17"
 smallvec = "1.13"

@@ -4,6 +4,7 @@ use std::collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::env;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -18,6 +19,7 @@ use rapier2d::prelude::{
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use serde_json::{Map as JsonMap, Value as JsonValue};
+use serde::{Deserialize, Serialize};
 use rhai::module_resolvers::ModuleResolver;
 use rhai::{Array, Dynamic, Engine, EvalAltResult, Map, Module, Scope, Shared, AST, FLOAT};
 
@@ -1805,6 +1807,7 @@ pub struct ScriptHost {
     ast: Option<AST>,
     scope: Scope<'static>,
     script_path: PathBuf,
+    ast_cache_dir: Option<PathBuf>,
     import_resolver: CachedModuleResolver,
     last_modified: Option<SystemTime>,
     last_len: Option<u64>,
@@ -1827,6 +1830,10 @@ pub struct ScriptHost {
 impl ScriptHost {
     fn set_physics_context(&mut self, ctx: Option<PhysicsQueryContext>) {
         self.shared.borrow_mut().physics_ctx = ctx;
+    }
+
+    pub fn set_ast_cache_dir(&mut self, dir: Option<PathBuf>) {
+        self.ast_cache_dir = dir.map(|d| d.canonicalize().unwrap_or(d));
     }
 
     fn drop_listeners_for_owner(&mut self, owner: ListenerOwner) {
@@ -2153,11 +2160,13 @@ impl ScriptHost {
         engine.set_module_resolver(import_resolver.clone());
         register_api(&mut engine);
         let shared = SharedState { next_handle: 1, ..Default::default() };
+        let ast_cache_dir = env::var("KESTREL_SCRIPT_AST_CACHE").ok().map(PathBuf::from);
         Self {
             engine,
             ast: None,
             scope: Scope::new(),
             script_path: path.as_ref().to_path_buf(),
+            ast_cache_dir: ast_cache_dir.and_then(|p| p.canonicalize().ok()),
             import_resolver,
             last_modified: None,
             last_len: None,
@@ -2902,15 +2911,31 @@ impl ScriptHost {
     ) -> Result<&AST> {
         self.reset_import_resolver();
         self.drop_listeners_for_owner(ListenerOwner::Host);
+        let script_digest = hash_source(&source);
+        let mut import_digests = None;
+        if let Some(root) = &self.ast_cache_dir {
+            let cache = ScriptAstCache::new(root.clone());
+            if let Some(imports) = cache.load(&self.script_path, script_digest) {
+                import_digests = Some(imports);
+            }
+        }
+        let import_digests = match import_digests {
+            Some(imports) => imports,
+            None => self.import_resolver.compute_import_digests(&source)?,
+        };
+        if let Some(root) = &self.ast_cache_dir {
+            let cache = ScriptAstCache::new(root.clone());
+            cache.store(&self.script_path, script_digest, &import_digests);
+        }
         let ast = self.engine.compile(&source).with_context(|| "Compiling Rhai script")?;
         self.scope = Scope::new();
         self.engine
             .run_ast_with_scope(&mut self.scope, &ast)
             .map_err(|err| anyhow!("Evaluating script global statements: {err}"))?;
-        self.last_import_digests = self.import_resolver.compute_import_digests(&source)?;
+        self.last_import_digests = import_digests.clone();
         self.last_modified = Some(modified);
         self.last_len = Some(len);
-        self.last_digest = Some(hash_source(&source));
+        self.last_digest = Some(script_digest);
         self.last_digest_check = Some(Instant::now());
         self.last_asset_revision = revision;
         self.initialized = false;
@@ -2962,6 +2987,52 @@ fn imports_unchanged(imports: &HashMap<PathBuf, u64>) -> bool {
             .map(|src| hash_source(&src) == *digest)
             .unwrap_or(false)
     })
+}
+
+#[derive(Serialize, Deserialize)]
+struct AstCacheFile {
+    script_digest: u64,
+    import_digests: HashMap<PathBuf, u64>,
+}
+
+struct ScriptAstCache {
+    root: PathBuf,
+}
+
+impl ScriptAstCache {
+    fn new(root: PathBuf) -> Self {
+        Self { root }
+    }
+
+    fn file_path(&self, script_path: &Path) -> PathBuf {
+        let mut hasher = DefaultHasher::new();
+        script_path.to_string_lossy().hash(&mut hasher);
+        let name = format!("{:016x}.rhaiast", hasher.finish());
+        self.root.join(name)
+    }
+
+    fn load(&self, script_path: &Path, script_digest: u64) -> Option<HashMap<PathBuf, u64>> {
+        let path = self.file_path(script_path);
+        let data = std::fs::read(path).ok()?;
+        let cached: AstCacheFile = bincode::deserialize(&data).ok()?;
+        if cached.script_digest != script_digest {
+            return None;
+        }
+        Some(cached.import_digests)
+    }
+
+    fn store(&self, script_path: &Path, script_digest: u64, import_digests: &HashMap<PathBuf, u64>) {
+        if std::fs::create_dir_all(&self.root).is_err() {
+            return;
+        }
+        let cache = AstCacheFile {
+            script_digest,
+            import_digests: import_digests.clone(),
+        };
+        if let Ok(bytes) = bincode::serialize(&cache) {
+            let _ = std::fs::write(self.file_path(script_path), bytes);
+        }
+    }
 }
 
 fn detect_callbacks(ast: &AST) -> (bool, bool, bool, bool) {
@@ -3017,6 +3088,10 @@ impl ScriptPlugin {
             behaviour_worklist: Vec::new(),
             pending_persistent: HashMap::new(),
         }
+    }
+
+    pub fn set_ast_cache_dir(&mut self, dir: Option<PathBuf>) {
+        self.host.set_ast_cache_dir(dir);
     }
 
     pub fn take_commands(&mut self) -> Vec<ScriptCommand> {
@@ -3759,7 +3834,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
     use crate::ecs::{EcsWorld, PhysicsParams, RapierState, Transform, WorldBounds};
-    use tempfile::{Builder, NamedTempFile};
+    use tempfile::{tempdir, Builder, NamedTempFile};
 
     fn write_script(contents: &str) -> NamedTempFile {
         let mut temp = NamedTempFile::new().expect("temp script");
@@ -4945,6 +5020,41 @@ mod tests {
             info.get(&rapier_entity.to_bits()).expect("rapier entity should be included");
         assert!(*rapier_collider, "rapier hit should keep collider handle");
         assert!(*rapier_normal, "rapier hit should pick up snapshot translation for normals");
+    }
+
+    #[test]
+    fn ast_cache_round_trips_and_refreshes_on_change() {
+        let cache_dir = tempdir().expect("temp cache dir");
+        let script = write_script(
+            r#"
+                fn init(world) { world.log("v1"); }
+                fn update(world, dt) { }
+            "#,
+        );
+        let script_path = script.path().to_path_buf();
+        let mut host = ScriptHost::new(&script_path);
+        host.set_ast_cache_dir(Some(cache_dir.path().to_path_buf()));
+        host.force_reload(None).expect("initial load");
+
+        let cache = ScriptAstCache::new(cache_dir.path().to_path_buf());
+        let cache_path = cache.file_path(&script_path);
+        assert!(cache_path.exists(), "cache file should be written after load");
+        let bytes = std::fs::read(&cache_path).expect("read cache file");
+        let cached: AstCacheFile = bincode::deserialize(&bytes).expect("deserialize cache");
+        let first_digest = cached.script_digest;
+
+        std::fs::write(
+            &script_path,
+            r#"
+                fn init(world) { world.log("v2"); }
+                fn update(world, dt) { }
+            "#,
+        )
+        .expect("rewrite script");
+        host.force_reload(None).expect("reload updated script");
+        let bytes = std::fs::read(&cache_path).expect("read cache file after update");
+        let cached_after: AstCacheFile = bincode::deserialize(&bytes).expect("deserialize updated cache");
+        assert_ne!(cached_after.script_digest, first_digest, "cache should refresh when source changes");
     }
 
     #[test]
