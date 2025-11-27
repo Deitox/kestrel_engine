@@ -3578,6 +3578,15 @@ impl ScriptPlugin {
                 instance.persist_state = persist_state;
                 instance.mute_errors = mute_errors;
             }
+            if !persist_state {
+                if let Some(instance) = self.host.instances.get_mut(&instance_id) {
+                    instance.state.borrow_mut().persistent.clear();
+                }
+                self.pending_persistent.remove(&entity);
+                if let Ok(mut entity_ref) = ecs.world.get_entity_mut(entity) {
+                    entity_ref.remove::<ScriptPersistedState>();
+                }
+            }
             if let Err(err) = self.host.call_instance_ready(instance_id) {
                 eprintln!("[script] ready error for {}: {}", script_path, err);
                 self.host.mark_entity_error(entity);
@@ -3650,34 +3659,62 @@ impl ScriptPlugin {
 
     fn populate_pending_persistent_from_components(&mut self, ecs: &mut crate::ecs::EcsWorld) {
         let mut query = ecs.world.query::<(Entity, &ScriptPersistedState, Option<&ScriptBehaviour>)>();
+        let mut stale: Vec<Entity> = Vec::new();
         for (entity, persisted, behaviour) in query.iter(&ecs.world) {
             let wants_persist = behaviour.map(|b| b.persist_state).unwrap_or(false);
             if !wants_persist {
+                stale.push(entity);
                 continue;
             }
             if let Some(map) = ScriptHost::json_to_map(&persisted.0) {
                 self.pending_persistent.insert(entity, map);
             }
         }
+        for entity in stale {
+            if let Ok(mut entity_ref) = ecs.world.get_entity_mut(entity) {
+                entity_ref.remove::<ScriptPersistedState>();
+            }
+        }
     }
 
     fn sync_persisted_state_components(&mut self, ecs: &mut crate::ecs::EcsWorld) {
-        let mut to_update: Vec<(Entity, JsonValue)> = Vec::new();
+        let mut to_update: HashMap<Entity, JsonValue> = HashMap::new();
+        let mut to_remove: HashSet<Entity> = HashSet::new();
         for instance in self.host.instances.values() {
             if !instance.persist_state || instance.errored {
                 continue;
             }
             let map = instance.state.borrow().persistent.clone();
+            if map.is_empty() {
+                to_remove.insert(instance.entity);
+                continue;
+            }
             let json = ScriptHost::map_to_json(&map);
-            to_update.push((instance.entity, json));
+            to_update.insert(instance.entity, json);
         }
-        for (entity, json) in to_update {
+        for (entity, json) in &to_update {
+            let entity = *entity;
             if let Ok(mut entity_ref) = ecs.world.get_entity_mut(entity) {
                 if let Some(mut existing) = entity_ref.get_mut::<ScriptPersistedState>() {
                     existing.0 = json.clone();
                 } else {
-                    entity_ref.insert(ScriptPersistedState(json));
+                    entity_ref.insert(ScriptPersistedState(json.clone()));
                 }
+            }
+        }
+        let mut stale: Vec<Entity> = Vec::new();
+        {
+            let mut query = ecs.world.query::<(Entity, &ScriptPersistedState, Option<&ScriptBehaviour>)>();
+            for (entity, _, behaviour) in query.iter(&ecs.world) {
+                let wants_persist = behaviour.map(|b| b.persist_state).unwrap_or(false);
+                if !wants_persist || to_remove.contains(&entity) || !to_update.contains_key(&entity) {
+                    stale.push(entity);
+                }
+            }
+        }
+        for entity in stale {
+            if let Ok(mut entity_ref) = ecs.world.get_entity_mut(entity) {
+                entity_ref.remove::<ScriptPersistedState>();
             }
         }
     }

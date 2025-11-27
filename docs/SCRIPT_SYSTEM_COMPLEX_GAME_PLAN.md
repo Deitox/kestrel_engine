@@ -21,8 +21,8 @@ Status legend: `[x]` done, `[~]` partial/incomplete, `[ ]` not started/unknown.
 - [x] Input/time: input state helpers exist; `World` now exposes time scale, scaled/unscaled time/delta, and timer registration helpers in addition to `dt` in callbacks, and engine physics/animation respect the script time scale.
 - [x] Deliverables: prefab/query helpers and basic tests are in place; template/time/filter coverage landed; physics coupling/broadphase now hooked up.
 
-## Phase 3 - State & Lifecycle [~]
-- [~] Persistent state: `ScriptBehaviour.persist_state` + `world.state_get/set/clear/keys` preserve instance maps across reload when opted in; not serialized into scene saves/checkpoints.
+## Phase 3 - State & Lifecycle [x]
+- [x] Persistent state: `ScriptBehaviour.persist_state` + `world.state_get/set/clear/keys` preserve instance maps across reload when opted in, serialize into scenes/checkpoints, and drop persisted components when persistence is disabled.
 - [x] Lifecycle: `exit(world, entity)` fires on despawn and reload/script swap; `ready` reruns after reload with optional state preservation.
 - [x] Hot reload policy: reload reruns globals, resets scopes unless persistence is enabled, and exposes `world.is_hot_reload()` during the first `ready`.
 - [x] Deliverables: runtime persistence/reload tests exist; persisted state now serializes into scenes/checkpoints and reloads with entities.

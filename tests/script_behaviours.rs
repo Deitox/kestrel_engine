@@ -11,7 +11,7 @@ use kestrel_engine::plugins::{
     CapabilityTrackerHandle, EnginePlugin, FeatureRegistryHandle, PluginContext,
 };
 use kestrel_engine::renderer::Renderer;
-use kestrel_engine::scripts::{ScriptBehaviour, ScriptCommand, ScriptPlugin};
+use kestrel_engine::scripts::{ScriptBehaviour, ScriptCommand, ScriptPersistedState, ScriptPlugin};
 use kestrel_engine::scene::SceneEntityId;
 use kestrel_engine::time::Time;
 use serde_json::Value as JsonValue;
@@ -572,6 +572,136 @@ fn persisted_state_roundtrips_through_scene_export_and_load() {
     let persisted = persisted_component.expect("persisted component attached");
     assert_eq!(persisted.0["count"], JsonValue::from(7));
     assert_eq!(persisted.0["label"], JsonValue::from("hello"));
+}
+
+#[test]
+fn persisted_state_is_dropped_when_persistence_is_disabled() {
+    let main_script = write_script(
+        r#"
+            fn init(world) { }
+            fn update(world, dt) { }
+        "#,
+    );
+    let behaviour_script = write_script(
+        r#"
+            fn ready(world, entity) {
+                world.log("ready");
+                world.state_set("count", 3);
+            }
+            fn process(world, entity, dt) {
+                let c = world.state_get("count");
+                world.log("count:" + c.to_string());
+            }
+        "#,
+    );
+    let behaviour_path = behaviour_script.path().to_string_lossy().into_owned();
+
+    let mut plugin = ScriptPlugin::new(main_script.path());
+    let mut renderer = block_on(Renderer::new(&WindowConfig::default()));
+    let mut ecs = EcsWorld::new();
+    let mut assets = AssetManager::new();
+    let mut input = Input::new();
+    let mut material_registry = MaterialRegistry::new();
+    let mut mesh_registry = MeshRegistry::new(&mut material_registry);
+    let mut environment_registry = EnvironmentRegistry::new();
+    let time = Time::new();
+    let feature_registry = FeatureRegistryHandle::isolated();
+    let capability_tracker = CapabilityTrackerHandle::isolated();
+
+    let entity = ecs
+        .world
+        .spawn((Transform::default(), ScriptBehaviour::with_persistence(behaviour_path.clone(), true)))
+        .id();
+
+    {
+        let mut ctx = PluginContext::new(
+            &mut renderer,
+            &mut ecs,
+            &mut assets,
+            &mut input,
+            &mut material_registry,
+            &mut mesh_registry,
+            &mut environment_registry,
+            &time,
+            push_event_bridge,
+            feature_registry.clone(),
+            None,
+            capability_tracker.clone(),
+        );
+        plugin.update(&mut ctx, 0.016).expect("initial update should run ready");
+        let logs = plugin.take_logs();
+        assert!(logs.iter().any(|l| l.contains("ready")), "ready() should have run and logged");
+        assert!(logs.iter().any(|l| l.contains("count:3")), "state_set should be visible via logs");
+    }
+    {
+        let mut ctx = PluginContext::new(
+            &mut renderer,
+            &mut ecs,
+            &mut assets,
+            &mut input,
+            &mut material_registry,
+            &mut mesh_registry,
+            &mut environment_registry,
+            &time,
+            push_event_bridge,
+            feature_registry.clone(),
+            None,
+            capability_tracker.clone(),
+        );
+        plugin.update(&mut ctx, 0.016).expect("second update should sync persisted state");
+        let _ = plugin.take_logs();
+    }
+    assert!(plugin.last_error().is_none(), "script run should not error");
+    assert_eq!(plugin.instance_count_for_test(), 1, "behaviour instance should be created");
+    assert!(!plugin.entity_has_errored_instance(entity), "instance should be healthy before persistence checks");
+
+    let behaviour_before = ecs.world.get::<ScriptBehaviour>(entity).expect("behaviour should exist");
+    assert!(behaviour_before.persist_state, "persist flag should be enabled initially");
+
+    let mut count_query = ecs.world.query::<&ScriptPersistedState>();
+    let count = count_query.iter(&ecs.world).count();
+    assert_eq!(count, 1, "persisted component should be attached before opt-out");
+
+    let mut query = ecs.world.query::<Option<&ScriptPersistedState>>();
+    let persisted = query.iter(&ecs.world).flatten().next().expect("persisted state present");
+    assert_eq!(persisted.0["count"], JsonValue::from(3));
+
+    if let Ok(mut entity_ref) = ecs.world.get_entity_mut(entity) {
+        if let Some(mut behaviour) = entity_ref.get_mut::<ScriptBehaviour>() {
+            behaviour.persist_state = false;
+        }
+    }
+
+    {
+        let mut ctx = PluginContext::new(
+            &mut renderer,
+            &mut ecs,
+            &mut assets,
+            &mut input,
+            &mut material_registry,
+            &mut mesh_registry,
+            &mut environment_registry,
+            &time,
+            push_event_bridge,
+            feature_registry,
+            None,
+            capability_tracker,
+        );
+        plugin.update(&mut ctx, 0.016).expect("update should run after opt-out");
+        let _ = plugin.take_logs();
+    }
+
+    let behaviour = ecs.world.get::<ScriptBehaviour>(entity).expect("behaviour should exist");
+    assert!(!behaviour.persist_state, "persist flag should reflect opt-out");
+    assert!(
+        plugin.last_error().is_none(),
+        "opt-out update should not introduce script errors: {:?}",
+        plugin.last_error()
+    );
+
+    let mut query = ecs.world.query::<Option<&ScriptPersistedState>>();
+    let persisted_after = query.iter(&ecs.world).flatten().next();
+    assert!(persisted_after.is_none(), "persisted component should be removed after opt-out");
 }
 
 #[test]
