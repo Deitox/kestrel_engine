@@ -57,8 +57,11 @@ Status legend: `[x]` done, `[~]` partial/incomplete, `[ ]` not started/unknown.
 - [x] Build artifacts: AOT AST cache tooling added (env-configurable cache load/save plus `src/bin/script_ast_cache.rs` to prebuild caches).
 - [~] Deliverables: headless runner and golden helpers landed; AOT tooling still not implemented.
 
-## Game Kit Layer (Player/Waves/Stats/Upgrades) [ ]
-- [ ] Not yet implemented; no `gamekit.rhai`, Rust helpers, docs, or sample scripts.
+## Game Kit Layer (Player/Waves/Stats/Upgrades) [~]
+- [x] `assets/scripts/gamekit.rhai` introduces player/wave/stat/upgrade helpers plus a sample `gamekit_sample.rhai` host.
+- [x] Prefab stubs and aliases exist for the kit player + light/heavy enemies under `assets/prefabs/`.
+- [x] Harness coverage: `gamekit_wave` fixture/golden exercises kit flow, stat sync, and upgrade purchases.
+- [ ] Editor-facing docs, richer behaviours, and tuning helpers still pending.
 
 ### Recent core tightenings
 - Added Rapier-backed script queries: raycasts now return normals + collider IDs and fall back to snapshots; overlaps can return collider IDs via `overlap_circle_hits` (with filters variant) while preserving legacy array output.

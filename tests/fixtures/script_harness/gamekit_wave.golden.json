@@ -1,0 +1,95 @@
+{
+  "steps": 4,
+  "dt": 0.2,
+  "behaviours": [
+    "tests/fixtures/script_harness/gamekit_wave.rhai"
+  ],
+  "results": [
+    {
+      "step": 0,
+      "logs": [
+        "kit:ready"
+      ],
+      "commands": [
+        {
+          "kind": "set_position",
+          "handle": 1,
+          "position": [
+            -0.5,
+            -0.2
+          ]
+        },
+        {
+          "kind": "set_position",
+          "handle": 2,
+          "position": [
+            -0.5,
+            -0.2
+          ]
+        },
+        {
+          "kind": "spawn_template",
+          "handle": 1,
+          "template": "gamekit_player"
+        },
+        {
+          "kind": "spawn_template",
+          "handle": 2,
+          "template": "gamekit_enemy_light"
+        }
+      ]
+    },
+    {
+      "step": 1,
+      "logs": [
+        "kit:upgrade auto_repair",
+        "kit:score=15.0 scrap=1.0 wave=1 next=finale"
+      ],
+      "commands": [
+        {
+          "kind": "set_position",
+          "handle": 3,
+          "position": [
+            -0.5,
+            -0.2
+          ]
+        },
+        {
+          "kind": "spawn_template",
+          "handle": 3,
+          "template": "gamekit_enemy_light"
+        }
+      ]
+    },
+    {
+      "step": 2,
+      "logs": [
+        "kit:stats score=22.0 scrap=2.5"
+      ],
+      "commands": []
+    },
+    {
+      "step": 3,
+      "logs": [
+        "kit:score=22.0 scrap=2.5 wave=2 next=done",
+        "kit:stats score=22.0 scrap=2.5"
+      ],
+      "commands": []
+    }
+  ],
+  "final_entities": [
+    {
+      "entity": 4294967297,
+      "name": "gamekit",
+      "translation": [
+        0.0,
+        0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+        1.0,
+        1.0
+      ]
+    }
+  ]
+}

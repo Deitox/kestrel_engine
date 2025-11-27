@@ -1,0 +1,38 @@
+{
+  "metadata": {
+    "viewport": "Ortho2D"
+  },
+  "dependencies": {
+    "atlases": [
+      {
+        "key": "main",
+        "path": "assets/images/atlas.json"
+      }
+    ],
+    "clips": [],
+    "skeletons": [],
+    "meshes": [],
+    "materials": [],
+    "environments": []
+  },
+  "entities": [
+    {
+      "name": "gamekit_enemy_light",
+      "transform": {
+        "translation": {
+          "x": 0.0,
+          "y": 0.0
+        },
+        "rotation": 0.0,
+        "scale": {
+          "x": 0.8,
+          "y": 0.8
+        }
+      },
+      "sprite": {
+        "atlas": "main",
+        "region": "bluebox"
+      }
+    }
+  ]
+}

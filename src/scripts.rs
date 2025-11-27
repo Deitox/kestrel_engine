@@ -299,6 +299,7 @@ struct SharedState {
     commands_per_owner: HashMap<ListenerOwner, usize>,
     logs: Vec<String>,
     rng: Option<StdRng>,
+    global_stats: HashMap<String, f64>,
     entity_snapshots: HashMap<Entity, EntitySnapshot>,
     input_snapshot: Option<InputSnapshot>,
     spatial_index: ScriptSpatialIndex,
@@ -327,6 +328,7 @@ impl Default for SharedState {
             commands_per_owner: HashMap::new(),
             logs: Vec::new(),
             rng: None,
+            global_stats: HashMap::new(),
             entity_snapshots: HashMap::new(),
             input_snapshot: None,
             spatial_index: ScriptSpatialIndex::default(),
@@ -1062,6 +1064,54 @@ impl ScriptWorld {
         Array::new()
     }
 
+    fn stat_get(&mut self, key: &str) -> FLOAT {
+        let Some(key) = Self::stat_key(key) else { return 0.0; };
+        self.state
+            .borrow()
+            .global_stats
+            .get(&key)
+            .copied()
+            .unwrap_or(0.0) as FLOAT
+    }
+
+    fn stat_set(&mut self, key: &str, value: Dynamic) -> bool {
+        let Some(key) = Self::stat_key(key) else { return false; };
+        let number = value
+            .clone()
+            .try_cast::<FLOAT>()
+            .or_else(|| value.try_cast::<rhai::INT>().map(|v| v as FLOAT));
+        let Some(raw) = number else { return false; };
+        let val = raw as f32;
+        if !self.ensure_finite("stat_set", &[val]) {
+            return false;
+        }
+        self.state.borrow_mut().global_stats.insert(key, val as f64);
+        true
+    }
+
+    fn stat_add(&mut self, key: &str, delta: FLOAT) -> FLOAT {
+        let Some(key) = Self::stat_key(key) else { return 0.0; };
+        let delta = delta as f32;
+        if !self.ensure_finite("stat_add", &[delta]) {
+            return 0.0;
+        }
+        let mut state = self.state.borrow_mut();
+        let entry = state.global_stats.entry(key).or_insert(0.0);
+        *entry += delta as f64;
+        *entry as FLOAT
+    }
+
+    fn stat_clear(&mut self, key: &str) -> bool {
+        let Some(key) = Self::stat_key(key) else { return false; };
+        self.state.borrow_mut().global_stats.remove(&key).is_some()
+    }
+
+    fn stat_keys(&mut self) -> Array {
+        let mut keys: Vec<_> = self.state.borrow().global_stats.keys().cloned().collect();
+        keys.sort();
+        keys.into_iter().map(Dynamic::from).collect()
+    }
+
     fn is_hot_reload(&mut self) -> bool {
         self.instance_state
             .as_ref()
@@ -1161,6 +1211,15 @@ impl ScriptWorld {
         match (x, y) {
             (Some(x), Some(y)) if x.is_finite() && y.is_finite() => Some(Vec2::new(x as f32, y as f32)),
             _ => None,
+        }
+    }
+
+    fn stat_key(key: &str) -> Option<String> {
+        let trimmed = key.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
         }
     }
 
@@ -3811,6 +3870,11 @@ fn register_api(engine: &mut Engine) {
     engine.register_fn("state_set", ScriptWorld::state_set);
     engine.register_fn("state_clear", ScriptWorld::state_clear);
     engine.register_fn("state_keys", ScriptWorld::state_keys);
+    engine.register_fn("stat_get", ScriptWorld::stat_get);
+    engine.register_fn("stat_set", ScriptWorld::stat_set);
+    engine.register_fn("stat_add", ScriptWorld::stat_add);
+    engine.register_fn("stat_clear", ScriptWorld::stat_clear);
+    engine.register_fn("stat_keys", ScriptWorld::stat_keys);
     engine.register_fn("is_hot_reload", ScriptWorld::is_hot_reload);
     engine.register_fn("vec2", ScriptWorld::vec2);
     engine.register_fn("vec2_len", ScriptWorld::vec2_len);
@@ -3840,6 +3904,25 @@ mod tests {
         let mut temp = NamedTempFile::new().expect("temp script");
         write!(temp, "{contents}").expect("write script");
         temp
+    }
+
+    #[test]
+    fn stat_helpers_store_and_clear_values() {
+        let state = Rc::new(RefCell::new(SharedState::default()));
+        let mut world = ScriptWorld::new(state);
+        assert_eq!(world.stat_get("score"), 0.0);
+        assert!(!world.stat_set("", Dynamic::from(1.0)));
+        assert!(world.stat_set("score", Dynamic::from(5.0)));
+        assert!((world.stat_get("score") - 5.0).abs() < 1e-4);
+        let updated = world.stat_add("score", 3.5);
+        assert!((updated - 8.5).abs() < 1e-4);
+        let mut keys = world.stat_keys();
+        assert_eq!(keys.len(), 1);
+        keys.sort_by(|a, b| a.to_string().cmp(&b.to_string()));
+        let key: String = keys[0].clone().try_cast().expect("string key");
+        assert_eq!(key, "score");
+        assert!(world.stat_clear("score"));
+        assert_eq!(world.stat_keys().len(), 0);
     }
 
     #[test]

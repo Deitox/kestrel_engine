@@ -1,0 +1,8 @@
+{
+  "player": "gamekit_player",
+  "kit_player": "gamekit_player",
+  "kit_enemy_light": "gamekit_enemy_light",
+  "kit_enemy_heavy": "gamekit_enemy_heavy",
+  "enemy.light": "gamekit_enemy_light",
+  "enemy.heavy": "gamekit_enemy_heavy"
+}

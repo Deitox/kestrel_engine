@@ -1,0 +1,12 @@
+{
+  "main_script": "tests/fixtures/script_harness/idle.rhai",
+  "steps": 4,
+  "dt": 0.2,
+  "deterministic_seed": 1,
+  "behaviours": [
+    {
+      "path": "tests/fixtures/script_harness/gamekit_wave.rhai",
+      "name": "gamekit"
+    }
+  ]
+}
