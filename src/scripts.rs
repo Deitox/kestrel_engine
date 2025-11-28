@@ -390,7 +390,6 @@ struct SharedState {
     despawn_dead_uses: u64,
     spawn_failures: HashMap<String, u64>,
     invalid_handle_labels: HashSet<String>,
-    legacy_hard_error: bool,
 }
 
 impl Default for SharedState {
@@ -433,7 +432,6 @@ impl Default for SharedState {
             despawn_dead_uses: 0,
             spawn_failures: HashMap::new(),
             invalid_handle_labels: HashSet::new(),
-            legacy_hard_error: false,
         }
     }
 }
@@ -1482,9 +1480,6 @@ impl ScriptWorld {
         vx: FLOAT,
         vy: FLOAT,
     ) -> ScriptHandle {
-        if self.legacy_call_blocked("spawn_sprite") {
-            return -1;
-        }
         self.spawn_sprite_internal(atlas, region, x, y, scale, vx, vy)
     }
 
@@ -1548,17 +1543,6 @@ impl ScriptWorld {
             return false;
         }
         self.push_command_plain(ScriptCommand::SetVelocity { handle, velocity: Vec2::new(vx, vy) })
-    }
-
-    fn legacy_call_blocked(&mut self, label: &str) -> bool {
-        if self.state.borrow().legacy_hard_error {
-            self.state
-                .borrow_mut()
-                .logs
-                .push(format!("[script] legacy call '{label}' blocked; use *_safe + handle guards"));
-            return true;
-        }
-        false
     }
 
     fn set_position(&mut self, handle: ScriptHandle, x: FLOAT, y: FLOAT) -> bool {
@@ -1644,17 +1628,11 @@ impl ScriptWorld {
     }
 
     fn spawn_prefab(&mut self, path: &str) -> ScriptHandle {
-        if self.legacy_call_blocked("spawn_prefab") {
-            return -1;
-        }
         self.spawn_prefab_with_tag_internal(path, None)
     }
 
     #[allow(dead_code)]
     fn spawn_prefab_with_tag(&mut self, path: &str, tag: Option<String>) -> ScriptHandle {
-        if self.legacy_call_blocked("spawn_prefab_with_tag") {
-            return -1;
-        }
         self.spawn_prefab_with_tag_internal(path, tag)
     }
 
@@ -1674,17 +1652,11 @@ impl ScriptWorld {
     }
 
     fn spawn_template(&mut self, name: &str) -> ScriptHandle {
-        if self.legacy_call_blocked("spawn_template") {
-            return -1;
-        }
         self.spawn_template_with_tag_internal(name, None)
     }
 
     #[allow(dead_code)]
     fn spawn_template_with_tag(&mut self, name: &str, tag: Option<String>) -> ScriptHandle {
-        if self.legacy_call_blocked("spawn_template_with_tag") {
-            return -1;
-        }
         self.spawn_template_with_tag_internal(name, tag)
     }
 
@@ -1704,16 +1676,10 @@ impl ScriptWorld {
     }
 
     fn spawn_player(&mut self, tag: &str) -> ScriptHandle {
-        if self.legacy_call_blocked("spawn_player") {
-            return -1;
-        }
         self.spawn_template_with_tag_internal("player", Some(tag.to_string()))
     }
 
     fn spawn_enemy(&mut self, template: &str, tag: &str) -> ScriptHandle {
-        if self.legacy_call_blocked("spawn_enemy") {
-            return -1;
-        }
         self.spawn_template_with_tag_internal(template, Some(tag.to_string()))
     }
 
@@ -2638,13 +2604,7 @@ impl ScriptHost {
         let import_resolver = CachedModuleResolver::new(canonical_import_root());
         engine.set_module_resolver(import_resolver.clone());
         register_api(&mut engine);
-        let mut shared = SharedState { next_handle: 1, ..Default::default() };
-        // Default hard-errors on legacy spawns outside of tests; env can override.
-        shared.legacy_hard_error = cfg!(not(test));
-        if let Ok(flag) = env::var("KESTREL_SCRIPT_LEGACY_HARD_ERROR") {
-            let flag = flag.to_lowercase();
-            shared.legacy_hard_error = matches!(flag.as_str(), "1" | "true" | "yes" | "on");
-        }
+        let shared = SharedState { next_handle: 1, ..Default::default() };
         let ast_cache_dir = env::var("KESTREL_SCRIPT_AST_CACHE").ok().map(PathBuf::from);
         Self {
             engine,
@@ -3775,10 +3735,6 @@ impl ScriptPlugin {
     pub fn set_rng_seed(&mut self, seed: u64) {
         let mut shared = self.host.shared.borrow_mut();
         shared.rng = Some(StdRng::seed_from_u64(seed));
-    }
-
-    pub fn set_legacy_hard_error(&mut self, enabled: bool) {
-        self.host.shared.borrow_mut().legacy_hard_error = enabled;
     }
 
     pub fn set_callback_budget_ms(&mut self, budget_ms: Option<f32>) {
@@ -5494,32 +5450,6 @@ mod tests {
         let result = world.spawn_sprite_safe("atlas", "region", 0.0, 0.0, -1.0, 0.0, 0.0);
         assert!(result.is_unit(), "invalid params should return unit");
         assert!(world.state.borrow().commands.is_empty(), "no command should be queued on invalid spawn");
-    }
-
-    #[test]
-    fn spawn_sprite_safe_not_blocked_by_legacy_flag() {
-        let mut shared = SharedState::default();
-        shared.legacy_hard_error = true;
-        let state = Rc::new(RefCell::new(shared));
-        let mut world = ScriptWorld::new(state.clone());
-        let result = world.spawn_sprite_safe("atlas", "region", 0.0, 0.0, 1.0, 0.0, 0.0);
-        assert!(!result.is_unit(), "safe sprite spawn should succeed even when legacy calls are blocked");
-        let commands = state.borrow().commands.clone();
-        assert_eq!(commands.len(), 1, "expected one spawn command queued");
-    }
-
-    #[test]
-    fn legacy_spawns_can_be_blocked_by_flag() {
-        let mut shared = SharedState::default();
-        shared.legacy_hard_error = true;
-        let mut world = ScriptWorld::new(Rc::new(RefCell::new(shared)));
-        let handle = world.spawn_template("enemy");
-        assert_eq!(handle, -1, "legacy spawn should be blocked when flag is enabled");
-        let logs = world.state.borrow().logs.clone();
-        assert!(
-            logs.iter().any(|l| l.contains("legacy call 'spawn_template'")),
-            "expected legacy warning log, got {logs:?}"
-        );
     }
 
     #[test]

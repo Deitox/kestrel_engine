@@ -65,6 +65,7 @@ Script-facing API:
 - `world.spawn_template_safe(name: &str, tag: &str = "") -> int | ()`
 - `world.spawn_player(tag: &str = "player") -> int | ()`
 - `world.spawn_enemy(template: &str, tag: &str = "enemy") -> int | ()`
+- `world.spawn_sprite_safe(atlas: &str, region: &str, x, y, scale, vx, vy) -> int | ()`
 - `world.despawn_safe(handle: int)`
 
 Behavior:
@@ -125,7 +126,7 @@ fn ready(world, entity) {
 ### 5. Migration Strategy
 
 - Keep legacy handle-taking APIs but route them through the safe validation path to eliminate panics; emit a one-time per-callsite warning when an invalid handle is passed.
-- Mark legacy spawn helpers as deprecated in docs and steer new content to `_safe` variants; feature-flag a mode that hard-errors on legacy unsafe calls in dev builds (env: `KESTREL_SCRIPT_LEGACY_HARD_ERROR=1`, defaults on outside tests). Doc note: use `_safe` helpers + `handle_is_alive` for all new content; legacy helpers remain for compatibility only.
+- Treat `_safe` helpers as the canonical API; legacy spawn names forward to the same safe path but are kept only for compatibility (no hard-error flag). Doc note: use `_safe` helpers + `handle_is_alive` for all new content.
 - Update existing sample scripts to use `_safe` helpers and `handle_is_alive` guards to provide working references.
 
 ---
@@ -185,8 +186,8 @@ Status legend: `[ ]` not started, `[>]` in progress, `[x]` done.
 
 - [x] Legacy handle-taking APIs routed through validation to remove panic paths.
 - [x] One-time per-callsite warning on invalid-handle use via legacy APIs.
-- [x] Legacy spawn helpers deprecated in docs; `_safe` variants recommended.
-- [x] Dev feature flag to hard-error on legacy unsafe calls.
+- [x] Legacy spawn helpers deprecated in docs; `_safe` variants recommended and treated as canonical API.
+- [x] Hard-error flag removed; legacy names forward to safe semantics for compatibility.
 - [x] Sample scripts migrated to `_safe` helpers + guards.
 
 ### Rhai Usage Guidance
