@@ -2601,6 +2601,9 @@ impl ScriptHost {
     pub fn new(path: impl AsRef<Path>) -> Self {
         let mut engine = Engine::new();
         engine.set_fast_operators(true);
+        // Lift Rhai safety ceilings (0 = unlimited).
+        engine.set_max_expr_depths(0, 0); // expr depth + function expr depth
+        engine.set_max_operations(0);     // op budget
         let import_resolver = CachedModuleResolver::new(canonical_import_root());
         engine.set_module_resolver(import_resolver.clone());
         register_api(&mut engine);
