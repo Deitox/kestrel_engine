@@ -68,6 +68,9 @@ pub(crate) struct ScriptDebuggerStatus {
     pub timings: Vec<ScriptTimingSummary>,
     pub offenders: Vec<ScriptOffenderStatus>,
     pub timing_history: Vec<ScriptTimingHistory>,
+    pub invalid_handle_uses: u64,
+    pub despawn_dead_uses: u64,
+    pub spawn_failures: Vec<(String, u64)>,
 }
 
 #[derive(Clone, Debug, Default)]

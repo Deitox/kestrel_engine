@@ -133,19 +133,19 @@ Status legend: `[ ]` not started, `[>]` in progress, `[x]` done.
 
 ### Safe Handle API
 
-- [ ] ScriptWorld validates handle liveness on every handle-taking entry point (move/get/set/tags/queries).
-- [ ] Handles encode generation/nonce; no raw ID reuse.
-- [ ] Rhai bindings for `handle_is_alive`, `handle_validate`, and `handles_with_tag` shipped and documented as session-only.
-- [ ] Docs updated to note ordering is unspecified and per-frame use of `handles_with_tag` is discouraged.
-- [ ] Integration tests: invalid handle => no panic, safe return path.
+- [x] ScriptWorld validates handle liveness on every handle-taking entry point (move/get/set/tags/queries).
+- [x] Handles encode generation/nonce; no raw ID reuse.
+- [x] Rhai bindings for `handle_is_alive`, `handle_validate`, and `handles_with_tag` shipped and documented as session-only.
+- [x] Docs updated to note ordering is unspecified and per-frame use of `handles_with_tag` is discouraged.
+- [x] Integration tests: invalid handle => no panic, safe return path.
 
 ### Safe Spawns & Despawn
 
-- [ ] `_safe` spawn helpers implemented (prefab, template, player, enemy) returning handles or `()`.
+- [x] `_safe` spawn helpers implemented (prefab, template, player, enemy) returning handles or `()`.
 - [ ] Deferred spawn path validated; scripts must guard with `handle_is_alive`.
-- [ ] `despawn_safe` idempotent and non-panicking on dead/invalid handles.
-- [ ] Spawn failures emit dev-facing reason; metrics counter increments.
-- [ ] Example script updated to use `_safe` helpers and guards.
+- [x] `despawn_safe` idempotent and non-panicking on dead/invalid handles.
+- [x] Spawn failures emit dev-facing reason; metrics counter increments.
+- [x] Example script updated to use `_safe` helpers and guards.
 
 ### Reload and Persistence Hygiene
 
@@ -155,9 +155,9 @@ Status legend: `[ ]` not started, `[>]` in progress, `[x]` done.
 
 ### Observability and Dev Ergonomics
 
-- [ ] Throttled dev warnings for invalid handle use and despawn of dead handles.
-- [ ] Spawn failure reasons recorded (logs + counters).
-- [ ] Metrics visible in dev HUD/debug overlay for triage.
+- [x] Throttled dev warnings for invalid handle use and despawn of dead handles.
+- [x] Spawn failure reasons recorded (logs + counters).
+- [x] Metrics visible in dev HUD/debug overlay for triage.
 
 ### Migration Strategy
 
@@ -174,7 +174,7 @@ Status legend: `[ ]` not started, `[>]` in progress, `[x]` done.
 
 ### Validation and Acceptance
 
-- [ ] Integration tests: invalid handle into move/read returns default/no-op, no panic.
-- [ ] Integration tests: spawn failure returns `()`, emits reason.
-- [ ] Integration tests: `despawn_safe` on dead handles is a no-op.
-- [ ] Dev script sample demonstrates reload hygiene and spawn failure handling.
+- [x] Integration tests: invalid handle into move/read returns default/no-op, no panic.
+- [x] Integration tests: spawn failure returns `()`, emits reason.
+- [x] Integration tests: `despawn_safe` on dead handles is a no-op.
+- [x] Dev script sample demonstrates reload hygiene and spawn failure handling.

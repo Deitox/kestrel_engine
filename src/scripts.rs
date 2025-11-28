@@ -127,8 +127,8 @@ pub enum ScriptCommand {
     SetEmitterEndColor { color: Vec4 },
     SetEmitterStartSize { size: f32 },
     SetEmitterEndSize { size: f32 },
-    SpawnPrefab { handle: ScriptHandle, path: String },
-    SpawnTemplate { handle: ScriptHandle, template: String },
+    SpawnPrefab { handle: ScriptHandle, path: String, tag: Option<String> },
+    SpawnTemplate { handle: ScriptHandle, template: String, tag: Option<String> },
     EntitySetPosition { entity: Entity, position: Vec2 },
     EntitySetRotation { entity: Entity, rotation: f32 },
     EntitySetScale { entity: Entity, scale: Vec2 },
@@ -175,6 +175,13 @@ pub struct ScriptTimingOffender {
     pub function: String,
     pub entity: Option<Entity>,
     pub last_ms: f32,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ScriptSafetyMetrics {
+    pub invalid_handle_uses: u64,
+    pub despawn_dead_uses: u64,
+    pub spawn_failures: HashMap<String, u64>,
 }
 
 #[derive(Component, Clone, Debug)]
@@ -351,6 +358,7 @@ impl PhysicsQueryContext {
 
 struct SharedState {
     next_handle: ScriptHandle,
+    handle_nonce: u32,
     next_listener_id: u64,
     commands: Vec<ScriptCommand>,
     command_quota: Option<usize>,
@@ -374,12 +382,24 @@ struct SharedState {
     event_overflowed: bool,
     timings: HashMap<&'static str, ScriptTiming>,
     offenders: Vec<ScriptTimingOffender>,
+    handle_lookup: HashMap<ScriptHandle, Entity>,
+    entity_handles: HashMap<Entity, ScriptHandle>,
+    handle_tags: HashMap<ScriptHandle, String>,
+    entity_tags: HashMap<Entity, String>,
+    invalid_handle_uses: u64,
+    despawn_dead_uses: u64,
+    spawn_failures: HashMap<String, u64>,
 }
 
 impl Default for SharedState {
     fn default() -> Self {
+        let mut nonce = rand::random::<u32>() & 0x7FFF_FFFF;
+        if nonce == 0 {
+            nonce = 1;
+        }
         Self {
             next_handle: 0,
+            handle_nonce: nonce,
             next_listener_id: 1,
             commands: Vec::new(),
             command_quota: None,
@@ -403,6 +423,13 @@ impl Default for SharedState {
             event_overflowed: false,
             timings: HashMap::new(),
             offenders: Vec::new(),
+            handle_lookup: HashMap::new(),
+            entity_handles: HashMap::new(),
+            handle_tags: HashMap::new(),
+            entity_tags: HashMap::new(),
+            invalid_handle_uses: 0,
+            despawn_dead_uses: 0,
+            spawn_failures: HashMap::new(),
         }
     }
 }
@@ -441,6 +468,41 @@ impl SharedState {
             .sort_by(|a, b| b.last_ms.partial_cmp(&a.last_ms).unwrap_or(std::cmp::Ordering::Equal));
         if self.offenders.len() > SCRIPT_OFFENDER_LIMIT {
             self.offenders.truncate(SCRIPT_OFFENDER_LIMIT);
+        }
+    }
+
+    fn record_invalid_handle_use(&mut self) {
+        self.invalid_handle_uses = self.invalid_handle_uses.saturating_add(1);
+        if self.invalid_handle_uses == 1 || self.invalid_handle_uses % 10 == 0 {
+            self.logs.push(format!(
+                "[script] invalid handle ignored (count={})",
+                self.invalid_handle_uses
+            ));
+        }
+    }
+
+    fn record_despawn_dead(&mut self) {
+        self.despawn_dead_uses = self.despawn_dead_uses.saturating_add(1);
+        if self.despawn_dead_uses == 1 || self.despawn_dead_uses % 10 == 0 {
+            self.logs.push(format!(
+                "[script] despawn_safe/EntityDespawn ignored dead handle (count={})",
+                self.despawn_dead_uses
+            ));
+        }
+    }
+
+    fn record_spawn_failure(&mut self, reason: &str) {
+        if reason.is_empty() {
+            return;
+        }
+        *self.spawn_failures.entry(reason.to_string()).or_insert(0) += 1;
+    }
+
+    fn safety_metrics(&self) -> ScriptSafetyMetrics {
+        ScriptSafetyMetrics {
+            invalid_handle_uses: self.invalid_handle_uses,
+            despawn_dead_uses: self.despawn_dead_uses,
+            spawn_failures: self.spawn_failures.clone(),
         }
     }
 }
@@ -668,6 +730,10 @@ impl ScriptWorld {
         Self { state, instance_state: Some(instance_state), owner: ListenerOwner::Instance(instance_id) }
     }
 
+    fn entity_is_alive(&self, entity: Entity) -> bool {
+        self.state.borrow().entity_snapshots.contains_key(&entity)
+    }
+
     fn entity_snapshot(&mut self, entity_bits: ScriptHandle) -> Map {
         let entity = Entity::from_bits(entity_bits as u64);
         let mut map = Map::new();
@@ -730,6 +796,52 @@ impl ScriptWorld {
             return Array::new();
         };
         snapshot.tint.map(Self::vec4_to_array).unwrap_or_else(Array::new)
+    }
+
+    fn resolve_handle_entity(&self, handle: ScriptHandle) -> Option<Entity> {
+        let state = self.state.borrow();
+        state
+            .handle_lookup
+            .get(&handle)
+            .copied()
+            .filter(|entity| state.entity_snapshots.contains_key(entity))
+    }
+
+    fn handle_is_alive(&mut self, handle: ScriptHandle) -> bool {
+        self.resolve_handle_entity(handle).is_some()
+    }
+
+    fn handle_validate(&mut self, handle: ScriptHandle) -> Dynamic {
+        if self.handle_is_alive(handle) {
+            Dynamic::from(handle)
+        } else {
+            self.state.borrow_mut().record_invalid_handle_use();
+            Dynamic::UNIT
+        }
+    }
+
+    fn handles_with_tag(&mut self, tag: &str) -> Array {
+        let trimmed = tag.trim();
+        if trimmed.is_empty() {
+            return Array::new();
+        }
+        let state = self.state.borrow();
+        let mut seen = HashSet::new();
+        let mut handles = Array::new();
+        for (entity, entity_tag) in state.entity_tags.iter() {
+            if entity_tag != trimmed {
+                continue;
+            }
+            if !state.entity_snapshots.contains_key(entity) {
+                continue;
+            }
+            if let Some(handle) = state.entity_handles.get(entity).copied() {
+                if seen.insert(handle) {
+                    handles.push(Dynamic::from(handle));
+                }
+            }
+        }
+        handles
     }
 
     fn raycast(&mut self, ox: FLOAT, oy: FLOAT, dx: FLOAT, dy: FLOAT, max_dist: FLOAT) -> Map {
@@ -1388,6 +1500,10 @@ impl ScriptWorld {
         if !self.ensure_finite("set_velocity", &[vx, vy]) {
             return false;
         }
+        if self.resolve_handle_entity(handle).is_none() {
+            self.state.borrow_mut().record_invalid_handle_use();
+            return false;
+        }
         self.push_command_plain(ScriptCommand::SetVelocity { handle, velocity: Vec2::new(vx, vy) })
     }
 
@@ -1395,6 +1511,10 @@ impl ScriptWorld {
         let x = x as f32;
         let y = y as f32;
         if !self.ensure_finite("set_position", &[x, y]) {
+            return false;
+        }
+        if self.resolve_handle_entity(handle).is_none() {
+            self.state.borrow_mut().record_invalid_handle_use();
             return false;
         }
         self.push_command_plain(ScriptCommand::SetPosition { handle, position: Vec2::new(x, y) })
@@ -1405,6 +1525,10 @@ impl ScriptWorld {
         if !self.ensure_finite("set_rotation", &[radians]) {
             return false;
         }
+        if self.resolve_handle_entity(handle).is_none() {
+            self.state.borrow_mut().record_invalid_handle_use();
+            return false;
+        }
         self.push_command_plain(ScriptCommand::SetRotation { handle, rotation: radians })
     }
 
@@ -1412,6 +1536,10 @@ impl ScriptWorld {
         let sx = sx as f32;
         let sy = sy as f32;
         if !self.ensure_finite("set_scale", &[sx, sy]) {
+            return false;
+        }
+        if self.resolve_handle_entity(handle).is_none() {
+            self.state.borrow_mut().record_invalid_handle_use();
             return false;
         }
         let clamped = Vec2::new(sx.max(0.01), sy.max(0.01));
@@ -1426,14 +1554,26 @@ impl ScriptWorld {
         if !self.ensure_finite("set_tint", &[r, g, b, a]) {
             return false;
         }
+        if self.resolve_handle_entity(handle).is_none() {
+            self.state.borrow_mut().record_invalid_handle_use();
+            return false;
+        }
         self.push_command_plain(ScriptCommand::SetTint { handle, tint: Some(Vec4::new(r, g, b, a)) })
     }
 
     fn clear_tint(&mut self, handle: ScriptHandle) -> bool {
+        if self.resolve_handle_entity(handle).is_none() {
+            self.state.borrow_mut().record_invalid_handle_use();
+            return false;
+        }
         self.push_command_plain(ScriptCommand::SetTint { handle, tint: None })
     }
 
     fn set_sprite_region(&mut self, handle: ScriptHandle, region: &str) -> bool {
+        if self.resolve_handle_entity(handle).is_none() {
+            self.state.borrow_mut().record_invalid_handle_use();
+            return false;
+        }
         self.state
             .borrow_mut()
             .commands
@@ -1442,29 +1582,123 @@ impl ScriptWorld {
     }
 
     fn despawn(&mut self, handle: ScriptHandle) -> bool {
+        if self.resolve_handle_entity(handle).is_none() {
+            self.state.borrow_mut().record_invalid_handle_use();
+            return false;
+        }
         self.push_command_plain(ScriptCommand::Despawn { handle })
     }
 
     fn spawn_prefab(&mut self, path: &str) -> ScriptHandle {
+        self.spawn_prefab_with_tag(path, None)
+    }
+
+    fn spawn_prefab_with_tag(&mut self, path: &str, tag: Option<String>) -> ScriptHandle {
         let trimmed = path.trim();
         if trimmed.is_empty() {
             return -1;
         }
-        self.push_command_with_handle(|handle| ScriptCommand::SpawnPrefab { handle, path: trimmed.to_string() })
+        let tag = tag.and_then(|t| {
+            let trimmed = t.trim();
+            if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+        });
+        let path_owned = trimmed.to_string();
+        self.push_command_with_handle(move |handle| {
+            ScriptCommand::SpawnPrefab { handle, path: path_owned.clone(), tag: tag.clone() }
+        })
     }
 
     fn spawn_template(&mut self, name: &str) -> ScriptHandle {
+        self.spawn_template_with_tag(name, None)
+    }
+
+    fn spawn_template_with_tag(&mut self, name: &str, tag: Option<String>) -> ScriptHandle {
         let trimmed = name.trim();
         if trimmed.is_empty() {
             return -1;
         }
-        self.push_command_with_handle(|handle| ScriptCommand::SpawnTemplate { handle, template: trimmed.to_string() })
+        let tag = tag.and_then(|t| {
+            let trimmed = t.trim();
+            if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+        });
+        let template_owned = trimmed.to_string();
+        self.push_command_with_handle(move |handle| {
+            ScriptCommand::SpawnTemplate { handle, template: template_owned.clone(), tag: tag.clone() }
+        })
+    }
+
+    fn spawn_player(&mut self, tag: &str) -> ScriptHandle {
+        self.spawn_template_with_tag("player", Some(tag.to_string()))
+    }
+
+    fn spawn_enemy(&mut self, template: &str, tag: &str) -> ScriptHandle {
+        self.spawn_template_with_tag(template, Some(tag.to_string()))
+    }
+
+    fn spawn_prefab_safe_with_tag(&mut self, path: &str, tag: &str) -> Dynamic {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            self.state.borrow_mut().record_spawn_failure("prefab_empty_path");
+            return Dynamic::UNIT;
+        }
+        let handle = self.spawn_prefab_with_tag(trimmed, Some(tag.to_string()));
+        if handle < 0 {
+            self.state.borrow_mut().record_spawn_failure("prefab_spawn_rejected");
+            Dynamic::UNIT
+        } else {
+            Dynamic::from(handle)
+        }
+    }
+
+    fn spawn_template_safe_with_tag(&mut self, name: &str, tag: &str) -> Dynamic {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            self.state.borrow_mut().record_spawn_failure("template_empty_name");
+            return Dynamic::UNIT;
+        }
+        let handle = self.spawn_template_with_tag(trimmed, Some(tag.to_string()));
+        if handle < 0 {
+            self.state.borrow_mut().record_spawn_failure("template_spawn_rejected");
+            Dynamic::UNIT
+        } else {
+            Dynamic::from(handle)
+        }
+    }
+
+    fn spawn_prefab_safe(&mut self, path: &str) -> Dynamic {
+        self.spawn_prefab_safe_with_tag(path, "")
+    }
+
+    fn spawn_template_safe(&mut self, name: &str) -> Dynamic {
+        self.spawn_template_safe_with_tag(name, "")
+    }
+
+    fn spawn_player_safe(&mut self, tag: &str) -> Dynamic {
+        let handle = self.spawn_player(tag);
+        if handle < 0 {
+            Dynamic::UNIT
+        } else {
+            Dynamic::from(handle)
+        }
+    }
+
+    fn spawn_enemy_safe(&mut self, template: &str, tag: &str) -> Dynamic {
+        let handle = self.spawn_enemy(template, tag);
+        if handle < 0 {
+            Dynamic::UNIT
+        } else {
+            Dynamic::from(handle)
+        }
     }
 
     fn entity_set_position(&mut self, entity_bits: ScriptHandle, x: FLOAT, y: FLOAT) -> bool {
         let entity = Entity::from_bits(entity_bits as u64);
         let pos = Vec2::new(x as f32, y as f32);
         if !self.ensure_finite("entity_set_position", &[pos.x, pos.y]) {
+            return false;
+        }
+        if !self.entity_is_alive(entity) {
+            self.state.borrow_mut().record_invalid_handle_use();
             return false;
         }
         self.push_command_plain(ScriptCommand::EntitySetPosition { entity, position: pos })
@@ -1476,6 +1710,10 @@ impl ScriptWorld {
         if !self.ensure_finite("entity_set_rotation", &[rot]) {
             return false;
         }
+        if !self.entity_is_alive(entity) {
+            self.state.borrow_mut().record_invalid_handle_use();
+            return false;
+        }
         self.push_command_plain(ScriptCommand::EntitySetRotation { entity, rotation: rot })
     }
 
@@ -1484,6 +1722,10 @@ impl ScriptWorld {
         let sx = sx as f32;
         let sy = sy as f32;
         if !self.ensure_finite("entity_set_scale", &[sx, sy]) {
+            return false;
+        }
+        if !self.entity_is_alive(entity) {
+            self.state.borrow_mut().record_invalid_handle_use();
             return false;
         }
         let clamped = Vec2::new(sx.max(0.01), sy.max(0.01));
@@ -1499,6 +1741,10 @@ impl ScriptWorld {
         if !self.ensure_finite("entity_set_tint", &[r, g, b, a]) {
             return false;
         }
+        if !self.entity_is_alive(entity) {
+            self.state.borrow_mut().record_invalid_handle_use();
+            return false;
+        }
         self.state
             .borrow_mut()
             .commands
@@ -1508,6 +1754,10 @@ impl ScriptWorld {
 
     fn entity_clear_tint(&mut self, entity_bits: ScriptHandle) -> bool {
         let entity = Entity::from_bits(entity_bits as u64);
+        if !self.entity_is_alive(entity) {
+            self.state.borrow_mut().record_invalid_handle_use();
+            return false;
+        }
         self.push_command_plain(ScriptCommand::EntitySetTint { entity, tint: None })
     }
 
@@ -1518,12 +1768,29 @@ impl ScriptWorld {
         if !self.ensure_finite("entity_set_velocity", &[vx, vy]) {
             return false;
         }
+        if !self.entity_is_alive(entity) {
+            self.state.borrow_mut().record_invalid_handle_use();
+            return false;
+        }
         self.push_command_plain(ScriptCommand::EntitySetVelocity { entity, velocity: Vec2::new(vx, vy) })
     }
 
     fn entity_despawn(&mut self, entity_bits: ScriptHandle) -> bool {
         let entity = Entity::from_bits(entity_bits as u64);
+        if !self.entity_is_alive(entity) {
+            self.state.borrow_mut().record_despawn_dead();
+            return false;
+        }
         self.push_command_plain(ScriptCommand::EntityDespawn { entity })
+    }
+
+    fn despawn_safe(&mut self, handle: ScriptHandle) -> bool {
+        if self.handle_is_alive(handle) {
+            self.despawn(handle)
+        } else {
+            self.state.borrow_mut().record_despawn_dead();
+            true
+        }
     }
 
     fn set_auto_spawn_rate(&mut self, rate: FLOAT) {
@@ -1912,8 +2179,9 @@ impl ScriptWorld {
             }
             *count += 1;
         }
-        let handle = state.next_handle;
+        let raw = state.next_handle;
         state.next_handle = state.next_handle.saturating_add(1);
+        let handle: ScriptHandle = (((state.handle_nonce as i64) << 32) | (raw as i64 & 0xFFFF_FFFF)) as ScriptHandle;
         state.commands.push(build(handle));
         handle
     }
@@ -2927,8 +3195,35 @@ impl ScriptHost {
         result
     }
 
-    pub fn register_spawn_result(&mut self, handle: ScriptHandle, entity: Entity) {
+    fn sync_handle_snapshot(&mut self) {
+        let mut shared = self.shared.borrow_mut();
+        shared.handle_lookup.clear();
+        shared.entity_handles.clear();
+        shared.entity_tags.clear();
+        for (handle, entity) in &self.handle_map {
+            let tag = shared.handle_tags.get(handle).cloned();
+            shared.handle_lookup.insert(*handle, *entity);
+            shared.entity_handles.insert(*entity, *handle);
+            if let Some(tag) = tag {
+                shared.entity_tags.insert(*entity, tag);
+            }
+        }
+    }
+
+    pub fn register_spawn_result(&mut self, handle: ScriptHandle, entity: Entity, tag: Option<String>) {
         self.handle_map.insert(handle, entity);
+        if let Some(tag) = tag.filter(|t| !t.is_empty()) {
+            self.shared.borrow_mut().handle_tags.insert(handle, tag);
+        }
+        self.sync_handle_snapshot();
+    }
+
+    pub fn record_spawn_failure(&mut self, reason: &str) {
+        self.shared.borrow_mut().record_spawn_failure(reason);
+    }
+
+    pub fn safety_metrics(&self) -> ScriptSafetyMetrics {
+        self.shared.borrow().safety_metrics()
     }
 
     pub fn resolve_handle(&self, handle: ScriptHandle) -> Option<Entity> {
@@ -2936,15 +3231,41 @@ impl ScriptHost {
     }
 
     pub fn forget_handle(&mut self, handle: ScriptHandle) {
-        self.handle_map.remove(&handle);
+        let entity = self.handle_map.remove(&handle);
+        {
+            let mut shared = self.shared.borrow_mut();
+            shared.handle_tags.remove(&handle);
+            if let Some(entity) = entity {
+                shared.entity_tags.remove(&entity);
+            }
+        }
+        self.sync_handle_snapshot();
     }
 
     pub fn forget_entity(&mut self, entity: Entity) {
-        self.handle_map.retain(|_, value| *value != entity);
+        {
+            let mut shared = self.shared.borrow_mut();
+            shared.entity_tags.remove(&entity);
+            self.handle_map.retain(|handle, value| {
+                if *value == entity {
+                    shared.handle_tags.remove(handle);
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        self.sync_handle_snapshot();
     }
 
     pub fn clear_handles(&mut self) {
         self.handle_map.clear();
+        {
+            let mut shared = self.shared.borrow_mut();
+            shared.handle_tags.clear();
+            shared.entity_tags.clear();
+        }
+        self.sync_handle_snapshot();
     }
 
     pub fn handles_snapshot(&self) -> Vec<(ScriptHandle, Entity)> {
@@ -3233,8 +3554,16 @@ impl ScriptPlugin {
         if scale.is_finite() && scale >= 0.0 { scale } else { 1.0 }
     }
 
-    pub fn register_spawn_result(&mut self, handle: ScriptHandle, entity: Entity) {
-        self.host.register_spawn_result(handle, entity);
+    pub fn register_spawn_result(&mut self, handle: ScriptHandle, entity: Entity, tag: Option<String>) {
+        self.host.register_spawn_result(handle, entity, tag);
+    }
+
+    pub fn record_spawn_failure(&mut self, reason: &str) {
+        self.host.record_spawn_failure(reason);
+    }
+
+    pub fn safety_metrics(&self) -> ScriptSafetyMetrics {
+        self.host.safety_metrics()
     }
 
     pub fn resolve_handle(&self, handle: ScriptHandle) -> Option<Entity> {
@@ -3444,14 +3773,14 @@ impl ScriptPlugin {
                 (SetEmitterEndColor { color: ca }, SetEmitterEndColor { color: cb }) => Self::cmp_vec4(ca, cb),
                 (SetEmitterStartSize { size: sa }, SetEmitterStartSize { size: sb }) => Self::cmp_float(*sa, *sb),
                 (SetEmitterEndSize { size: sa }, SetEmitterEndSize { size: sb }) => Self::cmp_float(*sa, *sb),
-                (SpawnPrefab { handle: ha, path: pa }, SpawnPrefab { handle: hb, path: pb }) => {
-                    ha.cmp(hb).then_with(|| pa.cmp(pb))
+                (SpawnPrefab { handle: ha, path: pa, tag: taga }, SpawnPrefab { handle: hb, path: pb, tag: tagb }) => {
+                    ha.cmp(hb).then_with(|| pa.cmp(pb)).then_with(|| taga.cmp(tagb))
                 }
                 (
-                    SpawnTemplate { handle: ha, template: ta },
-                    SpawnTemplate { handle: hb, template: tb },
+                    SpawnTemplate { handle: ha, template: ta, tag: taga },
+                    SpawnTemplate { handle: hb, template: tb, tag: tagb },
                 ) => {
-                    ha.cmp(hb).then_with(|| ta.cmp(tb))
+                    ha.cmp(hb).then_with(|| ta.cmp(tb)).then_with(|| taga.cmp(tagb))
                 }
                 (
                     EntitySetPosition { entity: ea, position: pa },
@@ -3900,7 +4229,18 @@ impl EnginePlugin for ScriptPlugin {
 
 fn register_api(engine: &mut Engine) {
     engine.register_type_with_name::<ScriptWorld>("World");
+    engine.register_fn("handle_is_alive", ScriptWorld::handle_is_alive);
+    engine.register_fn("handle_validate", ScriptWorld::handle_validate);
+    engine.register_fn("handles_with_tag", ScriptWorld::handles_with_tag);
     engine.register_fn("spawn_sprite", ScriptWorld::spawn_sprite);
+    engine.register_fn("spawn_prefab_safe", ScriptWorld::spawn_prefab_safe);
+    engine.register_fn("spawn_prefab_safe", ScriptWorld::spawn_prefab_safe_with_tag);
+    engine.register_fn("spawn_template_safe", ScriptWorld::spawn_template_safe);
+    engine.register_fn("spawn_template_safe", ScriptWorld::spawn_template_safe_with_tag);
+    engine.register_fn("spawn_player", ScriptWorld::spawn_player);
+    engine.register_fn("spawn_player_safe", ScriptWorld::spawn_player_safe);
+    engine.register_fn("spawn_enemy", ScriptWorld::spawn_enemy);
+    engine.register_fn("spawn_enemy_safe", ScriptWorld::spawn_enemy_safe);
     engine.register_fn("set_velocity", ScriptWorld::set_velocity);
     engine.register_fn("set_position", ScriptWorld::set_position);
     engine.register_fn("set_rotation", ScriptWorld::set_rotation);
@@ -3928,6 +4268,7 @@ fn register_api(engine: &mut Engine) {
     engine.register_fn("entity_clear_tint", ScriptWorld::entity_clear_tint);
     engine.register_fn("entity_set_velocity", ScriptWorld::entity_set_velocity);
     engine.register_fn("entity_despawn", ScriptWorld::entity_despawn);
+    engine.register_fn("despawn_safe", ScriptWorld::despawn_safe);
     engine.register_fn("entity_snapshot", ScriptWorld::entity_snapshot);
     engine.register_fn("entity_position", ScriptWorld::entity_position);
     engine.register_fn("entity_rotation", ScriptWorld::entity_rotation);
@@ -4588,16 +4929,16 @@ mod tests {
         plugin.set_deterministic_ordering(true);
         {
             let mut shared = plugin.host.shared.borrow_mut();
-            shared.commands.push(ScriptCommand::SpawnPrefab { handle: 2, path: "b".into() });
+            shared.commands.push(ScriptCommand::SpawnPrefab { handle: 2, path: "b".into(), tag: None });
             shared.commands.push(ScriptCommand::SetPosition { handle: 1, position: Vec2::new(1.0, 0.0) });
-            shared.commands.push(ScriptCommand::SpawnPrefab { handle: 0, path: "a".into() });
+            shared.commands.push(ScriptCommand::SpawnPrefab { handle: 0, path: "a".into(), tag: None });
         }
         let cmds = plugin.drain_host_commands();
         assert!(
             matches!(&cmds[..],
                 [ScriptCommand::SetPosition { handle: 1, .. },
-                 ScriptCommand::SpawnPrefab { handle: 0, path: p0 },
-                 ScriptCommand::SpawnPrefab { handle: 2, path: p2 }] if p0 == "a" && p2 == "b"),
+                 ScriptCommand::SpawnPrefab { handle: 0, path: p0, .. },
+                 ScriptCommand::SpawnPrefab { handle: 2, path: p2, .. }] if p0 == "a" && p2 == "b"),
             "expected deterministic sort by kind then handle/path, got {:?}", cmds
         );
     }
@@ -4850,7 +5191,7 @@ mod tests {
         let cmds = state.borrow().commands.clone();
         assert!(matches!(
             cmds.as_slice(),
-            [ScriptCommand::SpawnPrefab { handle: h, path }] if *h == handle && path.contains("example.json")
+            [ScriptCommand::SpawnPrefab { handle: h, path, .. }] if *h == handle && path.contains("example.json")
         ));
     }
 
@@ -4863,8 +5204,71 @@ mod tests {
         let cmds = state.borrow().commands.clone();
         assert!(matches!(
             cmds.as_slice(),
-            [ScriptCommand::SpawnTemplate { handle: h, template }] if *h == handle && template == "enemy"
+            [ScriptCommand::SpawnTemplate { handle: h, template, .. }] if *h == handle && template == "enemy"
         ));
+    }
+
+    #[test]
+    fn set_position_rejects_invalid_handle() {
+        let state = Rc::new(RefCell::new(SharedState::default()));
+        let mut world = ScriptWorld::new(state.clone());
+        let ok = world.set_position(42, 1.0, 2.0);
+        assert!(!ok, "invalid handle should return false");
+        assert!(state.borrow().commands.is_empty(), "no commands should be queued");
+        assert_eq!(state.borrow().invalid_handle_uses, 1);
+    }
+
+    #[test]
+    fn despawn_safe_counts_dead_handle() {
+        let state = Rc::new(RefCell::new(SharedState::default()));
+        let mut world = ScriptWorld::new(state.clone());
+        let ok = world.despawn_safe(99);
+        assert!(ok, "despawn_safe should no-op on dead handles");
+        assert!(state.borrow().commands.is_empty(), "no commands should be queued");
+        assert_eq!(state.borrow().despawn_dead_uses, 1);
+    }
+
+    #[test]
+    fn handles_with_tag_filters_live_entities() {
+        let mut host = ScriptHost::new("assets/scripts/main.rhai");
+        let entity = Entity::from_raw(42);
+        let handle: ScriptHandle = 12345;
+        let mut snaps = HashMap::new();
+        snaps.insert(
+            entity,
+            EntitySnapshot {
+                translation: Vec2::ZERO,
+                rotation: 0.0,
+                scale: Vec2::ONE,
+                velocity: None,
+                tint: None,
+                half_extents: None,
+            },
+        );
+        host.set_entity_snapshots(snaps, 1.0, None);
+        host.register_spawn_result(handle, entity, Some("enemy".into()));
+        let mut world = ScriptWorld::new(host.shared.clone());
+        let handles = world.handles_with_tag("enemy");
+        assert_eq!(handles.len(), 1, "expected a single live handle");
+        assert_eq!(handles[0].clone_cast::<ScriptHandle>(), handle);
+    }
+
+    #[test]
+    fn spawn_prefab_safe_returns_unit_on_empty_path() {
+        let mut world = ScriptWorld::new(Rc::new(RefCell::new(SharedState::default())));
+        let result = world.spawn_prefab_safe("");
+        assert!(result.is_unit(), "empty path should return unit");
+        let state = world.state.borrow();
+        assert_eq!(state.spawn_failures.get("prefab_empty_path").copied().unwrap_or(0), 1);
+    }
+
+    #[test]
+    fn spawn_template_safe_returns_unit_on_empty_name() {
+        let mut world = ScriptWorld::new(Rc::new(RefCell::new(SharedState::default())));
+        let result = world.spawn_template_safe("");
+        assert!(result.is_unit(), "empty name should return unit");
+        let state = world.state.borrow();
+        assert_eq!(state.spawn_failures.get("template_empty_name").copied().unwrap_or(0), 1);
     }
 
     #[test]

@@ -354,7 +354,7 @@ fn summarize_command(cmd: &ScriptCommand) -> CommandSummary {
             tint: None,
             details: None,
         },
-        SpawnPrefab { handle, path } => CommandSummary {
+        SpawnPrefab { handle, path, tag } => CommandSummary {
             kind: "spawn_prefab".into(),
             handle: Some(*handle),
             entity: None,
@@ -367,9 +367,9 @@ fn summarize_command(cmd: &ScriptCommand) -> CommandSummary {
             rotation: None,
             velocity: None,
             tint: None,
-            details: None,
+            details: tag.clone(),
         },
-        SpawnTemplate { handle, template } => CommandSummary {
+        SpawnTemplate { handle, template, tag: _ } => CommandSummary {
             kind: "spawn_template".into(),
             handle: Some(*handle),
             entity: None,

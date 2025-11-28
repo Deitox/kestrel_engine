@@ -1034,6 +1034,9 @@ pub(super) struct ScriptDebuggerParams {
     pub timings: Arc<[ScriptTimingSummary]>,
     pub offenders: Arc<[ScriptOffenderStatus]>,
     pub timing_history: Arc<[ScriptTimingHistory]>,
+    pub invalid_handle_uses: u64,
+    pub despawn_dead_uses: u64,
+    pub spawn_failures: Arc<[(String, u64)]>,
     pub timing_threshold_ms: Option<f32>,
     pub repl_input: String,
     pub repl_history_index: Option<usize>,
@@ -2380,6 +2383,31 @@ impl App {
                             } else {
                                 ui.label("Scripts disabled");
                             }
+                            if script_debugger.invalid_handle_uses > 0
+                                || script_debugger.despawn_dead_uses > 0
+                                || !script_debugger.spawn_failures.is_empty()
+                            {
+                                ui.separator();
+                                ui.label("Script safety");
+                                if script_debugger.invalid_handle_uses > 0 {
+                                    ui.label(format!(
+                                        "Invalid handle uses ignored: {}",
+                                        script_debugger.invalid_handle_uses
+                                    ));
+                                }
+                                if script_debugger.despawn_dead_uses > 0 {
+                                    ui.label(format!(
+                                        "Despawn on dead handles ignored: {}",
+                                        script_debugger.despawn_dead_uses
+                                    ));
+                                }
+                                if !script_debugger.spawn_failures.is_empty() {
+                                    ui.label("Spawn failures:");
+                                    for (reason, count) in script_debugger.spawn_failures.iter() {
+                                        ui.label(format!("- {reason}: {count}"));
+                                    }
+                                }
+                            }
                             ui.separator();
                             ui.label("Active handles");
                             show_script_handle_table(ui, &script_debugger.handles, "sidebar");
@@ -2593,6 +2621,31 @@ impl App {
                         });
                         if let Some(err) = script_debugger.last_error.as_ref() {
                             ui.colored_label(egui::Color32::RED, format!("Error: {err}"));
+                        }
+                        if script_debugger.invalid_handle_uses > 0
+                            || script_debugger.despawn_dead_uses > 0
+                            || !script_debugger.spawn_failures.is_empty()
+                        {
+                            ui.separator();
+                            ui.label("Script safety");
+                            if script_debugger.invalid_handle_uses > 0 {
+                                ui.label(format!(
+                                    "Invalid handle uses ignored: {}",
+                                    script_debugger.invalid_handle_uses
+                                ));
+                            }
+                            if script_debugger.despawn_dead_uses > 0 {
+                                ui.label(format!(
+                                    "Despawn on dead handles ignored: {}",
+                                    script_debugger.despawn_dead_uses
+                                ));
+                            }
+                            if !script_debugger.spawn_failures.is_empty() {
+                                ui.label("Spawn failures:");
+                                for (reason, count) in script_debugger.spawn_failures.iter() {
+                                    ui.label(format!("- {reason}: {count}"));
+                                }
+                            }
                         }
                         ui.separator();
                         ui.label("Active handles");

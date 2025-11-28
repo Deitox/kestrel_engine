@@ -1273,9 +1273,9 @@ impl App {
         self.script_plugin_mut().map(|plugin| plugin.take_logs()).unwrap_or_default()
     }
 
-    fn register_script_spawn(&mut self, handle: ScriptHandle, entity: Entity) {
+    fn register_script_spawn(&mut self, handle: ScriptHandle, entity: Entity, tag: Option<String>) {
         if let Some(plugin) = self.script_plugin_mut() {
-            plugin.register_spawn_result(handle, entity);
+            plugin.register_spawn_result(handle, entity, tag);
         }
     }
 
@@ -1417,6 +1417,7 @@ impl App {
                 })
                 .collect();
             let timings = plugin.timing_summaries();
+            let safety = plugin.safety_metrics();
             let timing_history = self.with_editor_ui_state_mut(|state| {
                 let cap = 120;
                 for timing in &timings {
@@ -1464,6 +1465,9 @@ impl App {
                 timings,
                 offenders,
                 timing_history,
+                invalid_handle_uses: safety.invalid_handle_uses,
+                despawn_dead_uses: safety.despawn_dead_uses,
+                spawn_failures: safety.spawn_failures.into_iter().collect(),
             }
         } else {
             ScriptDebuggerStatus::default()
@@ -3333,6 +3337,9 @@ impl ApplicationHandler for App {
                 timings: Arc::from(script_debugger_status.timings.clone().into_boxed_slice()),
                 offenders: Arc::from(script_debugger_status.offenders.clone().into_boxed_slice()),
                 timing_history: Arc::from(script_debugger_status.timing_history.clone().into_boxed_slice()),
+                invalid_handle_uses: script_debugger_status.invalid_handle_uses,
+                despawn_dead_uses: script_debugger_status.despawn_dead_uses,
+                spawn_failures: Arc::from(script_debugger_status.spawn_failures.clone().into_boxed_slice()),
                 timing_threshold_ms: self.editor_ui_state().script_timing_threshold_ms,
                 repl_input: script_repl_input,
                 repl_history_index: script_repl_history_index,
@@ -4329,10 +4336,13 @@ impl App {
                         velocity,
                     ) {
                         Ok(entity) => {
-                            self.register_script_spawn(handle, entity);
+                            self.register_script_spawn(handle, entity, None);
                         }
                         Err(err) => {
                             eprintln!("[script] spawn error for {atlas}:{region}: {err}");
+                            if let Some(plugin) = self.script_plugin_mut() {
+                                plugin.record_spawn_failure("spawn_sprite_error");
+                            }
                             self.forget_script_handle(handle);
                         }
                     }
@@ -4402,7 +4412,7 @@ impl App {
                         eprintln!("[script] despawn unknown handle {handle}");
                     }
                 }
-                ScriptCommand::SpawnPrefab { handle, path } => {
+                ScriptCommand::SpawnPrefab { handle, path, tag } => {
                     let load_result = Scene::load_from_path(&path).map(|scene| scene.with_fresh_entity_ids());
                     match load_result {
                         Ok(scene) => {
@@ -4411,28 +4421,53 @@ impl App {
                             }) {
                                 Ok(spawned) => {
                                     if let Some(&root) = spawned.first() {
-                                        self.register_script_spawn(handle, root);
+                                        self.register_script_spawn(handle, root, tag.clone());
                                     } else {
                                         eprintln!("[script] prefab '{path}' spawned zero entities");
+                                        self.push_script_console(
+                                            ScriptConsoleKind::Error,
+                                            format!("[script] prefab '{path}' spawned zero entities"),
+                                        );
+                                        if let Some(plugin) = self.script_plugin_mut() {
+                                            plugin.record_spawn_failure("prefab_zero_entities");
+                                        }
                                         self.forget_script_handle(handle);
                                     }
                                 }
                                 Err(err) => {
                                     eprintln!("[script] prefab instantiate failed for {path}: {err}");
+                                    self.push_script_console(
+                                        ScriptConsoleKind::Error,
+                                        format!("[script] prefab instantiate failed for {path}: {err}"),
+                                    );
+                                    if let Some(plugin) = self.script_plugin_mut() {
+                                        plugin.record_spawn_failure("prefab_instantiate_failed");
+                                    }
                                     self.forget_script_handle(handle);
                                 }
                             }
                         }
                         Err(err) => {
                             eprintln!("[script] prefab load failed for {path}: {err}");
+                            self.push_script_console(
+                                ScriptConsoleKind::Error,
+                                format!("[script] prefab load failed for {path}: {err}"),
+                            );
+                            if let Some(plugin) = self.script_plugin_mut() {
+                                plugin.record_spawn_failure("prefab_load_failed");
+                            }
                             self.forget_script_handle(handle);
                         }
                     }
                 }
-                ScriptCommand::SpawnTemplate { handle, template } => {
+                ScriptCommand::SpawnTemplate { handle, template, tag } => {
                     let name = template.trim();
                     if name.is_empty() {
                         eprintln!("[script] spawn_template received empty name");
+                        self.push_script_console(
+                            ScriptConsoleKind::Error,
+                            "[script] spawn_template received empty name".to_string(),
+                        );
                         self.forget_script_handle(handle);
                         continue;
                     }
@@ -4442,6 +4477,13 @@ impl App {
                     let entry = self.prefab_library.resolve(name);
                     let Some(entry) = entry else {
                         eprintln!("[script] prefab template '{name}' not found");
+                        self.push_script_console(
+                            ScriptConsoleKind::Error,
+                            format!("[script] prefab template '{name}' not found"),
+                        );
+                        if let Some(plugin) = self.script_plugin_mut() {
+                            plugin.record_spawn_failure("template_not_found");
+                        }
                         self.forget_script_handle(handle);
                         continue;
                     };
@@ -4454,20 +4496,41 @@ impl App {
                             }) {
                                 Ok(spawned) => {
                                     if let Some(&root) = spawned.first() {
-                                        self.register_script_spawn(handle, root);
+                                        self.register_script_spawn(handle, root, tag.clone());
                                     } else {
                                         eprintln!("[script] template '{}' spawned zero entities", entry.name);
+                                        self.push_script_console(
+                                            ScriptConsoleKind::Error,
+                                            format!("[script] template '{}' spawned zero entities", entry.name),
+                                        );
+                                        if let Some(plugin) = self.script_plugin_mut() {
+                                            plugin.record_spawn_failure("template_zero_entities");
+                                        }
                                         self.forget_script_handle(handle);
                                     }
                                 }
                                 Err(err) => {
                                     eprintln!("[script] template instantiate failed for '{}': {err}", entry.name);
+                                    self.push_script_console(
+                                        ScriptConsoleKind::Error,
+                                        format!("[script] template instantiate failed for '{}': {err}", entry.name),
+                                    );
+                                    if let Some(plugin) = self.script_plugin_mut() {
+                                        plugin.record_spawn_failure("template_instantiate_failed");
+                                    }
                                     self.forget_script_handle(handle);
                                 }
                             }
                         }
                         Err(err) => {
                             eprintln!("[script] template load failed for '{}': {err}", entry.name);
+                            self.push_script_console(
+                                ScriptConsoleKind::Error,
+                                format!("[script] template load failed for '{}': {err}", entry.name),
+                            );
+                            if let Some(plugin) = self.script_plugin_mut() {
+                                plugin.record_spawn_failure("template_load_failed");
+                            }
                             self.forget_script_handle(handle);
                         }
                     }
