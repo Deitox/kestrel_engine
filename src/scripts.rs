@@ -389,6 +389,7 @@ struct SharedState {
     invalid_handle_uses: u64,
     despawn_dead_uses: u64,
     spawn_failures: HashMap<String, u64>,
+    invalid_handle_labels: HashSet<String>,
 }
 
 impl Default for SharedState {
@@ -430,6 +431,7 @@ impl Default for SharedState {
             invalid_handle_uses: 0,
             despawn_dead_uses: 0,
             spawn_failures: HashMap::new(),
+            invalid_handle_labels: HashSet::new(),
         }
     }
 }
@@ -471,8 +473,13 @@ impl SharedState {
         }
     }
 
-    fn record_invalid_handle_use(&mut self) {
+    fn record_invalid_handle_use(&mut self, label: Option<&str>) {
         self.invalid_handle_uses = self.invalid_handle_uses.saturating_add(1);
+        if let Some(label) = label {
+            if self.invalid_handle_labels.insert(label.to_string()) {
+                self.logs.push(format!("[script] {label}: invalid handle ignored (first occurrence)"));
+            }
+        }
         if self.invalid_handle_uses == 1 || self.invalid_handle_uses % 10 == 0 {
             self.logs.push(format!(
                 "[script] invalid handle ignored (count={})",
@@ -815,7 +822,7 @@ impl ScriptWorld {
         if self.handle_is_alive(handle) {
             Dynamic::from(handle)
         } else {
-            self.state.borrow_mut().record_invalid_handle_use();
+            self.state.borrow_mut().record_invalid_handle_use(Some("handle_validate"));
             Dynamic::UNIT
         }
     }
@@ -1501,7 +1508,7 @@ impl ScriptWorld {
             return false;
         }
         if self.resolve_handle_entity(handle).is_none() {
-            self.state.borrow_mut().record_invalid_handle_use();
+            self.state.borrow_mut().record_invalid_handle_use(Some("set_velocity"));
             return false;
         }
         self.push_command_plain(ScriptCommand::SetVelocity { handle, velocity: Vec2::new(vx, vy) })
@@ -1514,7 +1521,7 @@ impl ScriptWorld {
             return false;
         }
         if self.resolve_handle_entity(handle).is_none() {
-            self.state.borrow_mut().record_invalid_handle_use();
+            self.state.borrow_mut().record_invalid_handle_use(Some("set_position"));
             return false;
         }
         self.push_command_plain(ScriptCommand::SetPosition { handle, position: Vec2::new(x, y) })
@@ -1526,7 +1533,7 @@ impl ScriptWorld {
             return false;
         }
         if self.resolve_handle_entity(handle).is_none() {
-            self.state.borrow_mut().record_invalid_handle_use();
+            self.state.borrow_mut().record_invalid_handle_use(Some("set_rotation"));
             return false;
         }
         self.push_command_plain(ScriptCommand::SetRotation { handle, rotation: radians })
@@ -1539,7 +1546,7 @@ impl ScriptWorld {
             return false;
         }
         if self.resolve_handle_entity(handle).is_none() {
-            self.state.borrow_mut().record_invalid_handle_use();
+            self.state.borrow_mut().record_invalid_handle_use(Some("set_scale"));
             return false;
         }
         let clamped = Vec2::new(sx.max(0.01), sy.max(0.01));
@@ -1555,7 +1562,7 @@ impl ScriptWorld {
             return false;
         }
         if self.resolve_handle_entity(handle).is_none() {
-            self.state.borrow_mut().record_invalid_handle_use();
+            self.state.borrow_mut().record_invalid_handle_use(Some("set_tint"));
             return false;
         }
         self.push_command_plain(ScriptCommand::SetTint { handle, tint: Some(Vec4::new(r, g, b, a)) })
@@ -1563,7 +1570,7 @@ impl ScriptWorld {
 
     fn clear_tint(&mut self, handle: ScriptHandle) -> bool {
         if self.resolve_handle_entity(handle).is_none() {
-            self.state.borrow_mut().record_invalid_handle_use();
+            self.state.borrow_mut().record_invalid_handle_use(Some("clear_tint"));
             return false;
         }
         self.push_command_plain(ScriptCommand::SetTint { handle, tint: None })
@@ -1571,7 +1578,7 @@ impl ScriptWorld {
 
     fn set_sprite_region(&mut self, handle: ScriptHandle, region: &str) -> bool {
         if self.resolve_handle_entity(handle).is_none() {
-            self.state.borrow_mut().record_invalid_handle_use();
+            self.state.borrow_mut().record_invalid_handle_use(Some("set_sprite_region"));
             return false;
         }
         self.state
@@ -1583,7 +1590,7 @@ impl ScriptWorld {
 
     fn despawn(&mut self, handle: ScriptHandle) -> bool {
         if self.resolve_handle_entity(handle).is_none() {
-            self.state.borrow_mut().record_invalid_handle_use();
+            self.state.borrow_mut().record_invalid_handle_use(Some("despawn"));
             return false;
         }
         self.push_command_plain(ScriptCommand::Despawn { handle })
@@ -1698,7 +1705,7 @@ impl ScriptWorld {
             return false;
         }
         if !self.entity_is_alive(entity) {
-            self.state.borrow_mut().record_invalid_handle_use();
+            self.state.borrow_mut().record_invalid_handle_use(Some("entity_set_position"));
             return false;
         }
         self.push_command_plain(ScriptCommand::EntitySetPosition { entity, position: pos })
@@ -1711,7 +1718,7 @@ impl ScriptWorld {
             return false;
         }
         if !self.entity_is_alive(entity) {
-            self.state.borrow_mut().record_invalid_handle_use();
+            self.state.borrow_mut().record_invalid_handle_use(Some("entity_set_rotation"));
             return false;
         }
         self.push_command_plain(ScriptCommand::EntitySetRotation { entity, rotation: rot })
@@ -1725,7 +1732,7 @@ impl ScriptWorld {
             return false;
         }
         if !self.entity_is_alive(entity) {
-            self.state.borrow_mut().record_invalid_handle_use();
+            self.state.borrow_mut().record_invalid_handle_use(Some("entity_set_scale"));
             return false;
         }
         let clamped = Vec2::new(sx.max(0.01), sy.max(0.01));
@@ -1742,7 +1749,7 @@ impl ScriptWorld {
             return false;
         }
         if !self.entity_is_alive(entity) {
-            self.state.borrow_mut().record_invalid_handle_use();
+            self.state.borrow_mut().record_invalid_handle_use(Some("entity_set_tint"));
             return false;
         }
         self.state
@@ -1755,7 +1762,7 @@ impl ScriptWorld {
     fn entity_clear_tint(&mut self, entity_bits: ScriptHandle) -> bool {
         let entity = Entity::from_bits(entity_bits as u64);
         if !self.entity_is_alive(entity) {
-            self.state.borrow_mut().record_invalid_handle_use();
+            self.state.borrow_mut().record_invalid_handle_use(Some("entity_clear_tint"));
             return false;
         }
         self.push_command_plain(ScriptCommand::EntitySetTint { entity, tint: None })
@@ -1769,7 +1776,7 @@ impl ScriptWorld {
             return false;
         }
         if !self.entity_is_alive(entity) {
-            self.state.borrow_mut().record_invalid_handle_use();
+            self.state.borrow_mut().record_invalid_handle_use(Some("entity_set_velocity"));
             return false;
         }
         self.push_command_plain(ScriptCommand::EntitySetVelocity { entity, velocity: Vec2::new(vx, vy) })
@@ -2004,6 +2011,10 @@ impl ScriptWorld {
 
     fn listen_for_entity(&mut self, event: &str, entity_bits: ScriptHandle, handler: &str) -> ListenerHandle {
         let entity = Entity::from_bits(entity_bits as u64);
+        if !self.entity_is_alive(entity) {
+            self.state.borrow_mut().record_invalid_handle_use(Some("listen_for_entity"));
+            return -1;
+        }
         self.register_listener(event, handler, Some(entity))
     }
 
@@ -2028,11 +2039,19 @@ impl ScriptWorld {
 
     fn emit_to(&mut self, name: &str, entity_bits: ScriptHandle) -> bool {
         let target = Entity::from_bits(entity_bits as u64);
+        if !self.entity_is_alive(target) {
+            self.state.borrow_mut().record_invalid_handle_use(Some("emit_to"));
+            return false;
+        }
         self.enqueue_event(name, Dynamic::UNIT, Some(target))
     }
 
     fn emit_to_with_payload(&mut self, name: &str, entity_bits: ScriptHandle, payload: Dynamic) -> bool {
         let target = Entity::from_bits(entity_bits as u64);
+        if !self.entity_is_alive(target) {
+            self.state.borrow_mut().record_invalid_handle_use(Some("emit_to_with_payload"));
+            return false;
+        }
         self.enqueue_event(name, payload, Some(target))
     }
 
@@ -2810,7 +2829,14 @@ impl ScriptHost {
         for id in targets {
             self.drop_listeners_for_owner(ListenerOwner::Instance(id));
             let Some(instance) = self.instances.get_mut(&id) else { continue };
-            if !instance.persist_state {
+            if instance.persist_state {
+                let current = instance.state.borrow().persistent.clone();
+                let sanitized = {
+                    let shared = self.shared.borrow();
+                    sanitize_persisted_map(&current, PersistedHandlePolicy::DropStaleHandles, &shared)
+                };
+                instance.state.borrow_mut().persistent = sanitized;
+            } else {
                 instance.state.borrow_mut().persistent.clear();
             }
             instance.state.borrow_mut().is_hot_reload = true;
@@ -3500,6 +3526,81 @@ fn entity_to_rhai(entity: Entity) -> ScriptHandle {
     entity.to_bits() as ScriptHandle
 }
 
+#[derive(Clone, Copy)]
+enum PersistedHandlePolicy {
+    DropAllHandles,
+    DropStaleHandles,
+}
+
+fn should_strip_persisted_handle(handle: ScriptHandle, policy: PersistedHandlePolicy, shared: &SharedState) -> bool {
+    if handle <= 0 {
+        return false;
+    }
+    let upper = ((handle as u64) >> 32) as u32;
+    if upper == 0 {
+        return false;
+    }
+    if upper != shared.handle_nonce {
+        return true;
+    }
+    let Some(entity) = shared.handle_lookup.get(&handle) else {
+        return true;
+    };
+    match policy {
+        PersistedHandlePolicy::DropAllHandles => true,
+        PersistedHandlePolicy::DropStaleHandles => {
+            if shared.entity_snapshots.is_empty() {
+                return false;
+            }
+            !shared.entity_snapshots.contains_key(entity)
+        }
+    }
+}
+
+fn sanitize_persisted_value(
+    value: &Dynamic,
+    policy: PersistedHandlePolicy,
+    shared: &SharedState,
+) -> Option<Dynamic> {
+    if let Some(int_val) = value.clone().try_cast::<ScriptHandle>() {
+        if should_strip_persisted_handle(int_val, policy, shared) {
+            return None;
+        }
+    }
+    if let Some(arr) = value.clone().try_cast::<Array>() {
+        let mut cleaned = Array::new();
+        for v in arr {
+            if let Some(cleaned_value) = sanitize_persisted_value(&v, policy, shared) {
+                cleaned.push(cleaned_value);
+            }
+        }
+        return Some(Dynamic::from_array(cleaned));
+    }
+    if let Some(map) = value.clone().try_cast::<Map>() {
+        let mut cleaned = Map::new();
+        for (k, v) in map {
+            if let Some(cleaned_value) = sanitize_persisted_value(&v, policy, shared) {
+                cleaned.insert(k, cleaned_value);
+            }
+        }
+        if cleaned.is_empty() {
+            return None;
+        }
+        return Some(Dynamic::from_map(cleaned));
+    }
+    Some(value.clone())
+}
+
+fn sanitize_persisted_map(map: &Map, policy: PersistedHandlePolicy, shared: &SharedState) -> Map {
+    let mut cleaned = Map::new();
+    for (k, v) in map {
+        if let Some(cleaned_value) = sanitize_persisted_value(v, policy, shared) {
+            cleaned.insert(k.clone(), cleaned_value);
+        }
+    }
+    cleaned
+}
+
 pub struct ScriptPlugin {
     host: ScriptHost,
     commands: Vec<ScriptCommand>,
@@ -3887,10 +3988,18 @@ impl ScriptPlugin {
                         instance_id = id;
                         self.id_updates.push((entity, id));
                         if let Some(persistent) = self.pending_persistent.remove(&entity) {
+                            let sanitized = {
+                                let shared = self.host.shared.borrow();
+                                sanitize_persisted_map(
+                                    &persistent,
+                                    PersistedHandlePolicy::DropStaleHandles,
+                                    &shared,
+                                )
+                            };
                             if let Some(new_instance) = self.host.instances.get_mut(&id) {
                                 new_instance.mute_errors = mute_errors;
                                 let mut state = new_instance.state.borrow_mut();
-                                state.persistent = persistent;
+                                state.persistent = sanitized;
                                 state.is_hot_reload = true;
                             }
                         } else if let Some(new_instance) = self.host.instances.get_mut(&id) {
@@ -3996,7 +4105,11 @@ impl ScriptPlugin {
                 continue;
             }
             if let Some(map) = ScriptHost::json_to_map(&persisted.0) {
-                self.pending_persistent.insert(entity, map);
+                let sanitized = {
+                    let shared = self.host.shared.borrow();
+                    sanitize_persisted_map(&map, PersistedHandlePolicy::DropAllHandles, &shared)
+                };
+                self.pending_persistent.insert(entity, sanitized);
             }
         }
         for entity in stale {
@@ -4014,11 +4127,15 @@ impl ScriptPlugin {
                 continue;
             }
             let map = instance.state.borrow().persistent.clone();
-            if map.is_empty() {
+            let sanitized = {
+                let shared = self.host.shared.borrow();
+                sanitize_persisted_map(&map, PersistedHandlePolicy::DropAllHandles, &shared)
+            };
+            if sanitized.is_empty() {
                 to_remove.insert(instance.entity);
                 continue;
             }
-            let json = ScriptHost::map_to_json(&map);
+            let json = ScriptHost::map_to_json(&sanitized);
             to_update.insert(instance.entity, json);
         }
         for (entity, json) in &to_update {
@@ -4092,7 +4209,12 @@ impl ScriptPlugin {
             return;
         };
         let preserved = if preserve_state && instance.persist_state {
-            Some(instance.state.borrow().persistent.clone())
+            let current = instance.state.borrow().persistent.clone();
+            let sanitized = {
+                let shared = self.host.shared.borrow();
+                sanitize_persisted_map(&current, PersistedHandlePolicy::DropStaleHandles, &shared)
+            };
+            Some(sanitized)
         } else {
             None
         };
@@ -5272,6 +5394,54 @@ mod tests {
     }
 
     #[test]
+    fn deferred_spawn_handle_requires_liveness_guard() {
+        let mut host = ScriptHost::new("assets/scripts/main.rhai");
+        let mut world = ScriptWorld::new(host.shared.clone());
+        let handle_dyn = world.spawn_prefab_safe("assets/prefabs/enemy.json");
+        let handle: ScriptHandle = handle_dyn.clone().try_cast::<ScriptHandle>().expect("handle");
+        assert!(!world.handle_is_alive(handle), "deferred spawn handle should not be alive yet");
+
+        let after_spawn_commands = world.state.borrow().commands.len();
+        let before_invalid = world.state.borrow().invalid_handle_uses;
+        assert!(!world.set_position(handle, 1.0, 2.0), "set_position should fail on deferred handle");
+        {
+            let state = world.state.borrow();
+            assert_eq!(state.invalid_handle_uses, before_invalid + 1);
+            assert!(state.invalid_handle_labels.contains("set_position"), "per-callsite warning recorded");
+            assert_eq!(
+                state.commands.len(),
+                after_spawn_commands,
+                "no additional commands should be queued for invalid handle"
+            );
+        }
+
+        let mut ecs_world = bevy_ecs::world::World::new();
+        let entity = ecs_world.spawn_empty().id();
+        let mut snaps = HashMap::new();
+        snaps.insert(
+            entity,
+            EntitySnapshot {
+                translation: Vec2::ZERO,
+                rotation: 0.0,
+                scale: Vec2::ONE,
+                velocity: None,
+                tint: None,
+                half_extents: None,
+            },
+        );
+        host.register_spawn_result(handle, entity, Some("enemy".into()));
+        host.set_entity_snapshots(snaps, 1.0, None);
+
+        assert!(world.handle_is_alive(handle), "handle should become alive after spawn materializes");
+        assert!(world.set_position(handle, 3.0, 4.0), "set_position should succeed on live handle");
+        assert_eq!(
+            world.state.borrow().commands.len(),
+            after_spawn_commands + 1,
+            "expected a single queued command for live handle"
+        );
+    }
+
+    #[test]
     fn entity_snapshot_functions_read_cached_data() {
         let state = Rc::new(RefCell::new(SharedState::default()));
         let mut ecs_world = bevy_ecs::world::World::new();
@@ -5957,6 +6127,61 @@ mod tests {
             reload_logs.iter().any(|l| l.contains("count:1")) && reload_logs.iter().any(|l| l.contains("hot")),
             "expected persisted state and hot flag on reload, got {reload_logs:?}"
         );
+    }
+
+    #[test]
+    fn persisted_handles_are_stripped_before_serialization() {
+        let mut shared = SharedState::default();
+        shared.handle_nonce = 7;
+        let handle: ScriptHandle = (((shared.handle_nonce as i64) << 32) | 3) as ScriptHandle;
+        let mut inner = Map::new();
+        inner.insert("h".into(), Dynamic::from(handle));
+        let mut map = Map::new();
+        map.insert("keep".into(), Dynamic::from(9 as ScriptHandle));
+        map.insert("handle".into(), Dynamic::from(handle));
+        map.insert(
+            "nested".into(),
+            Dynamic::from_array(vec![Dynamic::from(handle), Dynamic::from_map(inner)]),
+        );
+
+        let cleaned = sanitize_persisted_map(&map, PersistedHandlePolicy::DropAllHandles, &shared);
+        assert!(cleaned.contains_key("keep"));
+        assert!(!cleaned.contains_key("handle"), "handles should be removed from persisted state");
+        let nested = cleaned
+            .get("nested")
+            .and_then(|v| v.clone().try_cast::<Array>())
+            .unwrap_or_default();
+        assert!(nested.is_empty(), "nested handle references should be stripped, got {nested:?}");
+    }
+
+    #[test]
+    fn hot_reload_prunes_stale_handles_from_persistent_state() {
+        let mut shared = SharedState::default();
+        shared.handle_nonce = 11;
+        let live_handle: ScriptHandle = (((shared.handle_nonce as i64) << 32) | 1) as ScriptHandle;
+        let stale_handle: ScriptHandle = (((shared.handle_nonce as i64) << 32) | 2) as ScriptHandle;
+        let mut world = bevy_ecs::world::World::new();
+        let entity = world.spawn_empty().id();
+        shared.handle_lookup.insert(live_handle, entity);
+        shared.entity_snapshots.insert(
+            entity,
+            EntitySnapshot {
+                translation: Vec2::ZERO,
+                rotation: 0.0,
+                scale: Vec2::ONE,
+                velocity: None,
+                tint: None,
+                half_extents: None,
+            },
+        );
+
+        let mut map = Map::new();
+        map.insert("live".into(), Dynamic::from(live_handle));
+        map.insert("stale".into(), Dynamic::from(stale_handle));
+
+        let cleaned = sanitize_persisted_map(&map, PersistedHandlePolicy::DropStaleHandles, &shared);
+        assert!(cleaned.contains_key("live"), "live handles should be preserved across hot reload");
+        assert!(!cleaned.contains_key("stale"), "stale handles should be removed before reuse");
     }
 
     #[test]

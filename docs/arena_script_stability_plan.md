@@ -70,7 +70,7 @@ Script-facing API:
 Behavior:
 
 - These functions still use the deferred spawn model: the engine enqueues a spawn command, and the entity is materialized at the appropriate point in the frame.
-- The returned value is a handle that becomes usable once the entity exists; scripts should always guard with `world.handle_is_alive(handle)` before using it.
+- The returned value is a handle that becomes usable once the entity exists; scripts should always guard with `world.handle_is_alive(handle)` before using it. Invalid use records a per-callsite warning and drops the command.
 - On failure (missing prefab, rejected spawn), they return `()` instead of a sentinel like `-1` and emit a dev-facing reason to logs/metrics.
 - `world.despawn_safe` is idempotent: invalid or already-despawned handles are a no-op (no panic), with an optional throttled dev warning.
 
@@ -94,6 +94,24 @@ if world.handle_is_alive(player) {
 - On hot reload, scripts should revalidate or clear any stored handles using `world.handle_validate` (or by rebuilding handle collections) before reuse.
 - Provide a small pattern snippet for scripts that cache handles: run a cleanup function on reload/start-of-frame to purge invalid handles.
 
+*Status/notes:* Handle-like ints are now stripped when persisted state is saved or loaded, and hot reload prunes any stale handles before reusing cached state. Scripts can still keep live handles in-memory between frames, but they should rebuild/validate on reload:
+
+```rhai
+fn ready(world, entity) {
+    if world.is_hot_reload() {
+        let handles = world.state_get("handles");
+        if type_of(handles) == "map" && type_of(handles["enemies"]) == "array" {
+            handles["enemies"] = handles["enemies"]
+                .map(|h| world.handle_validate(h))
+                .filter(|h| h != ());
+            world.state_set("handles", handles);
+        }
+    } else {
+        world.state_set("handles", #{ enemies: [] });
+    }
+}
+```
+
 ---
 
 ### 4. Observability and Dev Ergonomics
@@ -107,7 +125,7 @@ if world.handle_is_alive(player) {
 ### 5. Migration Strategy
 
 - Keep legacy handle-taking APIs but route them through the safe validation path to eliminate panics; emit a one-time per-callsite warning when an invalid handle is passed.
-- Mark legacy spawn helpers as deprecated in docs and steer new content to `_safe` variants; feature-flag a mode that hard-errors on legacy unsafe calls in dev builds.
+- Mark legacy spawn helpers as deprecated in docs and steer new content to `_safe` variants; feature-flag a mode that hard-errors on legacy unsafe calls in dev builds. Doc note: use `_safe` helpers + `handle_is_alive` for all new content; legacy helpers remain for compatibility only.
 - Update existing sample scripts to use `_safe` helpers and `handle_is_alive` guards to provide working references.
 
 ---
@@ -116,7 +134,11 @@ if world.handle_is_alive(player) {
 
 - Prefer small helper functions over large inline maps/conditionals to stay under AST/expression limits.
 - Encourage scripts to store only handles (not raw IDs) and to validate them before every use that crosses a frame boundary.
-- Provide a short lint-like checklist in docs: guard deferred spawns, validate handles on reuse, avoid per-frame `handles_with_tag` in hot loops.
+- Checklist for authors:
+  - Guard deferred spawns (`handle_is_alive` before use; expect initial false).
+  - Validate handles on reuse (`handle_validate`) especially after reload.
+  - Avoid per-frame `handles_with_tag` in tight loops; cache/filter once per frame.
+  - Keep globals small; move big maps/conditionals into helpers to dodge AST limits.
 
 ---
 
@@ -142,16 +164,16 @@ Status legend: `[ ]` not started, `[>]` in progress, `[x]` done.
 ### Safe Spawns & Despawn
 
 - [x] `_safe` spawn helpers implemented (prefab, template, player, enemy) returning handles or `()`.
-- [ ] Deferred spawn path validated; scripts must guard with `handle_is_alive`.
+- [x] Deferred spawn path validated; scripts must guard with `handle_is_alive`.
 - [x] `despawn_safe` idempotent and non-panicking on dead/invalid handles.
 - [x] Spawn failures emit dev-facing reason; metrics counter increments.
 - [x] Example script updated to use `_safe` helpers and guards.
 
 ### Reload and Persistence Hygiene
 
-- [ ] Handles excluded from serialization; any persisted handle-like data is dropped on load.
-- [ ] Hot-reload path revalidates/clears cached handles before reuse.
-- [ ] Doc snippet added for handle cleanup on reload/start-of-frame.
+- [x] Handles excluded from serialization; any persisted handle-like data is dropped on load.
+- [x] Hot-reload path revalidates/clears cached handles before reuse.
+- [x] Doc snippet added for handle cleanup on reload/start-of-frame.
 
 ### Observability and Dev Ergonomics
 
@@ -161,16 +183,16 @@ Status legend: `[ ]` not started, `[>]` in progress, `[x]` done.
 
 ### Migration Strategy
 
-- [ ] Legacy handle-taking APIs routed through validation to remove panic paths.
-- [ ] One-time per-callsite warning on invalid-handle use via legacy APIs.
-- [ ] Legacy spawn helpers deprecated in docs; `_safe` variants recommended.
+- [x] Legacy handle-taking APIs routed through validation to remove panic paths.
+- [x] One-time per-callsite warning on invalid-handle use via legacy APIs.
+- [x] Legacy spawn helpers deprecated in docs; `_safe` variants recommended.
 - [ ] Dev feature flag to hard-error on legacy unsafe calls.
 - [ ] Sample scripts migrated to `_safe` helpers + guards.
 
 ### Rhai Usage Guidance
 
-- [ ] Doc guidance: prefer helper functions over large inline maps/conditionals to avoid AST limits.
-- [ ] Checklist: guard deferred spawns, validate handles on reuse, avoid per-frame `handles_with_tag` in hot loops.
+- [x] Doc guidance: prefer helper functions over large inline maps/conditionals to avoid AST limits.
+- [x] Checklist: guard deferred spawns, validate handles on reuse, avoid per-frame `handles_with_tag` in hot loops.
 
 ### Validation and Acceptance
 
