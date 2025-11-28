@@ -171,7 +171,7 @@ fn on_enemy_defeated(world, state, label) {
 
 fn on_player_hit(world, state, damage) {
     let out = state;
-    if out.player.handle < 0 {
+    if !world.handle_is_alive(out.player.handle) {
         return #{ state: out, died: false };
     }
     if out.player.invuln > 0.0 {
@@ -182,6 +182,7 @@ fn on_player_hit(world, state, damage) {
     let died = out.player.health <= 0.0;
     if died {
         out.player.deaths += 1;
+        world.despawn_safe(out.player.handle);
         out.player.handle = -1;
         if out.player.lives > 0 {
             out.player.lives -= 1;
@@ -268,13 +269,15 @@ fn summary(state) {
 
 fn maybe_spawn_player(world, state) {
     let out = state;
-    if out.player.handle >= 0 || out.player.lives <= 0 || out.player.respawn > 0.0 {
+    if world.handle_is_alive(out.player.handle) || out.player.lives <= 0 || out.player.respawn > 0.0 {
         return out;
     }
-    let handle = world.spawn_template(out.config.player.template);
-    if handle >= 0 {
+    let handle = world.spawn_template_safe(out.config.player.template);
+    if handle != () {
         let spawn_pos = out.config.player.spawn_point;
-        world.set_position(handle, spawn_pos[0], spawn_pos[1]);
+        if world.handle_is_alive(handle) {
+            world.set_position(handle, spawn_pos[0], spawn_pos[1]);
+        }
         out.player.handle = handle;
         out.player.health = out.config.player.health;
         out.player.invuln = out.config.player.invulnerable;
@@ -293,7 +296,7 @@ fn drive_waves(world, state, dt) {
     if out.waves.spawned < current.count && out.waves.timer <= 0.0 {
         let spawn_result = spawn_enemy(world, out, current.template);
         out = spawn_result.state;
-        if spawn_result.handle >= 0 {
+        if spawn_result.handle != () {
             out.waves.spawned += 1;
         }
         let cadence = current.cadence;
@@ -329,22 +332,25 @@ fn next_wave_delay(cfg, index) {
 
 fn spawn_enemy(world, state, template) {
     let out = state;
-    let handle = world.spawn_template(template);
-    if handle >= 0 {
-        let spawn_pos = jittered_spawn(out.config, out.player.spawn_point, world);
+    let handle = world.spawn_template_safe(template);
+    if handle == () {
+        return #{ state: out, handle: handle };
+    }
+    let spawn_pos = jittered_spawn(out.config, out.player.spawn_point, world);
+    if world.handle_is_alive(handle) {
         world.set_position(handle, spawn_pos[0], spawn_pos[1]);
-        let hp = scaled_enemy_health(out.config, template, out.stats.waves_cleared);
         let speed = enemy_speed(out.config, template);
         if speed > 0.0 {
             let dir = enemy_dir(spawn_pos, out.config.player.spawn_point);
             world.set_velocity(handle, dir[0] * speed, dir[1] * speed);
         }
-        out.enemies.push(#{
-            handle: handle,
-            template: template,
-            health: hp
-        });
     }
+    let hp = scaled_enemy_health(out.config, template, out.stats.waves_cleared);
+    out.enemies.push(#{
+        handle: handle,
+        template: template,
+        health: hp
+    });
     #{ state: out, handle: handle }
 }
 
@@ -430,7 +436,7 @@ fn enemy_hit(world, state, handle, damage) {
         idx += 1;
     }
     if killed {
-        world.despawn(handle);
+        world.despawn_safe(handle);
         out = on_enemy_defeated(world, out, template);
     }
     #{ state: out, killed: killed }
