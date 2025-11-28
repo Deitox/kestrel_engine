@@ -124,3 +124,57 @@ if world.handle_is_alive(player) {
 
 - Add integration tests that exercise: invalid handle into move/read calls (no panic, returns default/no-op), spawn failure returns `()`, and `despawn_safe` on dead handles is a no-op.
 - Add a dev script sample showing reload hygiene: caching handles, revalidating on reload, and handling spawn failures gracefully.
+
+---
+
+## Implementation Tracker
+
+Status legend: `[ ]` not started, `[>]` in progress, `[x]` done.
+
+### Safe Handle API
+
+- [ ] ScriptWorld validates handle liveness on every handle-taking entry point (move/get/set/tags/queries).
+- [ ] Handles encode generation/nonce; no raw ID reuse.
+- [ ] Rhai bindings for `handle_is_alive`, `handle_validate`, and `handles_with_tag` shipped and documented as session-only.
+- [ ] Docs updated to note ordering is unspecified and per-frame use of `handles_with_tag` is discouraged.
+- [ ] Integration tests: invalid handle => no panic, safe return path.
+
+### Safe Spawns & Despawn
+
+- [ ] `_safe` spawn helpers implemented (prefab, template, player, enemy) returning handles or `()`.
+- [ ] Deferred spawn path validated; scripts must guard with `handle_is_alive`.
+- [ ] `despawn_safe` idempotent and non-panicking on dead/invalid handles.
+- [ ] Spawn failures emit dev-facing reason; metrics counter increments.
+- [ ] Example script updated to use `_safe` helpers and guards.
+
+### Reload and Persistence Hygiene
+
+- [ ] Handles excluded from serialization; any persisted handle-like data is dropped on load.
+- [ ] Hot-reload path revalidates/clears cached handles before reuse.
+- [ ] Doc snippet added for handle cleanup on reload/start-of-frame.
+
+### Observability and Dev Ergonomics
+
+- [ ] Throttled dev warnings for invalid handle use and despawn of dead handles.
+- [ ] Spawn failure reasons recorded (logs + counters).
+- [ ] Metrics visible in dev HUD/debug overlay for triage.
+
+### Migration Strategy
+
+- [ ] Legacy handle-taking APIs routed through validation to remove panic paths.
+- [ ] One-time per-callsite warning on invalid-handle use via legacy APIs.
+- [ ] Legacy spawn helpers deprecated in docs; `_safe` variants recommended.
+- [ ] Dev feature flag to hard-error on legacy unsafe calls.
+- [ ] Sample scripts migrated to `_safe` helpers + guards.
+
+### Rhai Usage Guidance
+
+- [ ] Doc guidance: prefer helper functions over large inline maps/conditionals to avoid AST limits.
+- [ ] Checklist: guard deferred spawns, validate handles on reuse, avoid per-frame `handles_with_tag` in hot loops.
+
+### Validation and Acceptance
+
+- [ ] Integration tests: invalid handle into move/read returns default/no-op, no panic.
+- [ ] Integration tests: spawn failure returns `()`, emits reason.
+- [ ] Integration tests: `despawn_safe` on dead handles is a no-op.
+- [ ] Dev script sample demonstrates reload hygiene and spawn failure handling.
