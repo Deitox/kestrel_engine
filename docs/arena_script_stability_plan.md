@@ -125,7 +125,7 @@ fn ready(world, entity) {
 ### 5. Migration Strategy
 
 - Keep legacy handle-taking APIs but route them through the safe validation path to eliminate panics; emit a one-time per-callsite warning when an invalid handle is passed.
-- Mark legacy spawn helpers as deprecated in docs and steer new content to `_safe` variants; feature-flag a mode that hard-errors on legacy unsafe calls in dev builds (env: `KESTREL_SCRIPT_LEGACY_HARD_ERROR=1`). Doc note: use `_safe` helpers + `handle_is_alive` for all new content; legacy helpers remain for compatibility only.
+- Mark legacy spawn helpers as deprecated in docs and steer new content to `_safe` variants; feature-flag a mode that hard-errors on legacy unsafe calls in dev builds (env: `KESTREL_SCRIPT_LEGACY_HARD_ERROR=1`, defaults on outside tests). Doc note: use `_safe` helpers + `handle_is_alive` for all new content; legacy helpers remain for compatibility only.
 - Update existing sample scripts to use `_safe` helpers and `handle_is_alive` guards to provide working references.
 
 ---

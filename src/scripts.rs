@@ -1485,6 +1485,19 @@ impl ScriptWorld {
         if self.legacy_call_blocked("spawn_sprite") {
             return -1;
         }
+        self.spawn_sprite_internal(atlas, region, x, y, scale, vx, vy)
+    }
+
+    fn spawn_sprite_internal(
+        &mut self,
+        atlas: &str,
+        region: &str,
+        x: FLOAT,
+        y: FLOAT,
+        scale: FLOAT,
+        vx: FLOAT,
+        vy: FLOAT,
+    ) -> ScriptHandle {
         let x = x as f32;
         let y = y as f32;
         let scale = scale as f32;
@@ -1516,7 +1529,7 @@ impl ScriptWorld {
         vx: FLOAT,
         vy: FLOAT,
     ) -> Dynamic {
-        let handle = self.spawn_sprite(atlas, region, x, y, scale, vx, vy);
+        let handle = self.spawn_sprite_internal(atlas, region, x, y, scale, vx, vy);
         if handle < 0 {
             Dynamic::UNIT
         } else {
@@ -2626,6 +2639,8 @@ impl ScriptHost {
         engine.set_module_resolver(import_resolver.clone());
         register_api(&mut engine);
         let mut shared = SharedState { next_handle: 1, ..Default::default() };
+        // Default hard-errors on legacy spawns outside of tests; env can override.
+        shared.legacy_hard_error = cfg!(not(test));
         if let Ok(flag) = env::var("KESTREL_SCRIPT_LEGACY_HARD_ERROR") {
             let flag = flag.to_lowercase();
             shared.legacy_hard_error = matches!(flag.as_str(), "1" | "true" | "yes" | "on");
@@ -5479,6 +5494,18 @@ mod tests {
         let result = world.spawn_sprite_safe("atlas", "region", 0.0, 0.0, -1.0, 0.0, 0.0);
         assert!(result.is_unit(), "invalid params should return unit");
         assert!(world.state.borrow().commands.is_empty(), "no command should be queued on invalid spawn");
+    }
+
+    #[test]
+    fn spawn_sprite_safe_not_blocked_by_legacy_flag() {
+        let mut shared = SharedState::default();
+        shared.legacy_hard_error = true;
+        let state = Rc::new(RefCell::new(shared));
+        let mut world = ScriptWorld::new(state.clone());
+        let result = world.spawn_sprite_safe("atlas", "region", 0.0, 0.0, 1.0, 0.0, 0.0);
+        assert!(!result.is_unit(), "safe sprite spawn should succeed even when legacy calls are blocked");
+        let commands = state.borrow().commands.clone();
+        assert_eq!(commands.len(), 1, "expected one spawn command queued");
     }
 
     #[test]
