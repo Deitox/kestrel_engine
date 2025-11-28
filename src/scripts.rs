@@ -4265,6 +4265,15 @@ impl ScriptPlugin {
     pub fn enable_deterministic_mode(&mut self, seed: u64) {
         self.deterministic_ordering = true;
         self.set_rng_seed(seed);
+        {
+            let mut shared = self.host.shared.borrow_mut();
+            let mut nonce = (seed as u32) & 0x7FFF_FFFF;
+            if nonce == 0 {
+                nonce = 1;
+            }
+            shared.handle_nonce = nonce;
+            shared.next_handle = 1;
+        }
     }
 
     pub fn step_once(&mut self) {
