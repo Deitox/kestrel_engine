@@ -294,7 +294,7 @@ Each issue lists its originating milestone plus crisp acceptance criteria so it 
 
 
 
-    - *Highlights:* `kestrel_plugin_host` runs `trust = "isolated"` plugins out of process, `PluginManager` wires capability-scoped RPC plumbing plus watchdog timers (`src/bin/kestrel_plugin_host.rs:1`, `src/plugins.rs:1642-1875`), and `PluginContext` enforces capability declarations. Integration tests such as `cargo test --test plugins isolated_plugin_telemetry_pipeline` exercise the sandbox contract (`tests/plugins.rs:732-840`), while `docs/polish_targets.md:45-66` documents the compatibility matrix, analytics surfacing, and CI gates that keep the sandbox honest.
+    - *Highlights:* `kestrel_plugin_host` runs `trust = "isolated"` plugins out of process, `PluginManager` wires capability-scoped RPC plumbing plus watchdog timers (`src/bin/kestrel_plugin_host.rs:1`, `src/plugins.rs:1642-1875`), and `PluginContext` enforces capability declarations. Integration tests such as `cargo test --test plugins isolated_plugin_telemetry_pipeline` exercise the sandbox contract (`tests/plugins.rs:732-840`), while `docs/completed/polish_targets.md:45-66` documents the compatibility matrix, analytics surfacing, and CI gates that keep the sandbox honest.
 
 
 

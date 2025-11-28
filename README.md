@@ -109,4 +109,4 @@
 - The panel lists active tracks plus per-key metadata, and supports inserting, deleting, dragging, copy/paste, and undo/redo for Translation/Rotation/Scale/Tint tracks. Double-click empty timeline space (or press `Insert Key at Scrub`) to add a key, drag keys to retime, and hold Shift while dragging/scrubbing to snap to the time grid. Use Ctrl/Cmd+C and Ctrl/Cmd+V to duplicate selections, Delete to remove, Ctrl/Cmd+Z to undo, and Ctrl/Cmd+Y (or Shift+Ctrl/Cmd+Z) to redo.
 - Scrub playback either with the slider or by dragging the time axis in the panel header to preview edits in real time; scrubbing records analytics events so the Stats panel usage metrics stay up to date.
 
-For details, see `docs/keyframe_editor_spec.md` and `docs/animation_milestone_5_plan.md`.
+For details, see `docs/keyframe_editor_spec.md` and `docs/completed/animation_milestone_5_plan.md`.
