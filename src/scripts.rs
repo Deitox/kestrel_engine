@@ -1506,6 +1506,24 @@ impl ScriptWorld {
         })
     }
 
+    fn spawn_sprite_safe(
+        &mut self,
+        atlas: &str,
+        region: &str,
+        x: FLOAT,
+        y: FLOAT,
+        scale: FLOAT,
+        vx: FLOAT,
+        vy: FLOAT,
+    ) -> Dynamic {
+        let handle = self.spawn_sprite(atlas, region, x, y, scale, vx, vy);
+        if handle < 0 {
+            Dynamic::UNIT
+        } else {
+            Dynamic::from(handle)
+        }
+    }
+
     fn set_velocity(&mut self, handle: ScriptHandle, vx: FLOAT, vy: FLOAT) -> bool {
         let vx = vx as f32;
         let vy = vy as f32;
@@ -4407,6 +4425,7 @@ fn register_api(engine: &mut Engine) {
     engine.register_fn("handle_validate", ScriptWorld::handle_validate);
     engine.register_fn("handles_with_tag", ScriptWorld::handles_with_tag);
     engine.register_fn("spawn_sprite", ScriptWorld::spawn_sprite);
+    engine.register_fn("spawn_sprite_safe", ScriptWorld::spawn_sprite_safe);
     engine.register_fn("spawn_prefab_safe", ScriptWorld::spawn_prefab_safe);
     engine.register_fn("spawn_prefab_safe", ScriptWorld::spawn_prefab_safe_with_tag);
     engine.register_fn("spawn_template_safe", ScriptWorld::spawn_template_safe);
@@ -5443,6 +5462,14 @@ mod tests {
         assert!(result.is_unit(), "empty name should return unit");
         let state = world.state.borrow();
         assert_eq!(state.spawn_failures.get("template_empty_name").copied().unwrap_or(0), 1);
+    }
+
+    #[test]
+    fn spawn_sprite_safe_returns_unit_on_invalid_params() {
+        let mut world = ScriptWorld::new(Rc::new(RefCell::new(SharedState::default())));
+        let result = world.spawn_sprite_safe("atlas", "region", 0.0, 0.0, -1.0, 0.0, 0.0);
+        assert!(result.is_unit(), "invalid params should return unit");
+        assert!(world.state.borrow().commands.is_empty(), "no command should be queued on invalid spawn");
     }
 
     #[test]

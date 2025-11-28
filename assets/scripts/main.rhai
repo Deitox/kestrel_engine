@@ -29,15 +29,17 @@ fn update(world, dt) {
 fn spawn_entity(world) {
     let x = world.rand(-1.1, 1.1);
     let y = world.rand(-0.8, 0.8);
-    let handle = world.spawn_sprite("main", "green", x, y, 0.25, 0.0, 0.0);
-    if handle >= 0 {
-        world.log("Spawned entity handle: " + handle.to_string());
-    } else {
-        world.log("Failed to spawn entity: " + handle.to_string());
+    let handle = world.spawn_sprite_safe("main", "green", x, y, 0.25, 0.0, 0.0);
+    if handle == () {
+        world.log("Failed to spawn entity");
+        return;
     }
+    world.log("Spawned entity handle: " + handle.to_string());
     let angle = world.rand(0.0, 6.28318);
     let speed = world.rand(0.35, 0.95);
     let vx = speed * cos(angle);
     let vy = speed * sin(angle);
-    world.set_velocity(handle, vx, vy);
+    if world.handle_is_alive(handle) {
+        world.set_velocity(handle, vx, vy);
+    }
 }
