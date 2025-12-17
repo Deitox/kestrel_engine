@@ -1,14 +1,25 @@
+let state = #{
+    wave_size: 8,
+    wave_pending: false
+};
+
 fn init(world) {
     world.log("Kestrel Lab: init");
     world.rand_seed(1);
     world.stat_set("score", 0);
-    spawn_wave(world, 8);
+    state.wave_pending = true;
+    spawn_wave(world, state.wave_size);
 }
 
 fn update(world, _dt) {
-    let targets = world.handles_with_tag("target");
+    let targets = world.entities_with_tag("target");
     if targets.len() == 0 {
-        spawn_wave(world, 8);
+        if !state.wave_pending {
+            state.wave_pending = true;
+            spawn_wave(world, state.wave_size);
+        }
+    } else {
+        state.wave_pending = false;
     }
 }
 

@@ -2,11 +2,24 @@ let state = #{
     fire_prev: false,
     fire_cooldown: 0.0,
     aim_x: 1.0,
-    aim_y: 0.0
+    aim_y: 0.0,
+    crosshair: ()
 };
 
 fn ready(world, _entity) {
     world.log("player_controller ready");
+
+    if state.crosshair != () && world.handle_is_alive(state.crosshair) {
+        return;
+    }
+    let cursor_world = world.input_cursor_world();
+    let cx = if cursor_world.len() >= 2 { cursor_world[0] } else { 0.0 };
+    let cy = if cursor_world.len() >= 2 { cursor_world[1] } else { 0.0 };
+    let crosshair = world.spawn_sprite_safe("main", "redorb", cx, cy, 0.08, 0.0, 0.0);
+    if crosshair != () {
+        state.crosshair = crosshair;
+        world.set_tint(crosshair, 1.0, 1.0, 0.2, 0.55);
+    }
 }
 
 fn process(world, entity, dt) {
@@ -45,8 +58,19 @@ fn process(world, entity, dt) {
         state.aim_y = mvy;
     }
 
+    if state.crosshair == () || !world.handle_is_alive(state.crosshair) {
+        let crosshair = world.spawn_sprite_safe("main", "redorb", x, y, 0.08, 0.0, 0.0);
+        if crosshair != () {
+            state.crosshair = crosshair;
+            world.set_tint(crosshair, 1.0, 1.0, 0.2, 0.55);
+        }
+    }
+
     let cursor_world = world.input_cursor_world();
     if cursor_world.len() >= 2 {
+        if state.crosshair != () && world.handle_is_alive(state.crosshair) {
+            world.set_position(state.crosshair, cursor_world[0], cursor_world[1]);
+        }
         let ax = cursor_world[0] - x;
         let ay = cursor_world[1] - y;
         let alen = (ax * ax + ay * ay).sqrt();

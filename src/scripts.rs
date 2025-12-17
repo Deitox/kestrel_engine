@@ -889,6 +889,20 @@ impl ScriptWorld {
         }
     }
 
+    fn handle_entity(&mut self, handle: ScriptHandle) -> Dynamic {
+        if handle < 0 {
+            return Dynamic::UNIT;
+        }
+        if let Some(entity) = self.resolve_handle_entity(handle) {
+            return Dynamic::from(entity_to_rhai(entity));
+        }
+        if self.state.borrow().pending_handles.contains(&handle) {
+            return Dynamic::UNIT;
+        }
+        self.state.borrow_mut().record_invalid_handle_use(Some("handle_entity"));
+        Dynamic::UNIT
+    }
+
     fn handles_with_tag(&mut self, tag: &str) -> Array {
         let trimmed = tag.trim();
         if trimmed.is_empty() {
@@ -911,6 +925,23 @@ impl ScriptWorld {
             }
         }
         handles
+    }
+
+    fn entities_with_tag(&mut self, tag: &str) -> Array {
+        let trimmed = tag.trim();
+        if trimmed.is_empty() {
+            return Array::new();
+        }
+        let state = self.state.borrow();
+        let mut entities: Vec<_> = state
+            .entity_tags
+            .iter()
+            .filter(|(_, entity_tag)| entity_tag.as_str() == trimmed)
+            .map(|(entity, _)| *entity)
+            .filter(|entity| state.entity_snapshots.contains_key(entity))
+            .collect();
+        entities.sort_by_key(|entity| entity.to_bits());
+        entities.into_iter().map(|entity| Dynamic::from(entity_to_rhai(entity))).collect()
     }
 
     fn find_scene_entity(&mut self, scene_id: &str) -> Dynamic {
@@ -1362,6 +1393,10 @@ impl ScriptWorld {
         let entry = state.global_stats.entry(key).or_insert(0.0);
         *entry += delta as f64;
         *entry as FLOAT
+    }
+
+    fn stat_add_int(&mut self, key: &str, delta: rhai::INT) -> FLOAT {
+        self.stat_add(key, delta as FLOAT)
     }
 
     fn stat_clear(&mut self, key: &str) -> bool {
@@ -4552,7 +4587,9 @@ fn register_api(engine: &mut Engine) {
     engine.register_type_with_name::<ScriptWorld>("World");
     engine.register_fn("handle_is_alive", ScriptWorld::handle_is_alive);
     engine.register_fn("handle_validate", ScriptWorld::handle_validate);
+    engine.register_fn("handle_entity", ScriptWorld::handle_entity);
     engine.register_fn("handles_with_tag", ScriptWorld::handles_with_tag);
+    engine.register_fn("entities_with_tag", ScriptWorld::entities_with_tag);
     engine.register_fn("find_scene_entity", ScriptWorld::find_scene_entity);
     engine.register_fn("spawn_sprite", ScriptWorld::spawn_sprite);
     engine.register_fn("spawn_sprite_safe", ScriptWorld::spawn_sprite_safe);
@@ -4650,6 +4687,7 @@ fn register_api(engine: &mut Engine) {
     engine.register_fn("stat_get", ScriptWorld::stat_get);
     engine.register_fn("stat_set", ScriptWorld::stat_set);
     engine.register_fn("stat_add", ScriptWorld::stat_add);
+    engine.register_fn("stat_add", ScriptWorld::stat_add_int);
     engine.register_fn("stat_clear", ScriptWorld::stat_clear);
     engine.register_fn("stat_keys", ScriptWorld::stat_keys);
     engine.register_fn("is_hot_reload", ScriptWorld::is_hot_reload);
@@ -4700,6 +4738,27 @@ mod tests {
         assert_eq!(key, "score");
         assert!(world.stat_clear("score"));
         assert_eq!(world.stat_keys().len(), 0);
+    }
+
+    #[test]
+    fn stat_add_accepts_integer_literals_in_scripts() {
+        let script = write_script(
+            r#"
+                fn init(world) {
+                    world.stat_set("score", 0);
+                    world.stat_add("score", 1);
+                    return;
+                }
+                fn update(world, dt) {}
+            "#,
+        );
+
+        let mut host = ScriptHost::new(script.path());
+        host.force_reload(None).expect("load script");
+        host.update(0.016, true, None);
+        assert!(host.last_error().is_none(), "unexpected script error: {:?}", host.last_error());
+        let score = host.shared.borrow().global_stats.get("score").copied().unwrap_or(0.0);
+        assert!((score - 1.0).abs() < 1e-4, "expected score to increment to 1, got {score}");
     }
 
     #[test]
@@ -5578,6 +5637,72 @@ mod tests {
         let handles = world.handles_with_tag("enemy");
         assert_eq!(handles.len(), 1, "expected a single live handle");
         assert_eq!(handles[0].clone_cast::<ScriptHandle>(), handle);
+    }
+
+    #[test]
+    fn handle_entity_returns_unit_for_pending_handles() {
+        let state = Rc::new(RefCell::new(SharedState::default()));
+        let mut world = ScriptWorld::new(state.clone());
+        let handle = world.spawn_template("enemy");
+        assert!(handle >= 0);
+        let resolved = world.handle_entity(handle);
+        assert!(resolved.is_unit(), "pending handles should not resolve immediately");
+        assert_eq!(state.borrow().invalid_handle_uses, 0);
+    }
+
+    #[test]
+    fn handle_entity_resolves_spawned_entities() {
+        let mut host = ScriptHost::new("assets/scripts/main.rhai");
+        let entity = Entity::from_raw(42);
+        let handle: ScriptHandle = 12345;
+        let mut snaps = HashMap::new();
+        snaps.insert(
+            entity,
+            EntitySnapshot {
+                translation: Vec2::ZERO,
+                rotation: 0.0,
+                scale: Vec2::ONE,
+                velocity: None,
+                tint: None,
+                half_extents: None,
+            },
+        );
+        host.set_entity_snapshots(snaps, 1.0, None, HashMap::new());
+        host.register_spawn_result(handle, entity, Some("enemy".into()));
+        let mut world = ScriptWorld::new(host.shared.clone());
+        let resolved = world.handle_entity(handle);
+        assert!(!resolved.is_unit(), "expected handle to resolve to an entity");
+        let entity_bits: ScriptHandle = resolved.try_cast().expect("entity bits");
+        assert_eq!(entity_bits as u64, entity.to_bits());
+    }
+
+    #[test]
+    fn entities_with_tag_returns_live_entities() {
+        let mut host = ScriptHost::new("assets/scripts/main.rhai");
+        let entity = Entity::from_raw(42);
+        let handle: ScriptHandle = 12345;
+        let mut snaps = HashMap::new();
+        snaps.insert(
+            entity,
+            EntitySnapshot {
+                translation: Vec2::ZERO,
+                rotation: 0.0,
+                scale: Vec2::ONE,
+                velocity: None,
+                tint: None,
+                half_extents: None,
+            },
+        );
+        host.set_entity_snapshots(snaps, 1.0, None, HashMap::new());
+        host.register_spawn_result(handle, entity, Some("enemy".into()));
+
+        let mut world = ScriptWorld::new(host.shared.clone());
+        let entities = world.entities_with_tag("enemy");
+        assert_eq!(entities.len(), 1, "expected a single live entity");
+        let entity_bits = entities[0].clone_cast::<ScriptHandle>();
+        assert_eq!(entity_bits as u64, entity.to_bits());
+        assert_eq!(world.entities_with_tag("").len(), 0);
+        assert_eq!(world.entities_with_tag("missing").len(), 0);
     }
 
     #[test]
