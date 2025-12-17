@@ -98,6 +98,7 @@ pub struct InputSnapshot {
     pub left_mouse: bool,
     pub right_mouse: bool,
     pub cursor: Option<Vec2>,
+    pub cursor_world: Option<Vec2>,
     pub mouse_delta: Vec2,
     pub wheel: f32,
 }
@@ -793,6 +794,28 @@ impl ScriptWorld {
         state.entity_snapshots.get(&entity).map(|s| s.rotation as FLOAT).unwrap_or(0.0)
     }
 
+    fn entity_tag(&mut self, entity_bits: ScriptHandle) -> String {
+        if entity_bits < 0 {
+            return String::new();
+        }
+        let entity = Entity::from_bits(entity_bits as u64);
+        self.state.borrow().entity_tags.get(&entity).cloned().unwrap_or_default()
+    }
+
+    fn entity_handle(&mut self, entity_bits: ScriptHandle) -> Dynamic {
+        if entity_bits < 0 {
+            return Dynamic::UNIT;
+        }
+        let entity = Entity::from_bits(entity_bits as u64);
+        self.state
+            .borrow()
+            .entity_handles
+            .get(&entity)
+            .copied()
+            .map(Dynamic::from)
+            .unwrap_or(Dynamic::UNIT)
+    }
+
     fn entity_scale(&mut self, entity_bits: ScriptHandle) -> Array {
         let entity = Entity::from_bits(entity_bits as u64);
         let state = self.state.borrow();
@@ -1212,6 +1235,15 @@ impl ScriptWorld {
     fn input_cursor(&mut self) -> Array {
         if let Some(snap) = self.state.borrow().input_snapshot.as_ref() {
             if let Some(cursor) = snap.cursor {
+                return Self::vec2_to_array(cursor);
+            }
+        }
+        Array::new()
+    }
+
+    fn input_cursor_world(&mut self) -> Array {
+        if let Some(snap) = self.state.borrow().input_snapshot.as_ref() {
+            if let Some(cursor) = snap.cursor_world {
                 return Self::vec2_to_array(cursor);
             }
         }
@@ -3866,6 +3898,7 @@ impl ScriptPlugin {
             left_mouse: input.left_mouse_held(),
             right_mouse: input.right_mouse_held(),
             cursor: input.cursor_position().map(|(x, y)| Vec2::new(x, y)),
+            cursor_world: input.cursor_world_position().map(|(x, y)| Vec2::new(x, y)),
             mouse_delta: Vec2::new(input.mouse_delta.0, input.mouse_delta.1),
             wheel: input.wheel,
         }
@@ -4505,6 +4538,8 @@ fn register_api(engine: &mut Engine) {
     engine.register_fn("entity_snapshot", ScriptWorld::entity_snapshot);
     engine.register_fn("entity_position", ScriptWorld::entity_position);
     engine.register_fn("entity_rotation", ScriptWorld::entity_rotation);
+    engine.register_fn("entity_tag", ScriptWorld::entity_tag);
+    engine.register_fn("entity_handle", ScriptWorld::entity_handle);
     engine.register_fn("entity_scale", ScriptWorld::entity_scale);
     engine.register_fn("entity_velocity", ScriptWorld::entity_velocity);
     engine.register_fn("entity_tint", ScriptWorld::entity_tint);
@@ -4525,6 +4560,7 @@ fn register_api(engine: &mut Engine) {
     engine.register_fn("input_left_mouse", ScriptWorld::input_left_mouse);
     engine.register_fn("input_right_mouse", ScriptWorld::input_right_mouse);
     engine.register_fn("input_cursor", ScriptWorld::input_cursor);
+    engine.register_fn("input_cursor_world", ScriptWorld::input_cursor_world);
     engine.register_fn("input_mouse_delta", ScriptWorld::input_mouse_delta);
     engine.register_fn("input_wheel", ScriptWorld::input_wheel);
     engine.register_fn("listen", ScriptWorld::listen);
@@ -5487,6 +5523,34 @@ mod tests {
     }
 
     #[test]
+    fn entity_tag_and_handle_return_spawn_metadata() {
+        let mut host = ScriptHost::new("assets/scripts/main.rhai");
+        let entity = Entity::from_raw(42);
+        let handle: ScriptHandle = 12345;
+        let mut snaps = HashMap::new();
+        snaps.insert(
+            entity,
+            EntitySnapshot {
+                translation: Vec2::ZERO,
+                rotation: 0.0,
+                scale: Vec2::ONE,
+                velocity: None,
+                tint: None,
+                half_extents: None,
+            },
+        );
+        host.set_entity_snapshots(snaps, 1.0, None);
+        host.register_spawn_result(handle, entity, Some("target".into()));
+
+        let mut world = ScriptWorld::new(host.shared.clone());
+        assert_eq!(world.entity_tag(entity.to_bits() as ScriptHandle), "target");
+
+        let resolved = world.entity_handle(entity.to_bits() as ScriptHandle);
+        assert!(!resolved.is_unit(), "expected handle metadata for script-spawned entity");
+        assert_eq!(resolved.cast::<ScriptHandle>(), handle);
+    }
+
+    #[test]
     fn spawn_prefab_safe_returns_unit_on_empty_path() {
         let mut world = ScriptWorld::new(Rc::new(RefCell::new(SharedState::default())));
         let result = world.spawn_prefab_safe("");
@@ -6062,6 +6126,7 @@ mod tests {
                 left_mouse: true,
                 right_mouse: false,
                 cursor: Some(Vec2::new(10.0, 20.0)),
+                cursor_world: Some(Vec2::new(-0.5, 0.75)),
                 mouse_delta: Vec2::new(1.0, -2.0),
                 wheel: 0.5,
                 ..Default::default()
@@ -6074,6 +6139,8 @@ mod tests {
         assert!(!world.input_ctrl());
         let cursor = world.input_cursor();
         assert_eq!(cursor.len(), 2);
+        let cursor_world = world.input_cursor_world();
+        assert_eq!(cursor_world.len(), 2);
         let wheel: FLOAT = world.input_wheel();
         assert!((wheel - 0.5).abs() < 1e-6);
     }

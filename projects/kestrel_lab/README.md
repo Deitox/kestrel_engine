@@ -13,3 +13,7 @@ From the repo root:
 - Move: `WASD`
 - Boost: `Shift`
 - Shoot: Left mouse (aim with cursor; falls back to last move direction)
+
+## Goal
+
+Shoot the moving blue targets. When all targets are destroyed, a new wave spawns.

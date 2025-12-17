@@ -2295,6 +2295,21 @@ impl ApplicationHandler for App {
             }
         }
 
+        // Provide scripts a world-space cursor coordinate derived from the active viewport + camera.
+        // (Used for aiming without hardcoding window/camera assumptions.)
+        {
+            let viewport_size = self.viewport_physical_size();
+            let cursor_screen = self.input.cursor_position().map(|(sx, sy)| Vec2::new(sx, sy));
+            let cursor_viewport = cursor_screen.and_then(|pos| self.screen_to_viewport(pos));
+            let cursor_world_2d = if self.viewport_camera_mode == ViewportCameraMode::Ortho2D {
+                cursor_viewport.and_then(|pos| self.camera.screen_to_world(pos, viewport_size))
+            } else {
+                None
+            };
+            self.input
+                .set_cursor_world_position(cursor_world_2d.map(|pos| (pos.x, pos.y)));
+        }
+
         self.with_plugins(|plugins, ctx| plugins.update(ctx, dt));
         let time_scale = self.script_plugin().map(|p| p.time_scale()).unwrap_or(1.0);
         let time_scale = if time_scale.is_finite() && time_scale >= 0.0 { time_scale } else { 1.0 };

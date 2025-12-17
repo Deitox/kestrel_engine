@@ -26,6 +26,7 @@ pub struct Input {
     roll_right_held: bool,
     frustum_lock_toggle: bool,
     cursor_pos: Option<(f32, f32)>,
+    cursor_world: Option<(f32, f32)>,
     left_pressed: bool,
     left_clicked: bool,
     right_pressed: bool,
@@ -63,6 +64,7 @@ impl Input {
             roll_right_held: false,
             frustum_lock_toggle: false,
             cursor_pos: None,
+            cursor_world: None,
             left_pressed: false,
             left_clicked: false,
             right_pressed: false,
@@ -111,6 +113,7 @@ impl Input {
         self.mesh_toggle_pressed = false;
         self.frustum_lock_toggle = false;
         self.delete_selection_pressed = false;
+        self.cursor_world = None;
     }
 
     pub fn consume_wheel_delta(&mut self) -> Option<f32> {
@@ -155,6 +158,14 @@ impl Input {
     }
     pub fn cursor_position(&self) -> Option<(f32, f32)> {
         self.cursor_pos
+    }
+
+    pub fn set_cursor_world_position(&mut self, pos: Option<(f32, f32)>) {
+        self.cursor_world = pos;
+    }
+
+    pub fn cursor_world_position(&self) -> Option<(f32, f32)> {
+        self.cursor_world
     }
     pub fn freefly_forward(&self) -> bool {
         self.forward_held

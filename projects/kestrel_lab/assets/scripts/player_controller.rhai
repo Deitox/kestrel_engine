@@ -9,31 +9,6 @@ fn ready(world, _entity) {
     world.log("player_controller ready");
 }
 
-fn aim_from_cursor(world) {
-    let cursor = world.input_cursor();
-    if cursor.len() < 2 {
-        return [0.0, 0.0];
-    }
-
-    // Derived from Kestrel Studio camera defaults (Ortho2D, base_half_height=1.2, zoom=1.0)
-    // and this project's window size (1280x720).
-    let window_w = 1280.0;
-    let window_h = 720.0;
-    let half_w_px = window_w * 0.5;
-    let half_h_px = window_h * 0.5;
-    let aspect = window_w / window_h;
-    let half_h_world = 1.2;
-    let half_w_world = half_h_world * aspect;
-
-    let dx = ((cursor[0] - half_w_px) / half_w_px) * half_w_world;
-    let dy = ((half_h_px - cursor[1]) / half_h_px) * half_h_world;
-    let len = (dx * dx + dy * dy).sqrt();
-    if len <= 0.0001 {
-        return [0.0, 0.0];
-    }
-    [dx / len, dy / len]
-}
-
 fn process(world, entity, dt) {
     if dt <= 0.0 {
         return;
@@ -70,10 +45,15 @@ fn process(world, entity, dt) {
         state.aim_y = mvy;
     }
 
-    let aim = aim_from_cursor(world);
-    if aim[0].abs() > 0.0001 || aim[1].abs() > 0.0001 {
-        state.aim_x = aim[0];
-        state.aim_y = aim[1];
+    let cursor_world = world.input_cursor_world();
+    if cursor_world.len() >= 2 {
+        let ax = cursor_world[0] - x;
+        let ay = cursor_world[1] - y;
+        let alen = (ax * ax + ay * ay).sqrt();
+        if alen > 0.0001 {
+            state.aim_x = ax / alen;
+            state.aim_y = ay / alen;
+        }
     }
 
     world.entity_set_velocity(entity, mvx * speed, mvy * speed);

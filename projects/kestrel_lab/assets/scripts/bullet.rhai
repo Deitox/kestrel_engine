@@ -10,7 +10,49 @@ fn process(world, entity, dt) {
     }
     state.age += dt;
     if state.age >= 2.0 {
-        world.entity_despawn(entity);
+        despawn_self(world, entity);
+        return;
+    }
+
+    let pos = world.entity_position(entity);
+    if pos.len() < 2 {
+        return;
+    }
+    let scale = world.entity_scale(entity);
+    if scale.len() < 2 {
+        return;
+    }
+
+    let radius = (scale[0].abs().max(scale[1].abs())) * 0.6;
+    let hits = world.overlap_circle_hits(pos[0], pos[1], radius);
+    for hit in hits {
+        let other = hit["entity"];
+        if other == entity {
+            continue;
+        }
+        if world.entity_tag(other) == "target" {
+            despawn_target(world, other);
+            world.stat_add("score", 1);
+            despawn_self(world, entity);
+            return;
+        }
     }
 }
 
+fn despawn_self(world, entity) {
+    let handle = world.entity_handle(entity);
+    if handle == () {
+        world.entity_despawn(entity);
+    } else {
+        world.despawn_safe(handle);
+    }
+}
+
+fn despawn_target(world, entity) {
+    let handle = world.entity_handle(entity);
+    if handle == () {
+        world.entity_despawn(entity);
+    } else {
+        world.despawn_safe(handle);
+    }
+}
