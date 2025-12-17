@@ -1,7 +1,7 @@
 use super::{
     editor_shell::{ScriptHandleBinding, ScriptOffenderStatus, ScriptTimingHistory},
-    App, CameraBookmark, FrameTimingSample, MeshControlMode, ScriptConsoleEntry, ScriptConsoleKind,
-    ViewportCameraMode,
+    App, CameraBookmark, FrameTimingSample, LabUpgrade, MeshControlMode, OpenWorldCameraMode,
+    ScriptConsoleEntry, ScriptConsoleKind, ViewportCameraMode,
 };
 #[cfg(feature = "alloc_profiler")]
 use crate::alloc_profiler::AllocationDelta;
@@ -1596,6 +1596,48 @@ impl App {
         let mut editor_settings_dirty = false;
         let mut point_lights_dirty = false;
         let keyframe_panel_ctx = self.editor_shell.egui_ctx.clone();
+
+        #[derive(Clone, Copy)]
+        struct OpenWorldLabHudSnapshot {
+            time_alive: f32,
+            health: f32,
+            max_health: f32,
+            level: u32,
+            xp: f32,
+            xp_next: f32,
+            enemies: usize,
+            bullets: usize,
+            orbs: usize,
+            camera_mode: OpenWorldCameraMode,
+            move_speed: f32,
+            fire_rate: f32,
+            damage: f32,
+            pickup_radius: f32,
+            pending_upgrades: Option<[LabUpgrade; 3]>,
+        }
+
+        let open_world_lab_hud = if self.is_open_world_lab() {
+            self.open_world_lab.as_ref().map(|state| OpenWorldLabHudSnapshot {
+                time_alive: state.time_alive,
+                health: state.health,
+                max_health: state.max_health,
+                level: state.level,
+                xp: state.xp,
+                xp_next: state.xp_next,
+                enemies: state.enemies.len(),
+                bullets: state.bullets.len(),
+                orbs: state.xp_orbs.len(),
+                camera_mode: state.camera_mode,
+                move_speed: state.stats.move_speed,
+                fire_rate: state.stats.fire_rate,
+                damage: state.stats.damage,
+                pickup_radius: state.stats.pickup_radius,
+                pending_upgrades: state.pending_upgrades,
+            })
+        } else {
+            None
+        };
+        let mut open_world_upgrade_pick: Option<LabUpgrade> = None;
         let full_output = self.editor_shell.egui_ctx.run(raw_input, |ctx| {
             let show_editor_ui = matches!(play_state, PlayState::Editing);
 
@@ -4046,6 +4088,56 @@ impl App {
                                 }
                             });
                             ui.small("F5 play/pause/resume, Shift+F5 stop, F6 step");
+
+                            if let Some(lab) = open_world_lab_hud {
+                                    ui.separator();
+                                    let seconds = lab.time_alive.max(0.0);
+                                    let mins = (seconds / 60.0).floor() as i32;
+                                    let secs = (seconds % 60.0).floor() as i32;
+                                    ui.label(format!("Time: {mins:02}:{secs:02}"));
+                                    ui.label(format!(
+                                        "HP: {:.0}/{:.0}   Level: {}   XP: {:.0}/{:.0}",
+                                        lab.health, lab.max_health, lab.level, lab.xp, lab.xp_next
+                                    ));
+                                    ui.label(format!(
+                                        "Enemies: {}   Bullets: {}   Orbs: {}",
+                                        lab.enemies, lab.bullets, lab.orbs
+                                    ));
+                                    let camera_label = match lab.camera_mode {
+                                        OpenWorldCameraMode::ThirdPerson => "3rd-person",
+                                        OpenWorldCameraMode::FirstPerson => "1st-person",
+                                    };
+                                    ui.small(format!("Camera: {camera_label} (V toggles)"));
+                                    ui.small(format!(
+                                        "Move: {:.1}   Fire: {:.1}/s   Damage: {:.1}   Pickup: {:.1}",
+                                        lab.move_speed, lab.fire_rate, lab.damage, lab.pickup_radius
+                                    ));
+
+                                    if lab.health <= 0.0 {
+                                        ui.separator();
+                                        ui.colored_label(egui::Color32::LIGHT_RED, "Defeated. Stop (Shift+F5) to reset.");
+                                    }
+
+                                    if let Some(options) = lab.pending_upgrades {
+                                        ui.separator();
+                                        ui.strong("Level up: choose an upgrade");
+                                        for upgrade in options {
+                                            let (title, detail) = match upgrade {
+                                                LabUpgrade::Damage => ("Damage", "+0.9 projectile damage"),
+                                                LabUpgrade::FireRate => ("Fire Rate", "+18% projectiles per second"),
+                                                LabUpgrade::MoveSpeed => ("Move Speed", "+14% move speed"),
+                                                LabUpgrade::BulletSpeed => ("Projectile Speed", "+12% projectile speed"),
+                                                LabUpgrade::PickupRadius => ("Pickup Radius", "+22% pickup radius"),
+                                                LabUpgrade::MaxHealth => ("Max Health", "+18% max health (+12% heal)"),
+                                            };
+                                            if ui.button(title).clicked() {
+                                                open_world_upgrade_pick = Some(upgrade);
+                                                play_resume = true;
+                                            }
+                                            ui.small(detail);
+                                        }
+                                    }
+                            }
                         });
                     });
             }
@@ -4449,6 +4541,13 @@ impl App {
         for name in animation_snapshot.group_scales.keys() {
             if !final_group_map.contains_key(name) {
                 self.ecs.set_animation_group_scale(name, 1.0);
+            }
+        }
+
+        if let Some(upgrade) = open_world_upgrade_pick {
+            if let Some(state) = self.open_world_lab.as_mut() {
+                state.pending_upgrades = None;
+                state.apply_upgrade(upgrade);
             }
         }
 

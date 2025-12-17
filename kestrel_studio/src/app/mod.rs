@@ -325,22 +325,112 @@ enum OpenWorldCameraMode {
     ThirdPerson,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum LabUpgrade {
+    Damage,
+    FireRate,
+    MoveSpeed,
+    BulletSpeed,
+    PickupRadius,
+    MaxHealth,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LabPlayerStats {
+    move_speed: f32,
+    fire_rate: f32,
+    damage: f32,
+    bullet_speed: f32,
+    pickup_radius: f32,
+    target_range: f32,
+}
+
+impl Default for LabPlayerStats {
+    fn default() -> Self {
+        Self {
+            move_speed: 4.0,
+            fire_rate: 3.5,
+            damage: 1.0,
+            bullet_speed: 18.0,
+            pickup_radius: 2.6,
+            target_range: 28.0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LabEnemy {
+    position: Vec3,
+    health: f32,
+    speed: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LabBullet {
+    position: Vec3,
+    velocity: Vec3,
+    ttl: f32,
+    damage: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LabXpOrb {
+    position: Vec3,
+    value: f32,
+    phase: f32,
+}
+
 struct OpenWorldLabState {
     camera_mode: OpenWorldCameraMode,
     player_entity: Entity,
     chunk_size: f32,
     chunk_radius: i32,
     chunks: HashMap<(i32, i32), Vec<Entity>>,
+    seed: u32,
+    time_alive: f32,
+    enemy_spawn_timer: f32,
+    fire_timer: f32,
+    pending_upgrades: Option<[LabUpgrade; 3]>,
+    upgrades_taken: HashMap<LabUpgrade, u32>,
+    stats: LabPlayerStats,
+    level: u32,
+    xp: f32,
+    xp_next: f32,
+    health: f32,
+    max_health: f32,
+    enemies: HashMap<Entity, LabEnemy>,
+    bullets: HashMap<Entity, LabBullet>,
+    xp_orbs: HashMap<Entity, LabXpOrb>,
 }
 
 impl OpenWorldLabState {
     fn new(player_entity: Entity) -> Self {
+        let mut seed = Self::hash_u32(player_entity.to_bits() as u32 ^ 0x5B4D_47F1);
+        if seed == 0 {
+            seed = 0xA1B2_C3D4;
+        }
+        let stats = LabPlayerStats::default();
         Self {
             camera_mode: OpenWorldCameraMode::ThirdPerson,
             player_entity,
             chunk_size: 18.0,
             chunk_radius: 2,
             chunks: HashMap::new(),
+            seed,
+            time_alive: 0.0,
+            enemy_spawn_timer: 0.35,
+            fire_timer: 0.0,
+            pending_upgrades: None,
+            upgrades_taken: HashMap::new(),
+            stats,
+            level: 1,
+            xp: 0.0,
+            xp_next: 10.0,
+            health: 100.0,
+            max_health: 100.0,
+            enemies: HashMap::new(),
+            bullets: HashMap::new(),
+            xp_orbs: HashMap::new(),
         }
     }
 
@@ -427,6 +517,261 @@ impl OpenWorldLabState {
             entities.push(entity);
         }
         entities
+    }
+
+    fn update_survival_loop(&mut self, ecs: &mut EcsWorld, player_pos: Vec3, dt: f32) -> bool {
+        if dt <= 0.0 {
+            return false;
+        }
+        if self.pending_upgrades.is_some() {
+            return true;
+        }
+
+        self.time_alive = (self.time_alive + dt).max(0.0);
+
+        self.enemy_spawn_timer -= dt;
+        let spawn_interval = (0.85 - self.time_alive * 0.01).clamp(0.20, 0.85);
+        let desired_spawn_batch = 1 + (self.time_alive / 18.0).floor() as usize;
+        while self.enemy_spawn_timer <= 0.0 {
+            self.enemy_spawn_timer += spawn_interval;
+            let available = 260usize.saturating_sub(self.enemies.len());
+            let to_spawn = desired_spawn_batch.min(available).min(6);
+            for _ in 0..to_spawn {
+                self.spawn_enemy(ecs, player_pos);
+            }
+        }
+
+        let mut player_contact = 0usize;
+        for (&entity, enemy) in self.enemies.iter_mut() {
+            if !ecs.entity_exists(entity) {
+                continue;
+            }
+            let to_player = player_pos - enemy.position;
+            let dir = Vec3::new(to_player.x, 0.0, to_player.z);
+            let dist_sq = dir.length_squared();
+            if dist_sq > 0.01 {
+                enemy.position += dir.normalize_or_zero() * enemy.speed * dt;
+                ecs.set_mesh_translation(entity, enemy.position);
+            }
+            if dist_sq <= 1.1 * 1.1 {
+                player_contact += 1;
+            }
+        }
+        if player_contact > 0 {
+            let dps = 12.0;
+            self.health = (self.health - dps * dt).max(0.0);
+        }
+        if self.health <= 0.0 {
+            return true;
+        }
+
+        self.fire_timer -= dt;
+        let fire_interval = 1.0 / self.stats.fire_rate.max(0.25);
+        while self.fire_timer <= 0.0 {
+            self.fire_timer += fire_interval;
+            if self.bullets.len() >= 180 {
+                break;
+            }
+            if let Some(target_dir) = self.auto_target_direction(player_pos) {
+                self.spawn_bullet(ecs, player_pos + Vec3::new(0.0, 1.1, 0.0), target_dir);
+            }
+        }
+
+        let mut bullets_to_remove = Vec::new();
+        let mut enemies_to_remove = Vec::new();
+        let mut spawned_orbs = Vec::new();
+        for (&entity, bullet) in self.bullets.iter_mut() {
+            if !ecs.entity_exists(entity) {
+                bullets_to_remove.push(entity);
+                continue;
+            }
+            bullet.ttl -= dt;
+            bullet.position += bullet.velocity * dt;
+            ecs.set_mesh_translation(entity, bullet.position);
+            if bullet.ttl <= 0.0 {
+                bullets_to_remove.push(entity);
+                continue;
+            }
+            for (&enemy_entity, enemy) in self.enemies.iter_mut() {
+                if !ecs.entity_exists(enemy_entity) {
+                    continue;
+                }
+                let delta = enemy.position - bullet.position;
+                let dist_sq = delta.length_squared();
+                if dist_sq <= 0.85 * 0.85 {
+                    enemy.health -= bullet.damage;
+                    bullets_to_remove.push(entity);
+                    if enemy.health <= 0.0 {
+                        enemies_to_remove.push(enemy_entity);
+                        spawned_orbs.push(enemy.position);
+                    }
+                    break;
+                }
+            }
+        }
+
+        for entity in bullets_to_remove {
+            if self.bullets.remove(&entity).is_some() {
+                ecs.despawn_entity(entity);
+            }
+        }
+        for enemy_entity in enemies_to_remove {
+            if let Some(enemy) = self.enemies.remove(&enemy_entity) {
+                ecs.despawn_entity(enemy_entity);
+                let _ = enemy;
+            }
+        }
+        for pos in spawned_orbs {
+            self.spawn_xp_orb(ecs, pos);
+        }
+
+        let mut orbs_to_remove = Vec::new();
+        for (&entity, orb) in self.xp_orbs.iter_mut() {
+            if !ecs.entity_exists(entity) {
+                orbs_to_remove.push(entity);
+                continue;
+            }
+            orb.phase += dt;
+            let bob = (orb.phase * 2.4).sin() * 0.08;
+            let mut desired = orb.position;
+            desired.y = 0.5 + bob;
+            let to_player = player_pos - desired;
+            let dist = to_player.length();
+            if dist <= self.stats.pickup_radius.max(0.1) {
+                let speed = 8.5;
+                orb.position += to_player.normalize_or_zero() * speed * dt;
+            } else {
+                orb.position = desired;
+            }
+            ecs.set_mesh_translation(entity, orb.position);
+            if dist <= 0.65 {
+                orbs_to_remove.push(entity);
+                self.xp += orb.value;
+            }
+        }
+        for entity in orbs_to_remove {
+            if self.xp_orbs.remove(&entity).is_some() {
+                ecs.despawn_entity(entity);
+            }
+        }
+
+        if self.xp >= self.xp_next {
+            self.xp -= self.xp_next;
+            self.level = self.level.saturating_add(1);
+            self.xp_next = (self.xp_next * 1.22).max(6.0);
+            self.pending_upgrades = Some(self.roll_upgrade_choices());
+            return true;
+        }
+        false
+    }
+
+    fn auto_target_direction(&mut self, player_pos: Vec3) -> Option<Vec3> {
+        let range_sq = self.stats.target_range.max(0.1).powi(2);
+        let mut best = None;
+        let mut best_dist = range_sq;
+        for enemy in self.enemies.values() {
+            let delta = enemy.position - player_pos;
+            let dist_sq = Vec3::new(delta.x, 0.0, delta.z).length_squared();
+            if dist_sq < best_dist {
+                best_dist = dist_sq;
+                best = Some(delta);
+            }
+        }
+        best.map(|d| Vec3::new(d.x, 0.0, d.z).normalize_or_zero())
+    }
+
+    fn spawn_enemy(&mut self, ecs: &mut EcsWorld, player_pos: Vec3) {
+        let angle = Self::next_rand(&mut self.seed) * std::f32::consts::TAU;
+        let radius = 10.0 + Self::next_rand(&mut self.seed) * 12.0;
+        let offset = Vec3::new(angle.cos() * radius, 0.0, angle.sin() * radius);
+        let position = Vec3::new(player_pos.x + offset.x, 1.0, player_pos.z + offset.z);
+        let scale = Vec3::new(0.8, 1.6, 0.8);
+        let entity = ecs.spawn_mesh_entity("cube", position, scale);
+        ecs.set_mesh_material_params(entity, Vec3::new(0.92, 0.22, 0.22), 0.0, 0.85, None);
+        ecs.set_mesh_shadow_flags(entity, true, true);
+        let health = 2.5 + (self.time_alive / 22.0).floor() as f32 * 0.6;
+        let speed = 1.7 + Self::next_rand(&mut self.seed) * 0.7;
+        self.enemies.insert(entity, LabEnemy { position, health, speed });
+    }
+
+    fn spawn_bullet(&mut self, ecs: &mut EcsWorld, origin: Vec3, dir: Vec3) {
+        let dir = Vec3::new(dir.x, 0.0, dir.z).normalize_or_zero();
+        if dir.length_squared() <= f32::EPSILON {
+            return;
+        }
+        let scale = Vec3::new(0.14, 0.14, 0.55);
+        let entity = ecs.spawn_mesh_entity("cube", origin, scale);
+        ecs.set_mesh_material_params(entity, Vec3::new(1.0, 0.85, 0.25), 0.0, 0.35, Some(Vec3::new(0.25, 0.18, 0.02)));
+        ecs.set_mesh_shadow_flags(entity, false, false);
+        let yaw = dir.x.atan2(dir.z);
+        ecs.set_mesh_rotation_euler(entity, Vec3::new(0.0, yaw, 0.0));
+        let velocity = dir * self.stats.bullet_speed.max(0.1);
+        self.bullets.insert(
+            entity,
+            LabBullet { position: origin, velocity, ttl: 2.6, damage: self.stats.damage.max(0.1) },
+        );
+    }
+
+    fn spawn_xp_orb(&mut self, ecs: &mut EcsWorld, position: Vec3) {
+        if self.xp_orbs.len() >= 240 {
+            return;
+        }
+        let pos = Vec3::new(position.x, 0.5, position.z);
+        let scale = Vec3::splat(0.22);
+        let entity = ecs.spawn_mesh_entity("cube", pos, scale);
+        ecs.set_mesh_material_params(entity, Vec3::new(0.22, 0.70, 1.0), 0.0, 0.15, Some(Vec3::new(0.06, 0.22, 0.32)));
+        ecs.set_mesh_shadow_flags(entity, false, false);
+        let phase = Self::next_rand(&mut self.seed) * std::f32::consts::TAU;
+        self.xp_orbs.insert(entity, LabXpOrb { position: pos, value: 1.0, phase });
+    }
+
+    fn roll_upgrade_choices(&mut self) -> [LabUpgrade; 3] {
+        const POOL: [LabUpgrade; 6] = [
+            LabUpgrade::Damage,
+            LabUpgrade::FireRate,
+            LabUpgrade::MoveSpeed,
+            LabUpgrade::BulletSpeed,
+            LabUpgrade::PickupRadius,
+            LabUpgrade::MaxHealth,
+        ];
+        let mut chosen = Vec::with_capacity(3);
+        while chosen.len() < 3 {
+            let f = Self::next_rand(&mut self.seed);
+            let mut idx = (f * POOL.len() as f32) as usize;
+            if idx >= POOL.len() {
+                idx = POOL.len() - 1;
+            }
+            let upgrade = POOL[idx];
+            if !chosen.contains(&upgrade) {
+                chosen.push(upgrade);
+            }
+        }
+        [chosen[0], chosen[1], chosen[2]]
+    }
+
+    fn apply_upgrade(&mut self, upgrade: LabUpgrade) {
+        *self.upgrades_taken.entry(upgrade).or_insert(0) += 1;
+        match upgrade {
+            LabUpgrade::Damage => {
+                self.stats.damage = (self.stats.damage + 0.9).min(25.0);
+            }
+            LabUpgrade::FireRate => {
+                self.stats.fire_rate = (self.stats.fire_rate * 1.18).min(25.0);
+            }
+            LabUpgrade::MoveSpeed => {
+                self.stats.move_speed = (self.stats.move_speed * 1.14).min(18.0);
+            }
+            LabUpgrade::BulletSpeed => {
+                self.stats.bullet_speed = (self.stats.bullet_speed * 1.12).min(60.0);
+            }
+            LabUpgrade::PickupRadius => {
+                self.stats.pickup_radius = (self.stats.pickup_radius * 1.22).min(16.0);
+            }
+            LabUpgrade::MaxHealth => {
+                self.max_health = (self.max_health * 1.18).min(500.0);
+                self.health = (self.health + self.max_health * 0.12).min(self.max_health);
+            }
+        }
     }
 
     fn chunk_seed(chunk_x: i32, chunk_z: i32) -> u32 {
@@ -561,6 +906,7 @@ impl App {
         }
 
         let toggle_camera = self.input.take_camera_mode_toggle();
+        let player_move_speed = self.open_world_lab.as_ref().map(|state| state.stats.move_speed).unwrap_or(4.0);
 
         let Some(mut player_entity) = self.open_world_lab.as_ref().map(|state| state.player_entity) else {
             return;
@@ -618,7 +964,8 @@ impl App {
                 }
 
                 if move_dir.length_squared() > 1e-6 {
-                    let speed = if self.input.shift_held() { 7.5 } else { 4.0 };
+                    let sprint = if self.input.shift_held() { 1.85 } else { 1.0 };
+                    let speed = player_move_speed * sprint;
                     player_pos += move_dir.normalize_or_zero() * speed * dt;
                     self.ecs.set_mesh_translation(player_entity, player_pos);
                 }
@@ -653,8 +1000,14 @@ impl App {
             }
         });
 
+        let mut pause_requested = false;
         if let Some(state) = self.open_world_lab.as_mut() {
             state.sync_chunks(&mut self.ecs, player_pos);
+            pause_requested = state.update_survival_loop(&mut self.ecs, player_pos, dt);
+        }
+        if pause_requested {
+            self.step_pending = false;
+            self.set_play_state(PlayState::Playing { paused: true });
         }
     }
 
