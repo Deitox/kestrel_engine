@@ -1597,7 +1597,54 @@ impl App {
         let mut point_lights_dirty = false;
         let keyframe_panel_ctx = self.editor_shell.egui_ctx.clone();
         let full_output = self.editor_shell.egui_ctx.run(raw_input, |ctx| {
-            if start_screen_open_state {
+            let show_editor_ui = matches!(play_state, PlayState::Editing);
+
+            let (shortcut_play_enter, shortcut_play_pause, shortcut_play_resume, shortcut_play_stop, shortcut_play_step) =
+                ctx.input(|input| {
+                    let f5 = input.key_pressed(egui::Key::F5);
+                    let f6 = input.key_pressed(egui::Key::F6);
+                    let shift = input.modifiers.shift;
+                    let mut enter = false;
+                    let mut pause = false;
+                    let mut resume = false;
+                    let mut stop = false;
+                    let mut step = false;
+                    if f5 {
+                        if shift {
+                            stop = true;
+                        } else {
+                            match play_state {
+                                PlayState::Editing => enter = true,
+                                PlayState::Playing { paused: false } => pause = true,
+                                PlayState::Playing { paused: true } => resume = true,
+                            }
+                        }
+                    }
+                    if f6 {
+                        match play_state {
+                            PlayState::Editing => {
+                                enter = true;
+                                pause = true;
+                                step = true;
+                            }
+                            PlayState::Playing { paused: false } => {
+                                pause = true;
+                                step = true;
+                            }
+                            PlayState::Playing { paused: true } => {
+                                step = true;
+                            }
+                        }
+                    }
+                    (enter, pause, resume, stop, step)
+                });
+            play_enter |= shortcut_play_enter;
+            play_pause |= shortcut_play_pause;
+            play_resume |= shortcut_play_resume;
+            play_stop |= shortcut_play_stop;
+            play_step |= shortcut_play_step;
+
+            if show_editor_ui && start_screen_open_state {
                 if let Some(action) = render_start_screen(
                     ctx,
                     project_name.as_ref(),
@@ -1613,8 +1660,8 @@ impl App {
                     project_action = Some(action);
                 }
             }
-            let left_panel =
-                egui::SidePanel::left("kestrel_left_panel").default_width(340.0).show(ctx, |ui| {
+            let left_panel = if show_editor_ui {
+                Some(egui::SidePanel::left("kestrel_left_panel").default_width(340.0).show(ctx, |ui| {
                     egui::CollapsingHeader::new("Stats").default_open(true).show(ui, |ui| {
                         ui.label(format!("Entities: {}", entity_count));
                         ui.label(format!("Instances drawn: {}", instances_drawn));
@@ -1636,50 +1683,6 @@ impl App {
                             vsync_enabled = checkbox_state;
                             vsync_toggle_request = Some(checkbox_state);
                         }
-                        let (shortcut_play_enter, shortcut_play_pause, shortcut_play_resume, shortcut_play_stop, shortcut_play_step) =
-                            ctx.input(|input| {
-                                let f5 = input.key_pressed(egui::Key::F5);
-                                let f6 = input.key_pressed(egui::Key::F6);
-                                let shift = input.modifiers.shift;
-                                let mut enter = false;
-                                let mut pause = false;
-                                let mut resume = false;
-                                let mut stop = false;
-                                let mut step = false;
-                                if f5 {
-                                    if shift {
-                                        stop = true;
-                                    } else {
-                                        match play_state {
-                                            PlayState::Editing => enter = true,
-                                            PlayState::Playing { paused: false } => pause = true,
-                                            PlayState::Playing { paused: true } => resume = true,
-                                        }
-                                    }
-                                }
-                                if f6 {
-                                    match play_state {
-                                        PlayState::Editing => {
-                                            enter = true;
-                                            pause = true;
-                                            step = true;
-                                        }
-                                        PlayState::Playing { paused: false } => {
-                                            pause = true;
-                                            step = true;
-                                        }
-                                        PlayState::Playing { paused: true } => {
-                                            step = true;
-                                        }
-                                    }
-                                }
-                                (enter, pause, resume, stop, step)
-                            });
-                        play_enter |= shortcut_play_enter;
-                        play_pause |= shortcut_play_pause;
-                        play_resume |= shortcut_play_resume;
-                        play_stop |= shortcut_play_stop;
-                        play_step |= shortcut_play_step;
                         ui.separator();
                         ui.label("Play Controls");
                         let (state_label, paused_label) = match play_state {
@@ -2533,51 +2536,57 @@ impl App {
                         &mut frame_selection_request,
                         &mut actions,
                     );
-                });
+                })
+                )
+            } else {
+                None
+            };
 
-            let mut lookup_open = id_lookup_active;
-            let mut lookup_submit: Option<String> = None;
-            let mut lookup_close = false;
-            egui::Window::new("Entity Lookup")
-                .open(&mut lookup_open)
-                .resizable(false)
-                .collapsible(false)
-                .default_width(320.0)
-                .anchor(egui::Align2::CENTER_TOP, [0.0, 40.0])
-                .show(ctx, |ui| {
-                    ui.label("Paste an entity ID to jump selection to that entity.");
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut id_lookup_input)
-                            .hint_text("entity::...")
-                            .desired_width(260.0),
-                    );
-                    let submitted = response.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-                    let mut triggered = submitted;
-                    ui.horizontal(|ui| {
-                        if ui.button("Select").clicked() {
-                            triggered = true;
-                        }
-                        if ui.button("Close").clicked() {
-                            lookup_close = true;
+            if show_editor_ui {
+                let mut lookup_open = id_lookup_active;
+                let mut lookup_submit: Option<String> = None;
+                let mut lookup_close = false;
+                egui::Window::new("Entity Lookup")
+                    .open(&mut lookup_open)
+                    .resizable(false)
+                    .collapsible(false)
+                    .default_width(320.0)
+                    .anchor(egui::Align2::CENTER_TOP, [0.0, 40.0])
+                    .show(ctx, |ui| {
+                        ui.label("Paste an entity ID to jump selection to that entity.");
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut id_lookup_input)
+                                .hint_text("entity::...")
+                                .desired_width(260.0),
+                        );
+                        let submitted = response.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                        let mut triggered = submitted;
+                        ui.horizontal(|ui| {
+                            if ui.button("Select").clicked() {
+                                triggered = true;
+                            }
+                            if ui.button("Close").clicked() {
+                                lookup_close = true;
+                            }
+                        });
+                        if triggered {
+                            let trimmed = id_lookup_input.trim();
+                            if !trimmed.is_empty() {
+                                lookup_submit = Some(trimmed.to_string());
+                            }
                         }
                     });
-                    if triggered {
-                        let trimmed = id_lookup_input.trim();
-                        if !trimmed.is_empty() {
-                            lookup_submit = Some(trimmed.to_string());
-                        }
-                    }
-                });
-            if let Some(request) = lookup_submit {
-                id_lookup_request = Some(request);
-                lookup_open = false;
+                if let Some(request) = lookup_submit {
+                    id_lookup_request = Some(request);
+                    lookup_open = false;
+                }
+                if lookup_close {
+                    lookup_open = false;
+                }
+                id_lookup_active = lookup_open;
             }
-            if lookup_close {
-                lookup_open = false;
-            }
-            id_lookup_active = lookup_open;
 
-            if script_debugger.open {
+            if show_editor_ui && script_debugger.open {
                 let mut debugger_open = script_debugger.open;
                 egui::Window::new("Script Debugger")
                     .open(&mut debugger_open)
@@ -2764,8 +2773,8 @@ impl App {
                     });
                 script_debugger.open = debugger_open;
             }
-            let right_panel =
-                egui::SidePanel::right("kestrel_right_panel").default_width(360.0).show(ctx, |ui| {
+            let right_panel = if show_editor_ui {
+                Some(egui::SidePanel::right("kestrel_right_panel").default_width(360.0).show(ctx, |ui| {
                     ui.heading("3D Preview");
                     egui::ComboBox::from_label("Mesh asset").selected_text(&preview_mesh_key).show_ui(
                         ui,
@@ -3957,9 +3966,18 @@ impl App {
                             }
                         }
                     });
-                });
-            left_panel_width_px = left_panel.response.rect.width() * ui_pixels_per_point;
-            right_panel_width_px = right_panel.response.rect.width() * ui_pixels_per_point;
+                }))
+            } else {
+                None
+            };
+            left_panel_width_px = left_panel
+                .as_ref()
+                .map(|panel| panel.response.rect.width() * ui_pixels_per_point)
+                .unwrap_or(0.0);
+            right_panel_width_px = right_panel
+                .as_ref()
+                .map(|panel| panel.response.rect.width() * ui_pixels_per_point)
+                .unwrap_or(0.0);
             let window_width_px = window_size.width as f32;
             let window_height_px = window_size.height as f32;
             let viewport_width_px = (window_width_px - left_panel_width_px - right_panel_width_px).max(1.0);
@@ -3981,6 +3999,56 @@ impl App {
                     viewport_size_vec2.y / ui_pixels_per_point,
                 ),
             );
+            if !show_editor_ui {
+                let pos = egui::pos2(viewport_rect_points.left() + 10.0, viewport_rect_points.top() + 10.0);
+                egui::Area::new(egui::Id::new("kestrel_play_hud"))
+                    .order(egui::Order::Foreground)
+                    .interactable(true)
+                    .movable(false)
+                    .fixed_pos(pos)
+                    .show(ctx, |ui| {
+                        let frame = egui::Frame::new()
+                            .fill(ui.visuals().extreme_bg_color.gamma_multiply(0.9))
+                            .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color))
+                            .corner_radius(6.0)
+                            .inner_margin(egui::Margin::symmetric(10, 6));
+                        frame.show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                match play_state {
+                                    PlayState::Editing => {}
+                                    PlayState::Playing { paused: false } => {
+                                        if ui.button("Pause").clicked() {
+                                            play_pause = true;
+                                        }
+                                        if ui.button("Stop").clicked() {
+                                            play_stop = true;
+                                        }
+                                        if ui.button("Step").clicked() {
+                                            play_pause = true;
+                                            play_step = true;
+                                        }
+                                        ui.separator();
+                                        ui.small("Running");
+                                    }
+                                    PlayState::Playing { paused: true } => {
+                                        if ui.button("Resume").clicked() {
+                                            play_resume = true;
+                                        }
+                                        if ui.button("Stop").clicked() {
+                                            play_stop = true;
+                                        }
+                                        if ui.button("Step").clicked() {
+                                            play_step = true;
+                                        }
+                                        ui.separator();
+                                        ui.small("Paused");
+                                    }
+                                }
+                            });
+                            ui.small("F5 play/pause/resume, Shift+F5 stop, F6 step");
+                        });
+                    });
+            }
             if self.editor_shell.egui_ctx.input(|i| i.pointer.any_released()) {
                 if let Some(pointer_pos) = self.editor_shell.egui_ctx.pointer_interact_pos() {
                     if viewport_rect_points.contains(pointer_pos) {
@@ -4063,271 +4131,280 @@ impl App {
                 }
             }
 
-            let painter = ctx.debug_painter();
-            let viewport_outline = egui::Rect::from_min_size(
-                egui::pos2(
-                    viewport_origin_vec2.x / ui_pixels_per_point,
-                    viewport_origin_vec2.y / ui_pixels_per_point,
-                ),
-                egui::vec2(
-                    viewport_size_vec2.x / ui_pixels_per_point,
-                    viewport_size_vec2.y / ui_pixels_per_point,
-                ),
-            );
-            painter.rect_stroke(
-                viewport_outline,
-                0.0,
-                egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(220, 220, 240, 80)),
-                egui::StrokeKind::Outside,
-            );
-            if let Some(rect) = highlight_rect {
-                painter.rect_stroke(
-                    rect,
-                    0.0,
-                    egui::Stroke::new(2.0, egui::Color32::YELLOW),
-                    egui::StrokeKind::Inside,
+            if show_editor_ui {
+                let painter = ctx.debug_painter();
+                let viewport_outline = egui::Rect::from_min_size(
+                    egui::pos2(
+                        viewport_origin_vec2.x / ui_pixels_per_point,
+                        viewport_origin_vec2.y / ui_pixels_per_point,
+                    ),
+                    egui::vec2(
+                        viewport_size_vec2.x / ui_pixels_per_point,
+                        viewport_size_vec2.y / ui_pixels_per_point,
+                    ),
                 );
-            }
-            if viewport_camera_mode == ViewportCameraMode::Ortho2D {
-                if debug_show_spatial_hash {
-                    for (min, max) in &spatial_hash_rects {
-                        if let Some((min_px_view, max_px_view)) =
-                            camera_2d.world_rect_to_screen_bounds(*min, *max, viewport_size_physical)
-                        {
-                            let min_screen = min_px_view + viewport_origin_vec2;
-                            let max_screen = max_px_view + viewport_origin_vec2;
-                            let cell_rect = egui::Rect::from_two_pos(
-                                egui::pos2(
-                                    min_screen.x / ui_pixels_per_point,
-                                    min_screen.y / ui_pixels_per_point,
-                                ),
-                                egui::pos2(
-                                    max_screen.x / ui_pixels_per_point,
-                                    max_screen.y / ui_pixels_per_point,
-                                ),
-                            );
-                            painter.rect_stroke(
-                                cell_rect,
-                                0.0,
-                                egui::Stroke::new(
-                                    1.0,
-                                    egui::Color32::from_rgba_premultiplied(80, 200, 255, 80),
-                                ),
-                                egui::StrokeKind::Inside,
-                            );
-                        }
+                painter.rect_stroke(
+                    viewport_outline,
+                    0.0,
+                    egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(220, 220, 240, 80)),
+                    egui::StrokeKind::Outside,
+                );
+                if !matches!(play_state, PlayState::Playing { paused: false }) {
+                    if let Some(rect) = highlight_rect {
+                        painter.rect_stroke(
+                            rect,
+                            0.0,
+                            egui::Stroke::new(2.0, egui::Color32::YELLOW),
+                            egui::StrokeKind::Inside,
+                        );
                     }
                 }
-                if debug_show_colliders {
-                    for (min, max) in &collider_rects {
-                        if let Some((min_px_view, max_px_view)) =
-                            camera_2d.world_rect_to_screen_bounds(*min, *max, viewport_size_physical)
-                        {
-                            let min_screen = min_px_view + viewport_origin_vec2;
-                            let max_screen = max_px_view + viewport_origin_vec2;
-                            let collider_rect = egui::Rect::from_two_pos(
-                                egui::pos2(
-                                    min_screen.x / ui_pixels_per_point,
-                                    min_screen.y / ui_pixels_per_point,
-                                ),
-                                egui::pos2(
-                                    max_screen.x / ui_pixels_per_point,
-                                    max_screen.y / ui_pixels_per_point,
-                                ),
-                            );
-                            painter.rect_stroke(
-                                collider_rect,
-                                0.0,
-                                egui::Stroke::new(
-                                    1.5,
-                                    egui::Color32::from_rgba_premultiplied(255, 140, 60, 120),
-                                ),
-                                egui::StrokeKind::Inside,
-                            );
-                        }
-                    }
-                }
-                if let Some(sample) = animation_budget_sample {
-                    draw_animation_budget_overlay(ctx, viewport_outline, sample);
-                }
-                if let Some(metrics) = light_cluster_metrics_overlay {
-                    draw_light_cluster_overlay(ctx, viewport_outline, metrics);
-                }
-            }
-            let active_scale_handle_kind = gizmo_interaction.and_then(|interaction| match interaction {
-                    GizmoInteraction::Scale { handle, .. } => Some(handle.kind()),
-                    _ => None,
-                });
-            let scale_highlight_kind = active_scale_handle_kind.or(hovered_scale_kind);
-            if let Some(center_px) = gizmo_center_px {
-                let center = egui::pos2(center_px.x / ui_pixels_per_point, center_px.y / ui_pixels_per_point);
-                let draw_translate_axes = viewport_camera_mode == ViewportCameraMode::Perspective3D
-                    && gizmo_mode_state == GizmoMode::Translate;
-                if draw_translate_axes {
-                    if let Some(center_world) = gizmo_center_world3d {
-                        let distance = (mesh_camera_for_ui.position - center_world).length().max(0.001);
-                        let axis_length = (distance * GIZMO_3D_AXIS_LENGTH_SCALE)
-                            .clamp(GIZMO_3D_AXIS_MIN, GIZMO_3D_AXIS_MAX);
-                        let axes = [
-                            (Vec3::X, egui::Color32::from_rgb(240, 100, 100)),
-                            (Vec3::Y, egui::Color32::from_rgb(100, 220, 100)),
-                            (Vec3::Z, egui::Color32::from_rgb(120, 150, 255)),
-                        ];
-                        for (axis, color) in axes {
-                            let end_world = center_world + axis * axis_length;
-                            if let Some(end_view) =
-                                mesh_camera_for_ui.project_point(end_world, viewport_size_physical)
+                if viewport_camera_mode == ViewportCameraMode::Ortho2D {
+                    if debug_show_spatial_hash {
+                        for (min, max) in &spatial_hash_rects {
+                            if let Some((min_px_view, max_px_view)) =
+                                camera_2d.world_rect_to_screen_bounds(*min, *max, viewport_size_physical)
                             {
-                                let end_screen = end_view + viewport_origin_vec2;
-                                let end_pos = egui::pos2(
-                                    end_screen.x / ui_pixels_per_point,
-                                    end_screen.y / ui_pixels_per_point,
+                                let min_screen = min_px_view + viewport_origin_vec2;
+                                let max_screen = max_px_view + viewport_origin_vec2;
+                                let cell_rect = egui::Rect::from_two_pos(
+                                    egui::pos2(
+                                        min_screen.x / ui_pixels_per_point,
+                                        min_screen.y / ui_pixels_per_point,
+                                    ),
+                                    egui::pos2(
+                                        max_screen.x / ui_pixels_per_point,
+                                        max_screen.y / ui_pixels_per_point,
+                                    ),
                                 );
-                                painter.line_segment([center, end_pos], egui::Stroke::new(2.0, color));
-                                painter.circle_filled(end_pos, 3.0 / ui_pixels_per_point, color);
+                                painter.rect_stroke(
+                                    cell_rect,
+                                    0.0,
+                                    egui::Stroke::new(
+                                        1.0,
+                                        egui::Color32::from_rgba_premultiplied(80, 200, 255, 80),
+                                    ),
+                                    egui::StrokeKind::Inside,
+                                );
                             }
                         }
                     }
-                } else {
-                    match gizmo_mode_state {
-                        GizmoMode::Translate => {
-                            let extent = 8.0 / ui_pixels_per_point;
-                            painter.line_segment(
-                                [
-                                    egui::pos2(center.x - extent, center.y),
-                                    egui::pos2(center.x + extent, center.y),
-                                ],
-                                egui::Stroke::new(2.0, egui::Color32::YELLOW),
-                            );
-                            painter.line_segment(
-                                [
-                                    egui::pos2(center.x, center.y - extent),
-                                    egui::pos2(center.x, center.y + extent),
-                                ],
-                                egui::Stroke::new(2.0, egui::Color32::YELLOW),
-                            );
-                        }
-                        GizmoMode::Scale => {
-                            let inner = GIZMO_SCALE_INNER_RADIUS_PX / ui_pixels_per_point;
-                            let outer = GIZMO_SCALE_OUTER_RADIUS_PX / ui_pixels_per_point;
-                            let axis_length = GIZMO_SCALE_AXIS_LENGTH_PX / ui_pixels_per_point;
-                            let axis_half = (GIZMO_SCALE_AXIS_THICKNESS_PX * 0.5) / ui_pixels_per_point;
-                            let handle_half = (GIZMO_SCALE_HANDLE_SIZE_PX * 0.5) / ui_pixels_per_point;
-
-                            let active_uniform =
-                                matches!(scale_highlight_kind, Some(ScaleHandleKind::Uniform));
-                            let active_axis = match scale_highlight_kind {
-                                Some(ScaleHandleKind::Axis(axis)) => Some(axis),
-                                _ => None,
-                            };
-
-                            let base_x = if matches!(active_axis, Some(Axis2::X)) {
-                                egui::Color32::from_rgb(255, 185, 185)
-                            } else {
-                                egui::Color32::from_rgb(240, 120, 120)
-                            };
-                            let base_y = if matches!(active_axis, Some(Axis2::Y)) {
-                                egui::Color32::from_rgb(185, 225, 255)
-                            } else {
-                                egui::Color32::from_rgb(120, 180, 255)
-                            };
-
-                            let horiz_pos = egui::Rect::from_min_max(
-                                egui::pos2(center.x, center.y - axis_half),
-                                egui::pos2(center.x + axis_length, center.y + axis_half),
-                            );
-                            let horiz_neg = egui::Rect::from_min_max(
-                                egui::pos2(center.x - axis_length, center.y - axis_half),
-                                egui::pos2(center.x, center.y + axis_half),
-                            );
-                            painter.rect_filled(horiz_pos, 0.0, base_x);
-                            painter.rect_filled(horiz_neg, 0.0, base_x);
-
-                            let vert_pos = egui::Rect::from_min_max(
-                                egui::pos2(center.x - axis_half, center.y - axis_length),
-                                egui::pos2(center.x + axis_half, center.y),
-                            );
-                            let vert_neg = egui::Rect::from_min_max(
-                                egui::pos2(center.x - axis_half, center.y),
-                                egui::pos2(center.x + axis_half, center.y + axis_length),
-                            );
-                            painter.rect_filled(vert_pos, 0.0, base_y);
-                            painter.rect_filled(vert_neg, 0.0, base_y);
-
-                            let handle_size = egui::vec2(handle_half * 2.0, handle_half * 2.0);
-                            painter.rect_filled(
-                                egui::Rect::from_center_size(
-                                    egui::pos2(center.x + axis_length, center.y),
-                                    handle_size,
-                                ),
-                                0.0,
-                                base_x,
-                            );
-                            painter.rect_filled(
-                                egui::Rect::from_center_size(
-                                    egui::pos2(center.x - axis_length, center.y),
-                                    handle_size,
-                                ),
-                                0.0,
-                                base_x,
-                            );
-                            painter.rect_filled(
-                                egui::Rect::from_center_size(
-                                    egui::pos2(center.x, center.y - axis_length),
-                                    handle_size,
-                                ),
-                                0.0,
-                                base_y,
-                            );
-                            painter.rect_filled(
-                                egui::Rect::from_center_size(
-                                    egui::pos2(center.x, center.y + axis_length),
-                                    handle_size,
-                                ),
-                                0.0,
-                                base_y,
-                            );
-
-                            let outer_color = if active_uniform {
-                                egui::Color32::from_rgb(255, 235, 150)
-                            } else {
-                                egui::Color32::from_rgb(255, 210, 90)
-                            };
-                            let inner_color = if active_uniform {
-                                egui::Color32::from_rgb(220, 200, 110)
-                            } else {
-                                egui::Color32::from_rgb(180, 160, 60)
-                            };
-                            painter.circle_stroke(center, outer, egui::Stroke::new(2.0, outer_color));
-                            painter.circle_stroke(center, inner, egui::Stroke::new(1.0, inner_color));
-                        }
-                        GizmoMode::Rotate => {
-                            let inner = GIZMO_ROTATE_INNER_RADIUS_PX / ui_pixels_per_point;
-                            let outer = GIZMO_ROTATE_OUTER_RADIUS_PX / ui_pixels_per_point;
-                            painter.circle_stroke(
-                                center,
-                                outer,
-                                egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 210, 40)),
-                            );
-                            painter.circle_stroke(
-                                center,
-                                inner,
-                                egui::Stroke::new(1.0, egui::Color32::from_rgb(180, 160, 40)),
-                            );
+                    if debug_show_colliders {
+                        for (min, max) in &collider_rects {
+                            if let Some((min_px_view, max_px_view)) =
+                                camera_2d.world_rect_to_screen_bounds(*min, *max, viewport_size_physical)
+                            {
+                                let min_screen = min_px_view + viewport_origin_vec2;
+                                let max_screen = max_px_view + viewport_origin_vec2;
+                                let collider_rect = egui::Rect::from_two_pos(
+                                    egui::pos2(
+                                        min_screen.x / ui_pixels_per_point,
+                                        min_screen.y / ui_pixels_per_point,
+                                    ),
+                                    egui::pos2(
+                                        max_screen.x / ui_pixels_per_point,
+                                        max_screen.y / ui_pixels_per_point,
+                                    ),
+                                );
+                                painter.rect_stroke(
+                                    collider_rect,
+                                    0.0,
+                                    egui::Stroke::new(
+                                        1.5,
+                                        egui::Color32::from_rgba_premultiplied(255, 140, 60, 120),
+                                    ),
+                                    egui::StrokeKind::Inside,
+                                );
+                            }
                         }
                     }
+                    if let Some(sample) = animation_budget_sample {
+                        draw_animation_budget_overlay(ctx, viewport_outline, sample);
+                    }
+                    if let Some(metrics) = light_cluster_metrics_overlay {
+                        draw_light_cluster_overlay(ctx, viewport_outline, metrics);
+                    }
                 }
-                painter.circle_stroke(
-                    center,
-                    3.0 / ui_pixels_per_point,
-                    egui::Stroke::new(2.0, egui::Color32::YELLOW),
-                );
+                if !matches!(play_state, PlayState::Playing { paused: false }) {
+                    let active_scale_handle_kind = gizmo_interaction.and_then(|interaction| match interaction {
+                        GizmoInteraction::Scale { handle, .. } => Some(handle.kind()),
+                        _ => None,
+                    });
+                    let scale_highlight_kind = active_scale_handle_kind.or(hovered_scale_kind);
+                    if let Some(center_px) = gizmo_center_px {
+                        let center =
+                            egui::pos2(center_px.x / ui_pixels_per_point, center_px.y / ui_pixels_per_point);
+                        let draw_translate_axes = viewport_camera_mode == ViewportCameraMode::Perspective3D
+                            && gizmo_mode_state == GizmoMode::Translate;
+                        if draw_translate_axes {
+                            if let Some(center_world) = gizmo_center_world3d {
+                                let distance = (mesh_camera_for_ui.position - center_world).length().max(0.001);
+                                let axis_length = (distance * GIZMO_3D_AXIS_LENGTH_SCALE)
+                                    .clamp(GIZMO_3D_AXIS_MIN, GIZMO_3D_AXIS_MAX);
+                                let axes = [
+                                    (Vec3::X, egui::Color32::from_rgb(240, 100, 100)),
+                                    (Vec3::Y, egui::Color32::from_rgb(100, 220, 100)),
+                                    (Vec3::Z, egui::Color32::from_rgb(120, 150, 255)),
+                                ];
+                                for (axis, color) in axes {
+                                    let end_world = center_world + axis * axis_length;
+                                    if let Some(end_view) =
+                                        mesh_camera_for_ui.project_point(end_world, viewport_size_physical)
+                                    {
+                                        let end_screen = end_view + viewport_origin_vec2;
+                                        let end_pos = egui::pos2(
+                                            end_screen.x / ui_pixels_per_point,
+                                            end_screen.y / ui_pixels_per_point,
+                                        );
+                                        painter.line_segment([center, end_pos], egui::Stroke::new(2.0, color));
+                                        painter.circle_filled(end_pos, 3.0 / ui_pixels_per_point, color);
+                                    }
+                                }
+                            }
+                        } else {
+                            match gizmo_mode_state {
+                                GizmoMode::Translate => {
+                                    let extent = 8.0 / ui_pixels_per_point;
+                                    painter.line_segment(
+                                        [
+                                            egui::pos2(center.x - extent, center.y),
+                                            egui::pos2(center.x + extent, center.y),
+                                        ],
+                                        egui::Stroke::new(2.0, egui::Color32::YELLOW),
+                                    );
+                                    painter.line_segment(
+                                        [
+                                            egui::pos2(center.x, center.y - extent),
+                                            egui::pos2(center.x, center.y + extent),
+                                        ],
+                                        egui::Stroke::new(2.0, egui::Color32::YELLOW),
+                                    );
+                                }
+                                GizmoMode::Scale => {
+                                    let inner = GIZMO_SCALE_INNER_RADIUS_PX / ui_pixels_per_point;
+                                    let outer = GIZMO_SCALE_OUTER_RADIUS_PX / ui_pixels_per_point;
+                                    let axis_length = GIZMO_SCALE_AXIS_LENGTH_PX / ui_pixels_per_point;
+                                    let axis_half = (GIZMO_SCALE_AXIS_THICKNESS_PX * 0.5) / ui_pixels_per_point;
+                                    let handle_half = (GIZMO_SCALE_HANDLE_SIZE_PX * 0.5) / ui_pixels_per_point;
+
+                                    let active_uniform =
+                                        matches!(scale_highlight_kind, Some(ScaleHandleKind::Uniform));
+                                    let active_axis = match scale_highlight_kind {
+                                        Some(ScaleHandleKind::Axis(axis)) => Some(axis),
+                                        _ => None,
+                                    };
+
+                                    let base_x = if matches!(active_axis, Some(Axis2::X)) {
+                                        egui::Color32::from_rgb(255, 185, 185)
+                                    } else {
+                                        egui::Color32::from_rgb(240, 120, 120)
+                                    };
+                                    let base_y = if matches!(active_axis, Some(Axis2::Y)) {
+                                        egui::Color32::from_rgb(185, 225, 255)
+                                    } else {
+                                        egui::Color32::from_rgb(120, 180, 255)
+                                    };
+
+                                    let horiz_pos = egui::Rect::from_min_max(
+                                        egui::pos2(center.x, center.y - axis_half),
+                                        egui::pos2(center.x + axis_length, center.y + axis_half),
+                                    );
+                                    let horiz_neg = egui::Rect::from_min_max(
+                                        egui::pos2(center.x - axis_length, center.y - axis_half),
+                                        egui::pos2(center.x, center.y + axis_half),
+                                    );
+                                    painter.rect_filled(horiz_pos, 0.0, base_x);
+                                    painter.rect_filled(horiz_neg, 0.0, base_x);
+
+                                    let vert_pos = egui::Rect::from_min_max(
+                                        egui::pos2(center.x - axis_half, center.y - axis_length),
+                                        egui::pos2(center.x + axis_half, center.y),
+                                    );
+                                    let vert_neg = egui::Rect::from_min_max(
+                                        egui::pos2(center.x - axis_half, center.y),
+                                        egui::pos2(center.x + axis_half, center.y + axis_length),
+                                    );
+                                    painter.rect_filled(vert_pos, 0.0, base_y);
+                                    painter.rect_filled(vert_neg, 0.0, base_y);
+
+                                    let handle_size = egui::vec2(handle_half * 2.0, handle_half * 2.0);
+                                    painter.rect_filled(
+                                        egui::Rect::from_center_size(
+                                            egui::pos2(center.x + axis_length, center.y),
+                                            handle_size,
+                                        ),
+                                        0.0,
+                                        base_x,
+                                    );
+                                    painter.rect_filled(
+                                        egui::Rect::from_center_size(
+                                            egui::pos2(center.x - axis_length, center.y),
+                                            handle_size,
+                                        ),
+                                        0.0,
+                                        base_x,
+                                    );
+                                    painter.rect_filled(
+                                        egui::Rect::from_center_size(
+                                            egui::pos2(center.x, center.y - axis_length),
+                                            handle_size,
+                                        ),
+                                        0.0,
+                                        base_y,
+                                    );
+                                    painter.rect_filled(
+                                        egui::Rect::from_center_size(
+                                            egui::pos2(center.x, center.y + axis_length),
+                                            handle_size,
+                                        ),
+                                        0.0,
+                                        base_y,
+                                    );
+
+                                    let outer_color = if active_uniform {
+                                        egui::Color32::from_rgb(255, 235, 150)
+                                    } else {
+                                        egui::Color32::from_rgb(255, 210, 90)
+                                    };
+                                    let inner_color = if active_uniform {
+                                        egui::Color32::from_rgb(220, 200, 110)
+                                    } else {
+                                        egui::Color32::from_rgb(180, 160, 60)
+                                    };
+                                    painter.circle_stroke(center, outer, egui::Stroke::new(2.0, outer_color));
+                                    painter.circle_stroke(center, inner, egui::Stroke::new(1.0, inner_color));
+                                }
+                                GizmoMode::Rotate => {
+                                    let inner = GIZMO_ROTATE_INNER_RADIUS_PX / ui_pixels_per_point;
+                                    let outer = GIZMO_ROTATE_OUTER_RADIUS_PX / ui_pixels_per_point;
+                                    painter.circle_stroke(
+                                        center,
+                                        outer,
+                                        egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 210, 40)),
+                                    );
+                                    painter.circle_stroke(
+                                        center,
+                                        inner,
+                                        egui::Stroke::new(1.0, egui::Color32::from_rgb(180, 160, 40)),
+                                    );
+                                }
+                            }
+                        }
+                        painter.circle_stroke(
+                            center,
+                            3.0 / ui_pixels_per_point,
+                            egui::Stroke::new(2.0, egui::Color32::YELLOW),
+                        );
+                    }
+                }
             }
         });
-        if let Some(event) = keyframe_panel_toggle_event {
-            self.log_keyframe_editor_event(event);
+        if matches!(play_state, PlayState::Editing) {
+            if let Some(event) = keyframe_panel_toggle_event {
+                self.log_keyframe_editor_event(event);
+            }
+            self.show_animation_keyframe_panel(&keyframe_panel_ctx, &animation_snapshot);
         }
-        self.show_animation_keyframe_panel(&keyframe_panel_ctx, &animation_snapshot);
 
         script_debugger_output.open = script_debugger.open;
         script_debugger_output.repl_input = script_debugger.repl_input.clone();

@@ -3816,6 +3816,7 @@ pub struct ScriptPlugin {
     paused: bool,
     step_once: bool,
     deterministic_ordering: bool,
+    deterministic_seed: Option<u64>,
     path_indices: HashMap<Arc<str>, usize>,
     path_list: Vec<Arc<str>>,
     failed_path_scratch: HashSet<usize>,
@@ -3833,6 +3834,7 @@ impl ScriptPlugin {
             paused: false,
             step_once: false,
             deterministic_ordering: false,
+            deterministic_seed: None,
             path_indices: HashMap::new(),
             path_list: Vec::new(),
             failed_path_scratch: HashSet::new(),
@@ -3889,6 +3891,40 @@ impl ScriptPlugin {
 
     pub fn clear_handles(&mut self) {
         self.host.clear_handles();
+    }
+
+    pub fn reset_session(&mut self) -> Result<()> {
+        let command_quota = { self.host.shared.borrow().command_quota };
+
+        self.commands.clear();
+        self.logs.clear();
+        self.step_once = false;
+        self.pending_persistent.clear();
+
+        self.host.clear_instances();
+        self.host.clear_handles();
+        self.host.next_instance_id = 1;
+
+        self.host.shared = Rc::new(RefCell::new(SharedState::default()));
+        {
+            let mut shared = self.host.shared.borrow_mut();
+            shared.command_quota = command_quota;
+        }
+        if let Some(seed) = self.deterministic_seed {
+            self.enable_deterministic_mode(seed);
+        }
+
+        self.host.scope = Scope::new();
+        if let Some(ast) = self.host.ast.as_ref() {
+            self.host
+                .engine
+                .run_ast_with_scope(&mut self.host.scope, ast)
+                .map_err(|err| anyhow!("Evaluating script global statements: {err}"))?;
+        }
+        self.host.initialized = false;
+        self.host.error = None;
+
+        Ok(())
     }
 
     pub fn handles_snapshot(&self) -> Vec<(ScriptHandle, Entity)> {
@@ -4418,6 +4454,7 @@ impl ScriptPlugin {
 
     pub fn enable_deterministic_mode(&mut self, seed: u64) {
         self.deterministic_ordering = true;
+        self.deterministic_seed = Some(seed);
         self.set_rng_seed(seed);
         {
             let mut shared = self.host.shared.borrow_mut();

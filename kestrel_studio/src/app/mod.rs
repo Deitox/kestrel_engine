@@ -248,6 +248,7 @@ pub struct App {
     active_environment_key: String,
     environment_intensity: f32,
     play_state: PlayState,
+    play_snapshot: Option<PlaySessionSnapshot>,
     step_pending: bool,
     should_close: bool,
 
@@ -311,6 +312,12 @@ pub struct App {
     recent_projects: Vec<PathBuf>,
 }
 
+#[derive(Clone)]
+struct PlaySessionSnapshot {
+    scene: Scene,
+    selected_scene_id: Option<SceneEntityId>,
+}
+
 impl App {
     fn editor_ui_state(&self) -> Ref<'_, EditorUiState> {
         self.editor_shell.ui_state()
@@ -364,7 +371,8 @@ impl App {
     }
 
     fn sync_play_state_flags(&mut self) {
-        let paused = matches!(self.play_state, PlayState::Playing { paused: true }) && !self.step_pending;
+        let paused = matches!(self.play_state, PlayState::Editing)
+            || (matches!(self.play_state, PlayState::Playing { paused: true }) && !self.step_pending);
         {
             let mut animation_time = self.ecs.world.resource_mut::<AnimationTime>();
             animation_time.paused = paused;
@@ -728,6 +736,7 @@ impl App {
             active_environment_key: default_environment_key.clone(),
             environment_intensity,
             play_state: PlayState::Editing,
+            play_snapshot: None,
             step_pending: false,
             should_close: false,
             editor_shell,
@@ -1909,6 +1918,11 @@ impl App {
     }
 
     fn save_scene_to_path(&mut self, scene_path: &str) -> Result<()> {
+        if let (PlayState::Playing { .. }, Some(snapshot)) = (self.play_state, self.play_snapshot.as_ref()) {
+            snapshot.scene.clone().save_to_path(scene_path)?;
+            self.remember_scene_path(scene_path);
+            return Ok(());
+        }
         let mesh_source_map: HashMap<String, String> = self
             .mesh_registry
             .keys()
@@ -1938,6 +1952,83 @@ impl App {
         scene.metadata = self.capture_scene_metadata();
         scene.save_to_path(scene_path)?;
         self.remember_scene_path(scene_path);
+        Ok(())
+    }
+
+    fn capture_play_snapshot(&mut self) -> PlaySessionSnapshot {
+        let mesh_source_map: HashMap<String, String> = self
+            .mesh_registry
+            .keys()
+            .filter_map(|key| {
+                self.mesh_registry
+                    .mesh_source(key)
+                    .map(|path| (key.to_string(), path.to_string_lossy().into_owned()))
+            })
+            .collect();
+        let material_source_map: HashMap<String, String> = self
+            .material_registry
+            .keys()
+            .filter_map(|key| {
+                self.material_registry.material_source(key).map(|path| (key.to_string(), path.to_string()))
+            })
+            .collect();
+        let mut scene = self.ecs.export_scene_with_sources(
+            &self.assets,
+            |key| mesh_source_map.get(key).cloned(),
+            |key| material_source_map.get(key).cloned(),
+        );
+        let environment_dependency =
+            self.environment_registry.definition(&self.active_environment_key).map(|def| {
+                EnvironmentDependency::new(def.key().to_string(), def.source().map(|path| path.to_string()))
+            });
+        scene.dependencies.set_environment_dependency(environment_dependency);
+        scene.metadata = self.capture_scene_metadata();
+
+        let selected_scene_id = self
+            .selected_entity()
+            .and_then(|entity| self.ecs.entity_info(entity))
+            .map(|info| info.scene_id);
+
+        PlaySessionSnapshot { scene, selected_scene_id }
+    }
+
+    fn restore_play_snapshot(&mut self, snapshot: PlaySessionSnapshot) -> Result<()> {
+        if let Err(err) = self.update_scene_dependencies(&snapshot.scene.dependencies) {
+            self.ecs.clear_world();
+            self.clear_scene_atlases();
+            self.clear_scene_clips();
+            self.set_selected_entity(None);
+            self.set_gizmo_interaction(None);
+            if let Some(plugin) = self.script_plugin_mut() {
+                plugin.clear_handles();
+            }
+            self.sync_emitter_ui();
+            self.set_inspector_status(None);
+            return Err(err);
+        }
+        self.ecs.load_scene_with_dependencies(
+            &snapshot.scene,
+            &self.assets,
+            |_, _| Ok(()),
+            |_, _| Ok(()),
+            |_, _| Ok(()),
+        )?;
+        self.apply_scene_metadata(&snapshot.scene.metadata);
+        self.set_selected_entity(None);
+        self.set_gizmo_interaction(None);
+        if let Some(id) = snapshot.selected_scene_id.as_ref() {
+            if let Some(entity) = self.ecs.find_entity_by_scene_id(id.as_str()) {
+                self.set_selected_entity(Some(entity));
+            }
+        }
+        if let Some(plugin) = self.script_plugin_mut() {
+            plugin.clear_handles();
+        }
+        if let Some(analytics) = self.analytics_plugin_mut() {
+            analytics.clear_frame_history();
+        }
+        self.sync_emitter_ui();
+        self.set_inspector_status(None);
         Ok(())
     }
 
@@ -2258,7 +2349,8 @@ impl ApplicationHandler for App {
         if step_once {
             self.step_pending = false;
         }
-        let paused = matches!(self.play_state, PlayState::Playing { paused: true }) && !step_once;
+        let paused = matches!(self.play_state, PlayState::Editing)
+            || (matches!(self.play_state, PlayState::Playing { paused: true }) && !step_once);
         let RuntimeTick { dt, dropped_backlog, .. } =
             if paused { self.runtime_loop.tick_paused() } else { self.runtime_loop.tick() };
         if step_once {
@@ -2412,7 +2504,9 @@ impl ApplicationHandler for App {
         let prev_selection_details = selected_info.clone();
         let prev_selection_bounds_2d = selection_bounds_2d;
 
-        if self.viewport_camera_mode == ViewportCameraMode::Ortho2D
+        let viewport_editing_enabled = matches!(self.play_state, PlayState::Editing);
+        if viewport_editing_enabled
+            && self.viewport_camera_mode == ViewportCameraMode::Ortho2D
             && mesh_control_mode == MeshControlMode::Disabled
         {
             if let Some(delta) = self.input.consume_wheel_delta() {
@@ -2430,16 +2524,23 @@ impl ApplicationHandler for App {
             }
         }
 
-        let gizmo_update = self.update_gizmo_interactions(
-            viewport_size,
-            cursor_world_2d,
-            cursor_viewport,
-            cursor_ray,
-            cursor_in_viewport,
-            mesh_center_world,
-            gizmo_center_viewport,
-            &selected_info,
-        );
+        let gizmo_update = if viewport_editing_enabled {
+            self.update_gizmo_interactions(
+                viewport_size,
+                cursor_world_2d,
+                cursor_viewport,
+                cursor_ray,
+                cursor_in_viewport,
+                mesh_center_world,
+                gizmo_center_viewport,
+                &selected_info,
+            )
+        } else {
+            if cursor_in_viewport {
+                self.set_gizmo_interaction(None);
+            }
+            gizmo_interaction::GizmoUpdate { hovered_scale_kind: None }
+        };
         let hovered_scale_kind = gizmo_update.hovered_scale_kind;
         let selection_changed = self.selected_entity() != prev_selected_entity;
         let gizmo_changed = self.gizmo_interaction() != prev_gizmo_interaction;
@@ -4282,12 +4383,39 @@ impl RuntimeHost for App {
     }
 
     fn enter_play_mode(&mut self) {
+        if matches!(self.play_state, PlayState::Editing) {
+            self.play_snapshot = Some(self.capture_play_snapshot());
+            if let Some(plugin) = self.script_plugin_mut() {
+                if let Err(err) = plugin.reset_session() {
+                    plugin.set_error_message(err.to_string());
+                }
+            }
+            self.runtime_loop.clear_accumulator();
+        }
+        self.editor_shell.egui_ctx.memory_mut(|mem| {
+            if let Some(id) = mem.focused() {
+                mem.surrender_focus(id);
+            }
+        });
         self.step_pending = false;
         self.set_play_state(PlayState::Playing { paused: false });
     }
 
     fn exit_play_mode(&mut self) {
         self.step_pending = false;
+        if matches!(self.play_state, PlayState::Playing { .. }) {
+            if let Some(plugin) = self.script_plugin_mut() {
+                if let Err(err) = plugin.reset_session() {
+                    plugin.set_error_message(err.to_string());
+                }
+            }
+        }
+        if let Some(snapshot) = self.play_snapshot.take() {
+            if let Err(err) = self.restore_play_snapshot(snapshot) {
+                self.set_ui_scene_status(format!("Failed to restore play snapshot: {err}"));
+            }
+        }
+        self.runtime_loop.clear_accumulator();
         self.set_play_state(PlayState::Editing);
     }
 

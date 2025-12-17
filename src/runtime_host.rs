@@ -7,7 +7,7 @@ use crate::{ecs::EcsWorld, renderer::Renderer};
 /// Describes the current runtime execution mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlayState {
-    /// Editor-only state; the simulation is running in edit mode.
+    /// Editor-only state; the simulation is not running.
     Editing,
     /// Runtime play mode. `paused` distinguishes between live play and paused single-step.
     Playing { paused: bool },
