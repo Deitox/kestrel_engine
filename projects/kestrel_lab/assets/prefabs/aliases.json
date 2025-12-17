@@ -1,4 +1,5 @@
 {
   "bullet": "lab_bullet",
+  "hit_fx": "lab_hit_fx",
   "target": "lab_target"
 }

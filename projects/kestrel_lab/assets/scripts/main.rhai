@@ -1,25 +1,77 @@
 let state = #{
     wave_size: 8,
+    wave_index: 1,
     wave_pending: false
 };
 
 fn init(world) {
     world.log("Kestrel Lab: init");
     world.rand_seed(1);
+    world.listen("target_destroyed", "on_target_destroyed");
     world.stat_set("score", 0);
-    state.wave_pending = true;
+    world.stat_set("wave", state.wave_index);
+    world.stat_set("next_wave", 0.0);
     spawn_wave(world, state.wave_size);
+    return;
 }
 
 fn update(world, _dt) {
     let targets = world.entities_with_tag("target");
+    world.stat_set("targets", targets.len());
     if targets.len() == 0 {
         if !state.wave_pending {
             state.wave_pending = true;
-            spawn_wave(world, state.wave_size);
+            world.timer_start("wave_delay", 0.75);
         }
     } else {
         state.wave_pending = false;
+    }
+
+    if state.wave_pending {
+        let remaining = world.timer_remaining("wave_delay");
+        world.stat_set("next_wave", remaining);
+        if world.timer_fired("wave_delay") {
+            world.timer_clear("wave_delay");
+            state.wave_pending = false;
+            world.stat_set("next_wave", 0.0);
+            state.wave_index += 1;
+            state.wave_size = (state.wave_size + 2).min(18);
+            world.stat_set("wave", state.wave_index);
+            spawn_wave(world, state.wave_size);
+        }
+    }
+    return;
+}
+
+fn on_target_destroyed(world, evt) {
+    world.stat_add("score", 1);
+
+    let x = 0.0;
+    let y = 0.0;
+    let target = evt["target"];
+    if target != () {
+        let pos = world.entity_position(target);
+        if pos.len() >= 2 {
+            x = pos[0];
+            y = pos[1];
+        }
+    } else {
+        let payload = evt["payload"];
+        if payload != () {
+            let px = payload["x"];
+            let py = payload["y"];
+            if px != () {
+                x = px;
+            }
+            if py != () {
+                y = py;
+            }
+        }
+    }
+
+    let fx = world.spawn_template_safe("hit_fx");
+    if fx != () {
+        world.set_position(fx, x, y);
     }
 }
 

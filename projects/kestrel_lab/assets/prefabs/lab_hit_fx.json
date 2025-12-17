@@ -1,0 +1,36 @@
+{
+  "metadata": {
+    "viewport": "Ortho2D"
+  },
+  "dependencies": {
+    "atlases": [],
+    "clips": [],
+    "skeletons": [],
+    "meshes": [],
+    "materials": [],
+    "environments": []
+  },
+  "entities": [
+    {
+      "name": "lab_hit_fx",
+      "transform": {
+        "translation": {
+          "x": 0.0,
+          "y": 0.0
+        },
+        "rotation": 0.0,
+        "scale": {
+          "x": 0.25,
+          "y": 0.25
+        }
+      },
+      "script": {
+        "script_path": "assets/scripts/hit_fx.rhai"
+      },
+      "sprite": {
+        "atlas": "main",
+        "region": "redorb"
+      }
+    }
+  ]
+}

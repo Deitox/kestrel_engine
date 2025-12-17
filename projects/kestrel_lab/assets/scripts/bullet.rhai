@@ -31,8 +31,13 @@ fn process(world, entity, dt) {
             continue;
         }
         if world.entity_tag(other) == "target" {
+            let payload = #{
+                x: pos[0],
+                y: pos[1],
+                target: other
+            };
+            world.emit_to("target_destroyed", other, payload);
             despawn_target(world, other);
-            world.stat_add("score", 1);
             despawn_self(world, entity);
             return;
         }

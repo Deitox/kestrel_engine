@@ -16,4 +16,9 @@ From the repo root:
 
 ## Goal
 
-Shoot the moving blue targets. When all targets are destroyed, a new wave spawns.
+Shoot the moving blue targets. When all targets are destroyed, the next wave spawns after a short delay and ramps up in size.
+
+## Scripted Engine Tests
+
+- Events: bullets emit `target_destroyed`, main script listens and drives scoring + hit FX.
+- Timers: wave respawn uses `timer_start/timer_fired`, with a `next_wave` countdown stat.
