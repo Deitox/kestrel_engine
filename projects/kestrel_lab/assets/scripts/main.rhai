@@ -13,14 +13,25 @@ fn update(world, _dt) {
 }
 
 fn spawn_wave(world, count) {
+    let center_x = 0.0;
+    let center_y = 0.0;
+    let player = world.find_scene_entity("player");
+    if player != () {
+        let pos = world.entity_position(player);
+        if pos.len() >= 2 {
+            center_x = pos[0];
+            center_y = pos[1];
+        }
+    }
+
     for i in 0..count {
         let target = world.spawn_template_safe("target", "target");
         if target == () {
             world.log("spawn_wave: target spawn failed");
             return;
         }
-        let x = world.rand(-1.1, 1.1);
-        let y = world.rand(-0.75, 0.75);
+        let x = center_x + world.rand(-1.1, 1.1);
+        let y = center_y + world.rand(-0.75, 0.75);
         world.set_position(target, x, y);
 
         let vx = world.rand(-0.45, 0.45);

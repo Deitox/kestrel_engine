@@ -24,7 +24,7 @@ use rhai::module_resolvers::ModuleResolver;
 use rhai::{Array, Dynamic, Engine, EvalAltResult, Map, Module, Scope, Shared, AST, FLOAT};
 
 use bevy_ecs::prelude::{Component, Entity};
-use crate::ecs::{Aabb, Tint, Transform, Velocity, WorldTransform};
+use crate::ecs::{Aabb, SceneEntityTag, Tint, Transform, Velocity, WorldTransform};
 use std::fmt::Write as FmtWrite;
 use crate::input::Input;
 
@@ -382,6 +382,8 @@ struct SharedState {
     rng: Option<StdRng>,
     global_stats: HashMap<String, f64>,
     entity_snapshots: HashMap<Entity, EntitySnapshot>,
+    entity_scene_ids: HashMap<Entity, Arc<str>>,
+    scene_id_entities: HashMap<Arc<str>, Entity>,
     input_snapshot: Option<InputSnapshot>,
     spatial_index: ScriptSpatialIndex,
     physics_ctx: Option<PhysicsQueryContext>,
@@ -425,6 +427,8 @@ impl Default for SharedState {
             rng: None,
             global_stats: HashMap::new(),
             entity_snapshots: HashMap::new(),
+            entity_scene_ids: HashMap::new(),
+            scene_id_entities: HashMap::new(),
             input_snapshot: None,
             spatial_index: ScriptSpatialIndex::default(),
             physics_ctx: None,
@@ -816,6 +820,19 @@ impl ScriptWorld {
             .unwrap_or(Dynamic::UNIT)
     }
 
+    fn entity_scene_id(&mut self, entity_bits: ScriptHandle) -> String {
+        if entity_bits < 0 {
+            return String::new();
+        }
+        let entity = Entity::from_bits(entity_bits as u64);
+        self.state
+            .borrow()
+            .entity_scene_ids
+            .get(&entity)
+            .map(|id| id.as_ref().to_string())
+            .unwrap_or_default()
+    }
+
     fn entity_scale(&mut self, entity_bits: ScriptHandle) -> Array {
         let entity = Entity::from_bits(entity_bits as u64);
         let state = self.state.borrow();
@@ -894,6 +911,21 @@ impl ScriptWorld {
             }
         }
         handles
+    }
+
+    fn find_scene_entity(&mut self, scene_id: &str) -> Dynamic {
+        let trimmed = scene_id.trim();
+        if trimmed.is_empty() {
+            return Dynamic::UNIT;
+        }
+        let state = self.state.borrow();
+        state
+            .scene_id_entities
+            .get(trimmed)
+            .copied()
+            .filter(|entity| state.entity_snapshots.contains_key(entity))
+            .map(|entity| Dynamic::from(entity_to_rhai(entity)))
+            .unwrap_or(Dynamic::UNIT)
     }
 
     fn raycast(&mut self, ox: FLOAT, oy: FLOAT, dx: FLOAT, dy: FLOAT, max_dist: FLOAT) -> Map {
@@ -2736,12 +2768,21 @@ impl ScriptHost {
         snapshots: HashMap<Entity, EntitySnapshot>,
         cell_size: f32,
         spatial_cells: Option<HashMap<(i32, i32), Vec<Entity>>>,
+        scene_ids: HashMap<Entity, Arc<str>>,
     ) {
         let mut index = ScriptSpatialIndex::default();
         index.rebuild_with_spatial_hash(&snapshots, spatial_cells, cell_size);
+        let mut scene_id_entities = HashMap::new();
+        let mut scene_pairs: Vec<_> = scene_ids.iter().collect();
+        scene_pairs.sort_by_key(|(entity, _)| entity.to_bits());
+        for (entity, scene_id) in scene_pairs {
+            scene_id_entities.entry(Arc::clone(scene_id)).or_insert(*entity);
+        }
         let mut shared = self.shared.borrow_mut();
         shared.entity_snapshots = snapshots;
         shared.spatial_index = index;
+        shared.entity_scene_ids = scene_ids;
+        shared.scene_id_entities = scene_id_entities;
     }
 
     pub fn set_input_snapshot(&mut self, snapshot: InputSnapshot) {
@@ -3851,6 +3892,9 @@ impl ScriptPlugin {
             (spatial_hash.cell, cells)
         };
         let mut snapshots = HashMap::new();
+        let mut scene_ids: HashMap<Entity, Arc<str>> = HashMap::new();
+        let shared = self.host.shared.borrow();
+        let prev_scene_ids = &shared.entity_scene_ids;
         let mut query = ecs.world.query::<(
             Entity,
             Option<&WorldTransform>,
@@ -3858,8 +3902,9 @@ impl ScriptPlugin {
             Option<&Velocity>,
             Option<&Tint>,
             Option<&Aabb>,
+            Option<&SceneEntityTag>,
         )>();
-        for (entity, wt, transform, vel, tint, aabb) in query.iter(&ecs.world) {
+        for (entity, wt, transform, vel, tint, aabb, scene_tag) in query.iter(&ecs.world) {
             let (translation, rotation, scale) = if let Some(t) = transform {
                 let world_pos = wt
                     .map(|w| Vec2::new(w.0.w_axis.x, w.0.w_axis.y))
@@ -3870,6 +3915,16 @@ impl ScriptPlugin {
             } else {
                 continue;
             };
+            if let Some(tag) = scene_tag {
+                let scene_id = tag.id.as_str();
+                if !scene_id.is_empty() {
+                    let arc = match prev_scene_ids.get(&entity) {
+                        Some(existing) if existing.as_ref() == scene_id => Arc::clone(existing),
+                        _ => Arc::from(scene_id),
+                    };
+                    scene_ids.insert(entity, arc);
+                }
+            }
             snapshots.insert(
                 entity,
                 EntitySnapshot {
@@ -3882,7 +3937,8 @@ impl ScriptPlugin {
                 },
             );
         }
-        self.host.set_entity_snapshots(snapshots, cell_size, spatial_cells);
+        drop(shared);
+        self.host.set_entity_snapshots(snapshots, cell_size, spatial_cells, scene_ids);
     }
 
     fn snapshot_from_input(input: &Input) -> InputSnapshot {
@@ -4497,6 +4553,7 @@ fn register_api(engine: &mut Engine) {
     engine.register_fn("handle_is_alive", ScriptWorld::handle_is_alive);
     engine.register_fn("handle_validate", ScriptWorld::handle_validate);
     engine.register_fn("handles_with_tag", ScriptWorld::handles_with_tag);
+    engine.register_fn("find_scene_entity", ScriptWorld::find_scene_entity);
     engine.register_fn("spawn_sprite", ScriptWorld::spawn_sprite);
     engine.register_fn("spawn_sprite_safe", ScriptWorld::spawn_sprite_safe);
     engine.register_fn("spawn_prefab_safe", ScriptWorld::spawn_prefab_safe);
@@ -4540,6 +4597,7 @@ fn register_api(engine: &mut Engine) {
     engine.register_fn("entity_rotation", ScriptWorld::entity_rotation);
     engine.register_fn("entity_tag", ScriptWorld::entity_tag);
     engine.register_fn("entity_handle", ScriptWorld::entity_handle);
+    engine.register_fn("entity_scene_id", ScriptWorld::entity_scene_id);
     engine.register_fn("entity_scale", ScriptWorld::entity_scale);
     engine.register_fn("entity_velocity", ScriptWorld::entity_velocity);
     engine.register_fn("entity_tint", ScriptWorld::entity_tint);
@@ -5514,7 +5572,7 @@ mod tests {
                 half_extents: None,
             },
         );
-        host.set_entity_snapshots(snaps, 1.0, None);
+        host.set_entity_snapshots(snaps, 1.0, None, HashMap::new());
         host.register_spawn_result(handle, entity, Some("enemy".into()));
         let mut world = ScriptWorld::new(host.shared.clone());
         let handles = world.handles_with_tag("enemy");
@@ -5539,7 +5597,7 @@ mod tests {
                 half_extents: None,
             },
         );
-        host.set_entity_snapshots(snaps, 1.0, None);
+        host.set_entity_snapshots(snaps, 1.0, None, HashMap::new());
         host.register_spawn_result(handle, entity, Some("target".into()));
 
         let mut world = ScriptWorld::new(host.shared.clone());
@@ -5548,6 +5606,37 @@ mod tests {
         let resolved = world.entity_handle(entity.to_bits() as ScriptHandle);
         assert!(!resolved.is_unit(), "expected handle metadata for script-spawned entity");
         assert_eq!(resolved.cast::<ScriptHandle>(), handle);
+    }
+
+    #[test]
+    fn find_scene_entity_and_scene_id_resolve_from_snapshots() {
+        let mut host = ScriptHost::new("assets/scripts/main.rhai");
+        let entity = Entity::from_raw(7);
+        let mut snaps = HashMap::new();
+        snaps.insert(
+            entity,
+            EntitySnapshot {
+                translation: Vec2::ZERO,
+                rotation: 0.0,
+                scale: Vec2::ONE,
+                velocity: None,
+                tint: None,
+                half_extents: None,
+            },
+        );
+        let mut scene_ids = HashMap::new();
+        scene_ids.insert(entity, Arc::<str>::from("player"));
+        host.set_entity_snapshots(snaps, 1.0, None, scene_ids);
+
+        let mut world = ScriptWorld::new(host.shared.clone());
+        let found = world.find_scene_entity("player");
+        assert!(!found.is_unit(), "expected scene entity to resolve");
+        let found_bits: ScriptHandle = found.try_cast().unwrap();
+        assert_eq!(found_bits as u64, entity.to_bits());
+        assert_eq!(world.entity_scene_id(found_bits), "player");
+
+        assert!(world.find_scene_entity("").is_unit(), "empty lookup should return unit");
+        assert!(world.find_scene_entity("missing").is_unit(), "unknown id should return unit");
     }
 
     #[test]
@@ -5612,7 +5701,7 @@ mod tests {
             },
         );
         host.register_spawn_result(handle, entity, Some("enemy".into()));
-        host.set_entity_snapshots(snaps, 1.0, None);
+        host.set_entity_snapshots(snaps, 1.0, None, HashMap::new());
 
         assert!(world.handle_is_alive(handle), "handle should become alive after spawn materializes");
         assert!(world.set_position(handle, 3.0, 4.0), "set_position should succeed on live handle");
