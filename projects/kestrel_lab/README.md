@@ -11,7 +11,5 @@ From the repo root:
 ## Controls (default bindings)
 
 - Move: `WASD`
-- Jump: `E`
 - Boost: `Shift`
-- Shoot: Left mouse (fires in facing direction)
-
+- Shoot: Left mouse (aim with cursor; falls back to last move direction)

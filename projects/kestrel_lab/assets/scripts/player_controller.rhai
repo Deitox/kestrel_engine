@@ -1,12 +1,37 @@
 let state = #{
-    facing: 1.0,
     fire_prev: false,
     fire_cooldown: 0.0,
-    jump_prev: false
+    aim_x: 1.0,
+    aim_y: 0.0
 };
 
 fn ready(world, _entity) {
     world.log("player_controller ready");
+}
+
+fn aim_from_cursor(world) {
+    let cursor = world.input_cursor();
+    if cursor.len() < 2 {
+        return [0.0, 0.0];
+    }
+
+    // Derived from Kestrel Studio camera defaults (Ortho2D, base_half_height=1.2, zoom=1.0)
+    // and this project's window size (1280x720).
+    let window_w = 1280.0;
+    let window_h = 720.0;
+    let half_w_px = window_w * 0.5;
+    let half_h_px = window_h * 0.5;
+    let aspect = window_w / window_h;
+    let half_h_world = 1.2;
+    let half_w_world = half_h_world * aspect;
+
+    let dx = ((cursor[0] - half_w_px) / half_w_px) * half_w_world;
+    let dy = ((half_h_px - cursor[1]) / half_h_px) * half_h_world;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len <= 0.0001 {
+        return [0.0, 0.0];
+    }
+    [dx / len, dy / len]
 }
 
 fn process(world, entity, dt) {
@@ -22,46 +47,52 @@ fn process(world, entity, dt) {
     let y = pos[1];
 
     let speed = if world.input_boost() { 1.9 } else { 1.2 };
-    let vx = 0.0;
+    let dx = 0.0;
+    let dy = 0.0;
     if world.input_left() {
-        vx -= speed;
+        dx -= 1.0;
     }
     if world.input_right() {
-        vx += speed;
+        dx += 1.0;
     }
-    if vx < -0.01 {
-        state.facing = -1.0;
-    } else if vx > 0.01 {
-        state.facing = 1.0;
+    if world.input_forward() {
+        dy += 1.0;
+    }
+    if world.input_backward() {
+        dy -= 1.0;
     }
 
-    let vel = world.entity_velocity(entity);
-    let vy = if vel.len() >= 2 { vel[1] } else { 0.0 };
-
-    let jump = world.input_ascend();
-    let on_ground = y <= -0.79 && vy.abs() < 0.05;
-    if jump && !state.jump_prev && on_ground {
-        vy = 1.35;
+    let len = (dx * dx + dy * dy).sqrt();
+    let mvx = if len > 0.0001 { dx / len } else { 0.0 };
+    let mvy = if len > 0.0001 { dy / len } else { 0.0 };
+    if len > 0.0001 {
+        state.aim_x = mvx;
+        state.aim_y = mvy;
     }
-    state.jump_prev = jump;
 
-    world.entity_set_velocity(entity, vx, vy);
+    let aim = aim_from_cursor(world);
+    if aim[0].abs() > 0.0001 || aim[1].abs() > 0.0001 {
+        state.aim_x = aim[0];
+        state.aim_y = aim[1];
+    }
+
+    world.entity_set_velocity(entity, mvx * speed, mvy * speed);
 
     state.fire_cooldown = (state.fire_cooldown - dt).max(0.0);
     let fire = world.input_left_mouse();
     if fire && !state.fire_prev && state.fire_cooldown <= 0.0 {
         state.fire_cooldown = 0.12;
-        spawn_bullet(world, x, y, state.facing);
+        spawn_bullet(world, x, y, state.aim_x, state.aim_y);
     }
     state.fire_prev = fire;
 }
 
-fn spawn_bullet(world, x, y, facing) {
+fn spawn_bullet(world, x, y, dx, dy) {
     let bullet = world.spawn_template_safe("bullet");
     if bullet == () {
         world.log("spawn_bullet failed");
         return;
     }
-    world.set_position(bullet, x + facing * 0.32, y);
-    world.set_velocity(bullet, facing * 3.0, 0.0);
+    world.set_position(bullet, x + dx * 0.32, y + dy * 0.32);
+    world.set_velocity(bullet, dx * 3.0, dy * 3.0);
 }
