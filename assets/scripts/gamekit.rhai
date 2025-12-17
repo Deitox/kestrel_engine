@@ -336,7 +336,7 @@ fn spawn_enemy(world, state, template) {
     if handle == () {
         return #{ state: out, handle: handle };
     }
-    let spawn_pos = jittered_spawn(out.config, out.player.spawn_point, world);
+    let spawn_pos = jittered_spawn(out.config, out.config.player.spawn_point, world);
     if world.handle_is_alive(handle) {
         world.set_position(handle, spawn_pos[0], spawn_pos[1]);
         let speed = enemy_speed(out.config, template);

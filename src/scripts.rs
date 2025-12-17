@@ -36,6 +36,19 @@ const SCRIPT_IMPORT_ROOT: &str = "assets/scripts";
 const SCRIPT_EVENT_QUEUE_LIMIT: usize = 256;
 const SCRIPT_OFFENDER_LIMIT: usize = 8;
 
+fn derive_project_root_from_scripts_root(scripts_root: &Path) -> Option<PathBuf> {
+    let scripts_dir = scripts_root.file_name()?.to_str()?;
+    if !scripts_dir.eq_ignore_ascii_case("scripts") {
+        return None;
+    }
+    let assets_dir = scripts_root.parent()?;
+    let assets_dir_name = assets_dir.file_name()?.to_str()?;
+    if !assets_dir_name.eq_ignore_ascii_case("assets") {
+        return None;
+    }
+    assets_dir.parent().map(|p| p.to_path_buf())
+}
+
 #[derive(Clone)]
 pub struct CompiledScript {
     pub ast: AST,
@@ -359,6 +372,7 @@ impl PhysicsQueryContext {
 struct SharedState {
     next_handle: ScriptHandle,
     handle_nonce: u32,
+    pending_handles: HashSet<ScriptHandle>,
     next_listener_id: u64,
     commands: Vec<ScriptCommand>,
     command_quota: Option<usize>,
@@ -401,6 +415,7 @@ impl Default for SharedState {
         Self {
             next_handle: 0,
             handle_nonce: nonce,
+            pending_handles: HashSet::new(),
             next_listener_id: 1,
             commands: Vec::new(),
             command_quota: None,
@@ -814,8 +829,15 @@ impl ScriptWorld {
             .filter(|entity| state.entity_snapshots.contains_key(entity))
     }
 
+    fn handle_is_usable(&self, handle: ScriptHandle) -> bool {
+        if self.resolve_handle_entity(handle).is_some() {
+            return true;
+        }
+        self.state.borrow().pending_handles.contains(&handle)
+    }
+
     fn handle_is_alive(&mut self, handle: ScriptHandle) -> bool {
-        self.resolve_handle_entity(handle).is_some()
+        self.handle_is_usable(handle)
     }
 
     fn handle_validate(&mut self, handle: ScriptHandle) -> Dynamic {
@@ -1538,7 +1560,7 @@ impl ScriptWorld {
         if !self.ensure_finite("set_velocity", &[vx, vy]) {
             return false;
         }
-        if self.resolve_handle_entity(handle).is_none() {
+        if !self.handle_is_usable(handle) {
             self.state.borrow_mut().record_invalid_handle_use(Some("set_velocity"));
             return false;
         }
@@ -1551,7 +1573,7 @@ impl ScriptWorld {
         if !self.ensure_finite("set_position", &[x, y]) {
             return false;
         }
-        if self.resolve_handle_entity(handle).is_none() {
+        if !self.handle_is_usable(handle) {
             self.state.borrow_mut().record_invalid_handle_use(Some("set_position"));
             return false;
         }
@@ -1563,7 +1585,7 @@ impl ScriptWorld {
         if !self.ensure_finite("set_rotation", &[radians]) {
             return false;
         }
-        if self.resolve_handle_entity(handle).is_none() {
+        if !self.handle_is_usable(handle) {
             self.state.borrow_mut().record_invalid_handle_use(Some("set_rotation"));
             return false;
         }
@@ -1576,7 +1598,7 @@ impl ScriptWorld {
         if !self.ensure_finite("set_scale", &[sx, sy]) {
             return false;
         }
-        if self.resolve_handle_entity(handle).is_none() {
+        if !self.handle_is_usable(handle) {
             self.state.borrow_mut().record_invalid_handle_use(Some("set_scale"));
             return false;
         }
@@ -1592,7 +1614,7 @@ impl ScriptWorld {
         if !self.ensure_finite("set_tint", &[r, g, b, a]) {
             return false;
         }
-        if self.resolve_handle_entity(handle).is_none() {
+        if !self.handle_is_usable(handle) {
             self.state.borrow_mut().record_invalid_handle_use(Some("set_tint"));
             return false;
         }
@@ -1600,7 +1622,7 @@ impl ScriptWorld {
     }
 
     fn clear_tint(&mut self, handle: ScriptHandle) -> bool {
-        if self.resolve_handle_entity(handle).is_none() {
+        if !self.handle_is_usable(handle) {
             self.state.borrow_mut().record_invalid_handle_use(Some("clear_tint"));
             return false;
         }
@@ -1608,7 +1630,7 @@ impl ScriptWorld {
     }
 
     fn set_sprite_region(&mut self, handle: ScriptHandle, region: &str) -> bool {
-        if self.resolve_handle_entity(handle).is_none() {
+        if !self.handle_is_usable(handle) {
             self.state.borrow_mut().record_invalid_handle_use(Some("set_sprite_region"));
             return false;
         }
@@ -1620,7 +1642,7 @@ impl ScriptWorld {
     }
 
     fn despawn(&mut self, handle: ScriptHandle) -> bool {
-        if self.resolve_handle_entity(handle).is_none() {
+        if !self.handle_is_usable(handle) {
             self.state.borrow_mut().record_invalid_handle_use(Some("despawn"));
             return false;
         }
@@ -2242,6 +2264,7 @@ impl ScriptWorld {
         let raw = state.next_handle;
         state.next_handle = state.next_handle.saturating_add(1);
         let handle: ScriptHandle = (((state.handle_nonce as i64) << 32) | (raw as i64 & 0xFFFF_FFFF)) as ScriptHandle;
+        state.pending_handles.insert(handle);
         state.commands.push(build(handle));
         handle
     }
@@ -2252,6 +2275,7 @@ pub struct ScriptHost {
     ast: Option<AST>,
     scope: Scope<'static>,
     script_path: PathBuf,
+    project_root: PathBuf,
     ast_cache_dir: Option<PathBuf>,
     import_resolver: CachedModuleResolver,
     last_modified: Option<SystemTime>,
@@ -2604,7 +2628,23 @@ impl ScriptHost {
         // Lift Rhai safety ceilings (0 = unlimited).
         engine.set_max_expr_depths(0, 0); // expr depth + function expr depth
         engine.set_max_operations(0);     // op budget
-        let import_resolver = CachedModuleResolver::new(canonical_import_root());
+        let canonical_script_path = path.as_ref().canonicalize().unwrap_or_else(|_| path.as_ref().to_path_buf());
+        let scripts_root_candidate = canonical_script_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from(SCRIPT_IMPORT_ROOT));
+        let derived_project_root = derive_project_root_from_scripts_root(&scripts_root_candidate);
+        let is_project_layout = derived_project_root.is_some();
+        let project_root = derived_project_root
+            .clone()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let scripts_root = if is_project_layout {
+            scripts_root_candidate.clone()
+        } else {
+            project_root.join(SCRIPT_IMPORT_ROOT)
+        };
+        let import_resolver = CachedModuleResolver::new(scripts_root);
         engine.set_module_resolver(import_resolver.clone());
         register_api(&mut engine);
         let shared = SharedState { next_handle: 1, ..Default::default() };
@@ -2613,7 +2653,8 @@ impl ScriptHost {
             engine,
             ast: None,
             scope: Scope::new(),
-            script_path: path.as_ref().to_path_buf(),
+            script_path: canonical_script_path,
+            project_root,
             ast_cache_dir: ast_cache_dir.and_then(|p| p.canonicalize().ok()),
             import_resolver,
             last_modified: None,
@@ -2811,11 +2852,20 @@ impl ScriptHost {
         self.load_script(assets).map(|_| ())
     }
 
-    fn load_script_source(&self, path: &str, assets: Option<&AssetManager>) -> Result<String> {
-        if let Some(assets) = assets {
-            return assets.read_text(path).with_context(|| format!("Reading script asset '{path}'"));
+    fn resolve_script_path(&self, path: &str) -> PathBuf {
+        let raw = PathBuf::from(path);
+        if raw.is_absolute() {
+            return raw;
         }
-        std::fs::read_to_string(path).with_context(|| format!("Reading script file '{path}'"))
+        self.project_root.join(raw)
+    }
+
+    fn load_script_source(&self, path: &str, assets: Option<&AssetManager>) -> Result<String> {
+        let resolved = self.resolve_script_path(path);
+        if let Some(assets) = assets {
+            return assets.read_text(&resolved).with_context(|| format!("Reading script asset '{}'", resolved.display()));
+        }
+        std::fs::read_to_string(&resolved).with_context(|| format!("Reading script file '{}'", resolved.display()))
     }
 
     fn load_script_source_with_revision(
@@ -2823,12 +2873,15 @@ impl ScriptHost {
         path: &str,
         assets: Option<&AssetManager>,
     ) -> Result<(String, Option<u64>)> {
+        let resolved = self.resolve_script_path(path);
         if let Some(assets) = assets {
             let revision = Some(assets.revision());
-            let source = assets.read_text(path).with_context(|| format!("Reading script asset '{path}'"))?;
+            let source =
+                assets.read_text(&resolved).with_context(|| format!("Reading script asset '{}'", resolved.display()))?;
             return Ok((source, revision));
         }
-        let source = std::fs::read_to_string(path).with_context(|| format!("Reading script file '{path}'"))?;
+        let source =
+            std::fs::read_to_string(&resolved).with_context(|| format!("Reading script file '{}'", resolved.display()))?;
         Ok((source, None))
     }
 
@@ -3282,8 +3335,12 @@ impl ScriptHost {
 
     pub fn register_spawn_result(&mut self, handle: ScriptHandle, entity: Entity, tag: Option<String>) {
         self.handle_map.insert(handle, entity);
-        if let Some(tag) = tag.filter(|t| !t.is_empty()) {
-            self.shared.borrow_mut().handle_tags.insert(handle, tag);
+        {
+            let mut shared = self.shared.borrow_mut();
+            shared.pending_handles.remove(&handle);
+            if let Some(tag) = tag.filter(|t| !t.is_empty()) {
+                shared.handle_tags.insert(handle, tag);
+            }
         }
         self.sync_handle_snapshot();
     }
@@ -3304,6 +3361,7 @@ impl ScriptHost {
         let entity = self.handle_map.remove(&handle);
         {
             let mut shared = self.shared.borrow_mut();
+            shared.pending_handles.remove(&handle);
             shared.handle_tags.remove(&handle);
             if let Some(entity) = entity {
                 shared.entity_tags.remove(&entity);
@@ -3318,6 +3376,7 @@ impl ScriptHost {
             shared.entity_tags.remove(&entity);
             self.handle_map.retain(|handle, value| {
                 if *value == entity {
+                    shared.pending_handles.remove(handle);
                     shared.handle_tags.remove(handle);
                     false
                 } else {
@@ -3332,6 +3391,7 @@ impl ScriptHost {
         self.handle_map.clear();
         {
             let mut shared = self.shared.borrow_mut();
+            shared.pending_handles.clear();
             shared.handle_tags.clear();
             shared.entity_tags.clear();
         }
@@ -3471,10 +3531,6 @@ fn hash_source(source: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     source.hash(&mut hasher);
     hasher.finish()
-}
-
-fn canonical_import_root() -> PathBuf {
-    PathBuf::from(SCRIPT_IMPORT_ROOT).canonicalize().unwrap_or_else(|_| PathBuf::from(SCRIPT_IMPORT_ROOT))
 }
 
 fn parse_literal_imports(source: &str) -> Vec<String> {
@@ -4247,6 +4303,7 @@ impl ScriptPlugin {
             }
             shared.handle_nonce = nonce;
             shared.next_handle = 1;
+            shared.pending_handles.clear();
         }
     }
 
@@ -5456,24 +5513,23 @@ mod tests {
     }
 
     #[test]
-    fn deferred_spawn_handle_requires_liveness_guard() {
+    fn pending_spawn_handle_is_usable_before_materialize() {
         let mut host = ScriptHost::new("assets/scripts/main.rhai");
         let mut world = ScriptWorld::new(host.shared.clone());
         let handle_dyn = world.spawn_prefab_safe("assets/prefabs/enemy.json");
         let handle: ScriptHandle = handle_dyn.clone().try_cast::<ScriptHandle>().expect("handle");
-        assert!(!world.handle_is_alive(handle), "deferred spawn handle should not be alive yet");
+        assert!(world.handle_is_alive(handle), "pending handle should be usable immediately");
 
         let after_spawn_commands = world.state.borrow().commands.len();
         let before_invalid = world.state.borrow().invalid_handle_uses;
-        assert!(!world.set_position(handle, 1.0, 2.0), "set_position should fail on deferred handle");
+        assert!(world.set_position(handle, 1.0, 2.0), "set_position should queue for pending handle");
         {
             let state = world.state.borrow();
-            assert_eq!(state.invalid_handle_uses, before_invalid + 1);
-            assert!(state.invalid_handle_labels.contains("set_position"), "per-callsite warning recorded");
+            assert_eq!(state.invalid_handle_uses, before_invalid);
             assert_eq!(
                 state.commands.len(),
-                after_spawn_commands,
-                "no additional commands should be queued for invalid handle"
+                after_spawn_commands + 1,
+                "set_position should enqueue for pending handle"
             );
         }
 
@@ -5498,8 +5554,8 @@ mod tests {
         assert!(world.set_position(handle, 3.0, 4.0), "set_position should succeed on live handle");
         assert_eq!(
             world.state.borrow().commands.len(),
-            after_spawn_commands + 1,
-            "expected a single queued command for live handle"
+            after_spawn_commands + 2,
+            "expected a queued command for pending + live handle"
         );
     }
 
@@ -5910,7 +5966,7 @@ mod tests {
         host.force_reload(None).expect("initial load");
 
         let cache = ScriptAstCache::new(cache_dir.path().to_path_buf());
-        let cache_path = cache.file_path(&script_path);
+        let cache_path = cache.file_path(&host.script_path);
         assert!(cache_path.exists(), "cache file should be written after load");
         let bytes = std::fs::read(&cache_path).expect("read cache file");
         let cached: AstCacheFile = bincode::deserialize(&bytes).expect("deserialize cache");

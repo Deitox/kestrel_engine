@@ -9,3 +9,5 @@ crate-type = ["cdylib"]
 [dependencies]
 anyhow = "1.0"
 kestrel_engine = { path = "../.." }
+
+[workspace]

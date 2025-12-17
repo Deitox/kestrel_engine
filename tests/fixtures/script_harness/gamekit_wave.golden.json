@@ -15,7 +15,7 @@
       "commands": [
         {
           "kind": "set_position",
-          "handle": 1,
+          "handle": 4294967297,
           "position": [
             -0.5,
             -0.2
@@ -23,7 +23,7 @@
         },
         {
           "kind": "set_position",
-          "handle": 2,
+          "handle": 4294967298,
           "position": [
             -0.5,
             -0.2
@@ -31,16 +31,16 @@
         },
         {
           "kind": "despawn",
-          "handle": 2
+          "handle": 4294967298
         },
         {
           "kind": "spawn_template",
-          "handle": 1,
+          "handle": 4294967297,
           "template": "gamekit_player"
         },
         {
           "kind": "spawn_template",
-          "handle": 2,
+          "handle": 4294967298,
           "template": "gamekit_enemy_light"
         }
       ]
@@ -55,7 +55,7 @@
       "commands": [
         {
           "kind": "set_position",
-          "handle": 3,
+          "handle": 4294967299,
           "position": [
             -0.5,
             -0.2
@@ -63,11 +63,11 @@
         },
         {
           "kind": "despawn",
-          "handle": 3
+          "handle": 4294967299
         },
         {
           "kind": "spawn_template",
-          "handle": 3,
+          "handle": 4294967299,
           "template": "gamekit_enemy_light"
         }
       ]
@@ -88,7 +88,7 @@
       "commands": [
         {
           "kind": "set_position",
-          "handle": 4,
+          "handle": 4294967300,
           "position": [
             -0.5,
             -0.2
@@ -96,11 +96,11 @@
         },
         {
           "kind": "despawn",
-          "handle": 4
+          "handle": 4294967300
         },
         {
           "kind": "spawn_template",
-          "handle": 4,
+          "handle": 4294967300,
           "template": "gamekit_enemy_heavy"
         }
       ]

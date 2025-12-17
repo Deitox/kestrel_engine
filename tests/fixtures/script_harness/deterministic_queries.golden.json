@@ -13,12 +13,12 @@
         "Script init",
         "overlap:4294967297,4294967298,4294967299",
         "ray:4294967297@3.5",
-        "spawned:1,2"
+        "spawned:528280977409,528280977410"
       ],
       "commands": [
         {
           "kind": "spawn",
-          "handle": 1,
+          "handle": 528280977409,
           "atlas": "main",
           "region": "green",
           "position": [
@@ -36,7 +36,7 @@
         },
         {
           "kind": "spawn",
-          "handle": 2,
+          "handle": 528280977410,
           "atlas": "main",
           "region": "green",
           "position": [
@@ -54,7 +54,7 @@
         },
         {
           "kind": "set_position",
-          "handle": 1,
+          "handle": 528280977409,
           "position": [
             0.5,
             0.0
@@ -62,7 +62,7 @@
         },
         {
           "kind": "set_position",
-          "handle": 2,
+          "handle": 528280977410,
           "position": [
             -0.5,
             0.0

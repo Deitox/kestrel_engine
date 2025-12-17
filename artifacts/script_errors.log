@@ -6,3 +6,5 @@ caused by: Unknown operator: '?' (line 41, position 35)
 in module 'common' (line 3, position 8)
 [1764151854] Runtime error: Evaluating globals for 'assets/scripts/seeker.rhai': Syntax error: Expecting ';' to terminate this statement (line 4, position 10)
 in module 'common' (line 3, position 8)
+[1765936777] Runtime error: Compiling Rhai script 'assets/scripts/player_controller.rhai'
+caused by: Expecting ';' to terminate this statement (line 25, position 13)

@@ -266,6 +266,7 @@ pub struct App {
     config: AppConfig,
     project: Project,
     next_project: Option<Project>,
+    startup_scene_loaded: bool,
 
     scene_atlas_refs: HashSet<String>,
     persistent_atlases: HashSet<String>,
@@ -748,6 +749,7 @@ impl App {
             config,
             project,
             next_project: None,
+            startup_scene_loaded: false,
             emitter_entity,
             sprite_atlas_views: HashMap::new(),
             atlas_hot_reload,
@@ -2140,6 +2142,21 @@ impl ApplicationHandler for App {
             eprintln!("Failed to initialize sprite pipeline: {err:?}");
             self.should_close = true;
             return;
+        }
+
+        if !self.startup_scene_loaded {
+            self.startup_scene_loaded = true;
+            let startup_path = self.project.startup_scene_path().to_path_buf();
+            if startup_path.exists() {
+                let startup_scene = Project::display_path(&startup_path);
+                self.with_editor_ui_state_mut(|state| state.ui_scene_path = startup_scene.clone());
+                if let Err(err) = self.load_scene_from_path(startup_scene.as_str()) {
+                    eprintln!("[scene] Failed to load startup scene {}: {err:?}", startup_scene);
+                    self.set_ui_scene_status(format!("Startup scene load failed: {err}"));
+                } else {
+                    self.set_ui_scene_status(format!("Loaded startup scene {}", startup_scene));
+                }
+            }
         }
 
         if self.editor_shell.egui_winit.is_none() {
@@ -4324,6 +4341,7 @@ impl RuntimeHost for App {
 
 impl App {
     fn apply_script_commands(&mut self, commands: Vec<ScriptCommand>) {
+        let mut deferred = Vec::new();
         for cmd in commands {
             match cmd {
                 ScriptCommand::Spawn { handle, atlas, region, position, scale, velocity } => {
@@ -4353,7 +4371,7 @@ impl App {
                             eprintln!("[script] set_velocity failed for handle {handle}");
                         }
                     } else {
-                        eprintln!("[script] set_velocity unknown handle {handle}");
+                        deferred.push(ScriptCommand::SetVelocity { handle, velocity });
                     }
                 }
                 ScriptCommand::SetPosition { handle, position } => {
@@ -4362,7 +4380,7 @@ impl App {
                             eprintln!("[script] set_position failed for handle {handle}");
                         }
                     } else {
-                        eprintln!("[script] set_position unknown handle {handle}");
+                        deferred.push(ScriptCommand::SetPosition { handle, position });
                     }
                 }
                 ScriptCommand::SetRotation { handle, rotation } => {
@@ -4371,7 +4389,7 @@ impl App {
                             eprintln!("[script] set_rotation failed for handle {handle}");
                         }
                     } else {
-                        eprintln!("[script] set_rotation unknown handle {handle}");
+                        deferred.push(ScriptCommand::SetRotation { handle, rotation });
                     }
                 }
                 ScriptCommand::SetScale { handle, scale } => {
@@ -4380,7 +4398,7 @@ impl App {
                             eprintln!("[script] set_scale failed for handle {handle}");
                         }
                     } else {
-                        eprintln!("[script] set_scale unknown handle {handle}");
+                        deferred.push(ScriptCommand::SetScale { handle, scale });
                     }
                 }
                 ScriptCommand::SetTint { handle, tint } => {
@@ -4389,7 +4407,7 @@ impl App {
                             eprintln!("[script] set_tint failed for handle {handle}");
                         }
                     } else {
-                        eprintln!("[script] set_tint unknown handle {handle}");
+                        deferred.push(ScriptCommand::SetTint { handle, tint });
                     }
                 }
                 ScriptCommand::SetSpriteRegion { handle, region } => {
@@ -4398,7 +4416,7 @@ impl App {
                             eprintln!("[script] set_sprite_region failed for handle {handle}");
                         }
                     } else {
-                        eprintln!("[script] set_sprite_region unknown handle {handle}");
+                        deferred.push(ScriptCommand::SetSpriteRegion { handle, region });
                     }
                 }
                 ScriptCommand::Despawn { handle } => {
@@ -4409,7 +4427,7 @@ impl App {
                             eprintln!("[script] despawn failed for handle {handle}");
                         }
                     } else {
-                        eprintln!("[script] despawn unknown handle {handle}");
+                        deferred.push(ScriptCommand::Despawn { handle });
                     }
                 }
                 ScriptCommand::SpawnPrefab { handle, path, tag } => {
@@ -4631,6 +4649,77 @@ impl App {
                         eprintln!("[script] entity_despawn failed for entity {:?}", entity);
                     }
                 }
+            }
+        }
+
+        for cmd in deferred {
+            match cmd {
+                ScriptCommand::SetVelocity { handle, velocity } => {
+                    if let Some(entity) = self.resolve_script_handle(handle) {
+                        if !self.ecs.set_velocity(entity, velocity) {
+                            eprintln!("[script] set_velocity failed for handle {handle}");
+                        }
+                    } else {
+                        eprintln!("[script] set_velocity unknown handle {handle}");
+                    }
+                }
+                ScriptCommand::SetPosition { handle, position } => {
+                    if let Some(entity) = self.resolve_script_handle(handle) {
+                        if !self.ecs.set_translation(entity, position) {
+                            eprintln!("[script] set_position failed for handle {handle}");
+                        }
+                    } else {
+                        eprintln!("[script] set_position unknown handle {handle}");
+                    }
+                }
+                ScriptCommand::SetRotation { handle, rotation } => {
+                    if let Some(entity) = self.resolve_script_handle(handle) {
+                        if !self.ecs.set_rotation(entity, rotation) {
+                            eprintln!("[script] set_rotation failed for handle {handle}");
+                        }
+                    } else {
+                        eprintln!("[script] set_rotation unknown handle {handle}");
+                    }
+                }
+                ScriptCommand::SetScale { handle, scale } => {
+                    if let Some(entity) = self.resolve_script_handle(handle) {
+                        if !self.ecs.set_scale(entity, scale) {
+                            eprintln!("[script] set_scale failed for handle {handle}");
+                        }
+                    } else {
+                        eprintln!("[script] set_scale unknown handle {handle}");
+                    }
+                }
+                ScriptCommand::SetTint { handle, tint } => {
+                    if let Some(entity) = self.resolve_script_handle(handle) {
+                        if !self.ecs.set_tint(entity, tint) {
+                            eprintln!("[script] set_tint failed for handle {handle}");
+                        }
+                    } else {
+                        eprintln!("[script] set_tint unknown handle {handle}");
+                    }
+                }
+                ScriptCommand::SetSpriteRegion { handle, region } => {
+                    if let Some(entity) = self.resolve_script_handle(handle) {
+                        if !self.ecs.set_sprite_region(entity, &self.assets, &region) {
+                            eprintln!("[script] set_sprite_region failed for handle {handle}");
+                        }
+                    } else {
+                        eprintln!("[script] set_sprite_region unknown handle {handle}");
+                    }
+                }
+                ScriptCommand::Despawn { handle } => {
+                    if let Some(entity) = self.resolve_script_handle(handle) {
+                        if self.ecs.despawn_entity(entity) {
+                            self.forget_script_handle(handle);
+                        } else {
+                            eprintln!("[script] despawn failed for handle {handle}");
+                        }
+                    } else {
+                        eprintln!("[script] despawn unknown handle {handle}");
+                    }
+                }
+                _ => {}
             }
         }
     }

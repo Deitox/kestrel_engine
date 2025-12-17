@@ -587,6 +587,7 @@ mod tests {
     use bevy_ecs::prelude::Entity;
     use glam::{Vec2, Vec4};
     use std::collections::BTreeSet;
+    use std::path::PathBuf;
     use tempfile::NamedTempFile;
 
     #[derive(Default)]
@@ -658,7 +659,13 @@ mod tests {
         );
 
         let mut assets = AssetManager::new();
-        assets.retain_atlas("main", Some("assets/images/atlas.json")).expect("retain main atlas");
+        let atlas_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("assets")
+            .join("images")
+            .join("atlas.json");
+        let atlas_path = atlas_path.to_string_lossy().replace('\\', "/");
+        assets.retain_atlas("main", Some(&atlas_path)).expect("retain main atlas");
         let scene = world.export_scene(&assets);
         let temp = NamedTempFile::new().expect("temp scene");
         scene.save_to_path(temp.path()).expect("save headless scene");

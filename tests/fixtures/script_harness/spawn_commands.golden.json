@@ -66,12 +66,12 @@
         },
         {
           "kind": "spawn_prefab",
-          "handle": 2,
+          "handle": 12884901890,
           "prefab": "assets/prefabs/example.json"
         },
         {
           "kind": "spawn_template",
-          "handle": 1,
+          "handle": 12884901889,
           "template": "enemy"
         }
       ]

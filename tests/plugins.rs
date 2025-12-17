@@ -22,11 +22,16 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use tempfile::tempdir;
 
 fn push_event_bridge(ecs: &mut EcsWorld, event: GameEvent) {
     ecs.push_event(event);
+}
+
+fn isolated_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(())).lock().expect("isolated test lock")
 }
 
 #[derive(Default)]
@@ -479,6 +484,7 @@ fn manifest_builtin_toggle_updates_disable_list() {
 
 #[test]
 fn isolated_plugin_emits_script_message_via_rpc() {
+    let _guard = isolated_test_guard();
     let plugin_path = build_example_dynamic_plugin();
     let manifest_dir = tempdir().expect("temp manifest dir");
     let manifest_path = manifest_dir.path().join("plugins.json");
@@ -625,6 +631,7 @@ fn capability_violations_emit_events() {
 
 #[test]
 fn isolated_asset_readback_roundtrip() {
+    let _guard = isolated_test_guard();
     let plugin_path = build_example_dynamic_plugin();
     let manifest_dir = tempdir().expect("temp manifest dir");
     let manifest_path = manifest_dir.path().join("plugins.json");
@@ -698,6 +705,7 @@ fn isolated_asset_readback_roundtrip() {
 
 #[test]
 fn isolated_asset_readback_budget_is_enforced() {
+    let _guard = isolated_test_guard();
     let plugin_path = build_example_dynamic_plugin();
     let manifest_dir = tempdir().expect("temp manifest dir");
     let manifest_path = manifest_dir.path().join("plugins.json");
@@ -772,6 +780,7 @@ fn isolated_asset_readback_budget_is_enforced() {
 
 #[test]
 fn isolated_plugin_telemetry_pipeline() {
+    let _guard = isolated_test_guard();
     let plugin_path = build_example_dynamic_plugin();
     let manifest_dir = tempdir().expect("temp manifest dir");
     let manifest_path = manifest_dir.path().join("plugins.json");
@@ -873,6 +882,7 @@ fn isolated_plugin_telemetry_pipeline() {
 
 #[test]
 fn isolated_plugin_reload_cycle_does_not_accumulate_state() {
+    let _guard = isolated_test_guard();
     let plugin_path = build_example_dynamic_plugin();
     let manifest_dir = tempdir().expect("temp manifest dir");
     let manifest_path = manifest_dir.path().join("plugins.json");
@@ -1146,18 +1156,23 @@ fn plugin_panic_emits_watchdog_event() {
 }
 
 fn build_example_dynamic_plugin() -> PathBuf {
-    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let plugin_dir = project_root.join("plugins").join("example_dynamic");
-    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
-    let artifact = plugin_dir.join("target").join("debug").join(library_file_name("example_dynamic"));
-    let status = Command::new(&cargo)
-        .args(["build", "--offline"])
-        .current_dir(&plugin_dir)
-        .status()
-        .expect("cargo build example_dynamic");
-    assert!(status.success(), "building example_dynamic plugin failed");
-    assert!(artifact.exists(), "example_dynamic plugin artifact missing at {}", artifact.display());
-    artifact
+    static ARTIFACT: OnceLock<PathBuf> = OnceLock::new();
+    ARTIFACT
+        .get_or_init(|| {
+            let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            let plugin_dir = project_root.join("plugins").join("example_dynamic");
+            let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+            let artifact = plugin_dir.join("target").join("debug").join(library_file_name("example_dynamic"));
+            let status = Command::new(&cargo)
+                .args(["build", "--offline"])
+                .current_dir(&plugin_dir)
+                .status()
+                .expect("cargo build example_dynamic");
+            assert!(status.success(), "building example_dynamic plugin failed");
+            assert!(artifact.exists(), "example_dynamic plugin artifact missing at {}", artifact.display());
+            artifact
+        })
+        .clone()
 }
 
 fn library_file_name(name: &str) -> String {

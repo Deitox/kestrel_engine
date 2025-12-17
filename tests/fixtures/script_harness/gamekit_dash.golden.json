@@ -15,15 +15,15 @@
       "commands": [
         {
           "kind": "set_velocity",
-          "handle": 2,
+          "handle": 180388626434,
           "velocity": [
-            1.2521981,
-            -0.62609905
+            1.3963407,
+            -0.10115681
           ]
         },
         {
           "kind": "set_position",
-          "handle": 1,
+          "handle": 180388626433,
           "position": [
             0.2,
             -0.1
@@ -31,24 +31,24 @@
         },
         {
           "kind": "set_position",
-          "handle": 2,
+          "handle": 180388626434,
           "position": [
-            0.0,
-            0.0
+            0.09002292,
+            -0.0920328
           ]
         },
         {
           "kind": "despawn",
-          "handle": 2
+          "handle": 180388626434
         },
         {
           "kind": "spawn_template",
-          "handle": 1,
+          "handle": 180388626433,
           "template": "gamekit_player"
         },
         {
           "kind": "spawn_template",
-          "handle": 2,
+          "handle": 180388626434,
           "template": "gamekit_enemy_dash"
         }
       ]
@@ -69,27 +69,27 @@
       "commands": [
         {
           "kind": "set_velocity",
-          "handle": 3,
+          "handle": 180388626435,
           "velocity": [
-            1.2521981,
-            -0.62609905
+            1.3801885,
+            -0.23469089
           ]
         },
         {
           "kind": "set_position",
-          "handle": 3,
+          "handle": 180388626435,
           "position": [
-            0.0,
-            0.0
+            0.12462149,
+            -0.08718244
           ]
         },
         {
           "kind": "despawn",
-          "handle": 3
+          "handle": 180388626435
         },
         {
           "kind": "spawn_template",
-          "handle": 3,
+          "handle": 180388626435,
           "template": "gamekit_enemy_dash"
         }
       ]

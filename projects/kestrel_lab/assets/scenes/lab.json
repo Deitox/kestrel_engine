@@ -1,0 +1,189 @@
+{
+  "metadata": {
+    "viewport": "Ortho2D",
+    "camera2d": {
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "zoom": 1.0
+    },
+    "camera_follow_entity": "player"
+  },
+  "dependencies": {
+    "atlases": [],
+    "clips": [],
+    "skeletons": [],
+    "meshes": [],
+    "materials": [],
+    "environments": []
+  },
+  "entities": [
+    {
+      "id": "player",
+      "name": "player",
+      "transform": {
+        "translation": {
+          "x": 0.0,
+          "y": -0.2
+        },
+        "rotation": 0.0,
+        "scale": {
+          "x": 0.4,
+          "y": 0.4
+        }
+      },
+      "script": {
+        "script_path": "assets/scripts/player_controller.rhai"
+      },
+      "sprite": {
+        "atlas": "main",
+        "region": "green"
+      },
+      "velocity": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "mass": 1.0,
+      "collider": {
+        "half_extents": {
+          "x": 0.2,
+          "y": 0.2
+        }
+      }
+    },
+    {
+      "id": "player_emitter",
+      "name": "player_emitter",
+      "transform": {
+        "translation": {
+          "x": 0.0,
+          "y": 0.0
+        },
+        "rotation": 0.0,
+        "scale": {
+          "x": 0.15,
+          "y": 0.15
+        }
+      },
+      "sprite": {
+        "atlas": "main",
+        "region": "redorb"
+      },
+      "particle_emitter": {
+        "rate": 22.0,
+        "spread": 3.1415927,
+        "speed": 0.9,
+        "lifetime": 0.9,
+        "start_color": {
+          "r": 1.0,
+          "g": 0.8,
+          "b": 0.2,
+          "a": 0.8
+        },
+        "end_color": {
+          "r": 1.0,
+          "g": 0.2,
+          "b": 0.2,
+          "a": 0.0
+        },
+        "start_size": 0.12,
+        "end_size": 0.04,
+        "atlas": "main",
+        "region": "redorb"
+      },
+      "parent_id": "player"
+    },
+    {
+      "id": "crate_1",
+      "name": "crate_1",
+      "transform": {
+        "translation": {
+          "x": -0.55,
+          "y": -0.4
+        },
+        "rotation": 0.0,
+        "scale": {
+          "x": 0.5,
+          "y": 0.5
+        }
+      },
+      "sprite": {
+        "atlas": "main",
+        "region": "checker"
+      },
+      "velocity": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "mass": 4.0,
+      "collider": {
+        "half_extents": {
+          "x": 0.25,
+          "y": 0.25
+        }
+      }
+    },
+    {
+      "id": "crate_2",
+      "name": "crate_2",
+      "transform": {
+        "translation": {
+          "x": 0.55,
+          "y": -0.4
+        },
+        "rotation": 0.0,
+        "scale": {
+          "x": 0.5,
+          "y": 0.5
+        }
+      },
+      "sprite": {
+        "atlas": "main",
+        "region": "checker"
+      },
+      "velocity": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "mass": 4.0,
+      "collider": {
+        "half_extents": {
+          "x": 0.25,
+          "y": 0.25
+        }
+      }
+    },
+    {
+      "id": "crate_3",
+      "name": "crate_3",
+      "transform": {
+        "translation": {
+          "x": 0.0,
+          "y": 0.25
+        },
+        "rotation": 0.0,
+        "scale": {
+          "x": 0.35,
+          "y": 0.35
+        }
+      },
+      "sprite": {
+        "atlas": "main",
+        "region": "checker"
+      },
+      "velocity": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "mass": 1.5,
+      "collider": {
+        "half_extents": {
+          "x": 0.18,
+          "y": 0.18
+        }
+      }
+    }
+  ]
+}
+

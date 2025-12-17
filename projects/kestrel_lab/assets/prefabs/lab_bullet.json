@@ -1,0 +1,48 @@
+{
+  "metadata": {
+    "viewport": "Ortho2D"
+  },
+  "dependencies": {
+    "atlases": [],
+    "clips": [],
+    "skeletons": [],
+    "meshes": [],
+    "materials": [],
+    "environments": []
+  },
+  "entities": [
+    {
+      "name": "lab_bullet",
+      "transform": {
+        "translation": {
+          "x": 0.0,
+          "y": 0.0
+        },
+        "rotation": 0.0,
+        "scale": {
+          "x": 0.15,
+          "y": 0.15
+        }
+      },
+      "script": {
+        "script_path": "assets/scripts/bullet.rhai"
+      },
+      "sprite": {
+        "atlas": "main",
+        "region": "redorb"
+      },
+      "velocity": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "mass": 0.2,
+      "collider": {
+        "half_extents": {
+          "x": 0.075,
+          "y": 0.075
+        }
+      }
+    }
+  ]
+}
+
