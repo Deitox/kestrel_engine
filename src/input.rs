@@ -13,6 +13,7 @@ pub struct Input {
     space_pressed: bool,
     b_pressed: bool,
     mesh_toggle_pressed: bool,
+    camera_mode_toggle_pressed: bool,
     delete_selection_pressed: bool,
     forward_held: bool,
     backward_held: bool,
@@ -51,6 +52,7 @@ impl Input {
             space_pressed: false,
             b_pressed: false,
             mesh_toggle_pressed: false,
+            camera_mode_toggle_pressed: false,
             delete_selection_pressed: false,
             forward_held: false,
             backward_held: false,
@@ -111,6 +113,7 @@ impl Input {
         self.wheel = 0.0;
         self.left_clicked = false;
         self.mesh_toggle_pressed = false;
+        self.camera_mode_toggle_pressed = false;
         self.frustum_lock_toggle = false;
         self.delete_selection_pressed = false;
         self.cursor_world = None;
@@ -141,6 +144,12 @@ impl Input {
     pub fn take_mesh_toggle(&mut self) -> bool {
         let v = self.mesh_toggle_pressed;
         self.mesh_toggle_pressed = false;
+        v
+    }
+
+    pub fn take_camera_mode_toggle(&mut self) -> bool {
+        let v = self.camera_mode_toggle_pressed;
+        self.camera_mode_toggle_pressed = false;
         v
     }
 
@@ -238,6 +247,11 @@ impl Input {
                     self.mesh_toggle_pressed = true;
                 }
             }
+            InputAction::CameraModeToggle => {
+                if pressed {
+                    self.camera_mode_toggle_pressed = true;
+                }
+            }
             InputAction::DeleteSelection => {
                 if pressed {
                     self.delete_selection_pressed = true;
@@ -319,6 +333,7 @@ impl InputBindings {
         map.insert(SpawnBurstSmall, vec![InputKeyBinding::named(NamedKeyCode::Space)]);
         map.insert(SpawnBurstLarge, vec![InputKeyBinding::character("b")]);
         map.insert(MeshToggle, vec![InputKeyBinding::character("m")]);
+        map.insert(CameraModeToggle, vec![InputKeyBinding::character("v")]);
         map.insert(DeleteSelection, vec![InputKeyBinding::named(NamedKeyCode::Delete)]);
         map.insert(FrustumLockToggle, vec![InputKeyBinding::character("l")]);
         map.insert(FreeflyForward, vec![InputKeyBinding::character("w")]);
@@ -435,6 +450,7 @@ enum InputAction {
     SpawnBurstSmall,
     SpawnBurstLarge,
     MeshToggle,
+    CameraModeToggle,
     DeleteSelection,
     FrustumLockToggle,
     FreeflyForward,
@@ -455,6 +471,7 @@ impl InputAction {
             "spawn_burst_small" => Some(Self::SpawnBurstSmall),
             "spawn_burst_large" => Some(Self::SpawnBurstLarge),
             "mesh_toggle" => Some(Self::MeshToggle),
+            "camera_mode_toggle" => Some(Self::CameraModeToggle),
             "delete_selection" => Some(Self::DeleteSelection),
             "frustum_lock_toggle" => Some(Self::FrustumLockToggle),
             "freefly_forward" => Some(Self::FreeflyForward),

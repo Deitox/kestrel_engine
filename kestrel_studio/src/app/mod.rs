@@ -262,6 +262,7 @@ pub struct App {
     pub(crate) camera: Camera2D,
     pub(crate) viewport_camera_mode: ViewportCameraMode,
     camera_follow_target: Option<SceneEntityId>,
+    open_world_lab: Option<OpenWorldLabState>,
 
     // Configuration
     config: AppConfig,
@@ -316,6 +317,138 @@ pub struct App {
 struct PlaySessionSnapshot {
     scene: Scene,
     selected_scene_id: Option<SceneEntityId>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OpenWorldCameraMode {
+    FirstPerson,
+    ThirdPerson,
+}
+
+struct OpenWorldLabState {
+    camera_mode: OpenWorldCameraMode,
+    player_entity: Entity,
+    chunk_size: f32,
+    chunk_radius: i32,
+    chunks: HashMap<(i32, i32), Vec<Entity>>,
+}
+
+impl OpenWorldLabState {
+    fn new(player_entity: Entity) -> Self {
+        Self {
+            camera_mode: OpenWorldCameraMode::ThirdPerson,
+            player_entity,
+            chunk_size: 18.0,
+            chunk_radius: 2,
+            chunks: HashMap::new(),
+        }
+    }
+
+    fn toggle_camera_mode(&mut self) {
+        self.camera_mode = match self.camera_mode {
+            OpenWorldCameraMode::FirstPerson => OpenWorldCameraMode::ThirdPerson,
+            OpenWorldCameraMode::ThirdPerson => OpenWorldCameraMode::FirstPerson,
+        };
+    }
+
+    fn sync_chunks(&mut self, ecs: &mut EcsWorld, center: Vec3) {
+        let chunk_size = self.chunk_size.max(0.1);
+        let cx = (center.x / chunk_size).floor() as i32;
+        let cz = (center.z / chunk_size).floor() as i32;
+        let radius = self.chunk_radius.max(0);
+
+        let mut desired = HashSet::new();
+        for dz in -radius..=radius {
+            for dx in -radius..=radius {
+                desired.insert((cx + dx, cz + dz));
+            }
+        }
+
+        for coord in desired.iter().copied() {
+            if self.chunks.contains_key(&coord) {
+                continue;
+            }
+            let entities = self.spawn_chunk(ecs, coord.0, coord.1);
+            self.chunks.insert(coord, entities);
+        }
+
+        let to_remove: Vec<(i32, i32)> = self.chunks.keys().copied().filter(|c| !desired.contains(c)).collect();
+        for coord in to_remove {
+            if let Some(entities) = self.chunks.remove(&coord) {
+                for entity in entities {
+                    ecs.despawn_entity(entity);
+                }
+            }
+        }
+    }
+
+    fn spawn_chunk(&self, ecs: &mut EcsWorld, chunk_x: i32, chunk_z: i32) -> Vec<Entity> {
+        let chunk_size = self.chunk_size.max(0.1);
+        let half = chunk_size * 0.5;
+        let center = Vec3::new(
+            (chunk_x as f32 + 0.5) * chunk_size,
+            0.0,
+            (chunk_z as f32 + 0.5) * chunk_size,
+        );
+        let ground_thickness = 0.25;
+        let ground = ecs.spawn_mesh_entity(
+            "cube",
+            Vec3::new(center.x, -ground_thickness * 0.5, center.z),
+            Vec3::new(chunk_size, ground_thickness, chunk_size),
+        );
+        let tint_selector = ((chunk_x & 1) ^ (chunk_z & 1)) != 0;
+        let ground_color = if tint_selector {
+            Vec3::new(0.10, 0.12, 0.12)
+        } else {
+            Vec3::new(0.12, 0.14, 0.10)
+        };
+        ecs.set_mesh_material_params(ground, ground_color, 0.0, 1.0, None);
+        ecs.set_mesh_shadow_flags(ground, false, true);
+
+        let mut entities = vec![ground];
+        let mut seed = Self::chunk_seed(chunk_x, chunk_z);
+        let prop_count = 2 + (Self::next_rand(&mut seed) * 5.0) as usize;
+        for _ in 0..prop_count {
+            let ox = (Self::next_rand(&mut seed) * 2.0 - 1.0) * half * 0.85;
+            let oz = (Self::next_rand(&mut seed) * 2.0 - 1.0) * half * 0.85;
+            let height = 0.8 + Self::next_rand(&mut seed) * 2.2;
+            let radius = 0.25 + Self::next_rand(&mut seed) * 0.55;
+            let scale = Vec3::new(radius, height, radius);
+            let y = height * 0.5;
+            let entity = ecs.spawn_mesh_entity("cube", Vec3::new(center.x + ox, y, center.z + oz), scale);
+            let rock = Self::next_rand(&mut seed) > 0.65;
+            let base_color = if rock {
+                Vec3::new(0.38, 0.38, 0.42)
+            } else {
+                Vec3::new(0.16, 0.42, 0.18)
+            };
+            ecs.set_mesh_material_params(entity, base_color, 0.0, 0.95, None);
+            ecs.set_mesh_shadow_flags(entity, true, true);
+            entities.push(entity);
+        }
+        entities
+    }
+
+    fn chunk_seed(chunk_x: i32, chunk_z: i32) -> u32 {
+        let x = chunk_x as u32;
+        let z = chunk_z as u32;
+        let mixed = x.wrapping_mul(0x9E37_79B1) ^ z.wrapping_mul(0x85EB_CA6B) ^ 0xC2B2_AE35;
+        Self::hash_u32(mixed)
+    }
+
+    fn next_rand(seed: &mut u32) -> f32 {
+        *seed = Self::hash_u32(*seed);
+        (*seed as f32) / (u32::MAX as f32)
+    }
+
+    fn hash_u32(mut v: u32) -> u32 {
+        v ^= v >> 16;
+        v = v.wrapping_mul(0x7FEB_352D);
+        v ^= v >> 15;
+        v = v.wrapping_mul(0x846C_A68B);
+        v ^= v >> 16;
+        v
+    }
 }
 
 impl App {
@@ -385,6 +518,144 @@ impl App {
     fn set_play_state(&mut self, state: PlayState) {
         self.play_state = state;
         self.sync_play_state_flags();
+    }
+
+    fn is_open_world_lab(&self) -> bool {
+        self.project.id() == Some("kestrel_open_world_lab")
+    }
+
+    fn start_open_world_lab(&mut self) {
+        if !self.is_open_world_lab() || !matches!(self.play_state, PlayState::Playing { .. }) {
+            return;
+        }
+        if self.open_world_lab.is_some() {
+            return;
+        }
+
+        let player_entity = self
+            .ecs
+            .find_entity_by_scene_id("player")
+            .unwrap_or_else(|| self.ecs.spawn_mesh_entity("cube", Vec3::new(0.0, 1.0, 0.0), Vec3::ONE));
+        let mut state = OpenWorldLabState::new(player_entity);
+        let player_pos = self
+            .ecs
+            .entity_info(player_entity)
+            .and_then(|info| info.mesh_transform.map(|tx| tx.translation))
+            .unwrap_or(Vec3::new(0.0, 1.0, 0.0));
+
+        self.with_plugins(|plugins, ctx| {
+            if let Some(plugin) = plugins.get_mut::<MeshPreviewPlugin>() {
+                if let Err(err) = plugin.set_mesh_control_mode(ctx, MeshControlMode::Orbit) {
+                    eprintln!("[open_world_lab] set_mesh_control_mode(Orbit) failed: {err:?}");
+                }
+                plugin.set_orbit_target(player_pos);
+            }
+        });
+        state.sync_chunks(&mut self.ecs, player_pos);
+        self.open_world_lab = Some(state);
+    }
+
+    fn update_open_world_lab(&mut self, dt: f32) {
+        if !self.is_open_world_lab() || !matches!(self.play_state, PlayState::Playing { .. }) || dt <= 0.0 {
+            return;
+        }
+
+        let toggle_camera = self.input.take_camera_mode_toggle();
+
+        let Some(mut player_entity) = self.open_world_lab.as_ref().map(|state| state.player_entity) else {
+            return;
+        };
+        if !self.ecs.entity_exists(player_entity) {
+            player_entity = match self.ecs.find_entity_by_scene_id("player") {
+                Some(entity) => {
+                    if let Some(state) = self.open_world_lab.as_mut() {
+                        state.player_entity = entity;
+                    }
+                    entity
+                }
+                None => return,
+            };
+        }
+
+        if toggle_camera {
+            if let Some(state) = self.open_world_lab.as_mut() {
+                state.toggle_camera_mode();
+            }
+        }
+
+        let Some(camera_mode) = self.open_world_lab.as_ref().map(|state| state.camera_mode) else {
+            return;
+        };
+
+        let mesh_camera_pos = self.mesh_preview_plugin().map(|plugin| plugin.mesh_camera().position);
+        let camera_forward = self
+            .mesh_preview_plugin()
+            .map(|plugin| plugin.mesh_camera_forward())
+            .unwrap_or(Vec3::Z);
+        let forward_flat = Vec3::new(camera_forward.x, 0.0, camera_forward.z).normalize_or_zero();
+        let right_flat = forward_flat.cross(Vec3::Y).normalize_or_zero();
+
+        let mut player_pos = self
+            .ecs
+            .entity_info(player_entity)
+            .and_then(|info| info.mesh_transform.map(|tx| tx.translation))
+            .unwrap_or(Vec3::new(0.0, 1.0, 0.0));
+
+        match camera_mode {
+            OpenWorldCameraMode::ThirdPerson => {
+                let mut move_dir = Vec3::ZERO;
+                if self.input.freefly_forward() {
+                    move_dir += forward_flat;
+                }
+                if self.input.freefly_backward() {
+                    move_dir -= forward_flat;
+                }
+                if self.input.freefly_right() {
+                    move_dir += right_flat;
+                }
+                if self.input.freefly_left() {
+                    move_dir -= right_flat;
+                }
+
+                if move_dir.length_squared() > 1e-6 {
+                    let speed = if self.input.shift_held() { 7.5 } else { 4.0 };
+                    player_pos += move_dir.normalize_or_zero() * speed * dt;
+                    self.ecs.set_mesh_translation(player_entity, player_pos);
+                }
+            }
+            OpenWorldCameraMode::FirstPerson => {
+                if let Some(cam_pos) = mesh_camera_pos {
+                    player_pos = cam_pos;
+                    self.ecs.set_mesh_translation(player_entity, player_pos);
+                }
+            }
+        }
+
+        let desired_mode = match camera_mode {
+            OpenWorldCameraMode::FirstPerson => MeshControlMode::Freefly,
+            OpenWorldCameraMode::ThirdPerson => MeshControlMode::Orbit,
+        };
+        self.with_plugins(|plugins, ctx| {
+            if let Some(plugin) = plugins.get_mut::<MeshPreviewPlugin>() {
+                if plugin.mesh_control_mode() != desired_mode {
+                    if let Err(err) = plugin.set_mesh_control_mode(ctx, desired_mode) {
+                        eprintln!("[open_world_lab] set_mesh_control_mode failed: {err:?}");
+                    }
+                }
+                match camera_mode {
+                    OpenWorldCameraMode::ThirdPerson => {
+                        plugin.set_orbit_target(player_pos);
+                    }
+                    OpenWorldCameraMode::FirstPerson => {
+                        plugin.teleport_freefly(player_pos);
+                    }
+                }
+            }
+        });
+
+        if let Some(state) = self.open_world_lab.as_mut() {
+            state.sync_chunks(&mut self.ecs, player_pos);
+        }
     }
 
     fn reload_dynamic_plugins(&mut self) {
@@ -744,6 +1015,7 @@ impl App {
             camera,
             viewport_camera_mode: ViewportCameraMode::default(),
             camera_follow_target: None,
+            open_world_lab: None,
             scene_atlas_refs: HashSet::new(),
             persistent_atlases: HashSet::new(),
             scene_clip_refs,
@@ -2611,6 +2883,7 @@ impl ApplicationHandler for App {
         let update_start = Instant::now();
         self.ecs.update(sim_dt);
         update_time_ms = update_start.elapsed().as_secs_f32() * 1000.0;
+        self.update_open_world_lab(dt);
         if self.camera_follow_target.is_some() && !self.refresh_camera_follow() {
             self.camera_follow_target = None;
         }
@@ -2692,23 +2965,25 @@ impl ApplicationHandler for App {
         #[allow(clippy::type_complexity)]
         let mut mesh_draw_infos: Vec<(String, Mat4, MeshLightingInfo, String, Option<Arc<[Mat4]>>)> =
             Vec::new();
-        if let Some(plugin) = self.mesh_preview_plugin() {
-            if plugin.mesh_control_mode() != MeshControlMode::Disabled {
-                let preview_key = plugin.preview_mesh_key().to_string();
-                let preview_model = *plugin.mesh_model();
-                match self.mesh_registry.ensure_gpu(&preview_key, &mut self.renderer) {
-                    Ok(_) => {
-                        let material_key = self.resolve_material_for_mesh(&preview_key, None);
-                        mesh_draw_infos.push((
-                            preview_key,
-                            preview_model,
-                            MeshLightingInfo::default(),
-                            material_key,
-                            None,
-                        ));
-                    }
-                    Err(err) => {
-                        self.set_mesh_status(format!("Mesh upload failed: {err}"));
+        if matches!(self.play_state, PlayState::Editing) {
+            if let Some(plugin) = self.mesh_preview_plugin() {
+                if plugin.mesh_control_mode() != MeshControlMode::Disabled {
+                    let preview_key = plugin.preview_mesh_key().to_string();
+                    let preview_model = *plugin.mesh_model();
+                    match self.mesh_registry.ensure_gpu(&preview_key, &mut self.renderer) {
+                        Ok(_) => {
+                            let material_key = self.resolve_material_for_mesh(&preview_key, None);
+                            mesh_draw_infos.push((
+                                preview_key,
+                                preview_model,
+                                MeshLightingInfo::default(),
+                                material_key,
+                                None,
+                            ));
+                        }
+                        Err(err) => {
+                            self.set_mesh_status(format!("Mesh upload failed: {err}"));
+                        }
                     }
                 }
             }
@@ -4399,10 +4674,12 @@ impl RuntimeHost for App {
         });
         self.step_pending = false;
         self.set_play_state(PlayState::Playing { paused: false });
+        self.start_open_world_lab();
     }
 
     fn exit_play_mode(&mut self) {
         self.step_pending = false;
+        self.open_world_lab = None;
         if matches!(self.play_state, PlayState::Playing { .. }) {
             if let Some(plugin) = self.script_plugin_mut() {
                 if let Err(err) = plugin.reset_session() {

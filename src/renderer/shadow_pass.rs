@@ -235,7 +235,8 @@ impl ShadowPass {
                 let draw_uniform = ShadowDrawUniform {
                     model: draw.model.to_cols_array_2d(),
                     joint_count: joint_count as u32,
-                    _padding: [0; 3],
+                    _pad0: [0; 3],
+                    _pad1: [0; 4],
                 };
                 params.queue.write_buffer(&draw_buffer, 0, bytemuck::bytes_of(&draw_uniform));
                 pass.set_bind_group(1, &draw_bg, &[]);
@@ -703,5 +704,8 @@ struct ShadowUniform {
 struct ShadowDrawUniform {
     model: [[f32; 4]; 4],
     joint_count: u32,
-    _padding: [u32; 3],
+    _pad0: [u32; 3],
+    _pad1: [u32; 4],
 }
+
+const _: [(); 96] = [(); std::mem::size_of::<ShadowDrawUniform>()];

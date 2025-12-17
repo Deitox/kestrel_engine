@@ -1,0 +1,33 @@
+{
+  "name": "Kestrel Open World Lab",
+  "id": "kestrel_open_world_lab",
+  "assets": "assets",
+  "config": {
+    "app": "config/app.json",
+    "plugins": "config/plugins.json",
+    "input": "config/input.json"
+  },
+  "startup_scene": "assets/scenes/open_world.json",
+  "prefabs": "assets/prefabs",
+  "environments": "assets/environments",
+  "scripts_entry": "assets/scripts/main.rhai",
+  "main_atlas": "../../assets/images/atlas.json",
+  "plugins": [],
+  "build": {
+    "targets": [
+      {
+        "name": "windows-x64-debug",
+        "triple": "x86_64-pc-windows-msvc",
+        "profile": "debug",
+        "output": "build/debug"
+      },
+      {
+        "name": "linux-x64-release",
+        "triple": "x86_64-unknown-linux-gnu",
+        "profile": "release",
+        "output": "build/release"
+      }
+    ],
+    "default_target": "windows-x64-debug"
+  }
+}

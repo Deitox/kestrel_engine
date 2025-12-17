@@ -1,0 +1,136 @@
+{
+  "metadata": {
+    "viewport": "Perspective3D",
+    "camera2d": {
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "zoom": 1.0
+    },
+    "preview_camera": {
+      "mode": "Orbit",
+      "orbit": {
+        "target": {
+          "x": 0.0,
+          "y": 1.0,
+          "z": 0.0
+        },
+        "radius": 6.5,
+        "yaw": 3.1415927,
+        "pitch": 0.55
+      },
+      "freefly": {
+        "position": {
+          "x": 0.0,
+          "y": 2.0,
+          "z": -6.5
+        },
+        "yaw": 0.0,
+        "pitch": 0.0,
+        "roll": 0.0,
+        "speed": 6.0
+      },
+      "frustum_lock": false,
+      "frustum_focus": {
+        "x": 0.0,
+        "y": 1.0,
+        "z": 0.0
+      },
+      "frustum_distance": 6.5
+    },
+    "lighting": {
+      "direction": {
+        "x": 0.41646338,
+        "y": 0.83292675,
+        "z": 0.36440545
+      },
+      "color": {
+        "x": 1.05,
+        "y": 0.98,
+        "z": 0.92
+      },
+      "ambient": {
+        "x": 0.03,
+        "y": 0.03,
+        "z": 0.03
+      },
+      "exposure": 1.0,
+      "shadow": {
+        "distance": 35.0,
+        "bias": 0.002,
+        "strength": 1.0,
+        "cascade_count": 4,
+        "resolution": 2048,
+        "split_lambda": 0.6,
+        "pcf_radius": 1.25
+      },
+      "point_lights": []
+    },
+    "environment": {
+      "key": "environment::default",
+      "intensity": 1.0
+    }
+  },
+  "dependencies": {
+    "atlases": [],
+    "clips": [],
+    "skeletons": [],
+    "meshes": [
+      "cube"
+    ],
+    "materials": [],
+    "environments": [
+      "environment::default"
+    ]
+  },
+  "entities": [
+    {
+      "id": "player",
+      "name": "player",
+      "transform": {
+        "translation": {
+          "x": 0.0,
+          "y": 0.0
+        },
+        "rotation": 0.0,
+        "scale": {
+          "x": 1.0,
+          "y": 1.0
+        }
+      },
+      "transform3d": {
+        "translation": {
+          "x": 0.0,
+          "y": 1.0,
+          "z": 0.0
+        },
+        "rotation": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0,
+          "w": 1.0
+        },
+        "scale": {
+          "x": 0.55,
+          "y": 1.75,
+          "z": 0.55
+        }
+      },
+      "mesh": {
+        "key": "cube",
+        "lighting": {
+          "cast_shadows": true,
+          "receive_shadows": true,
+          "base_color": {
+            "x": 0.2,
+            "y": 0.55,
+            "z": 1.0
+          },
+          "metallic": 0.0,
+          "roughness": 0.85
+        }
+      }
+    }
+  ]
+}

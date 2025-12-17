@@ -230,6 +230,30 @@ impl MeshPreviewPlugin {
         (self.mesh_camera.target - self.mesh_camera.position).normalize_or_zero()
     }
 
+    pub fn set_orbit_target(&mut self, target: Vec3) {
+        self.mesh_orbit.target = target;
+        if matches!(self.mesh_control_mode, MeshControlMode::Orbit | MeshControlMode::Disabled) {
+            self.mesh_camera =
+                self.mesh_orbit.to_camera(MESH_CAMERA_FOV_RADIANS, MESH_CAMERA_NEAR, MESH_CAMERA_FAR);
+            self.mesh_freefly = FreeflyController::from_camera(&self.mesh_camera);
+        }
+        if self.mesh_frustum_lock {
+            self.mesh_frustum_focus = target;
+            self.mesh_frustum_distance = (self.mesh_camera.position - target).length().max(0.1);
+        }
+    }
+
+    pub fn teleport_freefly(&mut self, position: Vec3) {
+        self.mesh_freefly.position = position;
+        if self.mesh_control_mode == MeshControlMode::Freefly {
+            self.mesh_camera = self.mesh_freefly.as_camera();
+        }
+        if self.mesh_frustum_lock {
+            self.mesh_frustum_focus = self.mesh_camera.target;
+            self.mesh_frustum_distance = (self.mesh_frustum_focus - position).length().max(0.1);
+        }
+    }
+
     pub fn ensure_preview_gpu(&mut self, ctx: &mut PluginContext<'_>) -> Result<()> {
         let (mesh_registry, renderer) = ctx.mesh_registry_and_renderer()?;
         if let Err(err) = mesh_registry.ensure_gpu(self.preview_mesh_key(), renderer) {
